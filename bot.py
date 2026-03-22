@@ -870,6 +870,124 @@ class RSVPView(discord.ui.View):
 # =========================
 # CREW PANEL
 # =========================
+
+_application_data = {}  # user_id -> {"step1": {...}, "step2": {...}}
+
+
+class CrewAppStep1Modal(discord.ui.Modal, title="DIFF Crew Application — Part 1 of 3"):
+    age = discord.ui.TextInput(label="How old are you?", required=True, max_length=3)
+    timezone = discord.ui.TextInput(label="What timezone do you live in?", placeholder="e.g. Eastern, Central, Pacific, GMT", required=True, max_length=100)
+    gamertag = discord.ui.TextInput(label="PlayStation or PC Gamertag", required=True, max_length=100)
+    discord_name = discord.ui.TextInput(label="Discord Name", required=True, max_length=100)
+    gta_rank = discord.ui.TextInput(label="What is your GTA Rank?", required=True, max_length=50)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        _application_data[interaction.user.id] = {
+            "step1": {
+                "age": self.age.value,
+                "timezone": self.timezone.value,
+                "gamertag": self.gamertag.value,
+                "discord_name": self.discord_name.value,
+                "gta_rank": self.gta_rank.value,
+            }
+        }
+        await interaction.response.send_message(
+            "✅ Part 1 saved! Click below to continue.",
+            view=CrewAppStep2View(),
+            ephemeral=True
+        )
+
+
+class CrewAppStep2View(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Continue to Part 2", style=discord.ButtonStyle.primary, emoji="▶️")
+    async def go_step2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in _application_data:
+            await interaction.response.send_message("Session expired. Please start over by clicking Crew Application again.", ephemeral=True)
+            return
+        await interaction.response.send_modal(CrewAppStep2Modal())
+
+
+class CrewAppStep2Modal(discord.ui.Modal, title="DIFF Crew Application — Part 2 of 3"):
+    how_heard = discord.ui.TextInput(label="How did you hear about us?", placeholder="Community Advertisement, From a Friend, or Attending a Car Meet", required=True, max_length=200)
+    days_available = discord.ui.TextInput(label="Days you are most available", placeholder="e.g. Monday, Wednesday, Friday, Saturday", required=True, max_length=200)
+    personal_skills = discord.ui.TextInput(label="Describe your personal skills", style=discord.TextStyle.paragraph, required=True, max_length=500)
+    meet_experience = discord.ui.TextInput(label="Previous DIFF meet experience", style=discord.TextStyle.paragraph, required=True, max_length=500)
+    former_crews = discord.ui.TextInput(label="Former crew(s) & how long (months)", placeholder="e.g. Midnight Meet Crews - 6 months", style=discord.TextStyle.paragraph, required=True, max_length=300)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id not in _application_data:
+            await interaction.response.send_message("Session expired. Please start over by clicking Crew Application again.", ephemeral=True)
+            return
+        _application_data[interaction.user.id]["step2"] = {
+            "how_heard": self.how_heard.value,
+            "days_available": self.days_available.value,
+            "personal_skills": self.personal_skills.value,
+            "meet_experience": self.meet_experience.value,
+            "former_crews": self.former_crews.value,
+        }
+        await interaction.response.send_message(
+            "✅ Part 2 saved! Click below to continue.",
+            view=CrewAppStep3View(),
+            ephemeral=True
+        )
+
+
+class CrewAppStep3View(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Continue to Part 3", style=discord.ButtonStyle.primary, emoji="▶️")
+    async def go_step3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in _application_data:
+            await interaction.response.send_message("Session expired. Please start over by clicking Crew Application again.", ephemeral=True)
+            return
+        await interaction.response.send_modal(CrewAppStep3Modal())
+
+
+class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 3 of 3"):
+    why_join = discord.ui.TextInput(label="Why do you have potential to join DIFF?", style=discord.TextStyle.paragraph, required=True, max_length=500)
+    what_bring = discord.ui.TextInput(label="What can you bring to the crew?", placeholder="e.g. Car Photography, Content Creation, Crew Colors", style=discord.TextStyle.paragraph, required=True, max_length=300)
+    understand = discord.ui.TextInput(label='Type "I Understand" to confirm', placeholder="I Understand", required=True, max_length=20)
+    comments = discord.ui.TextInput(label="Questions, comments, or concerns?", style=discord.TextStyle.paragraph, required=False, max_length=500)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id not in _application_data:
+            await interaction.response.send_message("Session expired. Please start over by clicking Crew Application again.", ephemeral=True)
+            return
+        if self.understand.value.strip().lower() != "i understand":
+            await interaction.response.send_message('❌ You must type "I Understand" exactly to submit. Please try again.', ephemeral=True)
+            return
+        app = _application_data.pop(interaction.user.id)
+        s1 = app["step1"]
+        s2 = app["step2"]
+        channel = interaction.guild.get_channel(CREW_APPLICATIONS_CHANNEL_ID)
+        if channel is None:
+            await interaction.response.send_message("❌ Could not find the applications channel. Please contact a staff member.", ephemeral=True)
+            return
+        embed = discord.Embed(title="📝 New Crew Application", color=discord.Color.blue(), timestamp=discord.utils.utcnow())
+        embed.set_author(name=str(interaction.user), icon_url=interaction.user.display_avatar.url)
+        embed.add_field(name="Discord", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Discord Name", value=s1["discord_name"], inline=True)
+        embed.add_field(name="Age", value=s1["age"], inline=True)
+        embed.add_field(name="Timezone", value=s1["timezone"], inline=True)
+        embed.add_field(name="Gamertag", value=s1["gamertag"], inline=True)
+        embed.add_field(name="GTA Rank", value=s1["gta_rank"], inline=True)
+        embed.add_field(name="How They Heard", value=s2["how_heard"], inline=True)
+        embed.add_field(name="Days Available", value=s2["days_available"], inline=True)
+        embed.add_field(name="Personal Skills", value=s2["personal_skills"], inline=False)
+        embed.add_field(name="DIFF Meet Experience", value=s2["meet_experience"], inline=False)
+        embed.add_field(name="Former Crews", value=s2["former_crews"], inline=False)
+        embed.add_field(name="Why They Should Join", value=self.why_join.value, inline=False)
+        embed.add_field(name="What They Bring", value=self.what_bring.value, inline=False)
+        if self.comments.value:
+            embed.add_field(name="Comments / Questions", value=self.comments.value, inline=False)
+        await channel.send(embed=embed)
+        await interaction.response.send_message("✅ Your application has been submitted! Staff will review it and reach out if you're selected for an interview. Good luck!", ephemeral=True)
+
+
 class CrewPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -923,17 +1041,7 @@ class CrewPanelView(discord.ui.View):
 
     @discord.ui.button(label="Crew Application", emoji="📝", style=discord.ButtonStyle.success, custom_id="crew_application_btn")
     async def crew_application(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="📝 DIFF Crew Application",
-            description=(
-                "Fill out the official application below:\n\n"
-                "https://form.jotform.com/231268157057054\n\n"
-                "Make sure you answer all questions seriously.\n"
-                "Applications with effort are more likely to be accepted."
-            ),
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_modal(CrewAppStep1Modal())
 
 
 async def send_or_refresh_crew_panel(guild: discord.Guild):
