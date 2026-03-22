@@ -1,0 +1,150 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+ROLL_CALL_CHANNEL = "https://discord.com/channels/850386896509337710/1047338695352664165"
+COLOR_CHANNEL = "https://discord.com/channels/850386896509337710/1108181679308283965"
+
+# Update these if you want different images later
+DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+
+LEADER_JACKET = "https://media.discordapp.net/attachments/1124435756774084659/1339471600092975126/IMG_1521.jpg"
+CREW_JACKETS = [
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471609328832572/IMG_1520.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471616152834068/IMG_1519.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471775314088050/IMG_1518.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471807610097766/IMG_1517.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471812328947775/IMG_1516.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471817601187933/IMG_1515.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471823922003978/IMG_1514.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471829911208006/IMG_1513.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471835426717747/IMG_1512.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471845308497960/IMG_1511.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471868553465926/IMG_1510.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471877910954035/IMG_1509.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471885280346205/IMG_1508.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471893563965473/IMG_1507.jpg",
+]
+ALT_JACKET = "https://media.discordapp.net/attachments/1124435756774084659/1346631821521195008/IMG_8887.png"
+
+
+class DiffPanel(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📋 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_CHANNEL)
+    async def rollcall(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="🎨 Crew Color Voting", style=discord.ButtonStyle.link, url=COLOR_CHANNEL)
+    async def color(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="⚠️ Strike System", style=discord.ButtonStyle.primary)
+    async def strike(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="⚠️ DIFF Strike & Warning System",
+            description=(
+                "To maintain a clean, realistic, and respectful environment, "
+                "DIFF uses a structured conduct system for all members."
+            ),
+            color=discord.Color.red()
+        )
+
+        embed.add_field(
+            name="📊 System Overview",
+            value=(
+                "• ⚠️ Warning — Minor issue (notice)\n"
+                "• 🚨 Strike 1 — Official warning\n"
+                "• ⛔ Strike 2 — Final warning\n"
+                "• ❌ Strike 3 — Removal from DIFF"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="📌 What Can Lead to Strikes",
+            value=(
+                "• Disruptive behavior during meets\n"
+                "• Unrealistic / non-compliant builds\n"
+                "• Disrespect toward members or staff\n"
+                "• Failure to follow crew rules"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🚨 Important",
+            value=(
+                "Repeated issues will escalate quickly. "
+                "Staff decisions are final to keep the crew organized and professional."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="✅ Stay in Good Standing",
+            value=(
+                "Follow the rules, respect the community, "
+                "and contribute positively to DIFF."
+            ),
+            inline=False
+        )
+
+        embed.set_footer(text="— DIFF Management")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🧥 Crew Jackets", style=discord.ButtonStyle.secondary)
+    async def jackets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        first = discord.Embed(
+            title="🧥 DIFF Crew Jackets",
+            description=(
+                "**Leaders / Managers Jacket** shown below.\n"
+                "Crew member jacket images will follow in separate messages.\n\n"
+                "If a member cannot place the crew emblem on the new jackets, "
+                "they must wear the alternate jacket."
+            ),
+            color=discord.Color.blue()
+        )
+        first.set_image(url=LEADER_JACKET)
+
+        await interaction.response.send_message(embed=first, ephemeral=True)
+
+        for index, url in enumerate(CREW_JACKETS, start=1):
+            jacket_embed = discord.Embed(
+                title=f"🧥 Crew Member Jacket {index}",
+                color=discord.Color.blue()
+            )
+            jacket_embed.set_image(url=url)
+            await interaction.followup.send(embed=jacket_embed, ephemeral=True)
+
+        alt_embed = discord.Embed(
+            title="🧥 Alternate Crew Jacket",
+            description="Use this jacket only if the crew emblem cannot be placed on the new jackets.",
+            color=discord.Color.blue()
+        )
+        alt_embed.set_image(url=ALT_JACKET)
+        await interaction.followup.send(embed=alt_embed, ephemeral=True)
+
+
+class DiffPanelCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="diffpanel", description="Post the DIFF crew control panel")
+    async def diffpanel(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🚘 DIFF Crew Control Panel",
+            description="Use the buttons below to access crew systems.",
+            color=discord.Color.blue()
+        )
+        embed.set_thumbnail(url=DIFF_LOGO)
+        embed.set_image(url=DIFF_BANNER)
+
+        await interaction.channel.send(embed=embed, view=DiffPanel())
+        await interaction.response.send_message("DIFF control panel posted ✅", ephemeral=True)
+
+
+async def setup(bot):
+    await bot.add_cog(DiffPanelCog(bot))

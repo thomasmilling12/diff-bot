@@ -2838,23 +2838,73 @@ class DiffPanel(discord.ui.View):
     async def strike(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title="⚠️ DIFF Strike & Warning System",
-            description="Follow all DIFF rules. Warnings → Strikes → Suspension → Removal.",
+            description=(
+                "To maintain a clean, realistic, and respectful environment, "
+                "DIFF uses a structured conduct system for all members."
+            ),
             color=discord.Color.red(),
         )
+        embed.add_field(
+            name="📊 System Overview",
+            value=(
+                "• ⚠️ Warning — Minor issue (notice)\n"
+                "• 🚨 Strike 1 — Official warning\n"
+                "• ⛔ Strike 2 — Final warning\n"
+                "• ❌ Strike 3 — Removal from DIFF"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📌 What Can Lead to Strikes",
+            value=(
+                "• Disruptive behavior during meets\n"
+                "• Unrealistic / non-compliant builds\n"
+                "• Disrespect toward members or staff\n"
+                "• Failure to follow crew rules"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🚨 Important",
+            value=(
+                "Repeated issues will escalate quickly. "
+                "Staff decisions are final to keep the crew organized and professional."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="✅ Stay in Good Standing",
+            value="Follow the rules, respect the community, and contribute positively to DIFF.",
+            inline=False,
+        )
+        embed.set_footer(text="— DIFF Management")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="🧥 Crew Jackets", style=discord.ButtonStyle.secondary, custom_id="diff_panel_jackets", row=1)
     async def jackets(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
+        first = discord.Embed(
             title="🧥 DIFF Crew Jackets",
-            description="Official DIFF crew jackets are shown below.",
+            description=(
+                "**Leaders / Managers Jacket** shown below.\n"
+                "Crew member jacket images will follow in separate messages.\n\n"
+                "If a member cannot place the crew emblem on the new jackets, "
+                "they must wear the alternate jacket."
+            ),
             color=discord.Color.blue(),
         )
-        embed.set_image(url=LEADER_JACKET)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        for url in CREW_JACKETS:
-            await interaction.followup.send(url, ephemeral=True)
-        await interaction.followup.send(f"Alt Jacket: {ALT_JACKET}", ephemeral=True)
+        first.set_image(url=LEADER_JACKET)
+        await interaction.response.send_message(embed=first, ephemeral=True)
+        for index, url in enumerate(CREW_JACKETS, start=1):
+            jacket_embed = discord.Embed(title=f"🧥 Crew Member Jacket {index}", color=discord.Color.blue())
+            jacket_embed.set_image(url=url)
+            await interaction.followup.send(embed=jacket_embed, ephemeral=True)
+        alt_embed = discord.Embed(
+            title="🧥 Alternate Crew Jacket",
+            description="Use this jacket only if the crew emblem cannot be placed on the new jackets.",
+            color=discord.Color.blue(),
+        )
+        alt_embed.set_image(url=ALT_JACKET)
+        await interaction.followup.send(embed=alt_embed, ephemeral=True)
 
 
 @bot.tree.command(name="diffpanel", description="Post the DIFF Crew Control Panel (staff only)")
