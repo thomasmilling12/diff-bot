@@ -2501,4 +2501,30 @@ if not TOKEN:
     raise ValueError("TOKEN not found.")
 
 keep_alive()
-bot.run(TOKEN)
+
+async def run_bot():
+    delay = 60
+    while True:
+        try:
+            await bot.start(TOKEN)
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                print(f"[Rate limited by Discord] Waiting {delay}s before retrying...")
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 900)
+            else:
+                print(f"[HTTP error] {e} — retrying in {delay}s")
+                await asyncio.sleep(delay)
+        except Exception as e:
+            print(f"[Connection error] {e} — retrying in {delay}s")
+            await asyncio.sleep(delay)
+        else:
+            delay = 60
+        if not bot.is_closed():
+            await bot.close()
+        try:
+            bot._connection._ready.clear()
+        except Exception:
+            pass
+
+asyncio.run(run_bot())
