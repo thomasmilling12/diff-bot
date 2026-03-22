@@ -368,12 +368,24 @@ async def cleanup_extra_status_panel_messages(channel: discord.TextChannel, keep
         pass
 
 
+def build_hierarchy_support_view() -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(
+        label="Support Tickets",
+        style=discord.ButtonStyle.link,
+        emoji="🎟️",
+        url=build_channel_link(GUILD_ID, SUPPORT_TICKETS_CHANNEL_ID),
+    ))
+    return view
+
+
 async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
     channel = guild.get_channel(HIERARCHY_CHANNEL_ID)
     if channel is None:
         return False, "Hierarchy channel not found."
 
     embeds = build_hierarchy_embeds(guild)
+    support_view = build_hierarchy_support_view()
     hierarchy_message_ids = data.get("hierarchy_message_ids", [])
 
     saved_messages = []
@@ -387,8 +399,13 @@ async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
                 break
 
     if saved_messages and len(saved_messages) == len(embeds):
-        for msg, embed in zip(saved_messages, embeds):
-            await msg.edit(content="## DIFF Hierarchy Panel" if msg.id == saved_messages[0].id else None, embed=embed)
+        for i, (msg, embed) in enumerate(zip(saved_messages, embeds)):
+            is_last = i == len(embeds) - 1
+            await msg.edit(
+                content="## DIFF Hierarchy Panel" if i == 0 else None,
+                embed=embed,
+                view=support_view if is_last else discord.ui.View(),
+            )
         await cleanup_extra_hierarchy_messages(channel, [msg.id for msg in saved_messages])
         return True, channel.mention
 
@@ -411,7 +428,8 @@ async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
     new_ids = []
     for index, embed in enumerate(embeds):
         content = "## DIFF Hierarchy Panel" if index == 0 else None
-        msg = await channel.send(content=content, embed=embed)
+        is_last = index == len(embeds) - 1
+        msg = await channel.send(content=content, embed=embed, view=support_view if is_last else None)
         new_ids.append(msg.id)
 
     data["hierarchy_message_ids"] = new_ids
@@ -419,6 +437,37 @@ async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
     save_data(data)
     await cleanup_extra_hierarchy_messages(channel, new_ids)
     return True, channel.mention
+
+
+async def _auto_refresh_hierarchy_panel(guild: discord.Guild):
+    await asyncio.sleep(15)
+    hierarchy_message_ids = data.get("hierarchy_message_ids", [])
+    if not hierarchy_message_ids:
+        return
+    channel = guild.get_channel(HIERARCHY_CHANNEL_ID)
+    if channel is None:
+        return
+    embeds = build_hierarchy_embeds(guild)
+    support_view = build_hierarchy_support_view()
+    saved_messages = []
+    for message_id in hierarchy_message_ids:
+        try:
+            msg = await channel.fetch_message(message_id)
+            saved_messages.append(msg)
+        except discord.NotFound:
+            return
+    if len(saved_messages) != len(embeds):
+        return
+    for i, (msg, embed) in enumerate(zip(saved_messages, embeds)):
+        is_last = i == len(embeds) - 1
+        try:
+            await msg.edit(
+                content="## DIFF Hierarchy Panel" if i == 0 else None,
+                embed=embed,
+                view=support_view if is_last else discord.ui.View(),
+            )
+        except Exception:
+            pass
 
 
 def build_status_embed(guild: discord.Guild) -> discord.Embed:
@@ -866,6 +915,7 @@ async def on_ready():
 # AUTO REFRESH PANEL
 # =========================
 _panel_refresh_task = None
+_hierarchy_refresh_task = None
 
 
 async def _auto_refresh_status_panel(guild: discord.Guild):
@@ -895,7 +945,7 @@ async def _auto_refresh_status_panel(guild: discord.Guild):
 
 @bot.event
 async def on_presence_update(before: discord.Member, after: discord.Member):
-    global _panel_refresh_task
+    global _panel_refresh_task, _hierarchy_refresh_task
     if after.guild.id != GUILD_ID:
         return
     if before.status == after.status and before.activity == after.activity:
@@ -903,6 +953,9 @@ async def on_presence_update(before: discord.Member, after: discord.Member):
     if _panel_refresh_task is not None and not _panel_refresh_task.done():
         _panel_refresh_task.cancel()
     _panel_refresh_task = asyncio.ensure_future(_auto_refresh_status_panel(after.guild))
+    if _hierarchy_refresh_task is not None and not _hierarchy_refresh_task.done():
+        _hierarchy_refresh_task.cancel()
+    _hierarchy_refresh_task = asyncio.ensure_future(_auto_refresh_hierarchy_panel(after.guild))
 
 
 # =========================
