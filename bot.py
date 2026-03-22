@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from datetime import datetime
@@ -859,6 +860,49 @@ async def on_ready():
         print(f"View registration warning: {e}")
 
     status_message_id = data.get("panel_message_id")
+
+
+# =========================
+# AUTO REFRESH PANEL
+# =========================
+_panel_refresh_task = None
+
+
+async def _auto_refresh_status_panel(guild: discord.Guild):
+    await asyncio.sleep(15)
+    channel_id = data.get("status_channel_id")
+    if not channel_id:
+        return
+    channel = guild.get_channel(channel_id)
+    if channel is None:
+        return
+    embed = build_status_embed(guild)
+    msg_id = data.get("panel_message_id")
+    target_message = None
+    if msg_id:
+        try:
+            target_message = await channel.fetch_message(msg_id)
+        except discord.NotFound:
+            target_message = None
+    if target_message is None:
+        target_message = await find_existing_status_panel_message(channel)
+    if target_message is not None:
+        try:
+            await target_message.edit(embed=embed)
+        except Exception:
+            pass
+
+
+@bot.event
+async def on_presence_update(before: discord.Member, after: discord.Member):
+    global _panel_refresh_task
+    if after.guild.id != GUILD_ID:
+        return
+    if before.status == after.status and before.activity == after.activity:
+        return
+    if _panel_refresh_task is not None and not _panel_refresh_task.done():
+        _panel_refresh_task.cancel()
+    _panel_refresh_task = asyncio.ensure_future(_auto_refresh_status_panel(after.guild))
 
 
 # =========================
