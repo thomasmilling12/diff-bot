@@ -291,7 +291,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
                 continue
 
             embed.add_field(
-                name=get_hierarchy_role_header(role, label),
+                name=f"{label} • {role.mention}",
                 value=format_role_member_lines(role),
                 inline=False,
             )
