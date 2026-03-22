@@ -1,0 +1,639 @@
+
+import os
+import json
+from datetime import datetime, timezone
+
+import discord
+
+# ============================================================
+# DIFF ACTIVITY + RANK SYSTEM ADDON
+# ============================================================
+# FEATURES
+# - Auto rank system tracking (Host -> Manager -> Leader)
+# - Meet attendance tracker
+# - Leaderboard for most active members
+# - Auto promotion suggestions based on activity
+# - Crew reputation system
+#
+# CHANNELS
+# - Staff logs / promotions / reputation: 1485265848099799163
+# - Meet attendance channel: 1089579004517953546
+# - Leaderboard channel: 1485282044392243290
+#
+# HOW TO USE
+# 1) Put this file in your bot folder
+# 2) Import:
+#       from diff_activity_rank_system import (
+#           setup_diff_activity_rank_system,
+#           send_meet_attendance_panel,
+#           post_activity_leaderboard,
+#           record_meet_attendance,
+#           record_meet_host,
+#           update_member_reputation,
+#       )
+#
+# 3) In on_ready:
+#       await setup_diff_activity_rank_system(bot)
+#
+# 4) Examples:
+#       channel = bot.get_channel(MEET_ATTENDANCE_CHANNEL_ID)
+#       await send_meet_attendance_panel(channel)
+#
+#       await record_meet_attendance(
+#           guild=ctx.guild,
+#           member=ctx.author,
+#           meet_name="Tire Lettering Meet",
+#           host_member=ctx.author
+#       )
+#
+#       await record_meet_host(
+#           guild=ctx.guild,
+#           host_member=ctx.author,
+#           meet_name="Tire Lettering Meet"
+#       )
+#
+#       leaderboard_channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+#       await post_activity_leaderboard(leaderboard_channel)
+#
+# NOTES
+# - This is an addon file. It does not replace your current bot.
+# - Promotion suggestions are posted to your staff logs channel.
+# - You can edit thresholds below whenever you want.
+# ============================================================
+
+# -------------------------
+# CHANNEL IDS
+# -------------------------
+STAFF_LOGS_CHANNEL_ID = 1485265848099799163
+MEET_ATTENDANCE_CHANNEL_ID = 1089579004517953546
+LEADERBOARD_CHANNEL_ID = 1485282044392243290
+
+# -------------------------
+# ROLE IDS
+# -------------------------
+LEADER_ROLE_ID = 850391095845584937
+CO_LEADER_ROLE_ID = 850391378559238235
+MANAGER_ROLE_ID = 990011447193006101
+HOST_ROLE_ID = 1055823929358430248
+CREW_MEMBER_ROLE_ID = 886702076552441927
+
+# -------------------------
+# PROMOTION THRESHOLDS
+# -------------------------
+# Crew Member -> Host
+HOST_PROMOTION_ATTENDED = 6
+HOST_PROMOTION_HOSTED = 2
+HOST_PROMOTION_REPUTATION = 15
+
+# Host -> Manager
+MANAGER_PROMOTION_ATTENDED = 14
+MANAGER_PROMOTION_HOSTED = 5
+MANAGER_PROMOTION_REPUTATION = 35
+
+# Manager -> Leader
+LEADER_PROMOTION_ATTENDED = 28
+LEADER_PROMOTION_HOSTED = 10
+LEADER_PROMOTION_REPUTATION = 65
+
+# -------------------------
+# DATA FILES
+# -------------------------
+DATA_FOLDER = "diff_data"
+ACTIVITY_FILE = os.path.join(DATA_FOLDER, "diff_activity_stats.json")
+REPUTATION_FILE = os.path.join(DATA_FOLDER, "diff_reputation_stats.json")
+MEETS_FILE = os.path.join(DATA_FOLDER, "diff_meet_records.json")
+
+def ensure_data_files():
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+    for path in [ACTIVITY_FILE, REPUTATION_FILE, MEETS_FILE]:
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({}, f, indent=2)
+
+def load_json(path: str) -> dict:
+    ensure_data_files()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_json(path: str, data: dict):
+    ensure_data_files()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def get_ts() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+# -------------------------
+# MEMBER / STATS HELPERS
+# -------------------------
+def get_user_stats(user_id: int) -> dict:
+    data = load_json(ACTIVITY_FILE)
+    return data.get(str(user_id), {
+        "meets_attended": 0,
+        "meets_hosted": 0,
+        "last_updated": None,
+        "username": None
+    })
+
+def save_user_stats(user_id: int, stats: dict):
+    data = load_json(ACTIVITY_FILE)
+    data[str(user_id)] = stats
+    save_json(ACTIVITY_FILE, data)
+
+def get_user_reputation(user_id: int) -> dict:
+    data = load_json(REPUTATION_FILE)
+    return data.get(str(user_id), {
+        "reputation": 0,
+        "positive_notes": [],
+        "negative_notes": [],
+        "last_updated": None,
+        "username": None
+    })
+
+def save_user_reputation(user_id: int, rep: dict):
+    data = load_json(REPUTATION_FILE)
+    data[str(user_id)] = rep
+    save_json(REPUTATION_FILE, data)
+
+def current_rank_name(member: discord.Member) -> str:
+    role_ids = {role.id for role in member.roles}
+    if LEADER_ROLE_ID in role_ids:
+        return "Leader"
+    if CO_LEADER_ROLE_ID in role_ids:
+        return "Co Leader"
+    if MANAGER_ROLE_ID in role_ids:
+        return "Manager"
+    if HOST_ROLE_ID in role_ids:
+        return "Host"
+    if CREW_MEMBER_ROLE_ID in role_ids:
+        return "Crew Member"
+    return "Unranked"
+
+def get_next_rank(member: discord.Member) -> str | None:
+    current = current_rank_name(member)
+    if current == "Crew Member":
+        return "Host"
+    if current == "Host":
+        return "Manager"
+    if current == "Manager":
+        return "Leader"
+    return None
+
+def check_promotion_eligibility(member: discord.Member) -> dict | None:
+    stats = get_user_stats(member.id)
+    rep = get_user_reputation(member.id)
+    current = current_rank_name(member)
+    next_rank = get_next_rank(member)
+
+    if current == "Crew Member":
+        eligible = (
+            stats["meets_attended"] >= HOST_PROMOTION_ATTENDED and
+            stats["meets_hosted"] >= HOST_PROMOTION_HOSTED and
+            rep["reputation"] >= HOST_PROMOTION_REPUTATION
+        )
+        return {
+            "current_role": current,
+            "suggested_role": "Host",
+            "eligible": eligible,
+            "required_attended": HOST_PROMOTION_ATTENDED,
+            "required_hosted": HOST_PROMOTION_HOSTED,
+            "required_reputation": HOST_PROMOTION_REPUTATION,
+            "stats": stats,
+            "reputation": rep["reputation"]
+        }
+
+    if current == "Host":
+        eligible = (
+            stats["meets_attended"] >= MANAGER_PROMOTION_ATTENDED and
+            stats["meets_hosted"] >= MANAGER_PROMOTION_HOSTED and
+            rep["reputation"] >= MANAGER_PROMOTION_REPUTATION
+        )
+        return {
+            "current_role": current,
+            "suggested_role": "Manager",
+            "eligible": eligible,
+            "required_attended": MANAGER_PROMOTION_ATTENDED,
+            "required_hosted": MANAGER_PROMOTION_HOSTED,
+            "required_reputation": MANAGER_PROMOTION_REPUTATION,
+            "stats": stats,
+            "reputation": rep["reputation"]
+        }
+
+    if current == "Manager":
+        eligible = (
+            stats["meets_attended"] >= LEADER_PROMOTION_ATTENDED and
+            stats["meets_hosted"] >= LEADER_PROMOTION_HOSTED and
+            rep["reputation"] >= LEADER_PROMOTION_REPUTATION
+        )
+        return {
+            "current_role": current,
+            "suggested_role": "Leader",
+            "eligible": eligible,
+            "required_attended": LEADER_PROMOTION_ATTENDED,
+            "required_hosted": LEADER_PROMOTION_HOSTED,
+            "required_reputation": LEADER_PROMOTION_REPUTATION,
+            "stats": stats,
+            "reputation": rep["reputation"]
+        }
+
+    return None
+
+async def maybe_post_promotion_suggestion(guild: discord.Guild, member: discord.Member):
+    result = check_promotion_eligibility(member)
+    if not result:
+        return
+
+    if not result["eligible"]:
+        return
+
+    channel = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title="📈 Promotion Suggestion",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="User", value=f"{member.mention}", inline=False)
+    embed.add_field(name="Current Role", value=result["current_role"], inline=False)
+    embed.add_field(name="Suggested Role", value=result["suggested_role"], inline=False)
+    embed.add_field(
+        name="Stats",
+        value=(
+            f"- Meets Attended: {result['stats']['meets_attended']}\n"
+            f"- Meets Hosted: {result['stats']['meets_hosted']}\n"
+            f"- Reputation: {result['reputation']}"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="Status",
+        value="Eligible for promotion",
+        inline=False
+    )
+
+    await channel.send(embed=embed)
+
+# -------------------------
+# MEET ATTENDANCE
+# -------------------------
+async def record_meet_attendance(
+    guild: discord.Guild,
+    member: discord.Member,
+    meet_name: str,
+    host_member: discord.Member | None = None
+):
+    stats = get_user_stats(member.id)
+    stats["meets_attended"] += 1
+    stats["last_updated"] = utc_now_iso()
+    stats["username"] = str(member)
+    save_user_stats(member.id, stats)
+
+    await maybe_post_promotion_suggestion(guild, member)
+
+    logs_channel = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if logs_channel:
+        embed = discord.Embed(
+            title="✅ Meet Attendance Recorded",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="Member", value=f"{member.mention}", inline=False)
+        embed.add_field(name="Meet Name", value=meet_name, inline=False)
+        embed.add_field(name="Host", value=host_member.mention if host_member else "Unknown", inline=False)
+        embed.add_field(name="Total Attended", value=str(stats["meets_attended"]), inline=False)
+        await logs_channel.send(embed=embed)
+
+async def record_meet_host(
+    guild: discord.Guild,
+    host_member: discord.Member,
+    meet_name: str
+):
+    stats = get_user_stats(host_member.id)
+    stats["meets_hosted"] += 1
+    stats["last_updated"] = utc_now_iso()
+    stats["username"] = str(host_member)
+    save_user_stats(host_member.id, stats)
+
+    await maybe_post_promotion_suggestion(guild, host_member)
+
+    logs_channel = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if logs_channel:
+        embed = discord.Embed(
+            title="🎤 Meet Host Recorded",
+            color=discord.Color.purple(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="Host", value=f"{host_member.mention}", inline=False)
+        embed.add_field(name="Meet Name", value=meet_name, inline=False)
+        embed.add_field(name="Total Hosted", value=str(stats["meets_hosted"]), inline=False)
+        await logs_channel.send(embed=embed)
+
+async def save_meet_record(
+    guild: discord.Guild,
+    host_member: discord.Member,
+    meet_name: str,
+    meet_date_text: str,
+    total_players: int,
+    diff_present: int | str,
+    screenshot_url: str | None = None
+):
+    data = load_json(MEETS_FILE)
+    record_id = f"{guild.id}-{get_ts()}"
+
+    data[record_id] = {
+        "guild_id": guild.id,
+        "host_id": host_member.id,
+        "host_name": str(host_member),
+        "meet_name": meet_name,
+        "meet_date_text": meet_date_text,
+        "total_players": total_players,
+        "diff_present": diff_present,
+        "screenshot_url": screenshot_url,
+        "created_at": utc_now_iso()
+    }
+    save_json(MEETS_FILE, data)
+
+class MeetAttendanceModal(discord.ui.Modal, title="DIFF Meet Attendance"):
+    host_name = discord.ui.TextInput(
+        label="Host Name",
+        placeholder="@HostName or staff name",
+        max_length=60
+    )
+    meet_name = discord.ui.TextInput(
+        label="Meet Name",
+        placeholder="Tire Lettering Meet",
+        max_length=100
+    )
+    meet_date = discord.ui.TextInput(
+        label="Date",
+        placeholder="Feb 7, 2026",
+        max_length=40
+    )
+    total_players = discord.ui.TextInput(
+        label="Total Players in Lobby",
+        placeholder="20",
+        max_length=10
+    )
+    diff_members_present = discord.ui.TextInput(
+        label="DIFF Members Present",
+        placeholder="Count manually or estimate",
+        max_length=20
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ Member check failed.", ephemeral=True)
+            return
+
+        attendance_channel = interaction.guild.get_channel(MEET_ATTENDANCE_CHANNEL_ID) if interaction.guild else None
+        if not attendance_channel:
+            await interaction.response.send_message("❌ Attendance channel not found.", ephemeral=True)
+            return
+
+        total_players_value = 0
+        try:
+            total_players_value = int(str(self.total_players))
+        except Exception:
+            total_players_value = 0
+
+        embed = discord.Embed(
+            title="📊 DIFF Meet Attendance",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="Host", value=str(self.host_name), inline=False)
+        embed.add_field(name="Meet Name", value=str(self.meet_name), inline=False)
+        embed.add_field(name="Date", value=str(self.meet_date), inline=False)
+        embed.add_field(name="Total Players in Lobby", value=str(total_players_value), inline=False)
+        embed.add_field(name="DIFF Members Present", value=str(self.diff_members_present), inline=False)
+        embed.add_field(name="Screenshot", value="📸 Attach lobby screenshot below", inline=False)
+        embed.set_footer(text=f"Submitted by {interaction.user}")
+
+        await attendance_channel.send(embed=embed)
+
+        await save_meet_record(
+            guild=interaction.guild,
+            host_member=interaction.user,
+            meet_name=str(self.meet_name),
+            meet_date_text=str(self.meet_date),
+            total_players=total_players_value,
+            diff_present=str(self.diff_members_present),
+            screenshot_url=None
+        )
+
+        await interaction.response.send_message("✅ Meet attendance panel posted.", ephemeral=True)
+
+class AttendancePanelButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Post Attendance",
+            emoji="📊",
+            style=discord.ButtonStyle.primary,
+            custom_id="diff_post_attendance_button"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(MeetAttendanceModal())
+
+class MeetAttendancePanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(AttendancePanelButton())
+
+async def send_meet_attendance_panel(channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="DIFF Meet Attendance System",
+        description=(
+            "Use the button below to post a meet attendance log.\n\n"
+            "Format includes:\n"
+            "• Host\n"
+            "• Meet Name\n"
+            "• Date\n"
+            "• Total Players in Lobby\n"
+            "• DIFF Members Present\n"
+            "• Screenshot reminder"
+        ),
+        color=discord.Color.blue()
+    )
+    await channel.send(embed=embed, view=MeetAttendancePanelView())
+
+# -------------------------
+# REPUTATION SYSTEM
+# -------------------------
+async def update_member_reputation(
+    guild: discord.Guild,
+    member: discord.Member,
+    amount: int,
+    note: str,
+    given_by: discord.Member | None = None
+):
+    rep = get_user_reputation(member.id)
+    rep["reputation"] += amount
+    rep["last_updated"] = utc_now_iso()
+    rep["username"] = str(member)
+
+    if amount >= 0:
+        rep["positive_notes"].append({
+            "amount": amount,
+            "note": note,
+            "given_by": str(given_by) if given_by else None,
+            "created_at": utc_now_iso()
+        })
+    else:
+        rep["negative_notes"].append({
+            "amount": amount,
+            "note": note,
+            "given_by": str(given_by) if given_by else None,
+            "created_at": utc_now_iso()
+        })
+
+    # keep lists from getting too huge
+    rep["positive_notes"] = rep["positive_notes"][-25:]
+    rep["negative_notes"] = rep["negative_notes"][-25:]
+
+    save_user_reputation(member.id, rep)
+    await maybe_post_promotion_suggestion(guild, member)
+
+    channel = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if channel:
+        embed = discord.Embed(
+            title="🏆 Crew Reputation Update" if amount >= 0 else "⚠️ Crew Reputation Update",
+            color=discord.Color.green() if amount >= 0 else discord.Color.red(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="User", value=f"{member.mention}", inline=False)
+        embed.add_field(name="Change", value=f"{amount:+}", inline=False)
+        embed.add_field(name="New Reputation", value=str(rep["reputation"]), inline=False)
+        embed.add_field(name="Reason", value=note[:1024], inline=False)
+        if given_by:
+            embed.add_field(name="Updated By", value=f"{given_by.mention}", inline=False)
+
+        await channel.send(embed=embed)
+
+# -------------------------
+# LEADERBOARD
+# -------------------------
+def build_leaderboard_lines(guild: discord.Guild):
+    activity = load_json(ACTIVITY_FILE)
+    reputation = load_json(REPUTATION_FILE)
+
+    rows = []
+    for user_id, stats in activity.items():
+        rep_value = reputation.get(user_id, {}).get("reputation", 0)
+        attended = stats.get("meets_attended", 0)
+        hosted = stats.get("meets_hosted", 0)
+
+        score = (attended * 2) + (hosted * 5) + rep_value
+        rows.append({
+            "user_id": int(user_id),
+            "attended": attended,
+            "hosted": hosted,
+            "reputation": rep_value,
+            "score": score
+        })
+
+    rows.sort(key=lambda x: x["score"], reverse=True)
+
+    lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for idx, row in enumerate(rows[:10], start=1):
+        member = guild.get_member(row["user_id"])
+        name = member.mention if member else f"<@{row['user_id']}>"
+        badge = medals[idx - 1] if idx <= 3 else f"#{idx}"
+        lines.append(
+            f"{badge} {name}\n"
+            f"Attendance: {row['attended']} | Hosted: {row['hosted']} | Reputation: {row['reputation']} | Score: {row['score']}"
+        )
+
+    if not lines:
+        lines.append("No activity data yet.")
+
+    return lines
+
+async def post_activity_leaderboard(channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="🏁 DIFF Activity Leaderboard",
+        description="\n\n".join(build_leaderboard_lines(channel.guild)),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.set_footer(text="Leaderboard uses attendance + hosting + reputation")
+    await channel.send(embed=embed)
+
+class RefreshLeaderboardButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Refresh Leaderboard",
+            emoji="🏁",
+            style=discord.ButtonStyle.success,
+            custom_id="diff_refresh_leaderboard_button"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Guild not found.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🏁 DIFF Activity Leaderboard",
+            description="\n\n".join(build_leaderboard_lines(interaction.guild)),
+            color=discord.Color.gold(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.set_footer(text="Leaderboard uses attendance + hosting + reputation")
+        await interaction.response.edit_message(embed=embed, view=LeaderboardView())
+
+class LeaderboardView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(RefreshLeaderboardButton())
+
+async def send_leaderboard_panel(channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="🏁 DIFF Most Active Members",
+        description="\n\n".join(build_leaderboard_lines(channel.guild)),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.set_footer(text="Leaderboard uses attendance + hosting + reputation")
+    await channel.send(embed=embed, view=LeaderboardView())
+
+# -------------------------
+# OPTIONAL COMMAND HELPERS
+# -------------------------
+async def post_rank_system_overview(channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="📈 DIFF Rank Progression System",
+        description=(
+            "**Crew Member → Host**\n"
+            f"- Meets Attended: {HOST_PROMOTION_ATTENDED}\n"
+            f"- Meets Hosted: {HOST_PROMOTION_HOSTED}\n"
+            f"- Reputation: {HOST_PROMOTION_REPUTATION}\n\n"
+            "**Host → Manager**\n"
+            f"- Meets Attended: {MANAGER_PROMOTION_ATTENDED}\n"
+            f"- Meets Hosted: {MANAGER_PROMOTION_HOSTED}\n"
+            f"- Reputation: {MANAGER_PROMOTION_REPUTATION}\n\n"
+            "**Manager → Leader**\n"
+            f"- Meets Attended: {LEADER_PROMOTION_ATTENDED}\n"
+            f"- Meets Hosted: {LEADER_PROMOTION_HOSTED}\n"
+            f"- Reputation: {LEADER_PROMOTION_REPUTATION}"
+        ),
+        color=discord.Color.blue()
+    )
+    await channel.send(embed=embed)
+
+# -------------------------
+# SETUP
+# -------------------------
+async def setup_diff_activity_rank_system(bot):
+    ensure_data_files()
+    bot.add_view(MeetAttendancePanelView())
+    bot.add_view(LeaderboardView())
