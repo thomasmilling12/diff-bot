@@ -219,23 +219,21 @@ def format_role_member_lines(role: discord.Role) -> str:
         return "No members assigned yet."
 
     lines = [f"{get_member_status_emoji(member)} {member.mention}" for member in members]
-    value = f"**Role:** {role.mention}\n" + "\n".join(lines)
+    value = "\n".join(lines)
 
     if len(value) <= 1024:
         return value
 
-    trimmed_lines = [f"**Role:** {role.mention}"]
-    current_len = len(trimmed_lines[0])
-    member_lines = [f"{get_member_status_emoji(member)} {member.mention}" for member in members]
-
-    for line in member_lines:
-        extra = len(line) + 1
+    trimmed_lines = []
+    current_len = 0
+    for line in lines:
+        extra = len(line) + (1 if trimmed_lines else 0)
         if current_len + extra > 1000:
             break
         trimmed_lines.append(line)
         current_len += extra
 
-    remaining = len(member_lines) - (len(trimmed_lines) - 1)
+    remaining = len(lines) - len(trimmed_lines)
     if remaining > 0:
         trimmed_lines.append(f"…and {remaining} more")
 
@@ -291,7 +289,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
                 continue
 
             embed.add_field(
-                name=f"{label} • {role.mention}",
+                name=label,
                 value=format_role_member_lines(role),
                 inline=False,
             )
