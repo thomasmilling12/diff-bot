@@ -1068,16 +1068,14 @@ async def refreshpanel(interaction: discord.Interaction):
 
     if target_message is None:
         target_message = await channel.send(embed=embed)
-        reply_text = "Panel was missing, so I rebuilt it and saved the new message."
     else:
         await target_message.edit(embed=embed)
-        reply_text = "Panel refreshed."
 
     data["panel_message_id"] = target_message.id
     save_data(data)
     status_message_id = target_message.id
     await cleanup_extra_status_panel_messages(channel, target_message.id)
-    await interaction.response.send_message(reply_text, ephemeral=True)
+    await interaction.response.send_message(f"Panel refreshed in {channel.mention}.", ephemeral=True)
 
 
 @refreshpanel.error
