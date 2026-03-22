@@ -1662,8 +1662,59 @@ class LeaderboardView(discord.ui.View):
 
 
 # =========================
-# WEEKLY ROLL CALL — VIEW
+# WEEKLY ROLL CALL — MODAL + VIEW
 # =========================
+
+class WeeklyRollCallModal(discord.ui.Modal, title="📅 Weekly Roll Call Setup"):
+    week_of = discord.ui.TextInput(
+        label="Week Of",
+        placeholder="e.g. March 22 – March 24",
+        required=True,
+        max_length=50,
+    )
+    friday = discord.ui.TextInput(
+        label="Friday – Theme & Host",
+        placeholder="e.g. Demolition Derby | Host: @BriMedia",
+        required=True,
+        max_length=100,
+    )
+    saturday = discord.ui.TextInput(
+        label="Saturday – Theme & Host",
+        placeholder="e.g. Tire Meet | Host: @Host",
+        required=True,
+        max_length=100,
+    )
+    sunday = discord.ui.TextInput(
+        label="Sunday – Theme & Host",
+        placeholder="e.g. Tire Lettering | Host: @Tso_Kyng",
+        required=True,
+        max_length=100,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        roll_call_ch = interaction.guild.get_channel(ROLL_CALL_CHANNEL_ID)
+        if not isinstance(roll_call_ch, discord.TextChannel):
+            return await interaction.response.send_message("Roll call channel not found.", ephemeral=True)
+        embed = discord.Embed(
+            title="📅 DIFF Weekly Roll Call",
+            description=(
+                f"**Week of {self.week_of.value}**\n"
+                "React below for EACH meet you plan to attend.\n\n"
+                "━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🏁 **Friday**\n{self.friday.value}\n\n"
+                "━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🔥 **Saturday**\n{self.saturday.value}\n\n"
+                "━━━━━━━━━━━━━━━━━━━\n\n"
+                f"💎 **Sunday**\n{self.sunday.value}"
+            ),
+            color=discord.Color.blue(),
+        )
+        await roll_call_ch.send(
+            content=f"<@&{CREW_MEMBER_ROLE_ID}>",
+            embed=embed,
+            view=WeeklyRollCallView(),
+        )
+        await interaction.response.send_message(f"Weekly roll call posted in {roll_call_ch.mention} ✅", ephemeral=True)
 
 class WeeklyRollCallView(discord.ui.View):
     def __init__(self):
@@ -3707,34 +3758,7 @@ async def rankinfo(interaction: discord.Interaction):
 async def weeklyrollcall(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
-    roll_call_ch = interaction.guild.get_channel(ROLL_CALL_CHANNEL_ID)
-    if not isinstance(roll_call_ch, discord.TextChannel):
-        return await interaction.response.send_message("Roll call channel not found. Check ROLL_CALL_CHANNEL_ID.", ephemeral=True)
-    embed = discord.Embed(
-        title="📅 DIFF Weekly Roll Call",
-        description=(
-            "React below for EACH meet you plan to attend.\n\n"
-            "━━━━━━━━━━━━━━━━━━━\n\n"
-            "🏁 **Friday – Demolition Derby**\n"
-            "🕒 <t:1737320400:F>\n"
-            "Host: @BriMedia\n\n"
-            "━━━━━━━━━━━━━━━━━━━\n\n"
-            "🔥 **Saturday – [Meet Name]**\n"
-            "🕒 <t:1737406800:F>\n"
-            "Host: @Host\n\n"
-            "━━━━━━━━━━━━━━━━━━━\n\n"
-            "💎 **Sunday – Tire Lettering**\n"
-            "🕒 <t:1737493200:F>\n"
-            "Host: @Tso_Kyng"
-        ),
-        color=discord.Color.blue(),
-    )
-    await roll_call_ch.send(
-        content=f"<@&{CREW_MEMBER_ROLE_ID}>",
-        embed=embed,
-        view=WeeklyRollCallView(),
-    )
-    await interaction.response.send_message(f"Weekly roll call posted in {roll_call_ch.mention} ✅", ephemeral=True)
+    await interaction.response.send_modal(WeeklyRollCallModal())
 
 
 @bot.tree.command(name="staffdashboard", description="Post the DIFF staff recruitment dashboard (staff only)")
