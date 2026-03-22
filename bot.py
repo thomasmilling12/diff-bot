@@ -114,6 +114,30 @@ MEET_ATTENDANCE_REP = 2
 ROLL_CALL_CHANNEL_ID = 1047338695352664165
 SUPPORT_CHANNEL_ID = 1156363575150002226
 ACTIVITY_MEETS_FILE = os.path.join(DATA_FOLDER, "diff_activity_meets.json")
+DIFF_PANEL_CHANNEL_ID = 1103086800458760262
+
+DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+LEADER_JACKET = "https://media.discordapp.net/attachments/1124435756774084659/1339471600092975126/IMG_1521.jpg"
+CREW_JACKETS = [
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471609328832572/IMG_1520.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471616152834068/IMG_1519.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471775314088050/IMG_1518.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471807610097766/IMG_1517.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471812328947775/IMG_1516.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471817601187933/IMG_1515.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471823922003978/IMG_1514.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471829911208006/IMG_1513.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471835426717747/IMG_1512.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471845308497960/IMG_1511.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471868553465926/IMG_1510.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471877910954035/IMG_1509.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471885280346205/IMG_1508.jpg",
+    "https://media.discordapp.net/attachments/1124435756774084659/1339471893563965473/IMG_1507.jpg",
+]
+ALT_JACKET = "https://media.discordapp.net/attachments/1124435756774084659/1346631821521195008/IMG_8887.png"
+ROLL_CALL_URL = f"https://discord.com/channels/{GUILD_ID}/1047338695352664165"
+COLOR_CHANNEL_URL = f"https://discord.com/channels/{GUILD_ID}/1108181679308283965"
 
 # =========================
 # DISCORD SETUP
@@ -2801,6 +2825,57 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
 
 
 # =========================
+# DIFF CREW PANEL
+# =========================
+
+class DiffPanel(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(label="📋 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_URL, row=0))
+        self.add_item(discord.ui.Button(label="🎨 Crew Color Voting", style=discord.ButtonStyle.link, url=COLOR_CHANNEL_URL, row=0))
+
+    @discord.ui.button(label="⚠️ Strike System", style=discord.ButtonStyle.primary, custom_id="diff_panel_strike", row=1)
+    async def strike(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="⚠️ DIFF Strike & Warning System",
+            description="Follow all DIFF rules. Warnings → Strikes → Suspension → Removal.",
+            color=discord.Color.red(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🧥 Crew Jackets", style=discord.ButtonStyle.secondary, custom_id="diff_panel_jackets", row=1)
+    async def jackets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="🧥 DIFF Crew Jackets",
+            description="Official DIFF crew jackets are shown below.",
+            color=discord.Color.blue(),
+        )
+        embed.set_image(url=LEADER_JACKET)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        for url in CREW_JACKETS:
+            await interaction.followup.send(url, ephemeral=True)
+        await interaction.followup.send(f"Alt Jacket: {ALT_JACKET}", ephemeral=True)
+
+
+@bot.tree.command(name="diffpanel", description="Post the DIFF Crew Control Panel (staff only)")
+async def diffpanel(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    panel_ch = interaction.guild.get_channel(DIFF_PANEL_CHANNEL_ID)
+    if not isinstance(panel_ch, discord.TextChannel):
+        return await interaction.response.send_message("Panel channel not found.", ephemeral=True)
+    embed = discord.Embed(
+        title="🚘 DIFF Crew Control Panel",
+        description="Use the buttons below to access crew systems.",
+        color=discord.Color.blue(),
+    )
+    embed.set_thumbnail(url=DIFF_LOGO)
+    embed.set_image(url=DIFF_BANNER)
+    await panel_ch.send(embed=embed, view=DiffPanel())
+    await interaction.response.send_message(f"Panel posted in {panel_ch.mention} ✅", ephemeral=True)
+
+
+# =========================
 # ACTIVITY MEETS SYSTEM
 # =========================
 
@@ -3148,6 +3223,7 @@ async def on_ready():
         bot.add_view(LeaderboardView())
         bot.add_view(MeetRSVPView(meet1="Meet 1", meet2="Meet 2", meet3="Meet 3"))
         bot.add_view(ActivityDashboardView())
+        bot.add_view(DiffPanel())
     except Exception as e:
         print(f"View registration warning: {e}")
 
