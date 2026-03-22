@@ -3031,6 +3031,37 @@ async def refreshdiffpanel(interaction: discord.Interaction):
     await interaction.followup.send("Panel refreshed ✅", ephemeral=True)
 
 
+@bot.tree.command(name="diffhub", description="Post the DIFF Crew Control Hub in this channel (staff only)")
+async def diffhub(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Must be used in a text channel.", ephemeral=True)
+    embed = discord.Embed(
+        title="📌 DIFF Crew Control Hub",
+        description=(
+            "*The all-in-one crew hub for Different Meets.*\n\n"
+            "---\n\n"
+            "📊 **Available Systems:**\n\n"
+            "📝 **Crew Roll Call** — Confirm your attendance for upcoming meets\n"
+            "🎨 **Crew Color Voting** — Help decide crew themes & styles\n"
+            "⚠️ **Strike System** — Review conduct rules and standards\n"
+            "🧥 **Crew Jackets** — View official DIFF crew outfits\n"
+            "📋 **Crew Roles & Responsibility** — Learn each role and expectations within DIFF\n"
+            "📈 **My Stats** — View your personal DIFF activity snapshot\n\n"
+            "---\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
+            "— **Different Meets**"
+        ),
+        color=discord.Color.blue(),
+    )
+    embed.set_thumbnail(url=DIFF_LOGO)
+    embed.set_image(url=DIFF_LOGO)
+    await interaction.channel.send(embed=embed, view=DiffPanel())
+    await interaction.response.send_message("Control Hub posted ✅", ephemeral=True)
+
+
 # =========================
 # ACTIVITY MEETS SYSTEM
 # =========================

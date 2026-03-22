@@ -1,0 +1,75 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+ROLL_CALL_CHANNEL = "https://discord.com/channels/850386896509337710/1047338695352664165"
+COLOR_CHANNEL = "https://discord.com/channels/850386896509337710/1108181679308283965"
+
+DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+
+class DiffControlHub(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📝 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_CHANNEL)
+    async def rollcall(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="🎨 Crew Color Voting", style=discord.ButtonStyle.link, url=COLOR_CHANNEL)
+    async def color(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="⚠️ Strike System", style=discord.ButtonStyle.primary)
+    async def strike(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("View strike system from the panel.", ephemeral=True)
+
+    @discord.ui.button(label="🧥 Crew Jackets", style=discord.ButtonStyle.secondary)
+    async def jackets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("View crew jackets from the panel.", ephemeral=True)
+
+    @discord.ui.button(label="📋 Roles & Responsibility", style=discord.ButtonStyle.secondary)
+    async def roles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("View crew roles and responsibilities.", ephemeral=True)
+
+    @discord.ui.button(label="📈 My Stats", style=discord.ButtonStyle.success)
+    async def stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("View your DIFF stats using the stats system.", ephemeral=True)
+
+
+class DiffControlHubCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="diffhub", description="Post DIFF Crew Control Hub")
+    async def diffhub(self, interaction: discord.Interaction):
+
+        embed = discord.Embed(
+            title="📌 DIFF Crew Control Hub",
+            description=(
+                "*The all-in-one crew hub for Different Meets.*\n\n"
+                "---\n\n"
+                "📊 **Available Systems:**\n\n"
+                "📝 **Crew Roll Call** — Confirm your attendance for upcoming meets\n"
+                "🎨 **Crew Color Voting** — Help decide crew themes & styles\n"
+                "⚠️ **Strike System** — Review conduct rules and standards\n"
+                "🧥 **Crew Jackets** — View official DIFF crew outfits\n"
+                "📋 **Crew Roles & Responsibility** — Learn each role and expectations within DIFF\n"
+                "📈 **My Stats** — View your personal DIFF activity snapshot\n\n"
+                "---\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
+                "— **Different Meets**"
+            ),
+            color=discord.Color.blue()
+        )
+
+        embed.set_thumbnail(url=DIFF_LOGO)
+        embed.set_image(url=DIFF_BANNER)
+
+        await interaction.channel.send(embed=embed, view=DiffControlHub())
+        await interaction.response.send_message("Control Hub posted ✅", ephemeral=True)
+
+
+async def setup(bot):
+    await bot.add_cog(DiffControlHubCog(bot))
