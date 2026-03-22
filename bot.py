@@ -1051,7 +1051,10 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
 
     embed = discord.Embed(
         title="🏁 DIFF Crew Recruitment",
-        description="Join Different Meets (DIFF). Use the buttons below to get started.",
+        description=(
+            "Welcome to Different Meets (DIFF) — a structured and community-driven car meet crew focused on realism, quality builds, and consistency.\n\n"
+            "We're looking for dedicated members who are passionate about cars, understand proper meet etiquette, and want to be part of an organized and growing community."
+        ),
         color=discord.Color.blue()
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
