@@ -1210,9 +1210,9 @@ async def refreshrules(interaction: discord.Interaction):
         return
 
     panels = [
-        (get_rules_embed(), RulesAcceptView(interaction.guild.id)),
+        (get_rules_embed(), None),
         (get_discord_rules_embed(), None),
-        (get_bannable_offenses_embed(), None),
+        (get_bannable_offenses_embed(), RulesAcceptView(interaction.guild.id)),
     ]
 
     saved_ids = data.get("rules_message_ids", [])
