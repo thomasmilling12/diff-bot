@@ -77,6 +77,12 @@ CREW_MEMBER_ROLE_ID = 886702076552441927
 CREW_PANEL_CHANNEL_ID = 1103847009653358612
 CREW_APPLICATIONS_CHANNEL_ID = 1485238837943734373
 
+APPLICATION_TRACKER_CHANNEL_ID = 1485250394522386536
+APPLICATION_REVIEW_CHANNEL_ID = 1485250641294131280
+APPLICATION_TICKET_CATEGORY_ID = 1328457973583839282
+APPROVED_MEMBER_ROLE_ID = CREW_MEMBER_ROLE_ID
+APPLICATIONS_FILE = "diff_applications_full.json"
+
 # =========================
 # DISCORD SETUP
 # =========================
@@ -146,7 +152,218 @@ data = load_data()
 status_message_id = data.get("panel_message_id")
 
 # =========================
+# APPLICATION STORAGE
+# =========================
+def load_apps():
+    if not os.path.exists(APPLICATIONS_FILE):
+        return {"last_id": 0, "applications": {}}
+    with open(APPLICATIONS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_apps(app_data):
+    with open(APPLICATIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(app_data, f, indent=2)
+
+
+def create_next_app_id():
+    app_data = load_apps()
+    app_data["last_id"] += 1
+    new_id = str(app_data["last_id"]).zfill(4)
+    save_apps(app_data)
+    return new_id
+
+
+def get_app(app_id: str):
+    return load_apps()["applications"].get(app_id)
+
+
+def save_app(app_id: str, payload: dict):
+    app_data = load_apps()
+    app_data["applications"][app_id] = payload
+    save_apps(app_data)
+
+
+def update_app(app_id: str, **updates):
+    app_data = load_apps()
+    if app_id in app_data["applications"]:
+        app_data["applications"][app_id].update(updates)
+        save_apps(app_data)
+
+
+# =========================
 # HELPERS
+# =========================
+def utc_now():
+    return datetime.utcnow()
+
+
+def make_status_emoji(status: str) -> str:
+    return {"Pending": "🟡 Pending", "Approved": "🟢 Approved", "Denied": "🔴 Denied", "Closed": "⚫ Closed"}.get(status, status)
+
+
+def is_staff_reviewer(member: discord.Member) -> bool:
+    allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    return any(role.id in allowed for role in member.roles)
+
+
+async def safe_dm(user, message: str):
+    try:
+        await user.send(message)
+    except Exception:
+        pass
+
+
+def build_review_embed(app_id: str, applicant, answers: dict, ticket_channel_id=None):
+    embed = discord.Embed(
+        title=f"DIFF Application #{app_id}",
+        description="Staff: review the application and check the garage ticket before making a decision.",
+        color=discord.Color.blurple(),
+        timestamp=utc_now(),
+    )
+    embed.set_author(name=str(applicant), icon_url=applicant.display_avatar.url)
+    embed.add_field(name="Applicant", value=f"{applicant.mention}\n`{applicant.id}`", inline=False)
+    embed.add_field(name="Gamertag", value=answers.get("gamertag", "N/A"), inline=True)
+    embed.add_field(name="Age", value=answers.get("age", "N/A"), inline=True)
+    embed.add_field(name="Timezone", value=answers.get("timezone", "N/A"), inline=True)
+    embed.add_field(name="GTA Rank", value=answers.get("gta_rank", "N/A"), inline=True)
+    embed.add_field(name="How They Heard", value=answers.get("how_heard", "N/A"), inline=True)
+    embed.add_field(name="Days Available", value=answers.get("days_available", "N/A"), inline=True)
+    embed.add_field(name="Personal Skills", value=answers.get("personal_skills", "N/A"), inline=False)
+    embed.add_field(name="DIFF Meet Experience", value=answers.get("meet_experience", "N/A"), inline=False)
+    embed.add_field(name="Former Crews", value=answers.get("former_crews", "N/A"), inline=False)
+    embed.add_field(name="Why They Should Join", value=answers.get("why_join", "N/A"), inline=False)
+    embed.add_field(name="What They Bring", value=answers.get("what_bring", "N/A"), inline=False)
+    if answers.get("comments"):
+        embed.add_field(name="Comments", value=answers["comments"], inline=False)
+    if ticket_channel_id:
+        embed.add_field(name="Garage Ticket", value=f"<#{ticket_channel_id}>", inline=False)
+    embed.set_footer(text="Status: Pending Review")
+    return embed
+
+
+def build_tracker_embed(app_id: str, applicant, answers: dict, status: str, reviewer_text: str = "Not reviewed yet"):
+    color_map = {"Approved": discord.Color.green(), "Denied": discord.Color.red(), "Closed": discord.Color.dark_grey()}
+    embed = discord.Embed(
+        title=f"Application Tracker #{app_id}",
+        description="DIFF application progress",
+        color=color_map.get(status, discord.Color.orange()),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="User", value=applicant.mention, inline=True)
+    embed.add_field(name="Gamertag", value=answers.get("gamertag", "N/A"), inline=True)
+    embed.add_field(name="Status", value=make_status_emoji(status), inline=True)
+    embed.add_field(name="Reviewed By", value=reviewer_text, inline=False)
+    embed.set_footer(text=f"Applicant ID: {applicant.id}")
+    return embed
+
+
+# =========================
+# APPLICATION REVIEW VIEW
+# =========================
+class ReviewView(discord.ui.View):
+    def __init__(self, app_id: str, applicant_id: int):
+        super().__init__(timeout=None)
+        self.app_id = app_id
+        self.applicant_id = applicant_id
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="diff_review_accept")
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can approve applications.", ephemeral=True)
+        record = get_app(self.app_id)
+        if not record:
+            return await interaction.response.send_message("Application record not found.", ephemeral=True)
+        if record.get("status") != "Pending":
+            return await interaction.response.send_message("This application has already been reviewed.", ephemeral=True)
+        applicant = interaction.guild.get_member(self.applicant_id)
+        if applicant is None:
+            return await interaction.response.send_message("Applicant is no longer in the server.", ephemeral=True)
+        approved_role = interaction.guild.get_role(APPROVED_MEMBER_ROLE_ID)
+        if approved_role:
+            try:
+                await applicant.add_roles(approved_role, reason=f"DIFF application #{self.app_id} approved by {interaction.user}")
+            except discord.Forbidden:
+                return await interaction.response.send_message("I don't have permission to assign that role.", ephemeral=True)
+        await self._finalize(interaction, "Approved", interaction.user, close_ticket=True)
+        await safe_dm(applicant, f"Your DIFF application **#{self.app_id}** was **approved**. Welcome to DIFF! 🎉")
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, custom_id="diff_review_deny")
+    async def deny_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can deny applications.", ephemeral=True)
+        record = get_app(self.app_id)
+        if not record:
+            return await interaction.response.send_message("Application record not found.", ephemeral=True)
+        if record.get("status") != "Pending":
+            return await interaction.response.send_message("This application has already been reviewed.", ephemeral=True)
+        applicant = interaction.guild.get_member(self.applicant_id)
+        await self._finalize(interaction, "Denied", interaction.user, close_ticket=True)
+        if applicant:
+            await safe_dm(applicant, f"Your DIFF application **#{self.app_id}** was **denied**.")
+
+    async def _finalize(self, interaction: discord.Interaction, new_status: str, reviewer: discord.Member, close_ticket: bool):
+        for child in self.children:
+            child.disabled = True
+        record = get_app(self.app_id)
+        if not record:
+            return
+        update_app(self.app_id, status=new_status, reviewed_by=str(reviewer), reviewed_by_id=reviewer.id, reviewed_at=utc_now().isoformat())
+        embed = interaction.message.embeds[0]
+        embed.color = discord.Color.green() if new_status == "Approved" else discord.Color.red()
+        embed.set_footer(text=f"Status: {new_status} • Reviewed by {reviewer}")
+        embed.timestamp = utc_now()
+        await interaction.response.edit_message(embed=embed, view=self)
+        guild = interaction.guild
+        if guild:
+            tracker_channel = guild.get_channel(APPLICATION_TRACKER_CHANNEL_ID)
+            if tracker_channel and record.get("tracker_message_id"):
+                try:
+                    tracker_msg = await tracker_channel.fetch_message(record["tracker_message_id"])
+                    try:
+                        applicant = guild.get_member(record["user_id"]) or await guild.fetch_member(record["user_id"])
+                    except Exception:
+                        applicant = None
+                    if applicant:
+                        tracker_embed = build_tracker_embed(self.app_id, applicant, record, new_status, reviewer.mention)
+                        await tracker_msg.edit(embed=tracker_embed)
+                except Exception:
+                    pass
+            if close_ticket and record.get("ticket_channel_id"):
+                ticket_ch = guild.get_channel(record["ticket_channel_id"])
+                if isinstance(ticket_ch, discord.TextChannel):
+                    try:
+                        await ticket_ch.send(embed=discord.Embed(
+                            title="Application Decision",
+                            description=f"This application has been **{new_status.lower()}**. This ticket will now be closed.",
+                            color=discord.Color.green() if new_status == "Approved" else discord.Color.red(),
+                            timestamp=utc_now(),
+                        ))
+                    except Exception:
+                        pass
+                    try:
+                        await ticket_ch.edit(name=f"closed-{ticket_ch.name[:80]}")
+                    except Exception:
+                        pass
+                    try:
+                        await ticket_ch.set_permissions(guild.default_role, view_channel=False)
+                    except Exception:
+                        pass
+                    try:
+                        applicant_member = guild.get_member(record["user_id"])
+                        if applicant_member:
+                            await ticket_ch.set_permissions(applicant_member, overwrite=None)
+                    except Exception:
+                        pass
+                    update_app(self.app_id, ticket_closed=True, closed_at=utc_now().isoformat())
+
+
+# =========================
+# HELPERS (CONTINUED)
 # =========================
 def get_activity(member: discord.Member) -> str:
     if member.activity and getattr(member.activity, "name", None):
@@ -963,29 +1180,101 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
         app = _application_data.pop(interaction.user.id)
         s1 = app["step1"]
         s2 = app["step2"]
-        channel = interaction.guild.get_channel(CREW_APPLICATIONS_CHANNEL_ID)
-        if channel is None:
-            await interaction.response.send_message("❌ Could not find the applications channel. Please contact a staff member.", ephemeral=True)
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
             return
-        embed = discord.Embed(title="📝 New Crew Application", color=discord.Color.blue(), timestamp=discord.utils.utcnow())
-        embed.set_author(name=str(interaction.user), icon_url=interaction.user.display_avatar.url)
-        embed.add_field(name="Discord", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Discord Name", value=s1["discord_name"], inline=True)
-        embed.add_field(name="Age", value=s1["age"], inline=True)
-        embed.add_field(name="Timezone", value=s1["timezone"], inline=True)
-        embed.add_field(name="Gamertag", value=s1["gamertag"], inline=True)
-        embed.add_field(name="GTA Rank", value=s1["gta_rank"], inline=True)
-        embed.add_field(name="How They Heard", value=s2["how_heard"], inline=True)
-        embed.add_field(name="Days Available", value=s2["days_available"], inline=True)
-        embed.add_field(name="Personal Skills", value=s2["personal_skills"], inline=False)
-        embed.add_field(name="DIFF Meet Experience", value=s2["meet_experience"], inline=False)
-        embed.add_field(name="Former Crews", value=s2["former_crews"], inline=False)
-        embed.add_field(name="Why They Should Join", value=self.why_join.value, inline=False)
-        embed.add_field(name="What They Bring", value=self.what_bring.value, inline=False)
-        if self.comments.value:
-            embed.add_field(name="Comments / Questions", value=self.comments.value, inline=False)
-        await channel.send(embed=embed)
-        await interaction.response.send_message("✅ Your application has been submitted! Staff will review it and reach out if you're selected for an interview. Good luck!", ephemeral=True)
+        review_channel = guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
+        tracker_channel = guild.get_channel(APPLICATION_TRACKER_CHANNEL_ID)
+        category = guild.get_channel(APPLICATION_TICKET_CATEGORY_ID)
+        if not isinstance(review_channel, discord.TextChannel):
+            await interaction.response.send_message("❌ Staff review channel not configured. Contact an admin.", ephemeral=True)
+            return
+        if not isinstance(tracker_channel, discord.TextChannel):
+            await interaction.response.send_message("❌ Tracker channel not configured. Contact an admin.", ephemeral=True)
+            return
+        if not isinstance(category, discord.CategoryChannel):
+            await interaction.response.send_message("❌ Ticket category not configured. Contact an admin.", ephemeral=True)
+            return
+        answers = {
+            "age": s1["age"],
+            "timezone": s1["timezone"],
+            "gamertag": s1["gamertag"],
+            "discord_name": s1["discord_name"],
+            "gta_rank": s1["gta_rank"],
+            "how_heard": s2["how_heard"],
+            "days_available": s2["days_available"],
+            "personal_skills": s2["personal_skills"],
+            "meet_experience": s2["meet_experience"],
+            "former_crews": s2["former_crews"],
+            "why_join": self.why_join.value,
+            "what_bring": self.what_bring.value,
+            "comments": self.comments.value or "",
+        }
+        app_id = create_next_app_id()
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True),
+        }
+        for role_id in [LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID]:
+            role = guild.get_role(role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+        ticket_name = f"garage-{app_id}-{interaction.user.name}".lower().replace(" ", "-")[:95]
+        try:
+            ticket_channel = await guild.create_text_channel(
+                name=ticket_name,
+                category=category,
+                overwrites=overwrites,
+                topic=f"DIFF Garage Ticket for Application #{app_id} | User ID: {interaction.user.id}",
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to create ticket channels. Contact an admin.", ephemeral=True)
+            return
+        ticket_embed = discord.Embed(
+            title=f"Garage Submission Ticket #{app_id}",
+            description=(
+                f"Welcome {interaction.user.mention}.\n\n"
+                "**Next step:** Upload clear pictures of your garage / cars in this ticket.\n\n"
+                "Staff will review:\n"
+                "• Your application answers\n"
+                "• Your overall garage quality\n"
+                "• Build realism / cleanliness\n\n"
+                "Once staff finishes reviewing, this ticket will be closed automatically."
+            ),
+            color=discord.Color.blue(),
+            timestamp=utc_now(),
+        )
+        await ticket_channel.send(content=interaction.user.mention, embed=ticket_embed)
+        review_embed = build_review_embed(app_id, interaction.user, answers, ticket_channel.id)
+        review_view = ReviewView(app_id=app_id, applicant_id=interaction.user.id)
+        review_message = await review_channel.send(embed=review_embed, view=review_view)
+        tracker_embed = build_tracker_embed(app_id, interaction.user, answers, "Pending")
+        tracker_message = await tracker_channel.send(embed=tracker_embed)
+        save_app(app_id, {
+            "app_id": app_id,
+            "user_id": interaction.user.id,
+            "username": str(interaction.user),
+            **answers,
+            "status": "Pending",
+            "submitted_at": utc_now().isoformat(),
+            "review_channel_id": review_channel.id,
+            "review_message_id": review_message.id,
+            "tracker_channel_id": tracker_channel.id,
+            "tracker_message_id": tracker_message.id,
+            "ticket_channel_id": ticket_channel.id,
+            "ticket_channel_name": ticket_channel.name,
+            "reviewed_by": None,
+            "reviewed_at": None,
+            "ticket_closed": False,
+        })
+        await interaction.response.send_message(
+            f"✅ Your application **#{app_id}** has been submitted!\n"
+            f"A private garage ticket has been created: {ticket_channel.mention}\n\n"
+            "Please upload clear pictures of your cars there. Staff will review your application and garage, then reach out with a decision. Good luck!",
+            ephemeral=True,
+        )
 
 
 class CrewPanelView(discord.ui.View):
@@ -1102,6 +1391,7 @@ async def on_ready():
     try:
         bot.add_view(RulesAcceptView(GUILD_ID))
         bot.add_view(CrewPanelView())
+        bot.add_view(ReviewView(app_id="0000", applicant_id=0))
     except Exception as e:
         print(f"View registration warning: {e}")
 
@@ -1820,6 +2110,46 @@ async def hierarchy_command_error(interaction: discord.Interaction, error: app_c
             await interaction.response.send_message(msg, ephemeral=True)
     except discord.NotFound:
         pass
+
+# =========================
+# APPLICATION COMMANDS
+# =========================
+@bot.tree.command(name="application_lookup", description="Look up a DIFF application by ID (staff only)")
+@app_commands.describe(application_id="Application ID, e.g. 0001")
+async def application_lookup(interaction: discord.Interaction, application_id: str):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+    record = get_app(application_id)
+    if not record:
+        return await interaction.response.send_message(f"No application found with ID #{application_id}.", ephemeral=True)
+    embed = discord.Embed(title=f"Application Lookup #{application_id}", color=discord.Color.blurple(), timestamp=utc_now())
+    embed.add_field(name="Username", value=record.get("username", "N/A"), inline=True)
+    embed.add_field(name="User ID", value=str(record.get("user_id", "N/A")), inline=True)
+    embed.add_field(name="Status", value=make_status_emoji(record.get("status", "N/A")), inline=True)
+    embed.add_field(name="Gamertag", value=record.get("gamertag", "N/A"), inline=True)
+    embed.add_field(name="Age", value=record.get("age", "N/A"), inline=True)
+    embed.add_field(name="Reviewed By", value=record.get("reviewed_by") or "Not reviewed", inline=True)
+    embed.add_field(name="Ticket Channel", value=f"<#{record['ticket_channel_id']}>" if record.get("ticket_channel_id") else "N/A", inline=False)
+    embed.add_field(name="Submitted", value=record.get("submitted_at", "N/A"), inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="application_stats", description="View DIFF application totals (staff only)")
+async def application_stats(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+    app_data = load_apps()
+    apps = list(app_data.get("applications", {}).values())
+    pending = sum(1 for a in apps if a.get("status") == "Pending")
+    approved = sum(1 for a in apps if a.get("status") == "Approved")
+    denied = sum(1 for a in apps if a.get("status") == "Denied")
+    embed = discord.Embed(title="DIFF Application Stats", color=discord.Color.blue(), timestamp=utc_now())
+    embed.add_field(name="Total", value=str(len(apps)), inline=True)
+    embed.add_field(name="🟡 Pending", value=str(pending), inline=True)
+    embed.add_field(name="🟢 Approved", value=str(approved), inline=True)
+    embed.add_field(name="🔴 Denied", value=str(denied), inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 # =========================
 # START BOT
