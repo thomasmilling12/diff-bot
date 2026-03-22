@@ -4,6 +4,7 @@ import os
 import re
 import sys
 from datetime import datetime, timedelta
+from typing import Optional
 from threading import Thread
 
 from flask import Flask
@@ -111,6 +112,8 @@ LEADER_PROMOTION_REPUTATION = 65
 MEET_ATTENDER_ROLE_ID = 850392317751066705
 MEET_ATTENDANCE_REP = 2
 ROLL_CALL_CHANNEL_ID = 1047338695352664165
+SUPPORT_CHANNEL_ID = 1156363575150002226
+ACTIVITY_MEETS_FILE = os.path.join(DATA_FOLDER, "diff_activity_meets.json")
 
 # =========================
 # DISCORD SETUP
@@ -2798,6 +2801,328 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
 
 
 # =========================
+# ACTIVITY MEETS SYSTEM
+# =========================
+
+def _load_activity_meets() -> dict:
+    data = _load_diff_json(ACTIVITY_MEETS_FILE)
+    for key, default in [("members", {}), ("meets", {}), ("dashboard_message_id", None), ("dashboard_channel_id", None)]:
+        data.setdefault(key, default)
+    return data
+
+
+def _save_activity_meets(data: dict):
+    _save_diff_json(ACTIVITY_MEETS_FILE, data)
+
+
+def _get_member_activity(data: dict, user_id: int) -> dict:
+    uid = str(user_id)
+    members = data.setdefault("members", {})
+    if uid not in members:
+        members[uid] = {"attended": 0, "hosted": 0, "maybe": 0, "declined": 0, "no_shows": 0, "penalty_points": 0, "last_updated": datetime.utcnow().isoformat()}
+    return members[uid]
+
+
+def _get_meet(data: dict, meet_id: str) -> dict:
+    meets = data.setdefault("meets", {})
+    if meet_id not in meets:
+        meets[meet_id] = {"title": meet_id, "host_id": None, "scheduled_time": None, "created_at": datetime.utcnow().isoformat(), "rsvps": {}, "checked_in": [], "closed": False}
+    return meets[meet_id]
+
+
+def _activity_promotion_suggestion(member: discord.Member, stats: dict) -> Optional[str]:
+    attended = stats.get("attended", 0)
+    hosted = stats.get("hosted", 0)
+    no_shows = stats.get("no_shows", 0)
+    role_ids = {role.id for role in member.roles}
+    if no_shows > 1:
+        return None
+    if CREW_MEMBER_ROLE_ID in role_ids and attended >= 5:
+        return "Host"
+    if HOST_ROLE_ID in role_ids and attended >= 10 and hosted >= 3:
+        return "Manager"
+    if MANAGER_ROLE_ID in role_ids and attended >= 18 and hosted >= 6:
+        return "Co-Leader"
+    return None
+
+
+async def _build_activity_dashboard_embed(guild: discord.Guild, data: dict) -> discord.Embed:
+    embed = discord.Embed(title="DIFF Activity Dashboard", description="Live overview of attendance, leaderboard, and promotion watch.", color=discord.Color.blue(), timestamp=utc_now())
+    members = data.get("members", {})
+    ranked = sorted(members.items(), key=lambda x: (x[1].get("attended", 0), x[1].get("hosted", 0), -x[1].get("no_shows", 0)), reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
+    lb_lines = []
+    for idx, (uid, stats) in enumerate(ranked[:5], start=1):
+        m = guild.get_member(int(uid))
+        name = m.mention if m else f"<@{uid}>"
+        prefix = medals[idx - 1] if idx <= 3 else f"{idx}."
+        lb_lines.append(f"{prefix} {name} — {stats.get('attended', 0)} attended / {stats.get('hosted', 0)} hosted")
+    embed.add_field(name="🏆 Top Activity", value="\n".join(lb_lines) or "No data yet.", inline=False)
+    watch_lines = []
+    for uid, stats in ranked:
+        if stats.get("attended", 0) >= 5 and stats.get("no_shows", 0) <= 1:
+            m = guild.get_member(int(uid))
+            name = m.mention if m else f"<@{uid}>"
+            watch_lines.append(f"{name} — {stats.get('attended', 0)} attended / {stats.get('hosted', 0)} hosted / {stats.get('no_shows', 0)} no-shows")
+        if len(watch_lines) == 5:
+            break
+    embed.add_field(name="📈 Promotion Watch", value="\n".join(watch_lines) or "None yet.", inline=False)
+    penalty_lines = []
+    for uid, stats in ranked:
+        if stats.get("no_shows", 0) > 0 or stats.get("penalty_points", 0) > 0:
+            m = guild.get_member(int(uid))
+            name = m.mention if m else f"<@{uid}>"
+            penalty_lines.append(f"{name} — {stats.get('no_shows', 0)} no-shows / {stats.get('penalty_points', 0)} penalty pts")
+        if len(penalty_lines) == 5:
+            break
+    embed.add_field(name="⚠️ Penalty Watch", value="\n".join(penalty_lines) or "None recorded.", inline=False)
+    embed.set_footer(text="Auto-refreshes after each activity update")
+    return embed
+
+
+async def _refresh_activity_dashboard(guild: discord.Guild, data: dict):
+    ch_id = data.get("dashboard_channel_id")
+    msg_id = data.get("dashboard_message_id")
+    if not ch_id or not msg_id:
+        return
+    channel = guild.get_channel(int(ch_id))
+    if not isinstance(channel, discord.TextChannel):
+        return
+    try:
+        message = await channel.fetch_message(int(msg_id))
+        embed = await _build_activity_dashboard_embed(guild, data)
+        await message.edit(embed=embed, view=ActivityDashboardView())
+    except Exception:
+        pass
+
+
+class ActivityDashboardView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(
+            label="Support Channel",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{GUILD_ID}/{SUPPORT_CHANNEL_ID}",
+        ))
+
+
+@bot.tree.command(name="meet-create", description="Create a tracked meet record (staff only)")
+@app_commands.describe(meet_id="Short unique ID e.g. friday-derby-01", title="Meet title", scheduled_time_unix="Unix timestamp", host="Meet host")
+async def meet_create(interaction: discord.Interaction, meet_id: str, title: str, scheduled_time_unix: int, host: discord.Member):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    data = _load_activity_meets()
+    record = _get_meet(data, meet_id)
+    record["title"] = title
+    record["host_id"] = host.id
+    record["scheduled_time"] = scheduled_time_unix
+    record["closed"] = False
+    _save_activity_meets(data)
+    embed = discord.Embed(title="Meet Created", color=discord.Color.green())
+    embed.add_field(name="Meet ID", value=f"`{meet_id}`", inline=False)
+    embed.add_field(name="Title", value=title, inline=False)
+    embed.add_field(name="Time", value=f"<t:{scheduled_time_unix}:F>", inline=False)
+    embed.add_field(name="Host", value=host.mention, inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="meet-rsvp", description="Set a member's RSVP for a tracked meet (staff only)")
+@app_commands.describe(meet_id="Tracked meet ID", member="Member to update", status="going, maybe, or not_going")
+@app_commands.choices(status=[
+    app_commands.Choice(name="going", value="going"),
+    app_commands.Choice(name="maybe", value="maybe"),
+    app_commands.Choice(name="not_going", value="not_going"),
+])
+async def meet_rsvp(interaction: discord.Interaction, meet_id: str, member: discord.Member, status: app_commands.Choice[str]):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    data = _load_activity_meets()
+    meet = _get_meet(data, meet_id)
+    meet.setdefault("rsvps", {})[str(member.id)] = status.value
+    stats = _get_member_activity(data, member.id)
+    if status.value == "maybe":
+        stats["maybe"] = stats.get("maybe", 0) + 1
+    elif status.value == "not_going":
+        stats["declined"] = stats.get("declined", 0) + 1
+    stats["last_updated"] = datetime.utcnow().isoformat()
+    _save_activity_meets(data)
+    rsvps = meet.get("rsvps", {})
+    going = sum(1 for v in rsvps.values() if v == "going")
+    maybe = sum(1 for v in rsvps.values() if v == "maybe")
+    not_going = sum(1 for v in rsvps.values() if v == "not_going")
+    await interaction.response.send_message(f"Set {member.mention} to **{status.value}** for `{meet_id}`.\nGoing: {going} | Maybe: {maybe} | Not Going: {not_going}", ephemeral=True)
+
+
+@bot.tree.command(name="meet-checkin", description="Mark a member as attended for a meet (staff only)")
+@app_commands.describe(meet_id="Tracked meet ID", member="Member that showed up")
+async def meet_checkin(interaction: discord.Interaction, meet_id: str, member: discord.Member):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    data = _load_activity_meets()
+    meet = _get_meet(data, meet_id)
+    checked_in = meet.setdefault("checked_in", [])
+    if member.id not in checked_in:
+        checked_in.append(member.id)
+    stats = _get_member_activity(data, member.id)
+    stats["attended"] = stats.get("attended", 0) + 1
+    stats["last_updated"] = datetime.utcnow().isoformat()
+    _save_activity_meets(data)
+    suggestion = _activity_promotion_suggestion(member, stats)
+    if suggestion and interaction.guild:
+        logs_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_ch, discord.TextChannel):
+            promo_embed = discord.Embed(title="📈 Promotion Suggestion", color=discord.Color.gold(), timestamp=utc_now())
+            promo_embed.add_field(name="Member", value=member.mention, inline=False)
+            promo_embed.add_field(name="Suggested Role", value=suggestion, inline=False)
+            promo_embed.add_field(name="Stats", value=f"Attended: {stats.get('attended', 0)} | Hosted: {stats.get('hosted', 0)} | No-Shows: {stats.get('no_shows', 0)}", inline=False)
+            await logs_ch.send(embed=promo_embed)
+    if interaction.guild:
+        await _refresh_activity_dashboard(interaction.guild, data)
+    await interaction.response.send_message(f"Checked in {member.mention} for `{meet_id}`. Total attended: {stats.get('attended', 0)}", ephemeral=True)
+
+
+@bot.tree.command(name="meet-hosted", description="Add a hosted meet to a member's record (staff only)")
+@app_commands.describe(member="Host member")
+async def meet_hosted(interaction: discord.Interaction, member: discord.Member):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    data = _load_activity_meets()
+    stats = _get_member_activity(data, member.id)
+    stats["hosted"] = stats.get("hosted", 0) + 1
+    stats["last_updated"] = datetime.utcnow().isoformat()
+    _save_activity_meets(data)
+    if interaction.guild:
+        await _refresh_activity_dashboard(interaction.guild, data)
+    await interaction.response.send_message(f"Added 1 hosted meet to {member.mention}. Total hosted: {stats.get('hosted', 0)}", ephemeral=True)
+
+
+@bot.tree.command(name="meet-close", description="Close a meet and apply no-show penalties (staff only)")
+@app_commands.describe(meet_id="Tracked meet ID")
+async def meet_close(interaction: discord.Interaction, meet_id: str):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    data = _load_activity_meets()
+    meet = _get_meet(data, meet_id)
+    if meet.get("closed"):
+        return await interaction.response.send_message(f"`{meet_id}` is already closed.", ephemeral=True)
+    rsvps = meet.get("rsvps", {})
+    checked_in = set(meet.get("checked_in", []))
+    no_show_ids = []
+    for uid, status in rsvps.items():
+        if status == "going" and int(uid) not in checked_in:
+            stats = _get_member_activity(data, int(uid))
+            stats["no_shows"] = stats.get("no_shows", 0) + 1
+            stats["penalty_points"] = stats.get("penalty_points", 0) + 1
+            stats["last_updated"] = datetime.utcnow().isoformat()
+            no_show_ids.append(int(uid))
+    meet["closed"] = True
+    _save_activity_meets(data)
+    if interaction.guild and no_show_ids:
+        logs_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_ch, discord.TextChannel):
+            lines = []
+            for uid in no_show_ids:
+                m = interaction.guild.get_member(uid)
+                name = m.mention if m else f"<@{uid}>"
+                s = _get_member_activity(data, uid)
+                lines.append(f"{name} — No-Shows: {s.get('no_shows', 0)} / Penalty Pts: {s.get('penalty_points', 0)}")
+            penalty_embed = discord.Embed(title="⚠️ No-Show Penalties Applied", color=discord.Color.red(), timestamp=utc_now())
+            penalty_embed.add_field(name="Meet", value=f"{meet.get('title', meet_id)} (`{meet_id}`)", inline=False)
+            penalty_embed.add_field(name="Members Penalised", value="\n".join(lines), inline=False)
+            await logs_ch.send(embed=penalty_embed)
+    if interaction.guild:
+        await _refresh_activity_dashboard(interaction.guild, data)
+    msg = f"Closed `{meet_id}`."
+    if no_show_ids:
+        msg += f" {len(no_show_ids)} no-show penalt{'y' if len(no_show_ids) == 1 else 'ies'} applied and logged to staff channel."
+    else:
+        msg += " No no-shows recorded."
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bot.tree.command(name="diff-leaderboard", description="Post the DIFF activity leaderboard (staff only)")
+async def diff_leaderboard(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    if not interaction.guild:
+        return
+    data = _load_activity_meets()
+    members = data.get("members", {})
+    ranked = sorted(members.items(), key=lambda x: (x[1].get("attended", 0), x[1].get("hosted", 0), -x[1].get("no_shows", 0)), reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for idx, (uid, stats) in enumerate(ranked[:10], start=1):
+        m = interaction.guild.get_member(int(uid))
+        name = m.mention if m else f"<@{uid}>"
+        prefix = medals[idx - 1] if idx <= 3 else f"{idx}."
+        lines.append(f"{prefix} {name}\nAttended: {stats.get('attended', 0)} | Hosted: {stats.get('hosted', 0)} | No-Shows: {stats.get('no_shows', 0)}")
+    embed = discord.Embed(title="DIFF Activity Leaderboard", description="\n\n".join(lines) if lines else "No data yet.", color=discord.Color.blue(), timestamp=utc_now())
+    lb_ch = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
+    if isinstance(lb_ch, discord.TextChannel):
+        await lb_ch.send(embed=embed)
+        await interaction.response.send_message("Leaderboard posted.", ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="diff-dashboard-post", description="Post the live DIFF activity dashboard (staff only)")
+async def diff_dashboard_post(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Use this in a text channel.", ephemeral=True)
+    data = _load_activity_meets()
+    embed = await _build_activity_dashboard_embed(interaction.guild, data)
+    message = await interaction.channel.send(embed=embed, view=ActivityDashboardView())
+    data["dashboard_message_id"] = message.id
+    data["dashboard_channel_id"] = interaction.channel.id
+    _save_activity_meets(data)
+    await interaction.response.send_message("Activity dashboard posted and linked for auto-refresh.", ephemeral=True)
+
+
+@bot.tree.command(name="diff-dashboard-refresh", description="Manually refresh the DIFF activity dashboard (staff only)")
+async def diff_dashboard_refresh(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    if not interaction.guild:
+        return
+    data = _load_activity_meets()
+    await _refresh_activity_dashboard(interaction.guild, data)
+    await interaction.response.send_message("Dashboard refreshed.", ephemeral=True)
+
+
+@bot.tree.command(name="diff-member-stats", description="Show full activity stats for a member (staff only)")
+@app_commands.describe(member="Member to inspect")
+async def diff_member_stats(interaction: discord.Interaction, member: discord.Member):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    data = _load_activity_meets()
+    stats = _get_member_activity(data, member.id)
+    embed = discord.Embed(title="Member Activity Stats", color=discord.Color.blurple())
+    embed.set_author(name=str(member), icon_url=member.display_avatar.url)
+    embed.add_field(name="Attended", value=str(stats.get("attended", 0)), inline=True)
+    embed.add_field(name="Hosted", value=str(stats.get("hosted", 0)), inline=True)
+    embed.add_field(name="Maybe", value=str(stats.get("maybe", 0)), inline=True)
+    embed.add_field(name="Declined", value=str(stats.get("declined", 0)), inline=True)
+    embed.add_field(name="No-Shows", value=str(stats.get("no_shows", 0)), inline=True)
+    embed.add_field(name="Penalty Points", value=str(stats.get("penalty_points", 0)), inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="diff-reset-member", description="Reset a member's activity meets record (staff only)")
+@app_commands.describe(member="Member to reset")
+async def diff_reset_member(interaction: discord.Interaction, member: discord.Member):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    data = _load_activity_meets()
+    data.setdefault("members", {})[str(member.id)] = {"attended": 0, "hosted": 0, "maybe": 0, "declined": 0, "no_shows": 0, "penalty_points": 0, "last_updated": datetime.utcnow().isoformat()}
+    _save_activity_meets(data)
+    if interaction.guild:
+        await _refresh_activity_dashboard(interaction.guild, data)
+    await interaction.response.send_message(f"Reset activity stats for {member.mention}.", ephemeral=True)
+
+
+# =========================
 # EVENTS
 # =========================
 @bot.event
@@ -2822,6 +3147,7 @@ async def on_ready():
         bot.add_view(MeetAttendancePanelView())
         bot.add_view(LeaderboardView())
         bot.add_view(MeetRSVPView(meet1="Meet 1", meet2="Meet 2", meet3="Meet 3"))
+        bot.add_view(ActivityDashboardView())
     except Exception as e:
         print(f"View registration warning: {e}")
 
