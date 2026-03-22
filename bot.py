@@ -1695,16 +1695,17 @@ class WeeklyRollCallModal(discord.ui.Modal, title="📅 Weekly Roll Call Setup")
         roll_call_ch = interaction.guild.get_channel(ROLL_CALL_CHANNEL_ID)
         if not isinstance(roll_call_ch, discord.TextChannel):
             return await interaction.response.send_message("Roll call channel not found.", ephemeral=True)
+        meet3_val = self.meet3.value.strip() or None
         description = (
             f"**Week of {self.week_of.value}**\n"
-            "React below for EACH meet you plan to attend.\n\n"
+            "Use the buttons below to RSVP for each meet separately.\n\n"
             f"━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🏁 {self.meet1.value}\n\n"
+            f"🏁 **Meet 1** — {self.meet1.value}\n\n"
             f"━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🔥 {self.meet2.value}"
+            f"🔥 **Meet 2** — {self.meet2.value}"
         )
-        if self.meet3.value:
-            description += f"\n\n━━━━━━━━━━━━━━━━━━━\n\n💎 {self.meet3.value}"
+        if meet3_val:
+            description += f"\n\n━━━━━━━━━━━━━━━━━━━\n\n💎 **Meet 3** — {meet3_val}"
         embed = discord.Embed(
             title="📅 DIFF Weekly Roll Call",
             description=description,
@@ -1713,25 +1714,62 @@ class WeeklyRollCallModal(discord.ui.Modal, title="📅 Weekly Roll Call Setup")
         await roll_call_ch.send(
             content=f"<@&{CREW_MEMBER_ROLE_ID}>",
             embed=embed,
-            view=WeeklyRollCallView(),
+            view=MeetRSVPView(meet1=self.meet1.value, meet2=self.meet2.value, meet3=meet3_val),
         )
         await interaction.response.send_message(f"Weekly roll call posted in {roll_call_ch.mention} ✅", ephemeral=True)
 
-class WeeklyRollCallView(discord.ui.View):
-    def __init__(self):
+class MeetRSVPButton(discord.ui.Button):
+    def __init__(self, label: str, style: discord.ButtonStyle, custom_id: str, row: int, meet_label: str, response: str):
+        super().__init__(label=label, style=style, custom_id=custom_id, row=row)
+        self.meet_label = meet_label
+        self.response = response
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            f"You're marked as **{self.response}** for **{self.meet_label}** ✅",
+            ephemeral=True,
+        )
+
+
+class MeetRSVPView(discord.ui.View):
+    def __init__(self, meet1: str = "Meet 1", meet2: str = "Meet 2", meet3: str = None):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="✅ Pulling Up", style=discord.ButtonStyle.success, custom_id="diff_rollcall_going")
-    async def going(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("You're marked as Pulling Up ✅", ephemeral=True)
+        def short(name: str) -> str:
+            return (name[:22] + "…") if len(name) > 22 else name
 
-    @discord.ui.button(label="❔ Maybe", style=discord.ButtonStyle.secondary, custom_id="diff_rollcall_maybe")
-    async def maybe(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("You're marked as Maybe ❔", ephemeral=True)
+        m1 = short(meet1)
+        m2 = short(meet2)
 
-    @discord.ui.button(label="❌ Not Coming", style=discord.ButtonStyle.danger, custom_id="diff_rollcall_not_going")
-    async def not_going(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("You're marked as Not Coming ❌", ephemeral=True)
+        for custom, label, style, resp in [
+            ("diff_m1_going", f"✅ {m1}", discord.ButtonStyle.success,   "Pulling Up"),
+            ("diff_m1_maybe", f"❔ {m1}", discord.ButtonStyle.secondary, "Maybe"),
+            ("diff_m1_not",   f"❌ {m1}", discord.ButtonStyle.danger,    "Not Coming"),
+        ]:
+            self.add_item(MeetRSVPButton(label=label, style=style, custom_id=custom, row=0, meet_label=meet1, response=resp))
+
+        for custom, label, style, resp in [
+            ("diff_m2_going", f"✅ {m2}", discord.ButtonStyle.success,   "Pulling Up"),
+            ("diff_m2_maybe", f"❔ {m2}", discord.ButtonStyle.secondary, "Maybe"),
+            ("diff_m2_not",   f"❌ {m2}", discord.ButtonStyle.danger,    "Not Coming"),
+        ]:
+            self.add_item(MeetRSVPButton(label=label, style=style, custom_id=custom, row=1, meet_label=meet2, response=resp))
+
+        if meet3:
+            m3 = short(meet3)
+            for custom, label, style, resp in [
+                ("diff_m3_going", f"✅ {m3}", discord.ButtonStyle.success,   "Pulling Up"),
+                ("diff_m3_maybe", f"❔ {m3}", discord.ButtonStyle.secondary, "Maybe"),
+                ("diff_m3_not",   f"❌ {m3}", discord.ButtonStyle.danger,    "Not Coming"),
+            ]:
+                self.add_item(MeetRSVPButton(label=label, style=style, custom_id=custom, row=2, meet_label=meet3, response=resp))
+        else:
+            for custom, label in [
+                ("diff_m3_going", "Meet 3 N/A"),
+                ("diff_m3_maybe", "Meet 3 N/A"),
+                ("diff_m3_not",   "Meet 3 N/A"),
+            ]:
+                self.add_item(discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, custom_id=custom, row=2, disabled=True))
 
 
 # =========================
@@ -2783,7 +2821,7 @@ async def on_ready():
         bot.add_view(DIFFDashboardView())
         bot.add_view(MeetAttendancePanelView())
         bot.add_view(LeaderboardView())
-        bot.add_view(WeeklyRollCallView())
+        bot.add_view(MeetRSVPView(meet1="Meet 1", meet2="Meet 2", meet3="Meet 3"))
     except Exception as e:
         print(f"View registration warning: {e}")
 
