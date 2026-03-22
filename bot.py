@@ -299,6 +299,104 @@ def build_denied_result_embed(custom_deny_reason: str):
 
 
 # =========================
+# STAFF REPLY PANEL (posted in staff channel when applicant requests more info)
+# =========================
+class StaffReplyDropdown(discord.ui.Select):
+    def __init__(self, applicant_id: int, app_id: str):
+        self.applicant_id = applicant_id
+        self.app_id = app_id
+        options = [
+            discord.SelectOption(label="Build Quality", description="Vehicle build does not meet DIFF realism standards", value="build"),
+            discord.SelectOption(label="Activity / Availability", description="Applicant may not be active enough for DIFF expectations", value="activity"),
+            discord.SelectOption(label="Application Effort", description="Responses were too brief or lacked effort", value="effort"),
+            discord.SelectOption(label="Car Knowledge", description="Applicant did not show enough car knowledge", value="knowledge"),
+            discord.SelectOption(label="Community Fit", description="Applicant may not be the right fit for DIFF", value="fit"),
+            discord.SelectOption(label="Requirements Not Met", description="Applicant does not meet one or more listed requirements", value="requirements"),
+            discord.SelectOption(label="Reapply Later", description="Not accepted now, but may have potential later", value="later"),
+            discord.SelectOption(label="Custom Response", description="Staff writes their own response", value="custom"),
+        ]
+        super().__init__(placeholder="Choose a response category...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        responses = {
+            "build": (
+                "Thank you for requesting more information regarding your application.\n\n"
+                "After further review, one of the main concerns was your vehicle build quality. At DIFF, we look for clean, realistic, "
+                "and well-put-together builds that align with our crew standards.\n\n"
+                "We recommend improving overall realism, presentation, and attention to detail before applying again. "
+                "Once those areas are stronger, you are welcome to reapply."
+            ),
+            "activity": (
+                "Thank you for reaching out.\n\n"
+                "At this time, one of the main reasons for denial was activity and availability. DIFF expects members to remain active "
+                "in Discord, communicate consistently, and attend meets regularly, especially on weekends.\n\n"
+                "We recommend applying again once your schedule and availability better match our crew expectations."
+            ),
+            "effort": (
+                "Thank you for requesting clarification.\n\n"
+                "After reviewing your application again, we felt the overall effort and detail in your responses did not give us enough "
+                "information to move forward confidently.\n\n"
+                "When applying to DIFF, we expect thoughtful and complete answers that reflect seriousness, effort, and interest in joining "
+                "the crew. You are welcome to reapply with stronger responses in the future."
+            ),
+            "knowledge": (
+                "Thank you for reaching out for more information.\n\n"
+                "One of the concerns with your application was a lack of demonstrated car knowledge. DIFF values members who have a real "
+                "interest in cars and a solid understanding of car culture, builds, and meet standards.\n\n"
+                "We encourage you to continue learning and become more familiar with the community before reapplying."
+            ),
+            "fit": (
+                "Thank you for your request.\n\n"
+                "After further consideration, we do not believe your application showed the overall fit we are looking for in DIFF. "
+                "Our crew prioritizes realism, consistency, maturity, and strong community presence.\n\n"
+                "This decision is based on overall alignment with our standards and environment. We appreciate your interest and wish you "
+                "the best moving forward."
+            ),
+            "requirements": (
+                "Thank you for following up.\n\n"
+                "Your application was denied because one or more of the listed DIFF recruitment requirements were not met at this time. "
+                "These requirements are in place to maintain quality and consistency across the crew.\n\n"
+                "Please review the posted requirements carefully, and once you fully meet them, you are welcome to submit a new application."
+            ),
+            "later": (
+                "Thank you for reaching out.\n\n"
+                "At this time, we are not moving forward with your application, but this is not necessarily a permanent decision. "
+                "We believe there is potential, but more improvement is needed before joining DIFF.\n\n"
+                "Take some time to strengthen the areas mentioned, and you are welcome to reapply in the future."
+            ),
+            "custom": (
+                "Thank you for requesting more information regarding your application.\n\n"
+                "After further review, here is additional clarification from staff:\n\n"
+                "[Staff: edit this message before sending — use `/staff_reply_custom` or re-post manually]\n\n"
+                "Please take this feedback into consideration before applying again."
+            ),
+        }
+        reply = responses.get(self.values[0], "No response found.")
+        if not interaction.guild:
+            return await interaction.response.send_message("This only works inside the server.", ephemeral=True)
+        if not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
+        applicant = interaction.guild.get_member(self.applicant_id)
+        if applicant is None:
+            return await interaction.response.send_message("Could not find the applicant in the server.", ephemeral=True)
+        try:
+            await applicant.send(f"**DIFF Application #{self.app_id} — Staff Response**\n\n{reply}")
+            await interaction.response.send_message(
+                f"✅ Reply sent to {applicant.mention} via DM.", ephemeral=True
+            )
+        except Exception:
+            await interaction.response.send_message(
+                f"❌ Could not DM {applicant.mention}. They may have DMs disabled.", ephemeral=True
+            )
+
+
+class StaffReplyView(discord.ui.View):
+    def __init__(self, applicant_id: int, app_id: str):
+        super().__init__(timeout=None)
+        self.add_item(StaffReplyDropdown(applicant_id=applicant_id, app_id=app_id))
+
+
+# =========================
 # DENIED RESULT VIEW (sent to applicant via DM)
 # =========================
 class DeniedResultView(discord.ui.View):
@@ -345,6 +443,15 @@ class DeniedResultView(discord.ui.View):
                 embed.add_field(name="Status", value="User is requesting additional clarification.", inline=False)
                 try:
                     await info_channel.send(embed=embed)
+                    reply_embed = discord.Embed(
+                        title="📩 DIFF Staff Response Panel",
+                        description=(
+                            f"Use the dropdown below to send a pre-written reply to <@{self.applicant_id}> (Application **#{self.app_id}**).\n"
+                            "The selected response will be sent directly to their DMs."
+                        ),
+                        color=discord.Color.blue(),
+                    )
+                    await info_channel.send(embed=reply_embed, view=StaffReplyView(applicant_id=self.applicant_id, app_id=self.app_id))
                 except Exception:
                     pass
         await interaction.response.send_message(
