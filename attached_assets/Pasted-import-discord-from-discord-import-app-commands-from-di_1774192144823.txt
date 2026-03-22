@@ -1,0 +1,58 @@
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+class RSVPView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.responses = {}
+
+    @discord.ui.button(label="✅ Pulling Up", style=discord.ButtonStyle.success)
+    async def going(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.responses[interaction.user.id] = "going"
+        await interaction.response.send_message("You're marked as Pulling Up ✅", ephemeral=True)
+
+    @discord.ui.button(label="❔ Maybe", style=discord.ButtonStyle.secondary)
+    async def maybe(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.responses[interaction.user.id] = "maybe"
+        await interaction.response.send_message("You're marked as Maybe ❔", ephemeral=True)
+
+    @discord.ui.button(label="❌ Not Coming", style=discord.ButtonStyle.danger)
+    async def not_going(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.responses[interaction.user.id] = "not going"
+        await interaction.response.send_message("You're marked as Not Coming ❌", ephemeral=True)
+
+
+class RSVPSystem(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="weeklyrollcall", description="Post weekly DIFF roll call")
+    async def weekly_rollcall(self, interaction: discord.Interaction):
+
+        embed = discord.Embed(
+            title="📅 DIFF Weekly Roll Call",
+            description=(
+                "React below for EACH meet you plan to attend.\n\n"
+                "━━━━━━━━━━━━━━━━━━━\n\n"
+                "🏁 **Friday – Demolition Derby**\n"
+                "🕒 <t:1737320400:F>\n"
+                "Host: @BriMedia\n\n"
+                "━━━━━━━━━━━━━━━━━━━\n\n"
+                "🔥 **Saturday – [Meet Name]**\n"
+                "🕒 <t:1737406800:F>\n"
+                "Host: @Host\n\n"
+                "━━━━━━━━━━━━━━━━━━━\n\n"
+                "💎 **Sunday – Tire Lettering**\n"
+                "🕒 <t:1737493200:F>\n"
+                "Host: @Tso_Kyng\n"
+            ),
+            color=discord.Color.blue()
+        )
+
+        await interaction.channel.send(embed=embed, view=RSVPView())
+        await interaction.response.send_message("Weekly roll call posted ✅", ephemeral=True)
+
+
+async def setup(bot):
+    await bot.add_cog(RSVPSystem(bot))

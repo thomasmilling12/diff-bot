@@ -1661,6 +1661,27 @@ class LeaderboardView(discord.ui.View):
 
 
 # =========================
+# WEEKLY ROLL CALL — VIEW
+# =========================
+
+class WeeklyRollCallView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="✅ Pulling Up", style=discord.ButtonStyle.success, custom_id="diff_rollcall_going")
+    async def going(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("You're marked as Pulling Up ✅", ephemeral=True)
+
+    @discord.ui.button(label="❔ Maybe", style=discord.ButtonStyle.secondary, custom_id="diff_rollcall_maybe")
+    async def maybe(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("You're marked as Maybe ❔", ephemeral=True)
+
+    @discord.ui.button(label="❌ Not Coming", style=discord.ButtonStyle.danger, custom_id="diff_rollcall_not_going")
+    async def not_going(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("You're marked as Not Coming ❌", ephemeral=True)
+
+
+# =========================
 # HELPERS (CONTINUED)
 # =========================
 def get_activity(member: discord.Member) -> str:
@@ -2709,6 +2730,7 @@ async def on_ready():
         bot.add_view(DIFFDashboardView())
         bot.add_view(MeetAttendancePanelView())
         bot.add_view(LeaderboardView())
+        bot.add_view(WeeklyRollCallView())
     except Exception as e:
         print(f"View registration warning: {e}")
 
@@ -3678,6 +3700,33 @@ async def rankinfo(interaction: discord.Interaction):
     )
     embed.set_footer(text="Promotion suggestions are auto-posted to staff logs when thresholds are met.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="weeklyrollcall", description="Post the weekly DIFF roll call with RSVP buttons (staff only)")
+async def weeklyrollcall(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+    embed = discord.Embed(
+        title="📅 DIFF Weekly Roll Call",
+        description=(
+            "React below for EACH meet you plan to attend.\n\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            "🏁 **Friday – Demolition Derby**\n"
+            "🕒 <t:1737320400:F>\n"
+            "Host: @BriMedia\n\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔥 **Saturday – [Meet Name]**\n"
+            "🕒 <t:1737406800:F>\n"
+            "Host: @Host\n\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            "💎 **Sunday – Tire Lettering**\n"
+            "🕒 <t:1737493200:F>\n"
+            "Host: @Tso_Kyng"
+        ),
+        color=discord.Color.blue(),
+    )
+    await interaction.channel.send(embed=embed, view=WeeklyRollCallView())
+    await interaction.response.send_message("Weekly roll call posted ✅", ephemeral=True)
 
 
 @bot.tree.command(name="staffdashboard", description="Post the DIFF staff recruitment dashboard (staff only)")
