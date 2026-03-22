@@ -713,35 +713,6 @@ class RulesAcceptView(discord.ui.View):
         super().__init__(timeout=None)
         self.guild_id = guild_id
 
-        self.add_item(
-            discord.ui.Button(
-                label="📅 Upcoming Meets",
-                style=discord.ButtonStyle.link,
-                url=build_channel_link(self.guild_id, RULES_BTN_UPCOMING_MEETS_ID),
-            )
-        )
-        self.add_item(
-            discord.ui.Button(
-                label="📥 Join Meets",
-                style=discord.ButtonStyle.link,
-                url=build_channel_link(self.guild_id, RULES_BTN_JOIN_MEETS_ID),
-            )
-        )
-        self.add_item(
-            discord.ui.Button(
-                label="📜 Meet Rules",
-                style=discord.ButtonStyle.link,
-                url=build_channel_link(self.guild_id, RULES_BTN_MEET_RULES_ID),
-            )
-        )
-        self.add_item(
-            discord.ui.Button(
-                label="🎟️ Support",
-                style=discord.ButtonStyle.link,
-                url=build_channel_link(self.guild_id, RULES_BTN_SUPPORT_ID),
-            )
-        )
-
     @discord.ui.button(
         label="✅ I Understand & Accept",
         style=discord.ButtonStyle.success,
