@@ -1050,7 +1050,7 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
         return False, "Crew panel channel not found."
 
     embed = discord.Embed(
-        title="🏁 DIFF Crew Recruitment",
+        title="🏁 How to Join DIFF",
         description=(
             "Welcome to Different Meets (DIFF) — a structured and community-driven car meet crew focused on realism, quality builds, and consistency.\n\n"
             "We're looking for dedicated members who are passionate about cars, understand proper meet etiquette, and want to be part of an organized and growing community."
@@ -1071,7 +1071,7 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
 
     if target_message is None:
         async for msg in channel.history(limit=20):
-            if msg.author == guild.me and msg.embeds and msg.embeds[0].title == "🏁 DIFF Crew Recruitment":
+            if msg.author == guild.me and msg.embeds and msg.embeds[0].title in ("🏁 DIFF Crew Recruitment", "🏁 How to Join DIFF"):
                 target_message = msg
                 break
 
