@@ -2831,7 +2831,7 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
 class DiffPanel(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(discord.ui.Button(label="📋 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_URL, row=0))
+        self.add_item(discord.ui.Button(label="📝 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_URL, row=0))
         self.add_item(discord.ui.Button(label="🎨 Crew Color Voting", style=discord.ButtonStyle.link, url=COLOR_CHANNEL_URL, row=0))
 
     @discord.ui.button(label="⚠️ Strike System", style=discord.ButtonStyle.primary, custom_id="diff_panel_strike", row=1)
@@ -2915,8 +2915,20 @@ async def diffpanel(interaction: discord.Interaction):
     if not isinstance(panel_ch, discord.TextChannel):
         return await interaction.response.send_message("Panel channel not found.", ephemeral=True)
     embed = discord.Embed(
-        title="🚘 DIFF Crew Control Panel",
-        description="Use the buttons below to access crew systems.",
+        title="🚗 DIFF Crew Control Panel",
+        description=(
+            "Access all core crew systems in one place.\n"
+            "Use the buttons below to participate in meets, vote, and stay connected with the DIFF community.\n\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            "📌 **Available Systems:**\n"
+            "• 📝 Crew Roll Call — Confirm your attendance for upcoming meets\n"
+            "• 🎨 Crew Color Voting — Help decide crew themes & styles\n"
+            "• ⚠️ Strike System — Review conduct rules and standing\n"
+            "• 🧥 Crew Jackets — View official DIFF crew outfits\n\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
+            "— **Different Meets**"
+        ),
         color=discord.Color.blue(),
     )
     embed.set_thumbnail(url=DIFF_LOGO)

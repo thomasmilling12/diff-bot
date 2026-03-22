@@ -1,0 +1,65 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+ROLL_CALL_CHANNEL = "https://discord.com/channels/850386896509337710/1047338695352664165"
+COLOR_CHANNEL = "https://discord.com/channels/850386896509337710/1108181679308283965"
+
+DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+
+class DiffPanel(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📝 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_CHANNEL)
+    async def rollcall(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="🎨 Crew Color Voting", style=discord.ButtonStyle.link, url=COLOR_CHANNEL)
+    async def color(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="⚠️ Strike System", style=discord.ButtonStyle.primary)
+    async def strike(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Check the Strike System info using this panel.", ephemeral=True)
+
+    @discord.ui.button(label="🧥 Crew Jackets", style=discord.ButtonStyle.secondary)
+    async def jackets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("View crew jackets in the system panel.", ephemeral=True)
+
+
+class DiffPanelCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="diffpanel", description="Post DIFF Crew Control Panel")
+    async def diffpanel(self, interaction: discord.Interaction):
+
+        embed = discord.Embed(
+            title="🚗 DIFF Crew Control Panel",
+            description=(
+                "Access all core crew systems in one place.\n"
+                "Use the buttons below to participate in meets, vote, and stay connected with the DIFF community.\n\n"
+                "---\n\n"
+                "📌 **Available Systems:**\n"
+                "• 📝 Crew Roll Call — Confirm your attendance for upcoming meets\n"
+                "• 🎨 Crew Color Voting — Help decide crew themes & styles\n"
+                "• ⚠️ Strike System — Review conduct rules and standing\n"
+                "• 🧥 Crew Jackets — View official DIFF crew outfits\n\n"
+                "---\n\n"
+                "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
+                "— **Different Meets**"
+            ),
+            color=discord.Color.blue()
+        )
+
+        embed.set_thumbnail(url=DIFF_LOGO)
+        embed.set_image(url=DIFF_BANNER)
+
+        await interaction.channel.send(embed=embed, view=DiffPanel())
+        await interaction.response.send_message("Panel posted ✅", ephemeral=True)
+
+
+async def setup(bot):
+    await bot.add_cog(DiffPanelCog(bot))
