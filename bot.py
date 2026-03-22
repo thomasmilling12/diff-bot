@@ -108,6 +108,8 @@ MANAGER_PROMOTION_REPUTATION = 35
 LEADER_PROMOTION_ATTENDED = 28
 LEADER_PROMOTION_HOSTED = 10
 LEADER_PROMOTION_REPUTATION = 65
+MEET_ATTENDER_ROLE_ID = 850392317751066705
+MEET_ATTENDANCE_REP = 2
 
 # =========================
 # DISCORD SETUP
@@ -555,6 +557,9 @@ async def record_meet_attendance(guild: discord.Guild, member: discord.Member, m
     stats["last_updated"] = datetime.utcnow().isoformat()
     stats["username"] = str(member)
     save_user_stats(member.id, stats)
+    role_ids = {role.id for role in member.roles}
+    if MEET_ATTENDER_ROLE_ID in role_ids:
+        await update_member_reputation(guild, member, MEET_ATTENDANCE_REP, f"Attended meet: {meet_name}", given_by=None)
     await maybe_post_promotion_suggestion(guild, member)
     logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if isinstance(logs_ch, discord.TextChannel):
@@ -563,6 +568,7 @@ async def record_meet_attendance(guild: discord.Guild, member: discord.Member, m
         embed.add_field(name="Meet", value=meet_name, inline=False)
         embed.add_field(name="Host", value=host_member.mention if host_member else "Unknown", inline=False)
         embed.add_field(name="Total Attended", value=str(stats["meets_attended"]), inline=False)
+        embed.add_field(name="Rep Awarded", value=f"+{MEET_ATTENDANCE_REP}" if MEET_ATTENDER_ROLE_ID in role_ids else "None (no attender role)", inline=False)
         try:
             await logs_ch.send(embed=embed)
         except Exception:
