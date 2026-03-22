@@ -1672,41 +1672,42 @@ class WeeklyRollCallModal(discord.ui.Modal, title="📅 Weekly Roll Call Setup")
         required=True,
         max_length=50,
     )
-    friday = discord.ui.TextInput(
-        label="Friday – Theme & Host",
-        placeholder="e.g. Demolition Derby | Host: @BriMedia",
+    meet1 = discord.ui.TextInput(
+        label="Meet 1 – Day, Theme & Host",
+        placeholder="e.g. Friday – Demolition Derby | Host: @BriMedia",
         required=True,
-        max_length=100,
+        max_length=120,
     )
-    saturday = discord.ui.TextInput(
-        label="Saturday – Theme & Host",
-        placeholder="e.g. Tire Meet | Host: @Host",
+    meet2 = discord.ui.TextInput(
+        label="Meet 2 – Day, Theme & Host",
+        placeholder="e.g. Saturday – Tire Meet | Host: @Host",
         required=True,
-        max_length=100,
+        max_length=120,
     )
-    sunday = discord.ui.TextInput(
-        label="Sunday – Theme & Host",
-        placeholder="e.g. Tire Lettering | Host: @Tso_Kyng",
-        required=True,
-        max_length=100,
+    meet3 = discord.ui.TextInput(
+        label="Meet 3 – Day, Theme & Host",
+        placeholder="e.g. Sunday – Tire Lettering | Host: @Tso_Kyng",
+        required=False,
+        max_length=120,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
         roll_call_ch = interaction.guild.get_channel(ROLL_CALL_CHANNEL_ID)
         if not isinstance(roll_call_ch, discord.TextChannel):
             return await interaction.response.send_message("Roll call channel not found.", ephemeral=True)
+        description = (
+            f"**Week of {self.week_of.value}**\n"
+            "React below for EACH meet you plan to attend.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🏁 {self.meet1.value}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🔥 {self.meet2.value}"
+        )
+        if self.meet3.value:
+            description += f"\n\n━━━━━━━━━━━━━━━━━━━\n\n💎 {self.meet3.value}"
         embed = discord.Embed(
             title="📅 DIFF Weekly Roll Call",
-            description=(
-                f"**Week of {self.week_of.value}**\n"
-                "React below for EACH meet you plan to attend.\n\n"
-                "━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🏁 **Friday**\n{self.friday.value}\n\n"
-                "━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🔥 **Saturday**\n{self.saturday.value}\n\n"
-                "━━━━━━━━━━━━━━━━━━━\n\n"
-                f"💎 **Sunday**\n{self.sunday.value}"
-            ),
+            description=description,
             color=discord.Color.blue(),
         )
         await roll_call_ch.send(
