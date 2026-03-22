@@ -2907,7 +2907,7 @@ class DiffPanel(discord.ui.View):
         alt_embed.set_image(url=ALT_JACKET)
         await interaction.followup.send(embed=alt_embed, ephemeral=True)
 
-    @discord.ui.button(label="📊 My Stats", style=discord.ButtonStyle.primary, custom_id="diff_panel_member_stats", row=2)
+    @discord.ui.button(label="📈 My Stats", style=discord.ButtonStyle.success, custom_id="diff_panel_member_stats", row=2)
     async def member_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = str(interaction.user.id)
         meets_data = _load_activity_meets()
@@ -2929,45 +2929,38 @@ class DiffPanel(discord.ui.View):
         else:
             grade = "D"
         embed = discord.Embed(
-            title=f"📊 {interaction.user.display_name} — DIFF Member Stats",
+            title=f"📈 {interaction.user.display_name} — My DIFF Stats",
             description="Your current DIFF activity snapshot.",
-            color=discord.Color.blue(),
+            color=discord.Color.green(),
         )
         embed.add_field(name="✅ Meets Attended", value=str(attended), inline=True)
         embed.add_field(name="🎤 Meets Hosted", value=str(hosted), inline=True)
         embed.add_field(name="❌ No-Shows", value=str(no_shows), inline=True)
         embed.add_field(name="⭐ Reputation", value=str(reputation), inline=True)
         embed.add_field(name="⚠️ Warnings", value=str(warnings), inline=True)
-        embed.add_field(name="🏅 Activity Grade", value=f"{grade} ({score} pts)", inline=True)
+        embed.add_field(name="🏅 Activity Score", value=f"{score} ({grade})", inline=True)
         embed.set_footer(text="Stats are updated live from the DIFF activity systems.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="📖 Crew Roles & Responsibility", style=discord.ButtonStyle.success, custom_id="diff_panel_crew_roles", row=2)
+    @discord.ui.button(label="📋 Roles & Responsibility", style=discord.ButtonStyle.secondary, custom_id="diff_panel_crew_roles", row=2)
     async def crew_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            "__**Crew Roles & Responsibility:**__\n\n"
-            "*Please read each role & responsibility within the crew.*\n"
-            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
-            "**Leader & Co-Leader:**\n"
-            "*In charge of making schedules, posting on our official social media accounts, and recruiting new members. "
-            "They are responsible for the crew's growth, development, and monitoring the crew.*\n\n"
-            "__**Managers:**__\n"
-            "*Oversees the crew members, ensuring they follow requirements, handling issues, and assisting with recruitment. "
-            "Highly involved behind the scenes and active in admin duties.*\n\n"
-            "__**Hosts:**__\n"
-            "*Responsible for hosting meets and ensuring all meet rules are followed.*\n\n"
-            "__**Color Team:**__\n"
-            "*Handles crew colors, submissions, and voting announcements.*\n\n"
-            "__**Designer Team:**__\n"
-            "*Creates meet posters and graphics for the crew.*\n\n"
-            "__**Content Creators:**__\n"
-            "*Creates content for the crew and meets.*\n\n"
-            "__**General Crew Members:**__\n"
-            "*Ensure meets run smoothly, assist with parking, help manage car parks, and guide attendees where needed.*\n\n"
-            "**ALL MEMBERS MUST SEND MESSAGES STATING TO JOIN DISCORD VOICE CHAT DURING THE MEET**\n"
-            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍",
-            ephemeral=True,
+        embed = discord.Embed(
+            title="📋 DIFF Roles & Responsibility",
+            description=(
+                "**Leader** — Oversees the full crew, staff direction, and major decisions.\n\n"
+                "**Co-Leader / Manager** — Helps run operations, reviews activity, and supports hosts and staff.\n\n"
+                "**Host** — Runs meets, organizes the lobby, helps with attendance, and keeps events smooth.\n\n"
+                "**Crew Member** — Represents DIFF properly, does roll calls, follows rules, votes on colors, and stays active.\n\n"
+                "**What DIFF expects from everyone:**\n"
+                "• Respect staff and members\n"
+                "• Follow meet rules\n"
+                "• Stay active and consistent\n"
+                "• Represent the crew professionally"
+            ),
+            color=discord.Color.blurple(),
         )
+        embed.set_footer(text="— DIFF Management")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 def _build_diff_panel_embed() -> discord.Embed:

@@ -1,0 +1,214 @@
+import json
+import os
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+ROLL_CALL_CHANNEL = "https://discord.com/channels/850386896509337710/1047338695352664165"
+COLOR_CHANNEL = "https://discord.com/channels/850386896509337710/1108181679308283965"
+
+DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+
+STATE_FILE = "diff_control_hub_state.json"
+STATS_FILE = "diff_activity_data.json"
+
+
+def load_json(path: str, default):
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return default
+
+
+def save_json(path: str, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def build_hub_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📌 DIFF Crew Control Hub",
+        description=(
+            "*The all-in-one crew hub for Different Meets.*\n\n"
+            "📊 **Available Systems:**\n\n"
+            "📝 **Crew Roll Call** — Confirm your attendance for upcoming meets\n"
+            "🎨 **Crew Color Voting** — Help decide crew themes & styles\n"
+            "⚠️ **Strike System** — Review conduct rules and standards\n"
+            "🧥 **Crew Jackets** — View official DIFF crew outfits\n"
+            "📋 **Crew Roles & Responsibility** — Learn each role and expectations within DIFF\n"
+            "📈 **My Stats** — View your personal DIFF activity snapshot\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
+            "— **Different Meets**"
+        ),
+        color=discord.Color.blue()
+    )
+    embed.set_thumbnail(url=DIFF_LOGO)
+    embed.set_image(url=DIFF_BANNER)
+    return embed
+
+
+def build_roles_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📋 DIFF Roles & Responsibility",
+        description=(
+            "**Leader** — Oversees the full crew, staff direction, and major decisions.\n\n"
+            "**Co-Leader / Manager** — Helps run operations, reviews activity, and supports hosts and staff.\n\n"
+            "**Host** — Runs meets, organizes the lobby, helps with attendance, and keeps events smooth.\n\n"
+            "**Crew Member** — Represents DIFF properly, does roll calls, follows rules, votes on colors, and stays active.\n\n"
+            "**What DIFF expects from everyone:**\n"
+            "• Respect staff and members\n"
+            "• Follow meet rules\n"
+            "• Stay active and consistent\n"
+            "• Represent the crew professionally"
+        ),
+        color=discord.Color.blurple()
+    )
+    embed.set_footer(text="— DIFF Management")
+    return embed
+
+
+def build_stats_embed(member: discord.Member, stats: dict) -> discord.Embed:
+    attended = int(stats.get("attended", 0))
+    hosted = int(stats.get("hosted", 0))
+    no_shows = int(stats.get("no_shows", 0))
+    warnings = int(stats.get("warnings", 0))
+    strikes = int(stats.get("strikes", 0))
+
+    score = max(0, (attended * 5) + (hosted * 8) - (no_shows * 6) - (warnings * 3) - (strikes * 10))
+    if score >= 80:
+        grade = "A"
+    elif score >= 60:
+        grade = "B"
+    elif score >= 40:
+        grade = "C"
+    else:
+        grade = "D"
+
+    embed = discord.Embed(
+        title=f"📈 {member.display_name} — My DIFF Stats",
+        description="Your current DIFF activity snapshot from the leaderboard system.",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="✅ Meets Attended", value=str(attended), inline=True)
+    embed.add_field(name="🎤 Meets Hosted", value=str(hosted), inline=True)
+    embed.add_field(name="❌ No-Shows", value=str(no_shows), inline=True)
+    embed.add_field(name="⚠️ Warnings", value=str(warnings), inline=True)
+    embed.add_field(name="🚨 Strikes", value=str(strikes), inline=True)
+    embed.add_field(name="🏅 Activity Score", value=f"{score} ({grade})", inline=True)
+    embed.set_footer(text="Stats are pulled from diff_activity_data.json")
+    return embed
+
+
+def build_strike_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="⚠️ DIFF Strike System",
+        description=(
+            "Review DIFF conduct rules and standing.\n\n"
+            "• Warning — minor issue\n"
+            "• Strike 1 — official warning\n"
+            "• Strike 2 — final warning\n"
+            "• Strike 3 — removal from DIFF\n\n"
+            "Repeated issues escalate quickly. Staff decisions are final."
+        ),
+        color=discord.Color.red()
+    )
+    embed.set_footer(text="— DIFF Management")
+    return embed
+
+
+def build_jackets_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🧥 DIFF Crew Jackets",
+        description=(
+            "View official DIFF crew outfits.\n\n"
+            "Members are expected to wear the correct jacket setup during meets and crew activities."
+        ),
+        color=discord.Color.blue()
+    )
+    return embed
+
+
+class DiffControlHubView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📝 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_CHANNEL, row=0)
+    async def rollcall(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="🎨 Crew Color Voting", style=discord.ButtonStyle.link, url=COLOR_CHANNEL, row=0)
+    async def color(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="⚠️ Strike System", style=discord.ButtonStyle.primary, row=1)
+    async def strike(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=build_strike_embed(), ephemeral=True)
+
+    @discord.ui.button(label="🧥 Crew Jackets", style=discord.ButtonStyle.secondary, row=1)
+    async def jackets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=build_jackets_embed(), ephemeral=True)
+
+    @discord.ui.button(label="📋 Roles & Responsibility", style=discord.ButtonStyle.secondary, row=2)
+    async def roles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=build_roles_embed(), ephemeral=True)
+
+    @discord.ui.button(label="📈 My Stats", style=discord.ButtonStyle.success, row=2)
+    async def stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load_json(STATS_FILE, {})
+        member_stats = data.get(str(interaction.user.id), {})
+        embed = build_stats_embed(interaction.user, member_stats)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class DiffControlHubConnected(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.bot.add_view(DiffControlHubView())
+
+    async def post_or_refresh_hub(self, channel: discord.abc.Messageable, guild: discord.Guild):
+        state = load_json(STATE_FILE, {})
+        guild_key = str(guild.id)
+        guild_state = state.get(guild_key, {})
+        channel_id = guild_state.get("channel_id")
+        message_id = guild_state.get("message_id")
+
+        embed = build_hub_embed()
+        view = DiffControlHubView()
+
+        existing_message = None
+        if channel_id and message_id:
+            saved_channel = guild.get_channel(int(channel_id))
+            if saved_channel:
+                try:
+                    existing_message = await saved_channel.fetch_message(int(message_id))
+                except Exception:
+                    existing_message = None
+
+        if existing_message:
+            await existing_message.edit(embed=embed, view=view)
+            return existing_message, False
+
+        posted = await channel.send(embed=embed, view=view)
+        state[guild_key] = {"channel_id": str(channel.id), "message_id": str(posted.id)}
+        save_json(STATE_FILE, state)
+        return posted, True
+
+    @app_commands.command(name="diffhub-connected", description="Post or refresh the DIFF Crew Control Hub")
+    async def diffhub_connected(self, interaction: discord.Interaction):
+        _, created = await self.post_or_refresh_hub(interaction.channel, interaction.guild)
+        msg = "DIFF Control Hub posted ✅" if created else "DIFF Control Hub refreshed ✅"
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @app_commands.command(name="diffhub-refresh", description="Refresh the saved DIFF Crew Control Hub")
+    async def diffhub_refresh(self, interaction: discord.Interaction):
+        await self.post_or_refresh_hub(interaction.channel, interaction.guild)
+        await interaction.response.send_message("DIFF Control Hub refreshed ✅", ephemeral=True)
+
+
+async def setup(bot):
+    await bot.add_cog(DiffControlHubConnected(bot))
