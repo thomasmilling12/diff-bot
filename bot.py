@@ -2907,6 +2907,53 @@ class DiffPanel(discord.ui.View):
         alt_embed.set_image(url=ALT_JACKET)
         await interaction.followup.send(embed=alt_embed, ephemeral=True)
 
+    @discord.ui.button(label="📖 Crew Roles & Responsibility", style=discord.ButtonStyle.success, custom_id="diff_panel_crew_roles", row=2)
+    async def crew_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "__**Crew Roles & Responsibility:**__\n\n"
+            "*Please read each role & responsibility within the crew.*\n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+            "**Leader & Co-Leader:**\n"
+            "*In charge of making schedules, posting on our official social media accounts, and recruiting new members. "
+            "They are responsible for the crew's growth, development, and monitoring the crew.*\n\n"
+            "__**Managers:**__\n"
+            "*Oversees the crew members, ensuring they follow requirements, handling issues, and assisting with recruitment. "
+            "Highly involved behind the scenes and active in admin duties.*\n\n"
+            "__**Hosts:**__\n"
+            "*Responsible for hosting meets and ensuring all meet rules are followed.*\n\n"
+            "__**Color Team:**__\n"
+            "*Handles crew colors, submissions, and voting announcements.*\n\n"
+            "__**Designer Team:**__\n"
+            "*Creates meet posters and graphics for the crew.*\n\n"
+            "__**Content Creators:**__\n"
+            "*Creates content for the crew and meets.*\n\n"
+            "__**General Crew Members:**__\n"
+            "*Ensure meets run smoothly, assist with parking, help manage car parks, and guide attendees where needed.*\n\n"
+            "**ALL MEMBERS MUST SEND MESSAGES STATING TO JOIN DISCORD VOICE CHAT DURING THE MEET**\n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍",
+            ephemeral=True,
+        )
+
+
+def _build_diff_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📌 DIFF Crew Systems",
+        description=(
+            "**Available Systems:**\n\n"
+            "📝 Crew Roll Call — Confirm your attendance for upcoming meets\n"
+            "🎨 Crew Color Voting — Help decide crew themes & styles\n"
+            "⚠️ Strike System — Review conduct rules and standards\n"
+            "🧥 Crew Jackets — View official DIFF crew outfits\n"
+            "📖 Crew Roles & Responsibility — Learn each role and expectations within DIFF\n\n"
+            "────────────────────────────\n\n"
+            "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
+            "— **Different Meets**"
+        ),
+        color=discord.Color.blue(),
+    )
+    embed.set_image(url=DIFF_LOGO)
+    return embed
+
 
 @bot.tree.command(name="diffpanel", description="Post the DIFF Crew Control Panel (staff only)")
 async def diffpanel(interaction: discord.Interaction):
@@ -2915,26 +2962,7 @@ async def diffpanel(interaction: discord.Interaction):
     panel_ch = interaction.guild.get_channel(DIFF_PANEL_CHANNEL_ID)
     if not isinstance(panel_ch, discord.TextChannel):
         return await interaction.response.send_message("Panel channel not found.", ephemeral=True)
-    embed = discord.Embed(
-        title="🚗 DIFF Crew Control Panel",
-        description=(
-            "Access all core crew systems in one place.\n"
-            "Use the buttons below to participate in meets, vote, and stay connected with the DIFF community.\n\n"
-            "━━━━━━━━━━━━━━━━━━━\n\n"
-            "📌 **Available Systems:**\n"
-            "• 📝 Crew Roll Call — Confirm your attendance for upcoming meets\n"
-            "• 🎨 Crew Color Voting — Help decide crew themes & styles\n"
-            "• ⚠️ Strike System — Review conduct rules and standing\n"
-            "• 🧥 Crew Jackets — View official DIFF crew outfits\n\n"
-            "━━━━━━━━━━━━━━━━━━━\n\n"
-            "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
-            "— **Different Meets**"
-        ),
-        color=discord.Color.blue(),
-    )
-    embed.set_thumbnail(url=DIFF_LOGO)
-    embed.set_image(url=DIFF_BANNER)
-    message = await panel_ch.send(embed=embed, view=DiffPanel())
+    message = await panel_ch.send(embed=_build_diff_panel_embed(), view=DiffPanel())
     _save_diff_json(DIFF_PANEL_STATE_FILE, {"channel_id": panel_ch.id, "message_id": message.id})
     await interaction.response.send_message(f"Panel posted in {panel_ch.mention} ✅", ephemeral=True)
 
@@ -2943,39 +2971,28 @@ async def diffpanel(interaction: discord.Interaction):
 async def refreshdiffpanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
-    state = _load_diff_json(DIFF_PANEL_STATE_FILE)
-    channel_id = state.get("channel_id")
-    message_id = state.get("message_id")
-    if not channel_id or not message_id:
-        return await interaction.response.send_message("No panel found. Post one first with `/diffpanel`.", ephemeral=True)
-    panel_ch = interaction.guild.get_channel(int(channel_id))
+    panel_ch = interaction.guild.get_channel(DIFF_PANEL_CHANNEL_ID)
     if not isinstance(panel_ch, discord.TextChannel):
         return await interaction.response.send_message("Panel channel not found.", ephemeral=True)
-    try:
-        message = await panel_ch.fetch_message(int(message_id))
-    except discord.NotFound:
-        return await interaction.response.send_message("Panel message not found — it may have been deleted. Use `/diffpanel` to post a new one.", ephemeral=True)
-    embed = discord.Embed(
-        title="🚗 DIFF Crew Control Panel",
-        description=(
-            "Access all core crew systems in one place.\n"
-            "Use the buttons below to participate in meets, vote, and stay connected with the DIFF community.\n\n"
-            "━━━━━━━━━━━━━━━━━━━\n\n"
-            "📌 **Available Systems:**\n"
-            "• 📝 Crew Roll Call — Confirm your attendance for upcoming meets\n"
-            "• 🎨 Crew Color Voting — Help decide crew themes & styles\n"
-            "• ⚠️ Strike System — Review conduct rules and standing\n"
-            "• 🧥 Crew Jackets — View official DIFF crew outfits\n\n"
-            "━━━━━━━━━━━━━━━━━━━\n\n"
-            "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
-            "— **Different Meets**"
-        ),
-        color=discord.Color.blue(),
-    )
-    embed.set_thumbnail(url=DIFF_LOGO)
-    embed.set_image(url=DIFF_BANNER)
-    await message.edit(embed=embed, view=DiffPanel())
-    await interaction.response.send_message("Panel refreshed ✅", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    message = None
+    state = _load_diff_json(DIFF_PANEL_STATE_FILE)
+    message_id = state.get("message_id")
+    if message_id:
+        try:
+            message = await panel_ch.fetch_message(int(message_id))
+        except (discord.NotFound, discord.HTTPException):
+            message = None
+    if message is None:
+        async for msg in panel_ch.history(limit=50):
+            if msg.author.id == bot.user.id and msg.embeds:
+                message = msg
+                _save_diff_json(DIFF_PANEL_STATE_FILE, {"channel_id": panel_ch.id, "message_id": msg.id})
+                break
+    if message is None:
+        return await interaction.followup.send("No panel message found in the channel. Use `/diffpanel` to post one.", ephemeral=True)
+    await message.edit(embed=_build_diff_panel_embed(), view=DiffPanel())
+    await interaction.followup.send("Panel refreshed ✅", ephemeral=True)
 
 
 # =========================

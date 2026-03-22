@@ -1,0 +1,88 @@
+import discord
+from discord.ui import View, Button
+
+DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+
+# ---------------- PANEL ---------------- #
+
+class DiffPanel(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+        # Buttons
+        self.add_item(Button(label="Crew Roll Call", style=discord.ButtonStyle.secondary, custom_id="roll_call"))
+        self.add_item(Button(label="Crew Color Voting", style=discord.ButtonStyle.secondary, custom_id="color_voting"))
+        self.add_item(Button(label="Strike System", style=discord.ButtonStyle.primary, custom_id="strike_system"))
+        self.add_item(Button(label="Crew Jackets", style=discord.ButtonStyle.secondary, custom_id="crew_jackets"))
+
+        # NEW BUTTON
+        self.add_item(Button(label="Crew Roles & Responsibility", style=discord.ButtonStyle.success, custom_id="crew_roles"))
+
+# ---------------- EMBED ---------------- #
+
+def get_diff_embed():
+    embed = discord.Embed(
+        title="📌 DIFF Crew Systems",
+        description=(
+            "**Available Systems:**\n\n"
+            "📝 Crew Roll Call — Confirm your attendance for upcoming meets\n"
+            "🎨 Crew Color Voting — Help decide crew themes & styles\n"
+            "⚠️ Strike System — Review conduct rules and standards\n"
+            "🧥 Crew Jackets — View official DIFF crew outfits\n"
+            "📖 Crew Roles & Responsibility — Learn each role and expectations within DIFF\n\n"
+            "────────────────────────────\n\n"
+            "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
+            "— **Different Meets**"
+        ),
+        color=discord.Color.blue()
+    )
+
+    embed.set_image(url=DIFF_LOGO)
+
+    return embed
+
+# ---------------- BUTTON HANDLER ---------------- #
+
+async def handle_panel_interaction(interaction: discord.Interaction):
+    custom_id = interaction.data.get("custom_id")
+
+    if custom_id == "crew_roles":
+        await interaction.response.send_message(
+            "__**Crew Roles & Responsibility:**__ \n\n"
+            "*Please read each role, & responsibility within the crew.* \n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+
+            "**Leader & Co-Leader:**\n"
+            "*In charge of making schedules, posting on our official social media accounts, and recruiting new members. "
+            "They are responsible for the crew's growth, development, and monitoring the crew.*\n\n"
+
+            "__**Managers:**__\n"
+            "*Oversees the crew members, ensuring they follow requirements, handling issues, and assisting with recruitment. "
+            "Highly involved behind the scenes and active in admin duties.*\n\n"
+
+            "__**Hosts:**__\n"
+            "*Responsible for hosting meets and ensuring all meet rules are followed.*\n\n"
+
+            "__**Color Team:**__\n"
+            "*Handles crew colors, submissions, and voting announcements.*\n\n"
+
+            "__**Designer Team:**__\n"
+            "*Creates meet posters and graphics for the crew.*\n\n"
+
+            "__**Content Creators:**__\n"
+            "*Creates content for the crew and meets.*\n\n"
+
+            "__**General Crew Members:**__\n"
+            "*Ensure meets run smoothly, assist with parking, help manage car parks, and guide attendees where needed.*\n\n"
+
+            "**ALL MEMBERS MUST SEND MESSAGES STATING TO JOIN DISCORD VOICE CHAT DURING THE MEET**\n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍",
+            ephemeral=True
+        )
+
+# ---------------- SEND PANEL COMMAND ---------------- #
+
+async def send_diff_panel(channel):
+    embed = get_diff_embed()
+    view = DiffPanel()
+    await channel.send(embed=embed, view=view)
