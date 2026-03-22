@@ -74,6 +74,9 @@ CONTENT_TEAM_ROLE_ID = 1110037666147336293
 COLOR_TEAM_ROLE_ID = 1115495008670330902
 CREW_MEMBER_ROLE_ID = 886702076552441927
 
+CREW_PANEL_CHANNEL_ID = 1103847009653358612
+CREW_APPLICATIONS_CHANNEL_ID = 1485238837943734373
+
 # =========================
 # DISCORD SETUP
 # =========================
@@ -95,6 +98,7 @@ def load_data():
         "hierarchy_message_id": None,
         "hierarchy_message_ids": [],
         "rules_message_ids": [],
+        "crew_panel_message_id": None,
         "host_role_id": None,
         "meet_ping_role_id": None,
         "warnings": {},
@@ -126,6 +130,7 @@ def load_data():
     loaded.setdefault("hierarchy_message_id", None)
     loaded.setdefault("hierarchy_message_ids", [])
     loaded.setdefault("rules_message_ids", [])
+    loaded.setdefault("crew_panel_message_id", None)
     loaded.setdefault("meet_ping_role_id", None)
     loaded.setdefault("warnings", {})
     loaded.setdefault("hosts", default_data["hosts"])
@@ -863,6 +868,111 @@ class RSVPView(discord.ui.View):
 
 
 # =========================
+# CREW PANEL
+# =========================
+class CrewApplicationModal(discord.ui.Modal, title="DIFF Crew Application"):
+    discord_name = discord.ui.TextInput(label="Discord Username", required=True)
+    age = discord.ui.TextInput(label="Age", required=True)
+    timezone = discord.ui.TextInput(label="Timezone", required=True)
+    why_join = discord.ui.TextInput(label="Why do you want to join DIFF?", style=discord.TextStyle.paragraph)
+    what_bring = discord.ui.TextInput(label="What can you bring to the crew?", style=discord.TextStyle.paragraph)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        channel = interaction.guild.get_channel(CREW_APPLICATIONS_CHANNEL_ID)
+        embed = discord.Embed(title="📝 New Crew Application", color=discord.Color.blue())
+        embed.add_field(name="User", value=interaction.user.mention, inline=False)
+        embed.add_field(name="Discord Name", value=self.discord_name.value, inline=False)
+        embed.add_field(name="Age", value=self.age.value)
+        embed.add_field(name="Timezone", value=self.timezone.value)
+        embed.add_field(name="Why Join", value=self.why_join.value, inline=False)
+        embed.add_field(name="What They Bring", value=self.what_bring.value, inline=False)
+        await channel.send(embed=embed)
+        await interaction.response.send_message("✅ Application submitted!", ephemeral=True)
+
+
+class CrewPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Crew Requirements", emoji="📋", style=discord.ButtonStyle.primary, custom_id="crew_requirements")
+    async def requirements(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="📋 Crew Requirements",
+            description=(
+                "• Be active\n"
+                "• Follow rules\n"
+                "• Respect others\n"
+                "• Attend meets\n"
+                "• Represent DIFF well"
+            ),
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Crew Process", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="crew_process")
+    async def process(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="🔄 Crew Process",
+            description=(
+                "1. Read requirements\n"
+                "2. Submit application\n"
+                "3. Staff review\n"
+                "4. Possible interview\n"
+                "5. Decision"
+            ),
+            color=discord.Color.blurple()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Crew Application", emoji="📝", style=discord.ButtonStyle.success, custom_id="crew_apply")
+    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(CrewApplicationModal())
+
+
+async def send_or_refresh_crew_panel(guild: discord.Guild):
+    channel = guild.get_channel(CREW_PANEL_CHANNEL_ID)
+    if channel is None:
+        return False, "Crew panel channel not found."
+
+    embed = discord.Embed(
+        title="🏁 DIFF Crew Recruitment",
+        description="Use the buttons below to learn about joining the crew and submit your application.",
+        color=discord.Color.blue()
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_image(url=DIFF_BANNER_URL)
+    embed.add_field(
+        name="Options",
+        value="📋 **Crew Requirements** — See what we look for\n🔄 **Crew Process** — How the process works\n📝 **Crew Application** — Apply to join DIFF",
+        inline=False
+    )
+
+    crew_panel_msg_id = data.get("crew_panel_message_id")
+    target_message = None
+
+    if crew_panel_msg_id:
+        try:
+            target_message = await channel.fetch_message(crew_panel_msg_id)
+        except discord.NotFound:
+            target_message = None
+
+    if target_message is None:
+        async for msg in channel.history(limit=20):
+            if msg.author == guild.me and msg.embeds and msg.embeds[0].title == "🏁 DIFF Crew Recruitment":
+                target_message = msg
+                break
+
+    if target_message is not None:
+        await target_message.edit(embed=embed, view=CrewPanelView())
+    else:
+        target_message = await channel.send(embed=embed, view=CrewPanelView())
+
+    data["crew_panel_message_id"] = target_message.id
+    save_data(data)
+    return True, channel.mention
+
+
+# =========================
 # EVENTS
 # =========================
 @bot.event
@@ -878,6 +988,7 @@ async def on_ready():
 
     try:
         bot.add_view(RulesAcceptView(GUILD_ID))
+        bot.add_view(CrewPanelView())
     except Exception as e:
         print(f"View registration warning: {e}")
 
@@ -1250,6 +1361,41 @@ async def refreshrules(interaction: discord.Interaction):
 
 @refreshrules.error
 async def refreshrules_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        msg = "You need administrator permissions to use that command."
+    else:
+        msg = f"Command error: {error}"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except discord.NotFound:
+        pass
+
+
+@bot.tree.command(name="refreshcrewpanel", description="Post or refresh the crew recruitment panel")
+@app_commands.checks.has_permissions(administrator=True)
+async def refreshcrewpanel(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use this in the server.", ephemeral=True)
+        return
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    ok, result = await send_or_refresh_crew_panel(interaction.guild)
+    try:
+        if ok:
+            await interaction.followup.send(f"Crew panel refreshed in {result}.", ephemeral=True)
+        else:
+            await interaction.followup.send(result, ephemeral=True)
+    except discord.NotFound:
+        pass
+
+
+@refreshcrewpanel.error
+async def refreshcrewpanel_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.errors.MissingPermissions):
         msg = "You need administrator permissions to use that command."
     else:
