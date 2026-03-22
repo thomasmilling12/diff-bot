@@ -162,7 +162,6 @@ def is_host_or_admin(interaction: discord.Interaction) -> bool:
 
 
 
-
 def get_warning_count(member_id: int) -> int:
     return len(data.get("warnings", {}).get(str(member_id), []))
 
@@ -220,21 +219,23 @@ def format_role_member_lines(role: discord.Role) -> str:
         return "No members assigned yet."
 
     lines = [f"{get_member_status_emoji(member)} {member.mention}" for member in members]
-    value = "\n".join(lines)
+    value = f"**Role:** {role.mention}\n" + "\n".join(lines)
 
     if len(value) <= 1024:
         return value
 
-    trimmed_lines = []
-    current_len = 0
-    for line in lines:
-        extra = len(line) + (1 if trimmed_lines else 0)
+    trimmed_lines = [f"**Role:** {role.mention}"]
+    current_len = len(trimmed_lines[0])
+    member_lines = [f"{get_member_status_emoji(member)} {member.mention}" for member in members]
+
+    for line in member_lines:
+        extra = len(line) + 1
         if current_len + extra > 1000:
             break
         trimmed_lines.append(line)
         current_len += extra
 
-    remaining = len(lines) - len(trimmed_lines)
+    remaining = len(member_lines) - (len(trimmed_lines) - 1)
     if remaining > 0:
         trimmed_lines.append(f"…and {remaining} more")
 
@@ -256,22 +257,19 @@ def build_hierarchy_embeds(guild: discord.Guild):
             (CONTENT_TEAM_ROLE_ID, "📸 Content Team"),
             (COLOR_TEAM_ROLE_ID, "🌈 Color Team"),
         ]),
-        ("🤝 Community", [
-            (CREW_MEMBER_ROLE_ID, "🤝 Crew Members"),
-        ]),
     ]
 
-    base_description = (
-        "Live DIFF role board built from your server roles.\n"
-        "Add or remove members by changing their roles, then refresh the panel.\n\n"
-        "**Status key:** 🟢 Online • 🌙 Idle • ⛔ Do Not Disturb • ⚫ Offline"
-    )
+    panel_descriptions = [
+        "Server staff.",
+        "Live member list.",
+        f"Need help? Open <#{SUPPORT_TICKETS_CHANNEL_ID}>.",
+    ]
 
     embeds = []
-    for section_title, entries in role_sections:
+    for index, (section_title, entries) in enumerate(role_sections):
         embed = discord.Embed(
             title="🏆 DIFF SERVER HIERARCHY",
-            description=base_description,
+            description=panel_descriptions[index] if index < len(panel_descriptions) else "Server staff and teams.",
             color=0xC9A227,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -293,7 +291,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
                 continue
 
             embed.add_field(
-                name=f"{label} • {role.mention}",
+                name=get_hierarchy_role_header(role, label),
                 value=format_role_member_lines(role),
                 inline=False,
             )
@@ -304,6 +302,70 @@ def build_hierarchy_embeds(guild: discord.Guild):
         embeds.append(embed)
 
     return embeds
+
+
+async def cleanup_extra_hierarchy_messages(channel: discord.TextChannel, keep_ids: list[int]):
+    try:
+        async for msg in channel.history(limit=50):
+            if msg.author != bot.user:
+                continue
+            if msg.id in keep_ids:
+                continue
+            if msg.embeds and any(embed.title == "🏆 DIFF SERVER HIERARCHY" for embed in msg.embeds):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+            elif msg.content and "DIFF Hierarchy Panel" in msg.content:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+async def find_existing_hierarchy_messages(channel: discord.TextChannel, expected_count: int):
+    found = []
+    try:
+        async for msg in channel.history(limit=50, oldest_first=True):
+            if msg.author != bot.user:
+                continue
+            if msg.embeds and any(embed.title == "🏆 DIFF SERVER HIERARCHY" for embed in msg.embeds):
+                found.append(msg)
+                if len(found) == expected_count:
+                    break
+    except Exception:
+        return []
+    return found
+
+
+async def find_existing_status_panel_message(channel: discord.TextChannel):
+    try:
+        async for msg in channel.history(limit=50, oldest_first=True):
+            if msg.author != bot.user:
+                continue
+            if msg.embeds and any(embed.title == "🏁 DIFF Meets Crew" for embed in msg.embeds):
+                return msg
+    except Exception:
+        return None
+    return None
+
+
+async def cleanup_extra_status_panel_messages(channel: discord.TextChannel, keep_id: int | None):
+    try:
+        async for msg in channel.history(limit=50):
+            if msg.author != bot.user:
+                continue
+            if keep_id and msg.id == keep_id:
+                continue
+            if msg.embeds and any(embed.title == "🏁 DIFF Meets Crew" for embed in msg.embeds):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
@@ -326,15 +388,25 @@ async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
 
     if saved_messages and len(saved_messages) == len(embeds):
         for msg, embed in zip(saved_messages, embeds):
-            await msg.edit(embed=embed)
+            await msg.edit(content="## DIFF Hierarchy Panel" if msg.id == saved_messages[0].id else None, embed=embed)
+        await cleanup_extra_hierarchy_messages(channel, [msg.id for msg in saved_messages])
         return True, channel.mention
 
-    # Clean up old saved messages if counts changed or any went missing
-    for msg in saved_messages:
+    # recover old single-id storage if present
+    legacy_message_id = data.get("hierarchy_message_id")
+    if not saved_messages and legacy_message_id:
         try:
-            await msg.delete()
-        except Exception:
-            pass
+            legacy_message = await channel.fetch_message(legacy_message_id)
+            saved_messages = [legacy_message]
+        except discord.NotFound:
+            saved_messages = []
+
+    if saved_messages:
+        for msg in saved_messages:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
 
     new_ids = []
     for index, embed in enumerate(embeds):
@@ -343,8 +415,11 @@ async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
         new_ids.append(msg.id)
 
     data["hierarchy_message_ids"] = new_ids
+    data["hierarchy_message_id"] = new_ids[0] if new_ids else None
     save_data(data)
+    await cleanup_extra_hierarchy_messages(channel, new_ids)
     return True, channel.mention
+
 
 def build_status_embed(guild: discord.Guild) -> discord.Embed:
     embed = discord.Embed(
@@ -540,6 +615,7 @@ def get_discord_rules_embed():
     embed.add_field(name="📜 Rules (2/2)", value=rules_part2, inline=False)
     embed.set_footer(text="DIFF Meets • Keep it clean • Keep it respectful")
     return embed
+
 
 
 def get_bannable_offenses_embed():
@@ -870,7 +946,7 @@ async def panel(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="postpanel", description="Create a fresh saved live panel")
+@bot.tree.command(name="postpanel", description="Post or refresh the saved live panel")
 @app_commands.checks.has_permissions(administrator=True)
 async def postpanel(interaction: discord.Interaction):
     global status_message_id
@@ -886,11 +962,27 @@ async def postpanel(interaction: discord.Interaction):
         return
 
     embed = build_status_embed(interaction.guild)
-    message = await channel.send(embed=embed)
-    data["panel_message_id"] = message.id
+    target_message = None
+
+    if status_message_id:
+        try:
+            target_message = await channel.fetch_message(status_message_id)
+        except discord.NotFound:
+            target_message = None
+
+    if target_message is None:
+        target_message = await find_existing_status_panel_message(channel)
+
+    if target_message is None:
+        target_message = await channel.send(embed=embed)
+    else:
+        await target_message.edit(embed=embed)
+
+    data["panel_message_id"] = target_message.id
     save_data(data)
-    status_message_id = message.id
-    await interaction.response.send_message(f"Fresh panel posted in {channel.mention}.", ephemeral=True)
+    status_message_id = target_message.id
+    await cleanup_extra_status_panel_messages(channel, target_message.id)
+    await interaction.response.send_message(f"Panel saved in {channel.mention}.", ephemeral=True)
 
 
 @bot.tree.command(name="listhosts", description="Show all saved DIFF hosts")
@@ -904,7 +996,7 @@ async def listhosts(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="refreshpanel", description="Update the saved live panel only")
+@bot.tree.command(name="refreshpanel", description="Refresh the saved live panel")
 @app_commands.checks.has_permissions(administrator=True)
 async def refreshpanel(interaction: discord.Interaction):
     global status_message_id
@@ -920,21 +1012,29 @@ async def refreshpanel(interaction: discord.Interaction):
         return
 
     embed = build_status_embed(interaction.guild)
+    target_message = None
 
-    try:
-        if status_message_id:
-            message = await channel.fetch_message(status_message_id)
-            await message.edit(embed=embed)
-            await interaction.response.send_message("Panel updated.", ephemeral=True)
-            return
-    except discord.NotFound:
-        pass
+    if status_message_id:
+        try:
+            target_message = await channel.fetch_message(status_message_id)
+        except discord.NotFound:
+            target_message = None
 
-    new_message = await channel.send(embed=embed)
-    data["panel_message_id"] = new_message.id
+    if target_message is None:
+        target_message = await find_existing_status_panel_message(channel)
+
+    if target_message is None:
+        target_message = await channel.send(embed=embed)
+        reply_text = "Panel was missing, so I rebuilt it and saved the new message."
+    else:
+        await target_message.edit(embed=embed)
+        reply_text = "Panel refreshed."
+
+    data["panel_message_id"] = target_message.id
     save_data(data)
-    status_message_id = new_message.id
-    await interaction.response.send_message("Old panel was missing, so I created a new one and saved it.", ephemeral=True)
+    status_message_id = target_message.id
+    await cleanup_extra_status_panel_messages(channel, target_message.id)
+    await interaction.response.send_message(reply_text, ephemeral=True)
 
 
 @refreshpanel.error
@@ -1041,7 +1141,7 @@ async def rules(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(administrator=True)
 async def postrules(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("Use this command in the server.", ephemeral=True)
+        await interaction.response.send_message("Use this in the server.", ephemeral=True)
         return
 
     channel = interaction.guild.get_channel(RULES_CHANNEL_ID)
