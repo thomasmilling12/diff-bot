@@ -289,7 +289,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
                 continue
 
             embed.add_field(
-                name=label,
+                name=role.mention,
                 value=format_role_member_lines(role),
                 inline=False,
             )
