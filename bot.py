@@ -2907,6 +2907,41 @@ class DiffPanel(discord.ui.View):
         alt_embed.set_image(url=ALT_JACKET)
         await interaction.followup.send(embed=alt_embed, ephemeral=True)
 
+    @discord.ui.button(label="📊 My Stats", style=discord.ButtonStyle.primary, custom_id="diff_panel_member_stats", row=2)
+    async def member_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = str(interaction.user.id)
+        meets_data = _load_activity_meets()
+        m_stats = meets_data.get("members", {}).get(uid, {})
+        attended = m_stats.get("attended", 0)
+        hosted = m_stats.get("hosted", 0)
+        no_shows = m_stats.get("no_shows", 0)
+        penalty_pts = m_stats.get("penalty_points", 0)
+        rep_data = _load_activity_json(REPUTATION_FILE)
+        reputation = rep_data.get("reputation", {}).get(uid, 0)
+        warnings = get_warning_count(interaction.user.id)
+        score = max(0, (attended * 5) + (hosted * 8) - (no_shows * 6) - (warnings * 4) - (penalty_pts * 2))
+        if score >= 80:
+            grade = "A"
+        elif score >= 60:
+            grade = "B"
+        elif score >= 40:
+            grade = "C"
+        else:
+            grade = "D"
+        embed = discord.Embed(
+            title=f"📊 {interaction.user.display_name} — DIFF Member Stats",
+            description="Your current DIFF activity snapshot.",
+            color=discord.Color.blue(),
+        )
+        embed.add_field(name="✅ Meets Attended", value=str(attended), inline=True)
+        embed.add_field(name="🎤 Meets Hosted", value=str(hosted), inline=True)
+        embed.add_field(name="❌ No-Shows", value=str(no_shows), inline=True)
+        embed.add_field(name="⭐ Reputation", value=str(reputation), inline=True)
+        embed.add_field(name="⚠️ Warnings", value=str(warnings), inline=True)
+        embed.add_field(name="🏅 Activity Grade", value=f"{grade} ({score} pts)", inline=True)
+        embed.set_footer(text="Stats are updated live from the DIFF activity systems.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @discord.ui.button(label="📖 Crew Roles & Responsibility", style=discord.ButtonStyle.success, custom_id="diff_panel_crew_roles", row=2)
     async def crew_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
@@ -2944,7 +2979,8 @@ def _build_diff_panel_embed() -> discord.Embed:
             "🎨 Crew Color Voting — Help decide crew themes & styles\n"
             "⚠️ Strike System — Review conduct rules and standards\n"
             "🧥 Crew Jackets — View official DIFF crew outfits\n"
-            "📖 Crew Roles & Responsibility — Learn each role and expectations within DIFF\n\n"
+            "📖 Crew Roles & Responsibility — Learn each role and expectations within DIFF\n"
+            "📊 My Stats — View your personal DIFF activity snapshot\n\n"
             "────────────────────────────\n\n"
             "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
             "— **Different Meets**"

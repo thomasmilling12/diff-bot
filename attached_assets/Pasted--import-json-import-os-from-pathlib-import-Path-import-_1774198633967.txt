@@ -1,0 +1,333 @@
+
+import json
+import os
+from pathlib import Path
+
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# =========================
+# DIFF PANEL CONFIG
+# =========================
+ROLL_CALL_CHANNEL = "https://discord.com/channels/850386896509337710/1047338695352664165"
+COLOR_CHANNEL = "https://discord.com/channels/850386896509337710/1108181679308283965"
+
+DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+
+PANEL_STATE_FILE = "diff_control_panel_state.json"
+
+# Optional: replace with your real role IDs later if you want deeper stats logic
+LEADERBOARD_FILE = "diff_activity_data.json"
+
+
+# =========================
+# HELPERS
+# =========================
+def load_json(path: str, default):
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return default
+
+
+def save_json(path: str, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def build_main_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🚗 DIFF Crew Control Panel",
+        description=(
+            "Access all core crew systems in one place.\n"
+            "Use the buttons below to participate in meets, vote, and stay connected with the DIFF community.\n\n"
+            "📌 **Available Systems:**\n"
+            "• 📝 **Crew Roll Call** — Confirm your attendance for upcoming meets\n"
+            "• 🎨 **Crew Color Voting** — Help decide crew themes & styles\n"
+            "• ⚠️ **Strike System** — Review conduct rules and standing\n"
+            "• 🧥 **Crew Jackets** — View official DIFF crew outfits\n"
+            "• 📊 **Member Stats** — View your DIFF activity snapshot\n\n"
+            "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
+            "— **Different Meets**"
+        ),
+        color=discord.Color.blue()
+    )
+    embed.set_thumbnail(url=DIFF_LOGO)
+    embed.set_image(url=DIFF_BANNER)
+    return embed
+
+
+def build_strike_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="⚠️ DIFF Strike & Warning System",
+        description=(
+            "To maintain a clean, realistic, and respectful environment, "
+            "DIFF uses a structured conduct system for all members."
+        ),
+        color=discord.Color.red()
+    )
+
+    embed.add_field(
+        name="📊 System Overview",
+        value=(
+            "• ⚠️ Warning — Minor issue (notice)\n"
+            "• 🚨 Strike 1 — Official warning\n"
+            "• ⛔ Strike 2 — Final warning\n"
+            "• ❌ Strike 3 — Removal from DIFF"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📌 What Can Lead to Strikes",
+        value=(
+            "• Disruptive behavior during meets\n"
+            "• Unrealistic / non-compliant builds\n"
+            "• Disrespect toward members or staff\n"
+            "• Failure to follow crew rules"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🚨 Important",
+        value=(
+            "Repeated issues will escalate quickly. "
+            "Staff decisions are final to keep the crew organized and professional."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="✅ Stay in Good Standing",
+        value=(
+            "Follow the rules, respect the community, "
+            "and contribute positively to DIFF."
+        ),
+        inline=False
+    )
+
+    embed.set_footer(text="— DIFF Management")
+    return embed
+
+
+def build_jackets_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🧥 DIFF Crew Jackets",
+        description=(
+            "Official DIFF crew outfits are managed through the jacket system.\n\n"
+            "Wear the correct jacket during meets and crew activities.\n"
+            "If you want, you can expand this button later to show all jacket images again."
+        ),
+        color=discord.Color.blue()
+    )
+    embed.set_thumbnail(url=DIFF_LOGO)
+    return embed
+
+
+def build_rollcall_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📝 Crew Roll Call",
+        description=(
+            "Roll call is how DIFF tracks who is active and who plans to attend upcoming meets.\n\n"
+            "**Why it matters:**\n"
+            "• Helps staff plan meets properly\n"
+            "• Shows reliability and activity\n"
+            "• Supports attendance tracking and promotions\n\n"
+            "Use the button below to open the crew roll call channel."
+        ),
+        color=discord.Color.blue()
+    )
+    return embed
+
+
+def build_color_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🎨 Crew Color Voting",
+        description=(
+            "DIFF changes crew colors regularly to keep the crew fresh and organized.\n\n"
+            "**Why it matters:**\n"
+            "• Keeps the crew coordinated\n"
+            "• Lets members vote on weekly themes and styles\n"
+            "• Helps everyone stay updated on the current look\n\n"
+            "Use the button below to open the crew color voting channel."
+        ),
+        color=discord.Color.blue()
+    )
+    return embed
+
+
+def build_member_stats_embed(member: discord.Member, stats: dict) -> discord.Embed:
+    attended = stats.get("attended", 0)
+    hosted = stats.get("hosted", 0)
+    no_shows = stats.get("no_shows", 0)
+    strikes = stats.get("strikes", 0)
+    warnings = stats.get("warnings", 0)
+
+    score = max(0, (attended * 5) + (hosted * 8) - (no_shows * 6) - (strikes * 10) - (warnings * 3))
+    if score >= 80:
+        grade = "A"
+    elif score >= 60:
+        grade = "B"
+    elif score >= 40:
+        grade = "C"
+    else:
+        grade = "D"
+
+    embed = discord.Embed(
+        title=f"📊 {member.display_name} — DIFF Member Stats",
+        description="Your current DIFF activity snapshot.",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="✅ Meets Attended", value=str(attended), inline=True)
+    embed.add_field(name="🎤 Meets Hosted", value=str(hosted), inline=True)
+    embed.add_field(name="❌ No-Shows", value=str(no_shows), inline=True)
+    embed.add_field(name="⚠️ Warnings", value=str(warnings), inline=True)
+    embed.add_field(name="🚨 Strikes", value=str(strikes), inline=True)
+    embed.add_field(name="🏅 Activity Grade", value=f"{grade} ({score})", inline=True)
+    embed.set_footer(text="Stats update when your activity systems are used.")
+    return embed
+
+
+# =========================
+# VIEWS
+# =========================
+class PanelView(discord.ui.View):
+    def __init__(self, cog: "DiffElitePanelCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="📝 Crew Roll Call",
+        style=discord.ButtonStyle.link,
+        url=ROLL_CALL_CHANNEL,
+        row=0
+    )
+    async def crew_roll_call(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(
+        label="🎨 Crew Color Voting",
+        style=discord.ButtonStyle.link,
+        url=COLOR_CHANNEL,
+        row=0
+    )
+    async def crew_color_voting(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(
+        label="⚠️ Strike System",
+        style=discord.ButtonStyle.primary,
+        row=1
+    )
+    async def strike_system(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=build_strike_embed(), ephemeral=True)
+
+    @discord.ui.button(
+        label="🧥 Crew Jackets",
+        style=discord.ButtonStyle.secondary,
+        row=1
+    )
+    async def crew_jackets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=build_jackets_embed(), ephemeral=True)
+
+    @discord.ui.button(
+        label="📊 Member Stats",
+        style=discord.ButtonStyle.success,
+        row=1
+    )
+    async def member_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        stats_data = load_json(LEADERBOARD_FILE, {})
+        member_stats = stats_data.get(str(interaction.user.id), {})
+        embed = build_member_stats_embed(interaction.user, member_stats)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================
+# COG
+# =========================
+class DiffElitePanelCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.panel_state = load_json(PANEL_STATE_FILE, {})
+        self.bot.add_view(PanelView(self))
+
+    def get_panel_state(self) -> dict:
+        return load_json(PANEL_STATE_FILE, {})
+
+    def save_panel_state(self, data: dict):
+        save_json(PANEL_STATE_FILE, data)
+        self.panel_state = data
+
+    async def post_or_refresh_panel(self, channel: discord.TextChannel):
+        state = self.get_panel_state()
+        guild_key = str(channel.guild.id)
+        guild_state = state.get(guild_key, {})
+        message_id = guild_state.get("message_id")
+        channel_id = guild_state.get("channel_id")
+
+        embed = build_main_embed()
+        view = PanelView(self)
+
+        target_message = None
+
+        if message_id and channel_id:
+            existing_channel = channel.guild.get_channel(int(channel_id))
+            if existing_channel:
+                try:
+                    target_message = await existing_channel.fetch_message(int(message_id))
+                except discord.NotFound:
+                    target_message = None
+                except discord.HTTPException:
+                    target_message = None
+
+        if target_message:
+            await target_message.edit(embed=embed, view=view)
+            return target_message, False
+
+        posted = await channel.send(embed=embed, view=view)
+        state[guild_key] = {
+            "channel_id": str(channel.id),
+            "message_id": str(posted.id),
+        }
+        self.save_panel_state(state)
+        return posted, True
+
+    @app_commands.command(name="diffpanel", description="Post or refresh the DIFF control panel without duplicates")
+    async def diffpanel(self, interaction: discord.Interaction):
+        msg, created = await self.post_or_refresh_panel(interaction.channel)
+        if created:
+            await interaction.response.send_message("DIFF control panel posted ✅", ephemeral=True)
+        else:
+            await interaction.response.send_message("DIFF control panel refreshed ✅", ephemeral=True)
+
+    @app_commands.command(name="diffpanel-refresh", description="Force refresh the saved DIFF control panel")
+    async def diffpanel_refresh(self, interaction: discord.Interaction):
+        msg, created = await self.post_or_refresh_panel(interaction.channel)
+        await interaction.response.send_message("DIFF control panel refreshed ✅", ephemeral=True)
+
+    @app_commands.command(name="diffpanel-info", description="View quick info for the DIFF panel systems")
+    async def diffpanel_info(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🚗 DIFF Panel System Guide",
+            description=(
+                "**About button descriptions:** Discord buttons do not support true hover tooltips.\n"
+                "This file uses clear labels, matching icons, and this info command instead.\n\n"
+                "📝 **Crew Roll Call** — Attendance and activity check\n"
+                "🎨 **Crew Color Voting** — Weekly color/theme voting\n"
+                "⚠️ **Strike System** — Conduct rules and standing\n"
+                "🧥 **Crew Jackets** — Outfit guidance\n"
+                "📊 **Member Stats** — Personal activity snapshot"
+            ),
+            color=discord.Color.blurple()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+async def setup(bot):
+    await bot.add_cog(DiffElitePanelCog(bot))
