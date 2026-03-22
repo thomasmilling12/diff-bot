@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 from datetime import datetime, timedelta
 from threading import Thread
 
@@ -2708,27 +2709,25 @@ keep_alive()
 
 async def run_bot():
     delay = 60
-    while True:
-        try:
-            await bot.start(TOKEN)
-        except discord.errors.HTTPException as e:
-            if e.status == 429:
-                print(f"[Rate limited by Discord] Waiting {delay}s before retrying...")
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 900)
-            else:
-                print(f"[HTTP error] {e} — retrying in {delay}s")
-                await asyncio.sleep(delay)
-        except Exception as e:
-            print(f"[Connection error] {e} — retrying in {delay}s")
-            await asyncio.sleep(delay)
+    try:
+        await bot.start(TOKEN)
+    except discord.errors.HTTPException as e:
+        if e.status == 429:
+            print(f"[Rate limited by Discord] Waiting {delay}s before retrying...")
         else:
-            delay = 60
-        if not bot.is_closed():
-            await bot.close()
+            print(f"[HTTP error] {e} — retrying in {delay}s")
+    except Exception as e:
+        print(f"[Connection error] {e} — retrying in {delay}s")
+    finally:
         try:
-            bot._connection._ready.clear()
+            if not bot.is_closed():
+                await bot.close()
         except Exception:
             pass
 
 asyncio.run(run_bot())
+
+print(f"[Restarting process in 60s...]")
+import time
+time.sleep(60)
+os.execv(sys.executable, [sys.executable] + sys.argv)

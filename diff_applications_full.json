@@ -1,0 +1,34 @@
+{
+  "last_id": 1,
+  "applications": {
+    "0001": {
+      "app_id": "0001",
+      "user_id": 708024998228525167,
+      "username": "frostyy_2003",
+      "age": "re8",
+      "timezone": "fdsbs",
+      "gamertag": "fdbsfdeb",
+      "discord_name": "vfdsvg",
+      "gta_rank": "fdvesdbg",
+      "how_heard": "dffgxfd",
+      "days_available": "dchfgdc",
+      "personal_skills": "frdrtf",
+      "meet_experience": "rddtuj",
+      "former_crews": "trcdtr",
+      "why_join": "frtd",
+      "what_bring": "rtdrt",
+      "comments": "bgfds",
+      "status": "Pending",
+      "submitted_at": "2026-03-22T13:31:51.717702",
+      "review_channel_id": 1485250641294131280,
+      "review_message_id": 1485269783841603756,
+      "tracker_channel_id": 1485250394522386536,
+      "tracker_message_id": 1485269784747839658,
+      "ticket_channel_id": 1485269781404848430,
+      "ticket_channel_name": "garage-0001-frostyy_2003",
+      "reviewed_by": null,
+      "reviewed_at": null,
+      "ticket_closed": false
+    }
+  }
+}

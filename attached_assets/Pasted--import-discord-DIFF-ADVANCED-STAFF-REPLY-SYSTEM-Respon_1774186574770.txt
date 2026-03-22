@@ -1,0 +1,102 @@
+
+import discord
+
+# ===============================
+# DIFF ADVANCED STAFF REPLY SYSTEM
+# Respond Button + Auto Ticket User Detection
+# ===============================
+
+class RespondButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Respond", style=discord.ButtonStyle.green)
+
+    async def callback(self, interaction: discord.Interaction):
+        channel = interaction.channel
+
+        # Attempt to find ticket owner (first non-bot message author)
+        ticket_owner = None
+        async for msg in channel.history(limit=20):
+            if not msg.author.bot:
+                ticket_owner = msg.author
+                break
+
+        if not ticket_owner:
+            await interaction.response.send_message("❌ Could not detect ticket owner.", ephemeral=True)
+            return
+
+        # Open dropdown menu after detecting user
+        await interaction.response.send_message(
+            f"Replying to {ticket_owner.mention}. Select a response below:",
+            view=StaffReplyView(ticket_owner),
+            ephemeral=True
+        )
+
+
+class StaffReplyDropdown(discord.ui.Select):
+    def __init__(self, target_user):
+        self.target_user = target_user
+
+        options = [
+            discord.SelectOption(label="Build Quality", value="build"),
+            discord.SelectOption(label="Activity / Availability", value="activity"),
+            discord.SelectOption(label="Application Effort", value="effort"),
+            discord.SelectOption(label="Car Knowledge", value="knowledge"),
+            discord.SelectOption(label="Community Fit", value="fit"),
+            discord.SelectOption(label="Requirements Not Met", value="requirements"),
+            discord.SelectOption(label="Reapply Later", value="later"),
+            discord.SelectOption(label="Custom Response", value="custom"),
+        ]
+
+        super().__init__(
+            placeholder="Choose a response category...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        value = self.values[0]
+
+        responses = {
+            "build": "Your vehicle build needs improvement before reapplying.",
+            "activity": "Your activity level does not meet DIFF expectations.",
+            "effort": "Your application lacked effort and detail.",
+            "knowledge": "More car knowledge is needed.",
+            "fit": "You may not be the right fit for DIFF at this time.",
+            "requirements": "You did not meet the listed requirements.",
+            "later": "You have potential—please reapply later.",
+            "custom": "[Staff writes custom response here]"
+        }
+
+        reply = responses.get(value)
+
+        # Send to DM
+        try:
+            await self.target_user.send(reply)
+        except:
+            pass
+
+        # Send to ticket channel
+        await interaction.channel.send(f"📩 Reply sent to {self.target_user.mention}:\n{reply}")
+
+        await interaction.response.send_message("✅ Reply sent.", ephemeral=True)
+
+
+class StaffReplyView(discord.ui.View):
+    def __init__(self, target_user=None):
+        super().__init__(timeout=None)
+        if target_user:
+            self.add_item(StaffReplyDropdown(target_user))
+        else:
+            self.add_item(RespondButton())
+
+
+# COMMAND FUNCTION TO SEND PANEL
+async def send_advanced_staff_panel(channel):
+    embed = discord.Embed(
+        title="📩 DIFF Staff Response System",
+        description="Click the button below to respond to the ticket user.",
+        color=discord.Color.blue()
+    )
+
+    await channel.send(embed=embed, view=StaffReplyView())
