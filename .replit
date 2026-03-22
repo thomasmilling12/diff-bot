@@ -1,0 +1,14 @@
+modules = ["python-3.11"]
+[agent]
+expertMode = true
+
+[nix]
+packages = ["nano"]
+
+[deployment]
+run = ["sh", "-c", "python bot.py"]
+deploymentTarget = "cloudrun"
+
+[[ports]]
+localPort = 8080
+externalPort = 80
