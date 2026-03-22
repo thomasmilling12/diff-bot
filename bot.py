@@ -110,6 +110,7 @@ LEADER_PROMOTION_HOSTED = 10
 LEADER_PROMOTION_REPUTATION = 65
 MEET_ATTENDER_ROLE_ID = 850392317751066705
 MEET_ATTENDANCE_REP = 2
+ROLL_CALL_CHANNEL_ID = 1047338695352664165
 
 # =========================
 # DISCORD SETUP
@@ -3706,6 +3707,9 @@ async def rankinfo(interaction: discord.Interaction):
 async def weeklyrollcall(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+    roll_call_ch = interaction.guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    if not isinstance(roll_call_ch, discord.TextChannel):
+        return await interaction.response.send_message("Roll call channel not found. Check ROLL_CALL_CHANNEL_ID.", ephemeral=True)
     embed = discord.Embed(
         title="📅 DIFF Weekly Roll Call",
         description=(
@@ -3725,8 +3729,12 @@ async def weeklyrollcall(interaction: discord.Interaction):
         ),
         color=discord.Color.blue(),
     )
-    await interaction.channel.send(embed=embed, view=WeeklyRollCallView())
-    await interaction.response.send_message("Weekly roll call posted ✅", ephemeral=True)
+    await roll_call_ch.send(
+        content=f"<@&{CREW_MEMBER_ROLE_ID}>",
+        embed=embed,
+        view=WeeklyRollCallView(),
+    )
+    await interaction.response.send_message(f"Weekly roll call posted in {roll_call_ch.mention} ✅", ephemeral=True)
 
 
 @bot.tree.command(name="staffdashboard", description="Post the DIFF staff recruitment dashboard (staff only)")
