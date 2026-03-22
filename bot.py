@@ -1452,32 +1452,50 @@ async def moderation_command_error(interaction: discord.Interaction, error: app_
 @app_commands.checks.has_permissions(administrator=True)
 async def posthierarchy(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("Use this in the server.", ephemeral=True)
+        try:
+            await interaction.response.send_message("Use this in the server.", ephemeral=True)
+        except discord.NotFound:
+            pass
         return
 
-    await interaction.response.defer(ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
 
     ok, result = await post_or_refresh_hierarchy_panel(interaction.guild)
-    if ok:
-        await interaction.followup.send(f"Hierarchy panel posted or refreshed in {result}.", ephemeral=True)
-    else:
-        await interaction.followup.send(result, ephemeral=True)
+    try:
+        if ok:
+            await interaction.followup.send(f"Hierarchy panel posted or refreshed in {result}.", ephemeral=True)
+        else:
+            await interaction.followup.send(result, ephemeral=True)
+    except discord.NotFound:
+        pass
 
 
 @bot.tree.command(name="refreshhierarchy", description="Refresh the DIFF hierarchy panel")
 @app_commands.checks.has_permissions(administrator=True)
 async def refreshhierarchy(interaction: discord.Interaction):
     if interaction.guild is None:
-        await interaction.response.send_message("Use this in the server.", ephemeral=True)
+        try:
+            await interaction.response.send_message("Use this in the server.", ephemeral=True)
+        except discord.NotFound:
+            pass
         return
 
-    await interaction.response.defer(ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
 
     ok, result = await post_or_refresh_hierarchy_panel(interaction.guild)
-    if ok:
-        await interaction.followup.send(f"Hierarchy panel refreshed in {result}.", ephemeral=True)
-    else:
-        await interaction.followup.send(result, ephemeral=True)
+    try:
+        if ok:
+            await interaction.followup.send(f"Hierarchy panel refreshed in {result}.", ephemeral=True)
+        else:
+            await interaction.followup.send(result, ephemeral=True)
+    except discord.NotFound:
+        pass
 
 
 @posthierarchy.error
@@ -1488,10 +1506,13 @@ async def hierarchy_command_error(interaction: discord.Interaction, error: app_c
     else:
         msg = f"Command error: {error}"
 
-    if interaction.response.is_done():
-        await interaction.followup.send(msg, ephemeral=True)
-    else:
-        await interaction.response.send_message(msg, ephemeral=True)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except discord.NotFound:
+        pass
 
 # =========================
 # START BOT
