@@ -870,63 +870,70 @@ class RSVPView(discord.ui.View):
 # =========================
 # CREW PANEL
 # =========================
-class CrewApplicationModal(discord.ui.Modal, title="DIFF Crew Application"):
-    discord_name = discord.ui.TextInput(label="Discord Username", required=True)
-    age = discord.ui.TextInput(label="Age", required=True)
-    timezone = discord.ui.TextInput(label="Timezone", required=True)
-    why_join = discord.ui.TextInput(label="Why do you want to join DIFF?", style=discord.TextStyle.paragraph)
-    what_bring = discord.ui.TextInput(label="What can you bring to the crew?", style=discord.TextStyle.paragraph)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        channel = interaction.guild.get_channel(CREW_APPLICATIONS_CHANNEL_ID)
-        embed = discord.Embed(title="📝 New Crew Application", color=discord.Color.blue())
-        embed.add_field(name="User", value=interaction.user.mention, inline=False)
-        embed.add_field(name="Discord Name", value=self.discord_name.value, inline=False)
-        embed.add_field(name="Age", value=self.age.value)
-        embed.add_field(name="Timezone", value=self.timezone.value)
-        embed.add_field(name="Why Join", value=self.why_join.value, inline=False)
-        embed.add_field(name="What They Bring", value=self.what_bring.value, inline=False)
-        await channel.send(embed=embed)
-        await interaction.response.send_message("✅ Application submitted!", ephemeral=True)
-
-
 class CrewPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Crew Requirements", emoji="📋", style=discord.ButtonStyle.primary, custom_id="crew_requirements")
-    async def requirements(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Crew Requirements", emoji="📋", style=discord.ButtonStyle.primary, custom_id="crew_requirements_btn")
+    async def crew_requirements(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
-            title="📋 Crew Requirements",
+            title="📋 DIFF Crew Requirements",
             description=(
-                "• Be active\n"
-                "• Follow rules\n"
-                "• Respect others\n"
-                "• Attend meets\n"
-                "• Represent DIFF well"
+                "ALL MEMBERS MUST BE 18+ BEFORE JOINING DIFF\n\n"
+                "■ Clean & realistic builds only (no modded/riced cars)\n"
+                "■ Must have interest in cars\n"
+                "■ Must know Discord & stay active\n"
+                "■ Working headset required\n"
+                "■ Must rep DIFF at meets\n"
+                "■ Attend at least 1 meet per weekend\n\n"
+                "If you do not meet these requirements your application will be denied.\n\n"
+                "**What DIFF Offers:**\n"
+                "■ Weekly crew colors\n"
+                "■ Monthly meetings\n"
+                "■ Events on other games\n"
+                "■ Crew collaborations\n\n"
+                "**Crew Positions:**\n"
+                "■ Color Team\n"
+                "■ Meet Host (30 days required)\n"
+                "■ Designer Team\n"
+                "■ Content Creators\n"
+                "■ Crew Managers"
             ),
             color=discord.Color.blue()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Crew Process", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="crew_process")
-    async def process(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Crew Process", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="crew_process_btn")
+    async def crew_process(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
-            title="🔄 Crew Process",
+            title="🔄 DIFF Crew Process",
             description=(
-                "1. Read requirements\n"
-                "2. Submit application\n"
-                "3. Staff review\n"
-                "4. Possible interview\n"
-                "5. Decision"
+                "Step 1: Attend 3–5 meets before applying\n"
+                "Step 2: Submit your application\n"
+                "Step 3: Staff reviews your application\n"
+                "Step 4: If selected, you will be contacted for a Discord interview\n"
+                "Step 5: Final decision from management\n\n"
+                "**IMPORTANT:**\n"
+                "■ Interviews are done via Discord VC\n"
+                "■ Must be 18+ to apply"
             ),
             color=discord.Color.blurple()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Crew Application", emoji="📝", style=discord.ButtonStyle.success, custom_id="crew_apply")
-    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(CrewApplicationModal())
+    @discord.ui.button(label="Crew Application", emoji="📝", style=discord.ButtonStyle.success, custom_id="crew_application_btn")
+    async def crew_application(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="📝 DIFF Crew Application",
+            description=(
+                "Fill out the official application below:\n\n"
+                "https://form.jotform.com/231268157057054\n\n"
+                "Make sure you answer all questions seriously.\n"
+                "Applications with effort are more likely to be accepted."
+            ),
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def send_or_refresh_crew_panel(guild: discord.Guild):
@@ -936,16 +943,11 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
 
     embed = discord.Embed(
         title="🏁 DIFF Crew Recruitment",
-        description="Use the buttons below to learn about joining the crew and submit your application.",
+        description="Join Different Meets (DIFF). Use the buttons below to get started.",
         color=discord.Color.blue()
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_image(url=DIFF_BANNER_URL)
-    embed.add_field(
-        name="Options",
-        value="📋 **Crew Requirements** — See what we look for\n🔄 **Crew Process** — How the process works\n📝 **Crew Application** — Apply to join DIFF",
-        inline=False
-    )
 
     crew_panel_msg_id = data.get("crew_panel_message_id")
     target_message = None

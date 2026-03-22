@@ -1,0 +1,97 @@
+# =========================
+# DIFF CREW PANEL SYSTEM (ADD THIS TO YOUR BOT FILE)
+# =========================
+
+import discord
+
+CREW_PANEL_CHANNEL_ID = 1103847009653358612
+CREW_APPLICATIONS_CHANNEL_ID = 1485238837943734373
+
+# =========================
+# CREW PANEL BUTTON VIEW
+# =========================
+class CrewPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Crew Requirements", emoji="📋", style=discord.ButtonStyle.primary, custom_id="crew_requirements_btn")
+    async def crew_requirements(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="📋 DIFF Crew Requirements",
+            description="""ALL MEMBERS MUST BE 18+ BEFORE JOINING DIFF
+
+■ Clean & realistic builds only (no modded/riced cars)
+■ Must have interest in cars
+■ Must know Discord & stay active
+■ Working headset required
+■ Must rep DIFF at meets
+■ Attend at least 1 meet per weekend
+
+If you do not meet these requirements your application will be denied.
+
+What DIFF Offers:
+■ Weekly crew colors
+■ Monthly meetings
+■ Events on other games
+■ Crew collaborations
+
+Crew Positions:
+■ Color Team
+■ Meet Host (30 days required)
+■ Designer Team
+■ Content Creators
+■ Crew Managers""",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Crew Process", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="crew_process_btn")
+    async def crew_process(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="🔄 DIFF Crew Process",
+            description="""Step 1: Attend 3–5 meets before applying
+Step 2: Submit your application
+Step 3: Staff reviews your application
+Step 4: If selected, you will be contacted for a Discord interview
+Step 5: Final decision from management
+
+IMPORTANT:
+■ Interviews are done via Discord VC
+■ Must be 18+ to apply""",
+            color=discord.Color.blurple()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Crew Application", emoji="📝", style=discord.ButtonStyle.success, custom_id="crew_application_btn")
+    async def crew_application(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="📝 DIFF Crew Application",
+            description="""Fill out the official application below:
+
+https://form.jotform.com/231268157057054
+
+Make sure you answer all questions seriously.
+Applications with effort are more likely to be accepted.""",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# =========================
+# SEND / REFRESH PANEL
+# =========================
+async def send_or_refresh_crew_panel(bot):
+    channel = bot.get_channel(CREW_PANEL_CHANNEL_ID)
+
+    panel_embed = discord.Embed(
+        title="🏁 DIFF Crew Recruitment",
+        description="Join Different Meets (DIFF). Use the buttons below to get started.",
+        color=discord.Color.blue()
+    )
+
+    for message in await channel.history(limit=20).flatten():
+        if message.author == bot.user and message.embeds:
+            if message.embeds[0].title == "🏁 DIFF Crew Recruitment":
+                await message.edit(embed=panel_embed, view=CrewPanelView())
+                return
+
+    await channel.send(embed=panel_embed, view=CrewPanelView())
