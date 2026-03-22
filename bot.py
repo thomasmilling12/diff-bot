@@ -94,6 +94,7 @@ def load_data():
         "meet_info_message_id": None,
         "hierarchy_message_id": None,
         "hierarchy_message_ids": [],
+        "rules_message_ids": [],
         "host_role_id": None,
         "meet_ping_role_id": None,
         "warnings": {},
@@ -124,6 +125,7 @@ def load_data():
     loaded.setdefault("meet_info_message_id", None)
     loaded.setdefault("hierarchy_message_id", None)
     loaded.setdefault("hierarchy_message_ids", [])
+    loaded.setdefault("rules_message_ids", [])
     loaded.setdefault("meet_ping_role_id", None)
     loaded.setdefault("warnings", {})
     loaded.setdefault("hosts", default_data["hosts"])
@@ -1190,21 +1192,9 @@ async def sendmeetinfo_error(interaction: discord.Interaction, error: app_comman
         await interaction.response.send_message(msg, ephemeral=True)
 
 
-@bot.tree.command(name="rules", description="Show DIFF server rules")
-async def rules(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("Use this command in the server.", ephemeral=True)
-        return
-    await interaction.response.send_message(
-        embed=get_rules_embed(),
-        view=RulesAcceptView(interaction.guild.id),
-        ephemeral=False,
-    )
-
-
-@bot.tree.command(name="postrules", description="Post the rules panel in the rules channel")
+@bot.tree.command(name="refreshrules", description="Post or refresh all rules panels in the rules channel")
 @app_commands.checks.has_permissions(administrator=True)
-async def postrules(interaction: discord.Interaction):
+async def refreshrules(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Use this in the server.", ephemeral=True)
         return
@@ -1214,24 +1204,63 @@ async def postrules(interaction: discord.Interaction):
         await interaction.response.send_message("Rules channel not found.", ephemeral=True)
         return
 
-    await channel.send(
-        embed=get_rules_embed(),
-        view=RulesAcceptView(interaction.guild.id),
-    )
-    await interaction.response.send_message(f"Rules posted in {channel.mention}.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+
+    panels = [
+        (get_rules_embed(), RulesAcceptView(interaction.guild.id)),
+        (get_discord_rules_embed(), None),
+        (get_bannable_offenses_embed(), None),
+    ]
+
+    saved_ids = data.get("rules_message_ids", [])
+    saved_messages = []
+    if len(saved_ids) == len(panels):
+        for msg_id in saved_ids:
+            try:
+                msg = await channel.fetch_message(msg_id)
+                saved_messages.append(msg)
+            except discord.NotFound:
+                saved_messages = []
+                break
+
+    if len(saved_messages) == len(panels):
+        for msg, (embed, view) in zip(saved_messages, panels):
+            await msg.edit(embed=embed, view=view or discord.ui.View())
+    else:
+        for msg in saved_messages:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+        saved_messages = []
+        for embed, view in panels:
+            msg = await channel.send(embed=embed, view=view or discord.ui.View())
+            saved_messages.append(msg)
+        data["rules_message_ids"] = [msg.id for msg in saved_messages]
+        save_data(data)
+
+    try:
+        await interaction.followup.send(f"Rules panels refreshed in {channel.mention}.", ephemeral=True)
+    except discord.NotFound:
+        pass
 
 
-@postrules.error
-async def postrules_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+@refreshrules.error
+async def refreshrules_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.errors.MissingPermissions):
         msg = "You need administrator permissions to use that command."
     else:
         msg = f"Command error: {error}"
-
-    if interaction.response.is_done():
-        await interaction.followup.send(msg, ephemeral=True)
-    else:
-        await interaction.response.send_message(msg, ephemeral=True)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except discord.NotFound:
+        pass
 
 
 @bot.tree.command(name="sethostrole", description="Set the DIFF host role")
@@ -1362,51 +1391,6 @@ async def meethistory_error(interaction: discord.Interaction, error: app_command
 
 
 
-@bot.tree.command(name="postdiscordrules", description="Post the Discord rules panel")
-@app_commands.checks.has_permissions(administrator=True)
-async def postdiscordrules(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("Use this in the server.", ephemeral=True)
-        return
-
-    channel = interaction.channel
-
-    await channel.send(embed=get_discord_rules_embed())
-
-    await interaction.response.send_message(
-        f"Discord rules posted in {channel.mention}",
-        ephemeral=True
-    )
-
-
-
-
-@postdiscordrules.error
-async def postdiscordrules_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.errors.MissingPermissions):
-        msg = "You need administrator permissions to use that command."
-    else:
-        msg = f"Command error: {error}"
-
-    if interaction.response.is_done():
-        await interaction.followup.send(msg, ephemeral=True)
-    else:
-        await interaction.response.send_message(msg, ephemeral=True)
-
-
-@bot.tree.command(name="postbannableoffenses", description="Post the bannable offenses panel")
-@app_commands.checks.has_permissions(administrator=True)
-async def postbannableoffenses(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message("Use this in the server.", ephemeral=True)
-        return
-
-    channel = interaction.channel
-    await channel.send(embed=get_bannable_offenses_embed())
-    await interaction.response.send_message(
-        f"Bannable offenses panel posted in {channel.mention}",
-        ephemeral=True
-    )
 
 
 @bot.tree.command(name="warn", description="Warn a member and log it")
@@ -1494,7 +1478,6 @@ async def clearwarnings(interaction: discord.Interaction, member: discord.Member
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@postbannableoffenses.error
 @clearwarnings.error
 @warnings.error
 @warn.error
