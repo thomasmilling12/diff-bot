@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import Thread
 
 from flask import Flask
@@ -79,7 +79,10 @@ CREW_APPLICATIONS_CHANNEL_ID = 1485238837943734373
 
 APPLICATION_TRACKER_CHANNEL_ID = 1485250394522386536
 APPLICATION_REVIEW_CHANNEL_ID = 1485250641294131280
+APPLICATION_INFO_REQUEST_CHANNEL_ID = 1485250641294131280
 APPLICATION_TICKET_CATEGORY_ID = 1328457973583839282
+MIN_GARAGE_PHOTOS = 10
+GARAGE_TIMEOUT_HOURS = 24
 APPROVED_MEMBER_ROLE_ID = CREW_MEMBER_ROLE_ID
 APPLICATIONS_FILE = "diff_applications_full.json"
 
@@ -199,7 +202,21 @@ def utc_now():
 
 
 def make_status_emoji(status: str) -> str:
-    return {"Pending": "🟡 Pending", "Approved": "🟢 Approved", "Denied": "🔴 Denied", "Closed": "⚫ Closed"}.get(status, status)
+    return {
+        "Pending": "🟡 Pending",
+        "More Info Requested": "🟠 More Info Requested",
+        "Timed Out": "⏰ Timed Out",
+        "Approved": "🟢 Approved",
+        "Denied": "🔴 Denied",
+        "Closed": "⚫ Closed",
+    }.get(status, status)
+
+
+def count_message_attachments(messages) -> int:
+    total = 0
+    for msg in messages:
+        total += len(msg.attachments)
+    return total
 
 
 def is_staff_reviewer(member: discord.Member) -> bool:
@@ -258,6 +275,84 @@ def build_tracker_embed(app_id: str, applicant, answers: dict, status: str, revi
     return embed
 
 
+def build_denied_result_embed(custom_deny_reason: str):
+    embed = discord.Embed(
+        title="DIFF Application Result",
+        description=(
+            "Thank you for applying to Different Meets (DIFF).\n\n"
+            "After careful review, your application has been denied at this time.\n\n"
+            f"**Reason:**\n{custom_deny_reason}\n\n"
+            "Our decisions are based on crew standards, activity, realism, and overall community fit.\n\n"
+            "🔄 **Need Clarification?**\n\n"
+            "If you would like more details about this decision or guidance on how to improve, "
+            "you may use the button below to request additional feedback from our staff team.\n\n"
+            "**Please note:**\n"
+            "• This is not an appeal button\n"
+            "• Spamming requests may result in restricted access\n"
+            "• Staff responses may take time depending on availability\n\n"
+            "We appreciate your interest in DIFF."
+        ),
+        color=discord.Color.red(),
+        timestamp=utc_now(),
+    )
+    return embed
+
+
+# =========================
+# DENIED RESULT VIEW (sent to applicant via DM)
+# =========================
+class DeniedResultView(discord.ui.View):
+    def __init__(self, app_id: str, applicant_id: int):
+        super().__init__(timeout=None)
+        self.app_id = app_id
+        self.applicant_id = applicant_id
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="❌", custom_id="diff_denied_close")
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(view=None)
+
+    @discord.ui.button(label="Request More Info", style=discord.ButtonStyle.primary, emoji="🔄", custom_id="diff_denied_request_more_info")
+    async def request_more_info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        record = get_app(self.app_id)
+        if not record:
+            return await interaction.response.send_message("Application record not found.", ephemeral=True)
+        if interaction.user.id != self.applicant_id:
+            return await interaction.response.send_message("Only the applicant can use this button.", ephemeral=True)
+        if record.get("denied_info_requested"):
+            return await interaction.response.send_message(
+                "You already requested more information for this denied application. Please wait for staff to respond.",
+                ephemeral=True,
+            )
+        update_app(
+            self.app_id,
+            denied_info_requested=True,
+            denied_info_requested_at=utc_now().isoformat(),
+        )
+        guild = interaction.guild
+        if guild:
+            info_channel = guild.get_channel(APPLICATION_INFO_REQUEST_CHANNEL_ID)
+            if isinstance(info_channel, discord.TextChannel):
+                deny_reason = record.get("deny_reason") or record.get("decision_reason") or "No reason saved."
+                embed = discord.Embed(
+                    title="📩 Info Request – Denied Application",
+                    color=discord.Color.orange(),
+                    timestamp=utc_now(),
+                )
+                embed.add_field(name="User", value=f"<@{self.applicant_id}>", inline=True)
+                embed.add_field(name="User ID", value=str(self.applicant_id), inline=True)
+                embed.add_field(name="Application ID", value=f"#{self.app_id}", inline=True)
+                embed.add_field(name="Original Deny Reason", value=deny_reason, inline=False)
+                embed.add_field(name="Status", value="User is requesting additional clarification.", inline=False)
+                try:
+                    await info_channel.send(embed=embed)
+                except Exception:
+                    pass
+        await interaction.response.send_message(
+            "Your request for more information has been sent to DIFF staff. Please wait for a response.",
+            ephemeral=True,
+        )
+
+
 # =========================
 # APPLICATION REVIEW VIEW
 # =========================
@@ -266,6 +361,21 @@ class ReviewView(discord.ui.View):
         super().__init__(timeout=None)
         self.app_id = app_id
         self.applicant_id = applicant_id
+
+    async def _check_photos(self, interaction: discord.Interaction, record: dict) -> bool:
+        ticket_channel = interaction.guild.get_channel(record.get("ticket_channel_id")) if record.get("ticket_channel_id") else None
+        if not isinstance(ticket_channel, discord.TextChannel):
+            await interaction.response.send_message("Garage ticket channel could not be found.", ephemeral=True)
+            return False
+        messages = [m async for m in ticket_channel.history(limit=200)]
+        photo_count = count_message_attachments(messages)
+        if photo_count < MIN_GARAGE_PHOTOS:
+            await interaction.response.send_message(
+                f"This applicant only has **{photo_count}** uploaded file(s). Minimum required is **{MIN_GARAGE_PHOTOS}** before making a decision.",
+                ephemeral=True,
+            )
+            return False
+        return True
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="diff_review_accept")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -276,8 +386,10 @@ class ReviewView(discord.ui.View):
         record = get_app(self.app_id)
         if not record:
             return await interaction.response.send_message("Application record not found.", ephemeral=True)
-        if record.get("status") != "Pending":
+        if record.get("status") not in {"Pending", "More Info Requested"}:
             return await interaction.response.send_message("This application has already been reviewed.", ephemeral=True)
+        if not await self._check_photos(interaction, record):
+            return
         applicant = interaction.guild.get_member(self.applicant_id)
         if applicant is None:
             return await interaction.response.send_message("Applicant is no longer in the server.", ephemeral=True)
@@ -299,12 +411,24 @@ class ReviewView(discord.ui.View):
         record = get_app(self.app_id)
         if not record:
             return await interaction.response.send_message("Application record not found.", ephemeral=True)
-        if record.get("status") != "Pending":
+        if record.get("status") not in {"Pending", "More Info Requested"}:
             return await interaction.response.send_message("This application has already been reviewed.", ephemeral=True)
-        applicant = interaction.guild.get_member(self.applicant_id)
-        await self._finalize(interaction, "Denied", interaction.user, close_ticket=True)
-        if applicant:
-            await safe_dm(applicant, f"Your DIFF application **#{self.app_id}** was **denied**.")
+        if not await self._check_photos(interaction, record):
+            return
+        await interaction.response.send_modal(DenyReasonModal(self.app_id, self.applicant_id, self))
+
+    @discord.ui.button(label="Request More Info", style=discord.ButtonStyle.secondary, custom_id="diff_review_more_info")
+    async def more_info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can request more info.", ephemeral=True)
+        record = get_app(self.app_id)
+        if not record:
+            return await interaction.response.send_message("Application record not found.", ephemeral=True)
+        if record.get("status") not in {"Pending", "More Info Requested"}:
+            return await interaction.response.send_message("This application has already been reviewed.", ephemeral=True)
+        await interaction.response.send_modal(RequestMoreInfoModal(self.app_id, self.applicant_id, self))
 
     async def _finalize(self, interaction: discord.Interaction, new_status: str, reviewer: discord.Member, close_ticket: bool):
         for child in self.children:
@@ -312,7 +436,14 @@ class ReviewView(discord.ui.View):
         record = get_app(self.app_id)
         if not record:
             return
-        update_app(self.app_id, status=new_status, reviewed_by=str(reviewer), reviewed_by_id=reviewer.id, reviewed_at=utc_now().isoformat())
+        update_app(
+            self.app_id,
+            status=new_status,
+            reviewed_by=str(reviewer),
+            reviewed_by_id=reviewer.id,
+            reviewed_at=utc_now().isoformat(),
+            decision_reason=record.get("deny_reason") if new_status == "Denied" else record.get("decision_reason"),
+        )
         embed = interaction.message.embeds[0]
         embed.color = discord.Color.green() if new_status == "Approved" else discord.Color.red()
         embed.set_footer(text=f"Status: {new_status} • Reviewed by {reviewer}")
@@ -360,6 +491,126 @@ class ReviewView(discord.ui.View):
                     except Exception:
                         pass
                     update_app(self.app_id, ticket_closed=True, closed_at=utc_now().isoformat())
+
+
+# =========================
+# REQUEST MORE INFO MODAL
+# =========================
+class RequestMoreInfoModal(discord.ui.Modal, title="Request More Info"):
+    message = discord.ui.TextInput(
+        label="What info/photos do they need to add?",
+        placeholder="Example: Please upload 10 clear garage photos and a few closeups of your main builds.",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+        required=True,
+    )
+
+    def __init__(self, app_id: str, applicant_id: int, review_view: "ReviewView"):
+        super().__init__()
+        self.app_id = app_id
+        self.applicant_id = applicant_id
+        self.review_view = review_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        record = get_app(self.app_id)
+        if not record:
+            return await interaction.response.send_message("Application record not found.", ephemeral=True)
+        update_app(
+            self.app_id,
+            status="More Info Requested",
+            reviewed_by=str(interaction.user),
+            reviewed_by_id=interaction.user.id,
+            reviewed_at=utc_now().isoformat(),
+            more_info_request=str(self.message),
+        )
+        embed = interaction.message.embeds[0] if interaction.message and interaction.message.embeds else None
+        if embed:
+            embed.color = discord.Color.orange()
+            embed.set_footer(text=f"Status: More Info Requested • Reviewed by {interaction.user}")
+            embed.timestamp = utc_now()
+            await interaction.message.edit(embed=embed, view=self.review_view)
+        applicant = interaction.guild.get_member(self.applicant_id)
+        ticket_channel = interaction.guild.get_channel(record.get("ticket_channel_id")) if record.get("ticket_channel_id") else None
+        if isinstance(ticket_channel, discord.TextChannel):
+            await ticket_channel.send(embed=discord.Embed(
+                title="Staff Requested More Info",
+                description=(
+                    f"{applicant.mention if applicant else 'Applicant'}, staff needs more from you before they can decide.\n\n"
+                    f"**Request:**\n{self.message}"
+                ),
+                color=discord.Color.orange(),
+                timestamp=utc_now(),
+            ))
+        if applicant:
+            await safe_dm(
+                applicant,
+                f"DIFF application **#{self.app_id}** needs more info/photos before staff can decide.\n\nRequest:\n{self.message}",
+            )
+        tracker_channel = interaction.guild.get_channel(APPLICATION_TRACKER_CHANNEL_ID)
+        if isinstance(tracker_channel, discord.TextChannel) and record.get("tracker_message_id"):
+            try:
+                tracker_msg = await tracker_channel.fetch_message(record["tracker_message_id"])
+                tracker_embed = build_tracker_embed(
+                    self.app_id,
+                    applicant or interaction.user,
+                    record,
+                    "More Info Requested",
+                    interaction.user.mention,
+                )
+                await tracker_msg.edit(embed=tracker_embed)
+            except Exception:
+                pass
+        await interaction.response.send_message("Requested more info from the applicant.", ephemeral=True)
+
+
+# =========================
+# DENY REASON MODAL
+# =========================
+class DenyReasonModal(discord.ui.Modal, title="Deny Application"):
+    reason = discord.ui.TextInput(
+        label="Reason for denial",
+        placeholder="Explain why the application is being denied.",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+        required=True,
+    )
+
+    def __init__(self, app_id: str, applicant_id: int, review_view: "ReviewView"):
+        super().__init__()
+        self.app_id = app_id
+        self.applicant_id = applicant_id
+        self.review_view = review_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        record = get_app(self.app_id)
+        if not record:
+            return await interaction.response.send_message("Application record not found.", ephemeral=True)
+        deny_reason = str(self.reason)
+        update_app(
+            self.app_id,
+            deny_reason=deny_reason,
+            denied_info_requested=False,
+            denied_info_requested_at=None,
+        )
+        await self.review_view._finalize(interaction, "Denied", interaction.user, close_ticket=True)
+        applicant = interaction.guild.get_member(self.applicant_id)
+        denied_embed = build_denied_result_embed(deny_reason)
+        denied_view = DeniedResultView(self.app_id, self.applicant_id)
+        if applicant:
+            try:
+                await applicant.send(embed=denied_embed, view=denied_view)
+            except Exception:
+                await safe_dm(applicant, f"Your DIFF application **#{self.app_id}** was denied.\n\nReason: {deny_reason}")
+        ticket_channel = interaction.guild.get_channel(record.get("ticket_channel_id")) if record.get("ticket_channel_id") else None
+        if isinstance(ticket_channel, discord.TextChannel):
+            try:
+                await ticket_channel.send(embed=denied_embed)
+            except Exception:
+                pass
 
 
 # =========================
@@ -1236,7 +1487,8 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
             title=f"Garage Submission Ticket #{app_id}",
             description=(
                 f"Welcome {interaction.user.mention}.\n\n"
-                "**Next step:** Upload clear pictures of your garage / cars in this ticket.\n\n"
+                f"**Next step:** Upload at least **{MIN_GARAGE_PHOTOS} clear garage/car photos** in this ticket.\n\n"
+                f"Applications automatically time out if the required photos are not uploaded within **{GARAGE_TIMEOUT_HOURS} hours**.\n\n"
                 "Staff will review:\n"
                 "• Your application answers\n"
                 "• Your overall garage quality\n"
@@ -1392,14 +1644,105 @@ async def on_ready():
         bot.add_view(RulesAcceptView(GUILD_ID))
         bot.add_view(CrewPanelView())
         bot.add_view(ReviewView(app_id="0000", applicant_id=0))
+        bot.add_view(DeniedResultView(app_id="0000", applicant_id=0))
     except Exception as e:
         print(f"View registration warning: {e}")
+
+    bot.loop.create_task(application_timeout_loop())
 
     status_message_id = data.get("panel_message_id")
 
 
 # =========================
-# AUTO REFRESH PANEL
+# APPLICATION TIMEOUT LOOP
+# =========================
+async def application_timeout_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            app_data = load_apps()
+            for app_id, record in app_data.get("applications", {}).items():
+                if record.get("status") not in {"Pending", "More Info Requested"}:
+                    continue
+                submitted_at = record.get("submitted_at")
+                if not submitted_at:
+                    continue
+                try:
+                    submitted_dt = datetime.fromisoformat(submitted_at)
+                except Exception:
+                    continue
+                if utc_now() - submitted_dt < timedelta(hours=GARAGE_TIMEOUT_HOURS):
+                    continue
+                guild = bot.get_guild(GUILD_ID)
+                if not guild:
+                    continue
+                ticket_channel = guild.get_channel(record.get("ticket_channel_id")) if record.get("ticket_channel_id") else None
+                photo_count = 0
+                if isinstance(ticket_channel, discord.TextChannel):
+                    messages = [m async for m in ticket_channel.history(limit=200)]
+                    photo_count = count_message_attachments(messages)
+                if photo_count >= MIN_GARAGE_PHOTOS:
+                    continue
+                update_app(
+                    app_id,
+                    status="Timed Out",
+                    reviewed_at=utc_now().isoformat(),
+                    decision_reason=f"Timed out before uploading the required {MIN_GARAGE_PHOTOS} garage photos.",
+                    ticket_closed=True,
+                    closed_at=utc_now().isoformat(),
+                )
+                applicant = guild.get_member(record["user_id"])
+                if applicant:
+                    await safe_dm(
+                        applicant,
+                        f"Your DIFF application **#{app_id}** timed out because the required **{MIN_GARAGE_PHOTOS}** garage photos "
+                        f"were not uploaded within **{GARAGE_TIMEOUT_HOURS} hours**.",
+                    )
+                tracker_channel = guild.get_channel(APPLICATION_TRACKER_CHANNEL_ID)
+                if isinstance(tracker_channel, discord.TextChannel) and record.get("tracker_message_id"):
+                    try:
+                        tracker_msg = await tracker_channel.fetch_message(record["tracker_message_id"])
+                        tracker_embed = build_tracker_embed(
+                            app_id,
+                            applicant or guild.me,
+                            record,
+                            "Timed Out",
+                            "System Auto Timeout",
+                        )
+                        await tracker_msg.edit(embed=tracker_embed)
+                    except Exception:
+                        pass
+                if isinstance(ticket_channel, discord.TextChannel):
+                    try:
+                        await ticket_channel.send(embed=discord.Embed(
+                            title="Application Timed Out",
+                            description=(
+                                f"This application timed out because at least **{MIN_GARAGE_PHOTOS}** garage photos "
+                                f"were not uploaded within **{GARAGE_TIMEOUT_HOURS} hours**."
+                            ),
+                            color=discord.Color.dark_orange(),
+                            timestamp=utc_now(),
+                        ))
+                    except Exception:
+                        pass
+                    try:
+                        await ticket_channel.edit(name=f"closed-{ticket_channel.name[:80]}")
+                    except Exception:
+                        pass
+                    try:
+                        await ticket_channel.set_permissions(guild.default_role, view_channel=False)
+                    except Exception:
+                        pass
+                    if applicant:
+                        try:
+                            await ticket_channel.set_permissions(applicant, overwrite=None)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        await asyncio.sleep(600)
+
+
 # =========================
 _panel_refresh_task = None
 _hierarchy_refresh_task = None
