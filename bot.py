@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 from threading import Thread
@@ -86,6 +87,12 @@ MIN_GARAGE_PHOTOS = 10
 GARAGE_TIMEOUT_HOURS = 24
 APPROVED_MEMBER_ROLE_ID = CREW_MEMBER_ROLE_ID
 APPLICATIONS_FILE = "diff_applications_full.json"
+STAFF_DASHBOARD_CHANNEL_ID = 1485273802391814224
+MEMBER_DATABASE_CHANNEL_ID = 1485274945473871903
+REAPPLY_COOLDOWN_DAYS = 14
+DATA_FOLDER = "diff_data"
+COOLDOWN_FILE = os.path.join(DATA_FOLDER, "diff_reapply_cooldowns.json")
+MEMBER_DB_FILE = os.path.join(DATA_FOLDER, "diff_member_database.json")
 
 # =========================
 # DISCORD SETUP
@@ -193,6 +200,231 @@ def update_app(app_id: str, **updates):
     if app_id in app_data["applications"]:
         app_data["applications"][app_id].update(updates)
         save_apps(app_data)
+
+
+# =========================
+# RECRUITMENT EXPANSION — HELPERS
+# =========================
+
+def _ensure_diff_data():
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+    for path in [COOLDOWN_FILE, MEMBER_DB_FILE]:
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({}, f, indent=2)
+
+
+def _load_diff_json(path: str) -> dict:
+    _ensure_diff_data()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_diff_json(path: str, data: dict):
+    _ensure_diff_data()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def build_diff_member_name(name: str) -> str:
+    clean = re.sub(r"\s+", " ", name).strip()
+    return f"🅳🅸🅵🅵 - {clean} (Member)"
+
+
+def set_reapply_cooldown(user_id: int):
+    data = _load_diff_json(COOLDOWN_FILE)
+    expires_at = (datetime.utcnow() + timedelta(days=REAPPLY_COOLDOWN_DAYS)).isoformat()
+    data[str(user_id)] = {"expires_at": expires_at, "set_at": datetime.utcnow().isoformat()}
+    _save_diff_json(COOLDOWN_FILE, data)
+
+
+def clear_reapply_cooldown(user_id: int):
+    data = _load_diff_json(COOLDOWN_FILE)
+    data.pop(str(user_id), None)
+    _save_diff_json(COOLDOWN_FILE, data)
+
+
+def get_reapply_cooldown_text(user_id: int):
+    data = _load_diff_json(COOLDOWN_FILE)
+    entry = data.get(str(user_id))
+    if not entry:
+        return None
+    try:
+        expires_at = datetime.fromisoformat(entry["expires_at"])
+    except Exception:
+        return None
+    now = datetime.utcnow()
+    if expires_at <= now:
+        data.pop(str(user_id), None)
+        _save_diff_json(COOLDOWN_FILE, data)
+        return None
+    delta = expires_at - now
+    return f"{delta.days}d {delta.seconds // 3600}h remaining"
+
+
+async def add_member_to_database(
+    guild: discord.Guild,
+    member: discord.Member,
+    accepted_by: discord.Member = None,
+    nickname: str = None,
+):
+    data = _load_diff_json(MEMBER_DB_FILE)
+    data[str(member.id)] = {
+        "user_id": member.id,
+        "username": str(member),
+        "display_name": member.display_name,
+        "nickname": nickname or member.nick,
+        "joined_diff_at": datetime.utcnow().isoformat(),
+        "accepted_by_id": accepted_by.id if accepted_by else None,
+        "accepted_by_name": str(accepted_by) if accepted_by else None,
+    }
+    _save_diff_json(MEMBER_DB_FILE, data)
+    db_channel = guild.get_channel(MEMBER_DATABASE_CHANNEL_ID)
+    if isinstance(db_channel, discord.TextChannel):
+        embed = discord.Embed(title="DIFF Member Added", color=discord.Color.green(), timestamp=utc_now())
+        embed.add_field(name="Member", value=f"{member.mention} (`{member.id}`)", inline=False)
+        embed.add_field(name="Name", value=nickname or member.display_name, inline=False)
+        if accepted_by:
+            embed.add_field(name="Accepted By", value=accepted_by.mention, inline=False)
+        try:
+            await db_channel.send(embed=embed)
+        except Exception:
+            pass
+
+
+def _score_text(text: str) -> int:
+    t = (text or "").strip()
+    if not t:
+        return 0
+    if len(t) < 20:
+        return 1
+    if len(t) < 60:
+        return 2
+    if len(t) < 120:
+        return 3
+    if len(t) < 220:
+        return 4
+    return 5
+
+
+def _keyword_bonus(text: str, keywords: list) -> int:
+    text_low = (text or "").lower()
+    hits = sum(1 for k in keywords if k.lower() in text_low)
+    return 2 if hits >= 4 else (1 if hits >= 2 else 0)
+
+
+def generate_application_score(answers: dict) -> dict:
+    scores = {
+        "Build / Skills": min(5, _score_text(answers.get("personal_skills", "")) + _keyword_bonus(
+            answers.get("personal_skills", ""),
+            ["clean", "realistic", "fitment", "stance", "wheels", "detail", "photography", "content", "tasteful"],
+        )),
+        "Availability": min(5, _score_text(answers.get("days_available", "")) + _keyword_bonus(
+            answers.get("days_available", ""),
+            ["weekends", "daily", "active", "available", "consistent", "discord", "meets"],
+        )),
+        "Meet Experience": min(5, _score_text(answers.get("meet_experience", "")) + _keyword_bonus(
+            answers.get("meet_experience", ""),
+            ["jdm", "stance", "oem", "realistic", "car", "meet", "community", "crew", "diff"],
+        )),
+        "Why Join": min(5, _score_text(answers.get("why_join", "")) + _keyword_bonus(
+            answers.get("why_join", ""),
+            ["community", "realism", "meets", "cars", "crew", "growth", "active", "diff"],
+        )),
+        "What They Bring": min(5, _score_text(answers.get("what_bring", "")) + _keyword_bonus(
+            answers.get("what_bring", ""),
+            ["photography", "content", "creation", "event", "organize", "media", "editing"],
+        )),
+    }
+    total = sum(scores.values())
+    if total >= 21:
+        suggestion, color = "✅ Strong Accept", 0x2ecc71
+    elif total >= 14:
+        suggestion, color = "🟡 Review Manually", 0xf1c40f
+    else:
+        suggestion, color = "❌ Likely Deny", 0xe74c3c
+    weak = [k for k, v in scores.items() if v <= 2]
+    return {"scores": scores, "total": total, "max_total": 25, "suggestion": suggestion, "color": color, "weak": weak}
+
+
+def build_score_embed(app_id: str, applicant, score_data: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"📊 Auto Score — Application #{app_id}",
+        color=discord.Color(score_data["color"]),
+        timestamp=utc_now(),
+    )
+    embed.set_author(name=str(applicant), icon_url=applicant.display_avatar.url)
+    lines = "\n".join(f"**{k}:** {v}/5" for k, v in score_data["scores"].items())
+    lines += f"\n\n**Total:** {score_data['total']}/{score_data['max_total']}"
+    lines += f"\n**Suggestion:** {score_data['suggestion']}"
+    embed.add_field(name="Breakdown", value=lines, inline=False)
+    if score_data["weak"]:
+        embed.add_field(name="Weak Areas", value="\n".join(f"• {k}" for k in score_data["weak"])[:1024], inline=False)
+    embed.set_footer(text="Staff eyes only — auto-generated score")
+    return embed
+
+
+def get_app_by_ticket_channel(channel_id: int):
+    app_data = load_apps()
+    for app_id, record in app_data["applications"].items():
+        if record.get("ticket_channel_id") == channel_id:
+            return app_id, record
+    return None, None
+
+
+async def detect_ticket_applicant(channel: discord.TextChannel):
+    guild = channel.guild
+    topic = channel.topic or ""
+    m = re.search(r"User ID:\s*(\d{17,20})", topic, re.I)
+    if m:
+        user_id = int(m.group(1))
+        member = guild.get_member(user_id)
+        if member:
+            return member
+        try:
+            return await guild.fetch_member(user_id)
+        except Exception:
+            pass
+    try:
+        async for msg in channel.history(limit=50, oldest_first=True):
+            if not msg.author.bot:
+                return guild.get_member(msg.author.id) or msg.author
+    except Exception:
+        pass
+    return None
+
+
+def build_dashboard_embed() -> discord.Embed:
+    cooldowns = _load_diff_json(COOLDOWN_FILE)
+    members = _load_diff_json(MEMBER_DB_FILE)
+    app_data = load_apps()
+    apps = app_data.get("applications", {})
+    now = datetime.utcnow()
+    active_cds = 0
+    for e in cooldowns.values():
+        try:
+            if datetime.fromisoformat(e["expires_at"]) > now:
+                active_cds += 1
+        except Exception:
+            pass
+    embed = discord.Embed(
+        title="DIFF Staff Recruitment Dashboard",
+        description="Live snapshot of the DIFF application system.",
+        color=discord.Color.blurple(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="Total Applications", value=str(len(apps)), inline=True)
+    embed.add_field(name="Pending", value=str(sum(1 for a in apps.values() if a.get("status") == "Pending")), inline=True)
+    embed.add_field(name="Approved", value=str(sum(1 for a in apps.values() if a.get("status") == "Approved")), inline=True)
+    embed.add_field(name="Denied", value=str(sum(1 for a in apps.values() if a.get("status") == "Denied")), inline=True)
+    embed.add_field(name="Timed Out", value=str(sum(1 for a in apps.values() if a.get("status") == "Timed Out")), inline=True)
+    embed.add_field(name="Active Cooldowns", value=str(active_cds), inline=True)
+    embed.add_field(name="Members Logged", value=str(len(members)), inline=True)
+    embed.set_footer(text="DIFF Staff Only")
+    return embed
 
 
 # =========================
@@ -589,6 +821,23 @@ class ReviewView(discord.ui.View):
                 return await interaction.response.send_message("I don't have permission to assign that role.", ephemeral=True)
         await self._finalize(interaction, "Approved", interaction.user, close_ticket=True)
         await safe_dm(applicant, f"Your DIFF application **#{self.app_id}** was **approved**. Welcome to DIFF! 🎉")
+        clear_reapply_cooldown(applicant.id)
+        final_name = build_diff_member_name(applicant.display_name)
+        try:
+            await applicant.edit(nick=final_name, reason=f"DIFF application #{self.app_id} approved")
+        except Exception:
+            pass
+        await add_member_to_database(interaction.guild, applicant, accepted_by=interaction.user, nickname=final_name)
+        dashboard_ch = interaction.guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        if isinstance(dashboard_ch, discord.TextChannel):
+            dash_embed = discord.Embed(title="DIFF Application Accepted", color=discord.Color.green(), timestamp=utc_now())
+            dash_embed.add_field(name="Applicant", value=f"{applicant.mention} (`{applicant.id}`)", inline=False)
+            dash_embed.add_field(name="Accepted By", value=interaction.user.mention, inline=False)
+            dash_embed.add_field(name="Final Name", value=final_name, inline=False)
+            try:
+                await dashboard_ch.send(embed=dash_embed)
+            except Exception:
+                pass
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, custom_id="diff_review_deny")
     async def deny_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -785,6 +1034,7 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Application"):
             denied_info_requested_at=None,
         )
         await self.review_view._finalize(interaction, "Denied", interaction.user, close_ticket=True)
+        set_reapply_cooldown(self.applicant_id)
         applicant = interaction.guild.get_member(self.applicant_id)
         denied_embed = build_denied_result_embed(deny_reason)
         denied_view = DeniedResultView(self.app_id, self.applicant_id)
@@ -799,6 +1049,294 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Application"):
                 await ticket_channel.send(embed=denied_embed)
             except Exception:
                 pass
+        dashboard_ch = interaction.guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        if isinstance(dashboard_ch, discord.TextChannel):
+            dash_embed = discord.Embed(title="DIFF Application Denied", color=discord.Color.red(), timestamp=utc_now())
+            dash_embed.add_field(name="Applicant", value=f"<@{self.applicant_id}> (`{self.applicant_id}`)", inline=False)
+            dash_embed.add_field(name="Denied By", value=interaction.user.mention, inline=False)
+            dash_embed.add_field(name="Reason", value=deny_reason[:1024], inline=False)
+            dash_embed.add_field(name="Reapply Cooldown", value=f"{REAPPLY_COOLDOWN_DAYS} days", inline=False)
+            try:
+                await dashboard_ch.send(embed=dash_embed)
+            except Exception:
+                pass
+
+
+# =========================
+# RECRUITMENT EXPANSION — TICKET VIEW
+# =========================
+
+class TicketAcceptModal(discord.ui.Modal, title="Accept Applicant"):
+    member_name = discord.ui.TextInput(
+        label="Name after 🅳🅸🅵🅵 -",
+        placeholder="e.g. Frostyy2003",
+        max_length=24,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("❌ Ticket channels only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        applicant = await detect_ticket_applicant(interaction.channel)
+        if not isinstance(applicant, discord.Member):
+            return await interaction.followup.send("❌ Could not detect applicant in this ticket.", ephemeral=True)
+        app_id, record = get_app_by_ticket_channel(interaction.channel.id)
+        if not record:
+            return await interaction.followup.send("❌ No application record linked to this ticket.", ephemeral=True)
+        if record.get("status") not in {"Pending", "More Info Requested"}:
+            return await interaction.followup.send("❌ This application has already been decided.", ephemeral=True)
+        guild = interaction.guild
+        approved_role = guild.get_role(APPROVED_MEMBER_ROLE_ID)
+        if approved_role:
+            try:
+                await applicant.add_roles(approved_role, reason=f"DIFF #{app_id} accepted via ticket by {interaction.user}")
+            except Exception:
+                pass
+        final_name = build_diff_member_name(str(self.member_name))
+        try:
+            await applicant.edit(nick=final_name, reason=f"DIFF #{app_id} accepted")
+        except Exception:
+            pass
+        clear_reapply_cooldown(applicant.id)
+        await add_member_to_database(guild, applicant, accepted_by=interaction.user, nickname=final_name)
+        update_app(app_id, status="Approved", reviewed_by=str(interaction.user), reviewed_by_id=interaction.user.id, reviewed_at=utc_now().isoformat())
+        try:
+            review_ch = guild.get_channel(record.get("review_channel_id"))
+            if isinstance(review_ch, discord.TextChannel) and record.get("review_message_id"):
+                review_msg = await review_ch.fetch_message(record["review_message_id"])
+                emb = review_msg.embeds[0]
+                emb.color = discord.Color.green()
+                emb.set_footer(text=f"Status: Approved • Reviewed by {interaction.user}")
+                emb.timestamp = utc_now()
+                await review_msg.edit(embed=emb, view=None)
+        except Exception:
+            pass
+        try:
+            tracker_ch = guild.get_channel(record.get("tracker_channel_id"))
+            if isinstance(tracker_ch, discord.TextChannel) and record.get("tracker_message_id"):
+                tracker_msg = await tracker_ch.fetch_message(record["tracker_message_id"])
+                answers = {k: record.get(k, "N/A") for k in ("gamertag", "days_available", "why_join")}
+                t_emb = build_tracker_embed(app_id, applicant, answers, "Approved", interaction.user.mention)
+                await tracker_msg.edit(embed=t_emb)
+        except Exception:
+            pass
+        try:
+            await applicant.send(f"✅ Your DIFF application **#{app_id}** was **approved**. Welcome to DIFF! 🎉\nYour server name has been set to: `{final_name}`")
+        except Exception:
+            pass
+        try:
+            await interaction.channel.send(embed=discord.Embed(
+                title="Application Accepted",
+                description=f"{applicant.mention} has been accepted by {interaction.user.mention}.\nName: `{final_name}`",
+                color=discord.Color.green(),
+                timestamp=utc_now(),
+            ))
+        except Exception:
+            pass
+        dashboard_ch = guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        if isinstance(dashboard_ch, discord.TextChannel):
+            dash = discord.Embed(title="DIFF Application Accepted", color=discord.Color.green(), timestamp=utc_now())
+            dash.add_field(name="Applicant", value=f"{applicant.mention} (`{applicant.id}`)", inline=False)
+            dash.add_field(name="Accepted By", value=interaction.user.mention, inline=False)
+            dash.add_field(name="Final Name", value=final_name, inline=False)
+            try:
+                await dashboard_ch.send(embed=dash)
+            except Exception:
+                pass
+        try:
+            await interaction.channel.edit(name=f"closed-{interaction.channel.name[:80]}")
+            await interaction.channel.set_permissions(guild.default_role, view_channel=False)
+            if applicant in guild.members:
+                await interaction.channel.set_permissions(applicant, view_channel=False)
+        except Exception:
+            pass
+        await interaction.followup.send("✅ Applicant accepted, ticket closed.", ephemeral=True)
+
+
+class TicketDenyModal(discord.ui.Modal, title="Deny Applicant"):
+    reason = discord.ui.TextInput(
+        label="Denial reason",
+        style=discord.TextStyle.paragraph,
+        placeholder="Explain why the applicant was denied...",
+        max_length=1000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("❌ Ticket channels only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        applicant = await detect_ticket_applicant(interaction.channel)
+        if not applicant:
+            return await interaction.followup.send("❌ Could not detect applicant in this ticket.", ephemeral=True)
+        app_id, record = get_app_by_ticket_channel(interaction.channel.id)
+        if not record:
+            return await interaction.followup.send("❌ No application record linked to this ticket.", ephemeral=True)
+        if record.get("status") not in {"Pending", "More Info Requested"}:
+            return await interaction.followup.send("❌ This application has already been decided.", ephemeral=True)
+        guild = interaction.guild
+        deny_reason = str(self.reason)
+        set_reapply_cooldown(applicant.id)
+        update_app(app_id, status="Denied", deny_reason=deny_reason, reviewed_by=str(interaction.user), reviewed_by_id=interaction.user.id, reviewed_at=utc_now().isoformat())
+        try:
+            review_ch = guild.get_channel(record.get("review_channel_id"))
+            if isinstance(review_ch, discord.TextChannel) and record.get("review_message_id"):
+                review_msg = await review_ch.fetch_message(record["review_message_id"])
+                emb = review_msg.embeds[0]
+                emb.color = discord.Color.red()
+                emb.set_footer(text=f"Status: Denied • Reviewed by {interaction.user}")
+                emb.timestamp = utc_now()
+                await review_msg.edit(embed=emb, view=None)
+        except Exception:
+            pass
+        try:
+            tracker_ch = guild.get_channel(record.get("tracker_channel_id"))
+            if isinstance(tracker_ch, discord.TextChannel) and record.get("tracker_message_id"):
+                tracker_msg = await tracker_ch.fetch_message(record["tracker_message_id"])
+                answers = {k: record.get(k, "N/A") for k in ("gamertag", "days_available", "why_join")}
+                t_emb = build_tracker_embed(app_id, applicant, answers, "Denied", interaction.user.mention)
+                await tracker_msg.edit(embed=t_emb)
+        except Exception:
+            pass
+        denied_embed = build_denied_result_embed(deny_reason)
+        denied_view = DeniedResultView(app_id, applicant.id if hasattr(applicant, "id") else 0)
+        try:
+            await applicant.send(embed=denied_embed, view=denied_view)
+        except Exception:
+            try:
+                await applicant.send(f"Your DIFF application **#{app_id}** was denied.\n\nReason: {deny_reason}")
+            except Exception:
+                pass
+        try:
+            await interaction.channel.send(embed=denied_embed)
+        except Exception:
+            pass
+        dashboard_ch = guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        if isinstance(dashboard_ch, discord.TextChannel):
+            dash = discord.Embed(title="DIFF Application Denied", color=discord.Color.red(), timestamp=utc_now())
+            dash.add_field(name="Applicant", value=f"{applicant.mention} (`{applicant.id}`)", inline=False)
+            dash.add_field(name="Denied By", value=interaction.user.mention, inline=False)
+            dash.add_field(name="Reason", value=deny_reason[:1024], inline=False)
+            dash.add_field(name="Reapply Cooldown", value=f"{REAPPLY_COOLDOWN_DAYS} days", inline=False)
+            try:
+                await dashboard_ch.send(embed=dash)
+            except Exception:
+                pass
+        try:
+            await interaction.channel.edit(name=f"closed-{interaction.channel.name[:80]}")
+            await interaction.channel.set_permissions(guild.default_role, view_channel=False)
+            if isinstance(applicant, discord.Member):
+                await interaction.channel.set_permissions(applicant, view_channel=False)
+        except Exception:
+            pass
+        await interaction.followup.send("✅ Applicant denied, ticket closed.", ephemeral=True)
+
+
+class TicketRespondModal(discord.ui.Modal, title="Respond to Applicant"):
+    reply = discord.ui.TextInput(
+        label="Staff response",
+        style=discord.TextStyle.paragraph,
+        placeholder="Write your response here...",
+        max_length=1500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("❌ Ticket channels only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        applicant = await detect_ticket_applicant(interaction.channel)
+        if not applicant:
+            return await interaction.followup.send("❌ Could not detect applicant in this ticket.", ephemeral=True)
+        message_text = str(self.reply)
+        dm_sent = False
+        try:
+            await applicant.send(message_text)
+            dm_sent = True
+        except Exception:
+            pass
+        try:
+            await interaction.channel.send(f"📩 Staff response sent to {applicant.mention} by {interaction.user.mention}.\n\n{message_text}")
+        except Exception:
+            pass
+        await interaction.followup.send(f"✅ Response sent (DM delivered: {dm_sent}).", ephemeral=True)
+
+
+class TicketAcceptButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Accept", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_ticket_accept")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.send_modal(TicketAcceptModal())
+
+
+class TicketDenyButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Deny", emoji="❌", style=discord.ButtonStyle.danger, custom_id="diff_ticket_deny")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.send_modal(TicketDenyModal())
+
+
+class TicketRespondButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Respond", emoji="📩", style=discord.ButtonStyle.primary, custom_id="diff_ticket_respond")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.send_modal(TicketRespondModal())
+
+
+class TicketCloseButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="diff_ticket_close")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("❌ Ticket channels only.", ephemeral=True)
+        await interaction.response.send_message("🔒 Closing ticket in 5 seconds...", ephemeral=True)
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.edit(name=f"closed-{interaction.channel.name[:80]}")
+            await interaction.channel.set_permissions(interaction.guild.default_role, view_channel=False)
+        except Exception:
+            pass
+
+
+class DIFFRecruitmentTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(TicketAcceptButton())
+        self.add_item(TicketDenyButton())
+        self.add_item(TicketRespondButton())
+        self.add_item(TicketCloseButton())
+
+
+class DashboardRefreshButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Refresh", emoji="📊", style=discord.ButtonStyle.primary, custom_id="diff_dashboard_refresh")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.edit_message(embed=build_dashboard_embed(), view=DIFFDashboardView())
+
+
+class DIFFDashboardView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(DashboardRefreshButton())
 
 
 # =========================
@@ -1617,6 +2155,15 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
             await interaction.response.send_message('❌ You must type "I Understand" exactly to submit. Please try again.', ephemeral=True)
             return
         app = _application_data.pop(interaction.user.id)
+        cooldown_text = get_reapply_cooldown_text(interaction.user.id)
+        if cooldown_text:
+            await interaction.response.send_message(
+                f"❌ You cannot apply to DIFF yet.\n"
+                f"Your reapply cooldown is still active: **{cooldown_text}**.\n"
+                "Please wait until the cooldown expires before submitting a new application.",
+                ephemeral=True,
+            )
+            return
         s1 = app["step1"]
         s2 = app["step2"]
         guild = interaction.guild
@@ -1687,6 +2234,9 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
             timestamp=utc_now(),
         )
         await ticket_channel.send(content=interaction.user.mention, embed=ticket_embed)
+        score_data = generate_application_score(answers)
+        score_embed = build_score_embed(app_id, interaction.user, score_data)
+        await ticket_channel.send(embed=score_embed, view=DIFFRecruitmentTicketView())
         review_embed = build_review_embed(app_id, interaction.user, answers, ticket_channel.id)
         review_view = ReviewView(app_id=app_id, applicant_id=interaction.user.id)
         review_message = await review_channel.send(embed=review_embed, view=review_view)
@@ -1834,6 +2384,8 @@ async def on_ready():
         bot.add_view(ReviewView(app_id="0000", applicant_id=0))
         bot.add_view(DeniedResultView(app_id="0000", applicant_id=0))
         bot.add_view(RespondButtonView())
+        bot.add_view(DIFFRecruitmentTicketView())
+        bot.add_view(DIFFDashboardView())
     except Exception as e:
         print(f"View registration warning: {e}")
 
@@ -2697,6 +3249,14 @@ async def staffreplypanel(interaction: discord.Interaction):
     )
     await interaction.channel.send(embed=embed, view=RespondButtonView())
     await interaction.response.send_message("✅ Staff reply panel posted.", ephemeral=True)
+
+
+@bot.tree.command(name="staffdashboard", description="Post the DIFF staff recruitment dashboard (staff only)")
+async def staffdashboard(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+    await interaction.channel.send(embed=build_dashboard_embed(), view=DIFFDashboardView())
+    await interaction.response.send_message("✅ Dashboard posted.", ephemeral=True)
 
 
 # =========================
