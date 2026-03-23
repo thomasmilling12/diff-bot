@@ -3397,6 +3397,7 @@ async def on_ready():
         bot.add_view(MeetRSVPView(meet1="Meet 1", meet2="Meet 2", meet3="Meet 3"))
         bot.add_view(ActivityDashboardView())
         bot.add_view(DiffPanel())
+        bot.add_view(ColorSubmissionPanelView())
     except Exception as e:
         print(f"View registration warning: {e}")
 
@@ -4381,6 +4382,129 @@ async def staffdashboard(interaction: discord.Interaction):
         return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
     await interaction.channel.send(embed=build_dashboard_embed(), view=DIFFDashboardView())
     await interaction.response.send_message("✅ Dashboard posted.", ephemeral=True)
+
+
+# =========================
+# COLOR SUBMISSION PANEL
+# =========================
+COLOR_SUBMISSION_CHANNEL_ID = 1177434999381831680
+
+
+class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
+    color_name = discord.ui.TextInput(
+        label="Color Name",
+        placeholder="Example: Tangerine Tango",
+        max_length=100,
+        required=True,
+    )
+    hex_code = discord.ui.TextInput(
+        label="HEX Code",
+        placeholder="Example: #FF9742",
+        max_length=7,
+        min_length=4,
+        required=True,
+    )
+    image_url = discord.ui.TextInput(
+        label="Image URL",
+        placeholder="Paste the direct image link here",
+        style=discord.TextStyle.paragraph,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        channel = bot.get_channel(COLOR_SUBMISSION_CHANNEL_ID)
+        if channel is None:
+            channel = await bot.fetch_channel(COLOR_SUBMISSION_CHANNEL_ID)
+
+        color_name_val = str(self.color_name.value).strip()
+        hex_val = str(self.hex_code.value).strip().upper()
+        image_val = str(self.image_url.value).strip()
+
+        if not hex_val.startswith("#"):
+            hex_val = f"#{hex_val}"
+
+        if len(hex_val) not in (4, 7):
+            return await interaction.response.send_message(
+                "Your HEX code needs to look like `#FF9742` or `#F94`.", ephemeral=True
+            )
+
+        try:
+            embed_color = discord.Color.from_str(hex_val)
+        except Exception:
+            embed_color = discord.Color.blurple()
+
+        embed = discord.Embed(
+            title="🎨 DIFF Color Submission",
+            description=(
+                f"A new crew color has been submitted.\n\n"
+                f"**Color Name:** {color_name_val}\n"
+                f"**HEX Code:** `{hex_val}`\n\n"
+                "Use this post to review the submission."
+            ),
+            color=embed_color,
+        )
+        embed.set_image(url=image_val)
+        embed.set_footer(text=f"Submitted by {interaction.user.display_name}")
+
+        msg = await channel.send(embed=embed)
+        for emoji in ("✅", "❌", "🤔"):
+            try:
+                await msg.add_reaction(emoji)
+            except Exception:
+                pass
+
+        await interaction.response.send_message(
+            f"Your color submission has been posted in {channel.mention}.", ephemeral=True
+        )
+
+
+class ColorSubmissionPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Submit Color",
+        style=discord.ButtonStyle.primary,
+        emoji="🎨",
+        custom_id="diff_submit_color_button",
+    )
+    async def submit_color_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        color_team_role = discord.utils.get(interaction.guild.roles, name="Color Team")
+        if color_team_role and color_team_role not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "Only the Color Team can submit crew colors.", ephemeral=True
+            )
+        await interaction.response.send_modal(ColorSubmissionModal())
+
+
+@bot.tree.command(name="post-color-panel", description="Post the DIFF color submission panel (staff only)")
+async def post_color_panel(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    channel = bot.get_channel(COLOR_SUBMISSION_CHANNEL_ID)
+    if channel is None:
+        channel = await bot.fetch_channel(COLOR_SUBMISSION_CHANNEL_ID)
+    embed = discord.Embed(
+        title="🎨 DIFF Color Submission Panel",
+        description=(
+            "**Color Team Instructions**\n\n"
+            "Use the button below to submit a new crew color for review.\n\n"
+            "**What to include:**\n"
+            "• Color name\n"
+            "• HEX code\n"
+            "• Image link for the preview car\n\n"
+            "**Submission Notes:**\n"
+            "• Keep colors clean and realistic\n"
+            "• Make sure the HEX code is correct\n"
+            "• Use a clear car image that matches the color well\n"
+            "• Every submission will automatically receive review reactions\n\n"
+            "Press **Submit Color** below to begin."
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="DIFF • Color Team System")
+    await channel.send(embed=embed, view=ColorSubmissionPanelView())
+    await interaction.response.send_message(f"Color submission panel posted in {channel.mention}.", ephemeral=True)
 
 
 # =========================
