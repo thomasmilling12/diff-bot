@@ -1,15 +1,29 @@
 import asyncio
+import io
 import json
 import os
+import random
 import re
 import sys
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 import subprocess
 from dotenv import load_dotenv
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
+
+try:
+    import aiohttp
+except Exception:
+    aiohttp = None
+
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    PIL_AVAILABLE = True
+except Exception:
+    PIL_AVAILABLE = False
 
 # =========================
 # KEEP ALIVE FOR REPLIT
@@ -3398,8 +3412,13 @@ async def on_ready():
         bot.add_view(ActivityDashboardView())
         bot.add_view(DiffPanel())
         bot.add_view(ColorSubmissionPanelView())
+        bot.add_view(SubmissionActionView())
     except Exception as e:
         print(f"View registration warning: {e}")
+
+    _cs_ensure_file()
+    if not color_schedule_loop.is_running():
+        color_schedule_loop.start()
 
     bot.loop.create_task(application_timeout_loop())
 
@@ -4385,132 +4404,504 @@ async def staffdashboard(interaction: discord.Interaction):
 
 
 # =========================
-# COLOR SUBMISSION PANEL
+# ADVANCED COLOR SYSTEM
 # =========================
 COLOR_PANEL_CHANNEL_ID = 1177436572304556084
 COLOR_SUBMISSION_CHANNEL_ID = 1177434999381831680
+COLOR_ANNOUNCEMENT_CHANNEL_ID = 1108181679308283965
+COLOR_SYSTEM_FILE = os.path.join(DATA_FOLDER, "diff_color_system_data.json")
+COLOR_TZ = ZoneInfo("America/New_York")
+COLOR_SCHEDULE_HOUR = 12
+AUTO_LOCK_DAYS = 21
+NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+
+
+def _cs_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _cs_ensure_file() -> None:
+    if not os.path.exists(COLOR_SYSTEM_FILE):
+        _save_diff_json(COLOR_SYSTEM_FILE, {
+            "submissions": {}, "current_vote": None, "stats": {},
+            "schedule": {"last_vote_post_date": "", "last_winner_post_date": ""},
+            "history": [],
+        })
+
+
+def _cs_load() -> Dict[str, Any]:
+    _cs_ensure_file()
+    return _load_diff_json(COLOR_SYSTEM_FILE)
+
+
+def _cs_save(data: Dict[str, Any]) -> None:
+    _save_diff_json(COLOR_SYSTEM_FILE, data)
+
+
+def _cs_add_stat(data: Dict[str, Any], user_id: int, field: str, amount: int = 1) -> None:
+    key = str(user_id)
+    data["stats"].setdefault(key, {"submitted": 0, "selected_for_vote": 0, "wins": 0, "manual_approvals": 0})
+    data["stats"][key][field] = data["stats"][key].get(field, 0) + amount
+
+
+def _cs_is_color_team(member: discord.Member) -> bool:
+    return any(r.id == COLOR_TEAM_ROLE_ID for r in member.roles)
+
+
+def _cs_is_color_admin(member: discord.Member) -> bool:
+    return any(r.id in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID) for r in member.roles)
+
+
+async def _cs_fetch_channel(channel_id: int):
+    ch = bot.get_channel(channel_id)
+    if ch is None:
+        ch = await bot.fetch_channel(channel_id)
+    return ch
+
+
+async def _cs_update_submission_message(submission: Dict[str, Any], *, disable_view: bool = False, extra_footer: Optional[str] = None) -> None:
+    try:
+        channel = await _cs_fetch_channel(int(submission["channel_id"]))
+        message = await channel.fetch_message(int(submission["message_id"]))
+    except Exception:
+        return
+    status = submission.get("status", "pending").replace("_", " ").title()
+    try:
+        embed_color = discord.Color.from_str(submission["hex_code"])
+    except Exception:
+        embed_color = discord.Color.blurple()
+    embed = discord.Embed(
+        title="🎨 DIFF Color Submission",
+        description=(
+            "A new crew color has been submitted by the Color Team.\n\n"
+            f"**Color Name:** {submission['color_name']}\n"
+            f"**HEX Code:** `{submission['hex_code']}`\n"
+            f"**Status:** **{status}**\n\n"
+            "Use this post to review the submission."
+        ),
+        color=embed_color,
+    )
+    embed.set_image(url=submission["image_url"])
+    footer = f"Submitted by {submission.get('author_name', 'Unknown')}"
+    if extra_footer:
+        footer += f" • {extra_footer}"
+    embed.set_footer(text=footer)
+    view = None if disable_view else SubmissionActionView()
+    try:
+        await message.edit(embed=embed, view=view)
+    except Exception:
+        pass
+
+
+async def _cs_build_vote_collage(candidates: List[Dict[str, Any]]) -> Optional[discord.File]:
+    if not PIL_AVAILABLE or aiohttp is None:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            images = []
+            for c in candidates:
+                async with session.get(c["image_url"], timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    if resp.status != 200:
+                        return None
+                    images.append(Image.open(io.BytesIO(await resp.read())).convert("RGB"))
+        w, h, pad, lh = 420, 300, 16, 54
+        canvas = Image.new("RGB", (w * 2 + pad * 3, h * 2 + lh * 2 + pad * 3), (18, 24, 38))
+        draw = ImageDraw.Draw(canvas)
+        try:
+            font = ImageFont.truetype("arial.ttf", 26)
+            font_sm = ImageFont.truetype("arial.ttf", 20)
+        except Exception:
+            font = font_sm = ImageFont.load_default()
+        for idx, img in enumerate(images[:4]):
+            col, row = idx % 2, idx // 2
+            x = pad + col * (w + pad)
+            y = pad + row * (h + lh + pad)
+            canvas.paste(ImageOps.fit(img, (w, h), method=Image.LANCZOS), (x, y))
+            draw.rectangle([x, y + h, x + w, y + h + lh], fill=(10, 14, 24))
+            draw.text((x + 14, y + h + 12), f"{idx + 1}. {candidates[idx]['color_name']}", font=font, fill=(255, 255, 255))
+            draw.text((x + 14, y + h + 32), candidates[idx]["hex_code"], font=font_sm, fill=(180, 190, 210))
+        bio = io.BytesIO()
+        canvas.save(bio, format="PNG")
+        bio.seek(0)
+        return discord.File(bio, filename="diff_color_vote.png")
+    except Exception:
+        return None
+
+
+async def _cs_post_winner_announcement(guild: discord.Guild, winner: Dict[str, Any], manual: bool = False):
+    channel = await _cs_fetch_channel(COLOR_ANNOUNCEMENT_CHANNEL_ID)
+    crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+    ping = crew_role.mention if crew_role else ""
+    lines = []
+    if ping:
+        lines += [ping, ""]
+    lines += ["*The Crew Color has been changed this week.*", "", f"**{winner['color_name']}**", "", "*I hope you enjoy this color!*"]
+    try:
+        embed_color = discord.Color.from_str(winner["hex_code"])
+    except Exception:
+        embed_color = discord.Color.blurple()
+    embed = discord.Embed(color=embed_color, timestamp=datetime.now(COLOR_TZ))
+    embed.set_image(url=winner["image_url"])
+    embed.set_footer(text="DIFF • Crew Color Announcement" + (" • Manual Approval" if manual else ""))
+    return await channel.send("\n".join(lines), embed=embed)
+
+
+async def _cs_post_vote_announcement(guild: discord.Guild, candidates: List[Dict[str, Any]]):
+    channel = await _cs_fetch_channel(COLOR_ANNOUNCEMENT_CHANNEL_ID)
+    crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+    ping = crew_role.mention if crew_role else ""
+    lines = []
+    if ping:
+        lines += [ping, ""]
+    lines += [
+        "*Crew Color will be voted on this week.*", "",
+        "*The color with the most votes will be the crew color for the following week.*", "",
+    ]
+    for idx, c in enumerate(candidates[:4]):
+        lines.append(f"{['1️⃣', '2️⃣', '3️⃣', '4️⃣'][idx]} **{c['color_name']}**")
+    lines += ["", "*Color order starts from left to right.*", "", "*Please choose one color below* 👇"]
+    collage = await _cs_build_vote_collage(candidates[:4])
+    if collage:
+        try:
+            embed = discord.Embed(color=discord.Color.blurple(), timestamp=datetime.now(COLOR_TZ))
+            embed.set_image(url="attachment://diff_color_vote.png")
+            embed.set_footer(text="DIFF • Weekly Crew Color Vote")
+            msg = await channel.send("\n".join(lines), embed=embed, file=collage)
+        except Exception:
+            msg = await channel.send("\n".join(lines))
+    else:
+        msg = await channel.send("\n".join(lines))
+        for idx, c in enumerate(candidates[:4]):
+            try:
+                clr = discord.Color.from_str(c["hex_code"])
+            except Exception:
+                clr = discord.Color.blurple()
+            preview = discord.Embed(title=f"{idx + 1}. {c['color_name']}", description=f"`{c['hex_code']}`", color=clr)
+            preview.set_image(url=c["image_url"])
+            await channel.send(embed=preview)
+    for emoji in NUMBER_EMOJIS[:len(candidates[:4])]:
+        try:
+            await msg.add_reaction(emoji)
+        except Exception:
+            pass
+    return msg
+
+
+def _cs_get_candidate_pool(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    pending = sorted(
+        [s for s in data["submissions"].values() if s.get("status") == "pending"],
+        key=lambda s: s.get("submitted_at", ""), reverse=True,
+    )
+    unique: Dict[str, Dict[str, Any]] = {}
+    for sub in pending:
+        if sub["author_id"] not in unique:
+            unique[sub["author_id"]] = sub
+    candidates = list(unique.values())
+    random.shuffle(candidates)
+    return candidates[:4]
+
+
+async def _cs_try_post_weekly_vote(guild: discord.Guild) -> bool:
+    data = _cs_load()
+    current_vote = data.get("current_vote")
+    if current_vote and not current_vote.get("closed", False):
+        return False
+    candidates = _cs_get_candidate_pool(data)
+    if len(candidates) < 4:
+        return False
+    msg = await _cs_post_vote_announcement(guild, candidates)
+    if msg is None:
+        return False
+    for c in candidates:
+        c["status"] = "in_voting"
+        c["selected_for_vote"] = True
+        _cs_add_stat(data, int(c["author_id"]), "selected_for_vote", 1)
+    data["current_vote"] = {
+        "message_id": str(msg.id), "channel_id": str(msg.channel.id),
+        "candidate_submission_ids": [c["message_id"] for c in candidates],
+        "opened_at": _cs_utc_now(), "closed": False,
+    }
+    for c in candidates:
+        await _cs_update_submission_message(c, extra_footer="Selected for weekly voting")
+    _cs_save(data)
+    return True
+
+
+async def _cs_try_close_vote(guild: discord.Guild) -> bool:
+    data = _cs_load()
+    current_vote = data.get("current_vote")
+    if not current_vote or current_vote.get("closed", False):
+        return False
+    try:
+        channel = await _cs_fetch_channel(int(current_vote["channel_id"]))
+        vote_msg = await channel.fetch_message(int(current_vote["message_id"]))
+    except Exception:
+        return False
+    candidate_ids = current_vote.get("candidate_submission_ids", [])
+    candidates = [data["submissions"].get(cid) for cid in candidate_ids]
+    candidates = [c for c in candidates if c]
+    if not candidates:
+        return False
+    reaction_totals = {e: 0 for e in NUMBER_EMOJIS[:len(candidates)]}
+    for reaction in vote_msg.reactions:
+        if str(reaction.emoji) in reaction_totals:
+            reaction_totals[str(reaction.emoji)] = max(reaction.count - 1, 0)
+    top_idx, top_votes = 0, -1
+    for idx, emoji in enumerate(NUMBER_EMOJIS[:len(candidates)]):
+        v = reaction_totals.get(emoji, 0)
+        if v > top_votes:
+            top_votes = v
+            top_idx = idx
+    winner = candidates[top_idx]
+    await _cs_post_winner_announcement(guild, winner, manual=False)
+    winner["status"] = "won"
+    winner["won_at"] = _cs_utc_now()
+    _cs_add_stat(data, int(winner["author_id"]), "wins", 1)
+    for idx, c in enumerate(candidates):
+        if idx != top_idx:
+            c["status"] = "locked"
+            c["locked_at"] = _cs_utc_now()
+    current_vote["closed"] = True
+    current_vote["closed_at"] = _cs_utc_now()
+    current_vote["winner_submission_id"] = winner["message_id"]
+    data["history"].append({
+        "closed_at": current_vote["closed_at"], "winner_name": winner["color_name"], "votes": reaction_totals,
+    })
+    try:
+        await vote_msg.edit(content=(vote_msg.content or "") + f"\n\n🔒 **Voting Closed**\n🏆 Winner: **{winner['color_name']}**")
+    except Exception:
+        pass
+    for c in candidates:
+        await _cs_update_submission_message(c, disable_view=c["status"] in {"locked", "won"}, extra_footer="Voting cycle completed")
+    data["current_vote"] = None
+    _cs_save(data)
+    return True
+
+
+@tasks.loop(minutes=1)
+async def color_schedule_loop():
+    now = datetime.now(COLOR_TZ)
+    current_date = now.date().isoformat()
+    data = _cs_load()
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return
+    if (now.weekday() == 1 and now.hour == COLOR_SCHEDULE_HOUR and 0 <= now.minute <= 4
+            and data["schedule"].get("last_vote_post_date") != current_date):
+        if await _cs_try_post_weekly_vote(guild):
+            data = _cs_load()
+            data["schedule"]["last_vote_post_date"] = current_date
+            _cs_save(data)
+    if (now.weekday() == 0 and now.hour == COLOR_SCHEDULE_HOUR and 0 <= now.minute <= 4
+            and data["schedule"].get("last_winner_post_date") != current_date):
+        if await _cs_try_close_vote(guild):
+            data = _cs_load()
+            data["schedule"]["last_winner_post_date"] = current_date
+            _cs_save(data)
+    now_utc = datetime.now(timezone.utc)
+    changed = False
+    current_vote = data.get("current_vote") or {}
+    active_ids = set(current_vote.get("candidate_submission_ids", []))
+    for sub in data["submissions"].values():
+        if sub.get("status") != "pending" or sub["message_id"] in active_ids:
+            continue
+        try:
+            age = (now_utc - datetime.fromisoformat(sub["submitted_at"]).astimezone(timezone.utc)).days
+        except Exception:
+            continue
+        if age >= AUTO_LOCK_DAYS:
+            sub["status"] = "locked"
+            sub["locked_at"] = _cs_utc_now()
+            changed = True
+            await _cs_update_submission_message(sub, disable_view=True, extra_footer="Auto-locked due to age")
+    if changed:
+        _cs_save(data)
+
+
+@color_schedule_loop.before_loop
+async def before_color_schedule_loop():
+    await bot.wait_until_ready()
 
 
 class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
-    color_name = discord.ui.TextInput(
-        label="Color Name",
-        placeholder="Example: Tangerine Tango",
-        max_length=100,
-        required=True,
-    )
-    hex_code = discord.ui.TextInput(
-        label="HEX Code",
-        placeholder="Example: #FF9742",
-        max_length=7,
-        min_length=4,
-        required=True,
-    )
-    image_url = discord.ui.TextInput(
-        label="Image URL",
-        placeholder="Paste the direct image link here",
-        style=discord.TextStyle.paragraph,
-        required=True,
-    )
+    color_name = discord.ui.TextInput(label="Color Name", placeholder="Example: Tangerine Tango", max_length=100, required=True)
+    hex_code = discord.ui.TextInput(label="HEX Code", placeholder="Example: #FF9742", max_length=7, min_length=4, required=True)
+    image_url = discord.ui.TextInput(label="Image URL", placeholder="Paste the direct image link here", style=discord.TextStyle.paragraph, required=True)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        channel = bot.get_channel(COLOR_SUBMISSION_CHANNEL_ID)
-        if channel is None:
-            channel = await bot.fetch_channel(COLOR_SUBMISSION_CHANNEL_ID)
-
+        if not isinstance(interaction.user, discord.Member) or not _cs_is_color_team(interaction.user):
+            return await interaction.response.send_message("Only the Color Team can submit crew colors.", ephemeral=True)
+        submit_channel = await _cs_fetch_channel(COLOR_SUBMISSION_CHANNEL_ID)
         color_name_val = str(self.color_name.value).strip()
         hex_val = str(self.hex_code.value).strip().upper()
         image_val = str(self.image_url.value).strip()
-
         if not hex_val.startswith("#"):
             hex_val = f"#{hex_val}"
-
         if len(hex_val) not in (4, 7):
-            return await interaction.response.send_message(
-                "Your HEX code needs to look like `#FF9742` or `#F94`.", ephemeral=True
-            )
-
+            return await interaction.response.send_message("Your HEX code needs to look like `#FF9742` or `#F94`.", ephemeral=True)
         try:
             embed_color = discord.Color.from_str(hex_val)
         except Exception:
             embed_color = discord.Color.blurple()
-
         embed = discord.Embed(
             title="🎨 DIFF Color Submission",
             description=(
-                f"A new crew color has been submitted.\n\n"
+                "A new crew color has been submitted by the Color Team.\n\n"
                 f"**Color Name:** {color_name_val}\n"
-                f"**HEX Code:** `{hex_val}`\n\n"
+                f"**HEX Code:** `{hex_val}`\n"
+                "**Status:** **Pending Review**\n\n"
                 "Use this post to review the submission."
             ),
             color=embed_color,
         )
         embed.set_image(url=image_val)
         embed.set_footer(text=f"Submitted by {interaction.user.display_name}")
-
-        msg = await channel.send(embed=embed)
+        msg = await submit_channel.send(embed=embed, view=SubmissionActionView())
         for emoji in ("✅", "❌", "🤔"):
             try:
                 await msg.add_reaction(emoji)
             except Exception:
                 pass
-
-        await interaction.response.send_message(
-            f"Your color submission has been posted in {channel.mention}.", ephemeral=True
-        )
+        data = _cs_load()
+        data["submissions"][str(msg.id)] = {
+            "message_id": str(msg.id), "channel_id": str(submit_channel.id),
+            "author_id": str(interaction.user.id), "author_name": interaction.user.display_name,
+            "color_name": color_name_val, "hex_code": hex_val, "image_url": image_val,
+            "status": "pending", "submitted_at": _cs_utc_now(),
+            "selected_for_vote": False, "locked_at": "", "approved_at": "", "won_at": "",
+        }
+        _cs_add_stat(data, interaction.user.id, "submitted", 1)
+        _cs_save(data)
+        await interaction.response.send_message(f"Your color submission has been posted in {submit_channel.mention}.", ephemeral=True)
 
 
 class ColorSubmissionPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="Submit Color",
-        style=discord.ButtonStyle.primary,
-        emoji="🎨",
-        custom_id="diff_submit_color_button",
-    )
+    @discord.ui.button(label="Submit Color", style=discord.ButtonStyle.primary, emoji="🎨", custom_id="diff_submit_color_button_v3")
     async def submit_color_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        color_team_role = discord.utils.get(interaction.guild.roles, name="Color Team")
-        if color_team_role and color_team_role not in interaction.user.roles:
-            return await interaction.response.send_message(
-                "Only the Color Team can submit crew colors.", ephemeral=True
-            )
         await interaction.response.send_modal(ColorSubmissionModal())
+
+
+class SubmissionActionView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Approve Color", style=discord.ButtonStyle.success, emoji="🏆", custom_id="diff_approve_color_button_v3")
+    async def approve_color_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
+            return await interaction.response.send_message("Only Leaders, Co-Leaders, or Managers can approve colors.", ephemeral=True)
+        data = _cs_load()
+        submission = data["submissions"].get(str(interaction.message.id))
+        if not submission:
+            return await interaction.response.send_message("Submission not found in the system.", ephemeral=True)
+        submission["status"] = "approved"
+        submission["approved_at"] = _cs_utc_now()
+        _cs_add_stat(data, int(submission["author_id"]), "manual_approvals", 1)
+        _cs_save(data)
+        await _cs_update_submission_message(submission, extra_footer="Approved by leadership")
+        await _cs_post_winner_announcement(interaction.guild, submission, manual=True)
+        await interaction.response.send_message("Color approved and announcement posted.", ephemeral=True)
+
+    @discord.ui.button(label="Lock Submission", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="diff_lock_submission_button_v3")
+    async def lock_submission_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
+            return await interaction.response.send_message("Only Leaders, Co-Leaders, or Managers can lock submissions.", ephemeral=True)
+        data = _cs_load()
+        submission = data["submissions"].get(str(interaction.message.id))
+        if not submission:
+            return await interaction.response.send_message("Submission not found in the system.", ephemeral=True)
+        submission["status"] = "locked"
+        submission["locked_at"] = _cs_utc_now()
+        _cs_save(data)
+        await _cs_update_submission_message(submission, disable_view=True, extra_footer="Locked by leadership")
+        await interaction.response.send_message("Submission locked.", ephemeral=True)
 
 
 @bot.tree.command(name="post-color-panel", description="Post the DIFF color submission panel (staff only)")
 async def post_color_panel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
-    panel_ch = bot.get_channel(COLOR_PANEL_CHANNEL_ID)
-    if panel_ch is None:
-        panel_ch = await bot.fetch_channel(COLOR_PANEL_CHANNEL_ID)
+    panel_ch = await _cs_fetch_channel(COLOR_PANEL_CHANNEL_ID)
     embed = discord.Embed(
         title="🎨 DIFF Color Submission Panel",
         description=(
             "**Color Team Guide**\n\n"
             "Use the button below to submit a new crew color for review.\n\n"
             "**What to include:**\n"
-            "• Color name\n"
-            "• HEX code\n"
-            "• Image link for the preview car\n\n"
+            "• Color name\n• HEX code\n• Image link for the preview car\n\n"
             "**Before submitting:**\n"
-            "• Keep the color clean and realistic\n"
-            "• Double-check the HEX code\n"
-            "• Use a clear image that shows the color well\n"
-            "• Make sure the submission is meet-ready\n\n"
+            "• Keep the color clean and realistic\n• Double-check the HEX code\n"
+            "• Use a clear image that shows the color well\n• Make sure the submission is meet-ready\n\n"
             "**How it works:**\n"
-            "• Press **Submit Color**\n"
-            "• Fill out the form\n"
-            "• Your submission will be posted in the review channel automatically\n"
-            "• Review reactions will be added right away\n\n"
+            "• Press **Submit Color** and fill out the form\n"
+            "• Your submission posts to the review channel automatically\n"
+            "• Leadership can approve or lock submissions\n"
+            "• Weekly vote auto-posts Tuesday ~12 PM EST\n"
+            "• Winner auto-announces Monday ~12 PM EST\n\n"
             "Press **Submit Color** below to begin."
         ),
         color=discord.Color.blurple(),
     )
-    embed.set_footer(text="DIFF • Color Team System")
+    embed.set_footer(text="DIFF • Advanced Color Team System")
     await panel_ch.send(embed=embed, view=ColorSubmissionPanelView())
     await interaction.response.send_message(f"Color submission panel posted in {panel_ch.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="color-stats", description="Show the DIFF color team leaderboard")
+async def color_stats(interaction: discord.Interaction):
+    data = _cs_load()
+    if not data["stats"]:
+        return await interaction.response.send_message("No color team stats yet.", ephemeral=True)
+    sorted_stats = sorted(
+        data["stats"].items(),
+        key=lambda item: (item[1].get("wins", 0), item[1].get("selected_for_vote", 0), item[1].get("submitted", 0)),
+        reverse=True,
+    )
+    lines = []
+    for idx, (uid, stats) in enumerate(sorted_stats[:10], start=1):
+        member = interaction.guild.get_member(int(uid)) if interaction.guild else None
+        name = member.display_name if member else f"User {uid}"
+        lines.append(
+            f"**{idx}. {name}**\n"
+            f"Submitted: {stats.get('submitted', 0)} | Selected: {stats.get('selected_for_vote', 0)} | "
+            f"Wins: {stats.get('wins', 0)} | Approvals: {stats.get('manual_approvals', 0)}"
+        )
+    embed = discord.Embed(
+        title="📊 DIFF Color Team Leaderboard",
+        description="\n\n".join(lines),
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="Top color team members by wins, selections, and submissions")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="force-color-vote", description="Manually post the weekly color vote (leadership only)")
+async def force_color_vote(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
+        return await interaction.response.send_message("Leaders, Co-Leaders, and Managers only.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    success = await _cs_try_post_weekly_vote(interaction.guild)
+    if success:
+        await interaction.followup.send("Weekly color vote posted.", ephemeral=True)
+    else:
+        await interaction.followup.send(
+            "Could not post vote. Need at least 4 pending submissions from 4 different Color Team members and no active vote already open.",
+            ephemeral=True,
+        )
+
+
+@bot.tree.command(name="force-color-winner", description="Manually close the vote and post the winner (leadership only)")
+async def force_color_winner(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
+        return await interaction.response.send_message("Leaders, Co-Leaders, and Managers only.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    success = await _cs_try_close_vote(interaction.guild)
+    if success:
+        await interaction.followup.send("Vote closed and winner posted.", ephemeral=True)
+    else:
+        await interaction.followup.send("No active vote to close.", ephemeral=True)
 
 
 # =========================
