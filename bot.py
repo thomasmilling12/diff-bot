@@ -16,7 +16,7 @@ from discord.ext import commands
 # =========================
 def keep_alive():
     subprocess.Popen(
-        ["gunicorn", "--bind", "0.0.0.0:3000", "--workers", "1", "--timeout", "120", "web:app"],
+        ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "120", "web:app"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

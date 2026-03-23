@@ -7,7 +7,7 @@ packages = ["nano"]
 
 [deployment]
 run = ["python", "bot.py"]
-deploymentTarget = "vm"
+deploymentTarget = "autoscale"
 
 [[ports]]
 localPort = 3000
