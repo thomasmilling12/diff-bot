@@ -1,0 +1,554 @@
+// ============================================================
+// DIFF FINAL UPGRADE — JOIN SYSTEM
+// Copy this into a new file in your bot, for example:
+// joinSystemFinal.js
+//
+// WHAT THIS FILE ADDS:
+// - Join panel posted in channel 1277084633858576406
+// - PlayStation / Xbox / PC dropdown
+// - Xbox + PC redirect to MMI Meets
+// - PlayStation opens private join application ticket
+// - Ticket asks user to rename to: 🅸🅳 - PSN Name
+// - Ticket asks for 10 car photos
+// - Accept / Deny / Close buttons for staff
+// - Auto role on approval
+// - Auto DM on approval / denial
+// - Staff logs
+// - Simple transcript sent to logs when ticket closes
+//
+// IMPORTANT:
+// Replace the placeholder IDs in CONFIG below before using.
+// Requires discord.js v14
+// ============================================================
+
+const {
+  EmbedBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType,
+  PermissionsBitField,
+  AttachmentBuilder,
+} = require('discord.js');
+
+module.exports = (client) => {
+  const CONFIG = {
+    panelChannelId: '1277084633858576406',
+
+    // REQUIRED — replace these
+    ticketCategoryId: 'PUT_TICKET_CATEGORY_ID_HERE',
+    staffLogsChannelId: 'PUT_STAFF_LOGS_CHANNEL_ID_HERE',
+    psMeetRoleId: 'PUT_PS_MEET_ROLE_ID_HERE',
+
+    // Staff roles allowed to review tickets
+    leaderRoleId: '850391095845584937',
+    coLeaderRoleId: '850391378559238235',
+    managerRoleId: '990011447193006101',
+
+    // Optional panel image/logo
+    panelImage:
+      'https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png?ex=69c',
+  };
+
+  const PANEL_CUSTOM_ID = 'diff_join_platform_select';
+  const ACCEPT_ID = 'diff_join_accept';
+  const DENY_ID = 'diff_join_deny';
+  const CLOSE_ID = 'diff_join_close';
+
+  function staffRoleIds() {
+    return [CONFIG.leaderRoleId, CONFIG.coLeaderRoleId, CONFIG.managerRoleId].filter(Boolean);
+  }
+
+  function isStaffMember(member) {
+    return staffRoleIds().some((roleId) => member.roles.cache.has(roleId));
+  }
+
+  function buildPanelEmbed() {
+    return new EmbedBuilder()
+      .setColor('#111111')
+      .setAuthor({ name: 'Different Meets' })
+      .setTitle('🏁 DIFF MEETS — OFFICIAL JOIN HUB')
+      .setDescription(
+        [
+          '👋 **Select your platform** below to join our GTA car meets.',
+          '',
+          '**Attention**',
+          '🚗 Only clean customized vehicles are allowed at our meets.',
+          '',
+          '**Crew**',
+          '🤝 If you also want to join the crew, head to your crew application area after getting set up.',
+          '',
+          '━━━━━━━━━━━━━━━━━━━━━━',
+          '🎮 **PlayStation** — Apply directly through a private ticket',
+          '🟢 **Xbox** — Redirects to our partners at **MMI Meets**',
+          '💻 **PC** — Redirects to our partners at **MMI Meets**',
+          '━━━━━━━━━━━━━━━━━━━━━━',
+        ].join('\n')
+      )
+      .setImage(CONFIG.panelImage);
+  }
+
+  function buildPanelRow() {
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(PANEL_CUSTOM_ID)
+      .setPlaceholder('Select your platform')
+      .addOptions([
+        {
+          label: 'PlayStation',
+          description: 'Open a private join application ticket',
+          value: 'playstation',
+          emoji: '🎮',
+        },
+        {
+          label: 'Xbox',
+          description: 'Join our partners on Xbox Series X|S',
+          value: 'xbox',
+          emoji: '🟢',
+        },
+        {
+          label: 'PC',
+          description: 'Join our partners on PC',
+          value: 'pc',
+          emoji: '💻',
+        },
+      ]);
+
+    return new ActionRowBuilder().addComponents(menu);
+  }
+
+  function buildTicketButtons() {
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(ACCEPT_ID)
+        .setLabel('Accept')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('✅'),
+      new ButtonBuilder()
+        .setCustomId(DENY_ID)
+        .setLabel('Deny')
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('❌'),
+      new ButtonBuilder()
+        .setCustomId(CLOSE_ID)
+        .setLabel('Close Ticket')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🔒')
+    );
+  }
+
+  async function postOrRefreshPanel() {
+    try {
+      const channel = await client.channels.fetch(CONFIG.panelChannelId);
+      if (!channel) return;
+
+      const messages = await channel.messages.fetch({ limit: 15 });
+      const existing = messages.find(
+        (m) =>
+          m.author.id === client.user.id &&
+          m.components?.length &&
+          m.components[0]?.components?.some((c) => c.customId === PANEL_CUSTOM_ID)
+      );
+
+      const payload = {
+        embeds: [buildPanelEmbed()],
+        components: [buildPanelRow()],
+      };
+
+      if (existing) {
+        await existing.edit(payload);
+        console.log('[DIFF JOIN] Existing join panel refreshed.');
+      } else {
+        await channel.send(payload);
+        console.log('[DIFF JOIN] New join panel posted.');
+      }
+    } catch (error) {
+      console.error('[DIFF JOIN] Failed to post/refresh panel:', error);
+    }
+  }
+
+  async function createPsTicket(interaction) {
+    const guild = interaction.guild;
+    const member = interaction.member;
+
+    const existing = guild.channels.cache.find(
+      (ch) =>
+        ch.parentId === CONFIG.ticketCategoryId &&
+        ch.topic &&
+        ch.topic.includes(`JOIN_USER:${interaction.user.id}`)
+    );
+
+    if (existing) {
+      return interaction.reply({
+        content: `You already have an open join ticket: ${existing}`,
+        ephemeral: true,
+      });
+    }
+
+    const permissionOverwrites = [
+      {
+        id: guild.id,
+        deny: [PermissionsBitField.Flags.ViewChannel],
+      },
+      {
+        id: interaction.user.id,
+        allow: [
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.SendMessages,
+          PermissionsBitField.Flags.ReadMessageHistory,
+          PermissionsBitField.Flags.AttachFiles,
+          PermissionsBitField.Flags.EmbedLinks,
+        ],
+      },
+      ...staffRoleIds().map((roleId) => ({
+        id: roleId,
+        allow: [
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.SendMessages,
+          PermissionsBitField.Flags.ReadMessageHistory,
+          PermissionsBitField.Flags.ManageChannels,
+          PermissionsBitField.Flags.AttachFiles,
+          PermissionsBitField.Flags.EmbedLinks,
+        ],
+      })),
+    ];
+
+    const ticket = await guild.channels.create({
+      name: `join-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 90),
+      type: ChannelType.GuildText,
+      parent: CONFIG.ticketCategoryId,
+      topic: `DIFF PlayStation Join Application | JOIN_USER:${interaction.user.id}`,
+      permissionOverwrites,
+    });
+
+    const intro = new EmbedBuilder()
+      .setColor('#111111')
+      .setTitle('🎮 PlayStation Join Application')
+      .setDescription(
+        [
+          `${interaction.user}, welcome to your private join ticket.`,
+          '',
+          '**Please complete the following:**',
+          '1. Change your Discord name to: **🅸🅳 - PSN Name**',
+          '2. Send your **PSN name** in this ticket',
+          '3. Send **10 car photos** showing your builds',
+          '4. Wait for **Leader / Co-Leader / Manager** review',
+          '',
+          '━━━━━━━━━━━━━━━━━━━━━━',
+          '✅ Staff can review using the buttons below.',
+          '🔒 When finished, staff can close the ticket.',
+        ].join('\n')
+      );
+
+    await ticket.send({
+      content: `${interaction.user} <@&${CONFIG.leaderRoleId}> <@&${CONFIG.coLeaderRoleId}> <@&${CONFIG.managerRoleId}>`,
+      embeds: [intro],
+      components: [buildTicketButtons()],
+      allowedMentions: {
+        roles: staffRoleIds(),
+        users: [interaction.user.id],
+      },
+    });
+
+    const logsChannel = await client.channels.fetch(CONFIG.staffLogsChannelId).catch(() => null);
+    if (logsChannel) {
+      const logEmbed = new EmbedBuilder()
+        .setColor('#f1c40f')
+        .setTitle('📥 New Join Application')
+        .setDescription(
+          [
+            `**User:** ${interaction.user}`,
+            `**Platform:** PlayStation`,
+            `**Ticket:** ${ticket}`,
+            `**Status:** Pending Review`,
+          ].join('\n')
+        )
+        .setTimestamp();
+
+      await logsChannel.send({ embeds: [logEmbed] }).catch(() => null);
+    }
+
+    await interaction.reply({
+      content: `Your PlayStation join ticket has been created: ${ticket}`,
+      ephemeral: true,
+    });
+  }
+
+  async function buildTranscript(channel) {
+    const fetched = await channel.messages.fetch({ limit: 100 });
+    const messages = [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+    const lines = messages.map((m) => {
+      const time = new Date(m.createdTimestamp).toLocaleString('en-US');
+      const author = `${m.author.tag}`;
+      const content = (m.content || '').replace(/\n/g, ' ').trim();
+      const attachments = m.attachments.size
+        ? ` [Attachments: ${[...m.attachments.values()].map((a) => a.url).join(', ')}]`
+        : '';
+      return `[${time}] ${author}: ${content}${attachments}`;
+    });
+
+    const transcriptText =
+      `Transcript for #${channel.name}\n` +
+      `Generated: ${new Date().toLocaleString('en-US')}\n` +
+      `==================================================\n\n` +
+      lines.join('\n');
+
+    const buffer = Buffer.from(transcriptText, 'utf-8');
+    return new AttachmentBuilder(buffer, { name: `${channel.name}-transcript.txt` });
+  }
+
+  async function approveApplication(interaction) {
+    if (!isStaffMember(interaction.member)) {
+      return interaction.reply({
+        content: 'Only Leader / Co-Leader / Manager can use this button.',
+        ephemeral: true,
+      });
+    }
+
+    const channel = interaction.channel;
+    const topic = channel.topic || '';
+    const match = topic.match(/JOIN_USER:(\d+)/);
+
+    if (!match) {
+      return interaction.reply({
+        content: 'Could not find the applicant for this ticket.',
+        ephemeral: true,
+      });
+    }
+
+    const userId = match[1];
+    const member = await interaction.guild.members.fetch(userId).catch(() => null);
+
+    if (!member) {
+      return interaction.reply({
+        content: 'That user is no longer in the server.',
+        ephemeral: true,
+      });
+    }
+
+    if (CONFIG.psMeetRoleId && CONFIG.psMeetRoleId !== 'PUT_PS_MEET_ROLE_ID_HERE') {
+      await member.roles.add(CONFIG.psMeetRoleId).catch(() => null);
+    }
+
+    const approvedEmbed = new EmbedBuilder()
+      .setColor('#2ecc71')
+      .setTitle('✅ Application Accepted')
+      .setDescription(
+        [
+          `${member}, your PlayStation join application has been **approved**.`,
+          '',
+          'Welcome to DIFF Meets.',
+          'Stay ready for meet posts, announcements, and instructions.',
+        ].join('\n')
+      )
+      .setTimestamp();
+
+    await channel.send({ embeds: [approvedEmbed] });
+
+    await member
+      .send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor('#2ecc71')
+            .setTitle('✅ You were accepted into DIFF Meets')
+            .setDescription(
+              [
+                'Your PlayStation join application was approved.',
+                '',
+                'Welcome in.',
+                'Keep your builds clean and stay ready for meet updates.',
+              ].join('\n')
+            ),
+        ],
+      })
+      .catch(() => null);
+
+    const logsChannel = await client.channels.fetch(CONFIG.staffLogsChannelId).catch(() => null);
+    if (logsChannel) {
+      await logsChannel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor('#2ecc71')
+            .setTitle('✅ Join Application Accepted')
+            .setDescription(
+              [
+                `**User:** ${member}`,
+                `**Reviewed by:** ${interaction.user}`,
+                `**Ticket:** ${channel}`,
+                `**Role Added:** ${
+                  CONFIG.psMeetRoleId && CONFIG.psMeetRoleId !== 'PUT_PS_MEET_ROLE_ID_HERE'
+                    ? `<@&${CONFIG.psMeetRoleId}>`
+                    : 'Not configured'
+                }`,
+              ].join('\n')
+            )
+            .setTimestamp(),
+        ],
+      }).catch(() => null);
+    }
+
+    await interaction.reply({
+      content: `${member} has been accepted.`,
+      ephemeral: true,
+    });
+  }
+
+  async function denyApplication(interaction) {
+    if (!isStaffMember(interaction.member)) {
+      return interaction.reply({
+        content: 'Only Leader / Co-Leader / Manager can use this button.',
+        ephemeral: true,
+      });
+    }
+
+    const channel = interaction.channel;
+    const topic = channel.topic || '';
+    const match = topic.match(/JOIN_USER:(\d+)/);
+
+    if (!match) {
+      return interaction.reply({
+        content: 'Could not find the applicant for this ticket.',
+        ephemeral: true,
+      });
+    }
+
+    const userId = match[1];
+    const member = await interaction.guild.members.fetch(userId).catch(() => null);
+
+    if (member) {
+      await member
+        .send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor('#e74c3c')
+              .setTitle('❌ DIFF Join Application Update')
+              .setDescription(
+                [
+                  'Your PlayStation join application was not accepted at this time.',
+                  '',
+                  'You can improve your builds, presentation, or application details and apply again later.',
+                ].join('\n')
+              ),
+          ],
+        })
+        .catch(() => null);
+    }
+
+    const logsChannel = await client.channels.fetch(CONFIG.staffLogsChannelId).catch(() => null);
+    if (logsChannel) {
+      await logsChannel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor('#e74c3c')
+            .setTitle('❌ Join Application Denied')
+            .setDescription(
+              [
+                `**User:** ${member ? member.toString() : `<@${userId}>`}`,
+                `**Reviewed by:** ${interaction.user}`,
+                `**Ticket:** ${channel}`,
+              ].join('\n')
+            )
+            .setTimestamp(),
+        ],
+      }).catch(() => null);
+    }
+
+    await interaction.reply({
+      content: `Application denied.${member ? ` ${member} was notified by DM.` : ''}`,
+      ephemeral: true,
+    });
+  }
+
+  async function closeTicket(interaction) {
+    if (!isStaffMember(interaction.member)) {
+      return interaction.reply({
+        content: 'Only Leader / Co-Leader / Manager can close this ticket.',
+        ephemeral: true,
+      });
+    }
+
+    await interaction.reply({
+      content: 'Closing ticket and saving transcript...',
+      ephemeral: true,
+    });
+
+    const channel = interaction.channel;
+    const transcriptFile = await buildTranscript(channel).catch(() => null);
+    const logsChannel = await client.channels.fetch(CONFIG.staffLogsChannelId).catch(() => null);
+
+    if (logsChannel) {
+      const closeEmbed = new EmbedBuilder()
+        .setColor('#95a5a6')
+        .setTitle('🔒 Join Ticket Closed')
+        .setDescription(
+          [
+            `**Channel:** ${channel.name}`,
+            `**Closed by:** ${interaction.user}`,
+            `**Ticket Topic:** ${channel.topic || 'No topic set'}`,
+          ].join('\n')
+        )
+        .setTimestamp();
+
+      const payload = { embeds: [closeEmbed] };
+      if (transcriptFile) payload.files = [transcriptFile];
+
+      await logsChannel.send(payload).catch(() => null);
+    }
+
+    setTimeout(async () => {
+      await channel.delete().catch(() => null);
+    }, 2500);
+  }
+
+  client.once('ready', async () => {
+    await postOrRefreshPanel();
+  });
+
+  client.on('interactionCreate', async (interaction) => {
+    try {
+      if (interaction.isStringSelectMenu() && interaction.customId === PANEL_CUSTOM_ID) {
+        const value = interaction.values[0];
+
+        if (value === 'xbox' || value === 'pc') {
+          return interaction.reply({
+            ephemeral: true,
+            embeds: [
+              new EmbedBuilder()
+                .setColor('#111111')
+                .setTitle(value === 'xbox' ? '🟢 Xbox Join Info' : '💻 PC Join Info')
+                .setDescription(
+                  [
+                    `Your ${value === 'xbox' ? 'Xbox Series X|S' : 'PC'} car meets are handled via our partner **MMI Meets**.`,
+                    '',
+                    '**Join their server for more information:**',
+                    'https://discord.gg/mmi',
+                    '',
+                    'Then go to **#join-car-meet**.',
+                  ].join('\n')
+                ),
+            ],
+          });
+        }
+
+        if (value === 'playstation') {
+          return createPsTicket(interaction);
+        }
+      }
+
+      if (interaction.isButton()) {
+        if (interaction.customId === ACCEPT_ID) return approveApplication(interaction);
+        if (interaction.customId === DENY_ID) return denyApplication(interaction);
+        if (interaction.customId === CLOSE_ID) return closeTicket(interaction);
+      }
+    } catch (error) {
+      console.error('[DIFF JOIN] Interaction error:', error);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: 'Something went wrong while handling that action.',
+          ephemeral: true,
+        }).catch(() => null);
+      }
+    }
+  });
+};
