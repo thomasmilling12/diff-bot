@@ -5164,6 +5164,7 @@ ATT_PROMO_THRESHOLDS = {
     "Manager": 18,
     "Co-Leader": 30,
 }
+ATT_PROMO_RATE_MIN = 60.0
 
 
 @dataclass
@@ -5253,45 +5254,137 @@ def _rsvp_top_role(member: discord.Member) -> str:
     return "Crew Member"
 
 
-def _rsvp_check_promotion(member: discord.Member, entry: dict) -> None:
+def _rsvp_get_entry(member: discord.Member) -> dict:
+    return _rsvp_leaderboard.get(str(member.id), {
+        "user_id": member.id,
+        "name": member.display_name,
+        "attendance_count": 0,
+        "hosted_count": 0,
+        "current_role": _rsvp_top_role(member),
+        "last_attended": None,
+        "rsvp_yes": 0,
+        "rsvp_maybe": 0,
+        "rsvp_no": 0,
+        "missed_after_rsvp": 0,
+        "promotion_logged_for": [],
+    })
+
+
+def _rsvp_attendance_rate(entry: dict) -> float:
+    yes = int(entry.get("rsvp_yes", 0))
+    attended = int(entry.get("attendance_count", 0))
+    if yes <= 0:
+        return 100.0 if attended > 0 else 0.0
+    return round((attended / yes) * 100, 1)
+
+
+async def _rsvp_check_and_post_promotion(guild: discord.Guild, member: discord.Member, entry: dict) -> None:
     current = entry.get("current_role", "Crew Member")
     threshold = ATT_PROMO_THRESHOLDS.get(current)
     next_role = ATT_PROMO_PATH.get(current)
     if not threshold or not next_role:
         return
-    if entry.get("attendance_count", 0) < threshold:
+
+    attendance_count = int(entry.get("attendance_count", 0))
+    rate = _rsvp_attendance_rate(entry)
+    if attendance_count < threshold or rate < ATT_PROMO_RATE_MIN:
         return
-    already = any(
-        p.get("user_id") == member.id and p.get("suggested_role") == next_role
-        for p in _rsvp_promotions
-    )
-    if already:
+
+    promoted_for: list = entry.setdefault("promotion_logged_for", [])
+    if next_role in promoted_for:
         return
-    _rsvp_promotions.append({
+
+    suggestion = {
         "user_id": member.id,
         "name": member.display_name,
         "current_role": current,
         "suggested_role": next_role,
-        "attendance_count": entry["attendance_count"],
+        "attendance_count": attendance_count,
+        "hosted_count": int(entry.get("hosted_count", 0)),
+        "attendance_rate": rate,
         "created_at": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    _rsvp_promotions.append(suggestion)
+    promoted_for.append(next_role)
+    entry["promotion_logged_for"] = promoted_for
+
+    ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(ch, discord.TextChannel):
+        promo_embed = discord.Embed(
+            title="📈 Promotion Suggestion",
+            description="This member hit the auto-promotion threshold.",
+            color=discord.Color.purple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        promo_embed.add_field(name="User", value=f"<@{member.id}>", inline=True)
+        promo_embed.add_field(name="Current Role", value=current, inline=True)
+        promo_embed.add_field(name="Suggested Role", value=next_role, inline=True)
+        promo_embed.add_field(name="✅ Meets Attended", value=str(attendance_count), inline=True)
+        promo_embed.add_field(name="🎤 Meets Hosted", value=str(suggestion["hosted_count"]), inline=True)
+        promo_embed.add_field(name="📊 Attendance Rate", value=f"{rate}%", inline=True)
+        promo_embed.set_footer(text="Review manually before changing roles.")
+        try:
+            await ch.send(embed=promo_embed)
+        except Exception:
+            pass
 
 
 def _rsvp_update_stats(guild: discord.Guild, user_id: int) -> None:
     member = guild.get_member(user_id)
     if not member:
         return
-    key = str(user_id)
-    entry = _rsvp_leaderboard.get(key, {
-        "user_id": user_id, "name": member.display_name,
-        "attendance_count": 0, "current_role": _rsvp_top_role(member), "last_attended": None,
-    })
+    entry = _rsvp_get_entry(member)
     entry["name"] = member.display_name
-    entry["attendance_count"] = entry.get("attendance_count", 0) + 1
+    entry["attendance_count"] = int(entry.get("attendance_count", 0)) + 1
     entry["current_role"] = _rsvp_top_role(member)
     entry["last_attended"] = datetime.now(timezone.utc).isoformat()
-    _rsvp_leaderboard[key] = entry
-    _rsvp_check_promotion(member, entry)
+    _rsvp_leaderboard[str(user_id)] = entry
+
+
+def _rsvp_increment_host(guild: discord.Guild, host_id: int) -> None:
+    member = guild.get_member(host_id)
+    if not member:
+        return
+    entry = _rsvp_get_entry(member)
+    entry["name"] = member.display_name
+    entry["current_role"] = _rsvp_top_role(member)
+    entry["hosted_count"] = int(entry.get("hosted_count", 0)) + 1
+    _rsvp_leaderboard[str(host_id)] = entry
+
+
+async def _rsvp_update_rsvp_stats(guild: discord.Guild, meet: RsvpMeet) -> None:
+    all_ids = set(meet.attendees_yes) | set(meet.attendees_maybe) | set(meet.attendees_no) | set(meet.checked_in)
+    for user_id in all_ids:
+        member = guild.get_member(user_id)
+        if not member:
+            continue
+        entry = _rsvp_get_entry(member)
+        entry["name"] = member.display_name
+        entry["current_role"] = _rsvp_top_role(member)
+        if user_id in meet.attendees_yes:
+            entry["rsvp_yes"] = int(entry.get("rsvp_yes", 0)) + 1
+            if user_id not in meet.checked_in:
+                entry["missed_after_rsvp"] = int(entry.get("missed_after_rsvp", 0)) + 1
+        elif user_id in meet.attendees_maybe:
+            entry["rsvp_maybe"] = int(entry.get("rsvp_maybe", 0)) + 1
+        elif user_id in meet.attendees_no:
+            entry["rsvp_no"] = int(entry.get("rsvp_no", 0)) + 1
+        _rsvp_leaderboard[str(user_id)] = entry
+    _rsvp_save_all()
+
+
+async def _rsvp_evaluate_promotions(guild: discord.Guild, meet: RsvpMeet) -> None:
+    user_ids = set(meet.checked_in)
+    user_ids.add(meet.host_id)
+    for user_id in user_ids:
+        member = guild.get_member(user_id)
+        if not member:
+            continue
+        entry = _rsvp_leaderboard.get(str(user_id))
+        if not entry:
+            continue
+        await _rsvp_check_and_post_promotion(guild, member, entry)
+    _rsvp_save_all()
 
 
 async def _rsvp_refresh_message(meet: RsvpMeet) -> None:
@@ -5363,6 +5456,8 @@ async def attendance_create(interaction: discord.Interaction, meet_title: str, h
         channel_id=ch.id,
     )
     _rsvp_meets[meet_id] = meet
+    if interaction.guild:
+        _rsvp_increment_host(interaction.guild, host.id)
     view = AttendanceRsvpView(meet_id)
     msg = await ch.send(embed=_rsvp_build_embed(meet), view=view)
     meet.message_id = msg.id
@@ -5381,6 +5476,8 @@ async def attendance_checkin(interaction: discord.Interaction, meet_id: str, mem
     meet = _rsvp_meets.get(meet_id)
     if not meet:
         return await interaction.response.send_message("Meet ID not found.", ephemeral=True)
+    if member.id in meet.checked_in:
+        return await interaction.response.send_message(f"{member.mention} is already checked in.", ephemeral=True)
     meet.checked_in.add(member.id)
     if interaction.guild:
         _rsvp_update_stats(interaction.guild, member.id)
@@ -5400,9 +5497,14 @@ async def attendance_close(interaction: discord.Interaction, meet_id: str, total
     meet = _rsvp_meets.get(meet_id)
     if not meet:
         return await interaction.response.send_message("Meet ID not found.", ephemeral=True)
+    if meet.closed:
+        return await interaction.response.send_message("That meet is already closed.", ephemeral=True)
     meet.closed = True
     _rsvp_save_all()
     await _rsvp_refresh_message(meet)
+    if interaction.guild:
+        await _rsvp_update_rsvp_stats(interaction.guild, meet)
+        await _rsvp_evaluate_promotions(interaction.guild, meet)
     ch = bot.get_channel(meet.channel_id)
     if isinstance(ch, discord.TextChannel):
         no_shows = max(0, len(meet.attendees_yes) - len(meet.checked_in))
@@ -5429,12 +5531,19 @@ async def attendance_close(interaction: discord.Interaction, meet_id: str, total
 async def attendance_leaderboard(interaction: discord.Interaction):
     if not _rsvp_leaderboard:
         return await interaction.response.send_message("No attendance data yet.", ephemeral=True)
-    top = sorted(_rsvp_leaderboard.values(), key=lambda x: x.get("attendance_count", 0), reverse=True)[:10]
+    top = sorted(
+        _rsvp_leaderboard.values(),
+        key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))),
+        reverse=True,
+    )[:10]
     medals = ["🥇", "🥈", "🥉"]
     lines = []
     for idx, entry in enumerate(top, start=1):
         prefix = medals[idx - 1] if idx <= 3 else f"{idx}."
-        lines.append(f"{prefix} <@{entry['user_id']}> — **{entry.get('attendance_count', 0)}** meet(s) attended")
+        lines.append(
+            f"{prefix} <@{entry['user_id']}> — **{entry.get('attendance_count', 0)}** attended | "
+            f"**{entry.get('hosted_count', 0)}** hosted"
+        )
     embed = discord.Embed(
         title="🏆 DIFF Attendance Leaderboard",
         description="\n".join(lines),
@@ -5455,7 +5564,8 @@ async def attendance_promotions(interaction: discord.Interaction):
     for item in _rsvp_promotions[-10:][::-1]:
         lines.append(
             f"📈 <@{item['user_id']}> — {item['current_role']} → **{item['suggested_role']}** "
-            f"({item.get('attendance_count', 0)} attends)"
+            f"| {item.get('attendance_count', 0)} attended | {item.get('hosted_count', 0)} hosted "
+            f"| {item.get('attendance_rate', '?')}% rate"
         )
     embed = discord.Embed(
         title="📈 Attendance Promotion Suggestions",
@@ -5463,13 +5573,70 @@ async def attendance_promotions(interaction: discord.Interaction):
         color=discord.Color.purple(),
         timestamp=datetime.now(timezone.utc),
     )
-    embed.set_footer(text="Review suggestions manually before promoting anyone.")
+    embed.set_footer(text="Review manually before promoting. Auto-posted to staff logs when triggered.")
     embed.add_field(
         name="Thresholds",
-        value="Crew Member → Host: 5 | Host → Manager: 10 | Manager → Co-Leader: 18 | Co-Leader → Leader: 30",
+        value="Crew Member → Host: 5 | Host → Manager: 10 | Manager → Co-Leader: 18 | Co-Leader → Leader: 30\nRequires ≥60% attendance rate",
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="my-stats", description="View your DIFF meet attendance and activity stats")
+@app_commands.describe(member="Optional: check another member's stats (staff only)")
+async def my_stats(interaction: discord.Interaction, member: Optional[discord.Member] = None):
+    if member and member != interaction.user:
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("You can only view your own stats.", ephemeral=True)
+    target = member or interaction.user
+    if not isinstance(target, discord.Member):
+        return await interaction.response.send_message("Member not found.", ephemeral=True)
+
+    entry = _rsvp_leaderboard.get(str(target.id), {
+        "user_id": target.id,
+        "name": target.display_name,
+        "attendance_count": 0,
+        "hosted_count": 0,
+        "current_role": _rsvp_top_role(target),
+        "last_attended": None,
+        "rsvp_yes": 0,
+        "rsvp_maybe": 0,
+        "rsvp_no": 0,
+        "missed_after_rsvp": 0,
+    })
+    attendance_count = int(entry.get("attendance_count", 0))
+    hosted_count = int(entry.get("hosted_count", 0))
+    rsvp_yes = int(entry.get("rsvp_yes", 0))
+    rsvp_maybe = int(entry.get("rsvp_maybe", 0))
+    rsvp_no = int(entry.get("rsvp_no", 0))
+    missed = int(entry.get("missed_after_rsvp", 0))
+    rate = _rsvp_attendance_rate(entry)
+
+    sorted_entries = sorted(
+        _rsvp_leaderboard.values(),
+        key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))),
+        reverse=True,
+    )
+    rank = next((i for i, e in enumerate(sorted_entries, 1) if int(e.get("user_id", 0)) == target.id), None)
+
+    embed = discord.Embed(
+        title="📈 My DIFF Stats",
+        description=f"Stats for {target.mention}",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Current Role", value=entry.get("current_role", "Crew Member"), inline=True)
+    embed.add_field(name="Attendance Rank", value=f"#{rank}" if rank else "Unranked", inline=True)
+    embed.add_field(name="📊 Attendance Rate", value=f"{rate}%", inline=True)
+    embed.add_field(name="✅ Meets Attended", value=str(attendance_count), inline=True)
+    embed.add_field(name="🎤 Meets Hosted", value=str(hosted_count), inline=True)
+    embed.add_field(name="✅ RSVP Pulling Up", value=str(rsvp_yes), inline=True)
+    embed.add_field(name="❓ RSVP Maybe", value=str(rsvp_maybe), inline=True)
+    embed.add_field(name="❌ RSVP Can't Make It", value=str(rsvp_no), inline=True)
+    embed.add_field(name="⚠️ No-Shows After RSVP", value=str(missed), inline=True)
+    last = entry.get("last_attended")
+    embed.set_footer(text=f"Last attended: {last[:10] if last else 'No check-ins yet'}")
+    await interaction.response.send_message(embed=embed, ephemeral=member is None)
 
 
 # =========================
