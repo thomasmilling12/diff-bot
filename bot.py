@@ -6,7 +6,8 @@ import random
 import re
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, asdict
+from typing import Any, Dict, List, Optional, Set
 from zoneinfo import ZoneInfo
 import subprocess
 from dotenv import load_dotenv
@@ -3420,6 +3421,14 @@ async def on_ready():
     if not color_schedule_loop.is_running():
         color_schedule_loop.start()
 
+    _rsvp_load_all()
+    for _rsvp_mid, _rsvp_rec in _rsvp_meets.items():
+        if not _rsvp_rec.closed and _rsvp_rec.message_id:
+            try:
+                bot.add_view(AttendanceRsvpView(_rsvp_mid), message_id=int(_rsvp_rec.message_id))
+            except Exception:
+                pass
+
     bot.loop.create_task(application_timeout_loop())
 
     status_message_id = data.get("panel_message_id")
@@ -4938,6 +4947,334 @@ async def force_color_winner(interaction: discord.Interaction):
         await interaction.followup.send("Vote closed and winner posted.", ephemeral=True)
     else:
         await interaction.followup.send("No active vote to close.", ephemeral=True)
+
+
+# =========================
+# RSVP ATTENDANCE SYSTEM
+# =========================
+ATT_RSVP_CHANNEL_ID = 1485469927312850974
+ATT_RSVP_FILE = os.path.join(DATA_FOLDER, "diff_rsvp_meets.json")
+ATT_LB_FILE = os.path.join(DATA_FOLDER, "diff_rsvp_leaderboard.json")
+ATT_PROMO_FILE = os.path.join(DATA_FOLDER, "diff_rsvp_promotions.json")
+
+ATT_PROMO_PATH = {
+    "Crew Member": "Host",
+    "Host": "Manager",
+    "Manager": "Co-Leader",
+    "Co-Leader": "Leader",
+}
+ATT_PROMO_THRESHOLDS = {
+    "Crew Member": 5,
+    "Host": 10,
+    "Manager": 18,
+    "Co-Leader": 30,
+}
+
+
+@dataclass
+class RsvpMeet:
+    meet_id: str
+    title: str
+    host_id: int
+    host_name: str
+    meet_date: str
+    created_at: str
+    channel_id: int
+    message_id: Optional[int] = None
+    attendees_yes: Optional[Set[int]] = None
+    attendees_maybe: Optional[Set[int]] = None
+    attendees_no: Optional[Set[int]] = None
+    checked_in: Optional[Set[int]] = None
+    closed: bool = False
+
+    def __post_init__(self):
+        self.attendees_yes = set(self.attendees_yes or [])
+        self.attendees_maybe = set(self.attendees_maybe or [])
+        self.attendees_no = set(self.attendees_no or [])
+        self.checked_in = set(self.checked_in or [])
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["attendees_yes"] = list(self.attendees_yes)
+        d["attendees_maybe"] = list(self.attendees_maybe)
+        d["attendees_no"] = list(self.attendees_no)
+        d["checked_in"] = list(self.checked_in)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RsvpMeet":
+        return cls(**d)
+
+
+_rsvp_meets: Dict[str, RsvpMeet] = {}
+_rsvp_leaderboard: dict = {}
+_rsvp_promotions: list = []
+
+
+def _rsvp_load_all() -> None:
+    global _rsvp_meets, _rsvp_leaderboard, _rsvp_promotions
+    raw = _load_diff_json(ATT_RSVP_FILE)
+    _rsvp_meets = {k: RsvpMeet.from_dict(v) for k, v in raw.items()} if raw else {}
+    _rsvp_leaderboard = _load_diff_json(ATT_LB_FILE) or {}
+    _rsvp_promotions = _load_diff_json(ATT_PROMO_FILE) or []
+
+
+def _rsvp_save_all() -> None:
+    _save_diff_json(ATT_RSVP_FILE, {k: v.to_dict() for k, v in _rsvp_meets.items()})
+    _save_diff_json(ATT_LB_FILE, _rsvp_leaderboard)
+    _save_diff_json(ATT_PROMO_FILE, _rsvp_promotions)
+
+
+def _rsvp_make_id() -> str:
+    return datetime.now(timezone.utc).strftime("meet_%Y%m%d_%H%M%S")
+
+
+def _rsvp_build_embed(meet: RsvpMeet) -> discord.Embed:
+    embed = discord.Embed(
+        title="📊 DIFF Meet Attendance",
+        description="Use the buttons below to update your status for this meet.\n\n━━━━━━━━━━━━━━━━━━━━━━",
+        color=discord.Color.blue(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Meet", value=meet.title, inline=True)
+    embed.add_field(name="Host", value=meet.host_name, inline=True)
+    embed.add_field(name="Date", value=meet.meet_date, inline=True)
+    embed.add_field(name="✅ Pulling Up", value=str(len(meet.attendees_yes)), inline=True)
+    embed.add_field(name="❓ Maybe", value=str(len(meet.attendees_maybe)), inline=True)
+    embed.add_field(name="❌ Can't Make It", value=str(len(meet.attendees_no)), inline=True)
+    embed.add_field(name="✅ Checked In", value=str(len(meet.checked_in)), inline=True)
+    embed.add_field(name="Status", value="Closed 🔒" if meet.closed else "Open ✅", inline=True)
+    embed.add_field(name="Meet ID", value=f"`{meet.meet_id}`", inline=True)
+    embed.set_footer(text="Different Meets • Attendance System")
+    return embed
+
+
+def _rsvp_top_role(member: discord.Member) -> str:
+    priority = ["Leader", "Co-Leader", "Manager", "Host", "Crew Member"]
+    names = {r.name for r in member.roles}
+    for name in priority:
+        if name in names:
+            return name
+    return "Crew Member"
+
+
+def _rsvp_check_promotion(member: discord.Member, entry: dict) -> None:
+    current = entry.get("current_role", "Crew Member")
+    threshold = ATT_PROMO_THRESHOLDS.get(current)
+    next_role = ATT_PROMO_PATH.get(current)
+    if not threshold or not next_role:
+        return
+    if entry.get("attendance_count", 0) < threshold:
+        return
+    already = any(
+        p.get("user_id") == member.id and p.get("suggested_role") == next_role
+        for p in _rsvp_promotions
+    )
+    if already:
+        return
+    _rsvp_promotions.append({
+        "user_id": member.id,
+        "name": member.display_name,
+        "current_role": current,
+        "suggested_role": next_role,
+        "attendance_count": entry["attendance_count"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def _rsvp_update_stats(guild: discord.Guild, user_id: int) -> None:
+    member = guild.get_member(user_id)
+    if not member:
+        return
+    key = str(user_id)
+    entry = _rsvp_leaderboard.get(key, {
+        "user_id": user_id, "name": member.display_name,
+        "attendance_count": 0, "current_role": _rsvp_top_role(member), "last_attended": None,
+    })
+    entry["name"] = member.display_name
+    entry["attendance_count"] = entry.get("attendance_count", 0) + 1
+    entry["current_role"] = _rsvp_top_role(member)
+    entry["last_attended"] = datetime.now(timezone.utc).isoformat()
+    _rsvp_leaderboard[key] = entry
+    _rsvp_check_promotion(member, entry)
+
+
+async def _rsvp_refresh_message(meet: RsvpMeet) -> None:
+    ch = bot.get_channel(meet.channel_id)
+    if not isinstance(ch, discord.TextChannel) or not meet.message_id:
+        return
+    try:
+        msg = await ch.fetch_message(meet.message_id)
+        view = None if meet.closed else AttendanceRsvpView(meet.meet_id)
+        await msg.edit(embed=_rsvp_build_embed(meet), view=view)
+    except (discord.NotFound, discord.HTTPException):
+        pass
+
+
+class AttendanceRsvpView(discord.ui.View):
+    def __init__(self, meet_id: str):
+        super().__init__(timeout=None)
+        self.meet_id = meet_id
+
+    @discord.ui.button(label="Pulling Up", emoji="✅", style=discord.ButtonStyle.success, custom_id="rsvp_btn_yes")
+    async def pulling_up(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "yes")
+
+    @discord.ui.button(label="Maybe", emoji="❓", style=discord.ButtonStyle.secondary, custom_id="rsvp_btn_maybe")
+    async def maybe(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "maybe")
+
+    @discord.ui.button(label="Can't Make It", emoji="❌", style=discord.ButtonStyle.danger, custom_id="rsvp_btn_no")
+    async def cant_make_it(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "no")
+
+    async def _handle(self, interaction: discord.Interaction, status: str) -> None:
+        meet = _rsvp_meets.get(self.meet_id)
+        if not meet:
+            return await interaction.response.send_message("Meet record not found.", ephemeral=True)
+        if meet.closed:
+            return await interaction.response.send_message("This attendance panel is already closed.", ephemeral=True)
+        uid = interaction.user.id
+        meet.attendees_yes.discard(uid)
+        meet.attendees_maybe.discard(uid)
+        meet.attendees_no.discard(uid)
+        if status == "yes":
+            meet.attendees_yes.add(uid)
+            msg = "You are marked as **Pulling Up** ✅"
+        elif status == "maybe":
+            meet.attendees_maybe.add(uid)
+            msg = "You are marked as **Maybe** ❓"
+        else:
+            meet.attendees_no.add(uid)
+            msg = "You are marked as **Can't Make It** ❌"
+        _rsvp_save_all()
+        await _rsvp_refresh_message(meet)
+        await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bot.tree.command(name="attendance-create", description="Create a live RSVP attendance panel for a meet (staff only)")
+@app_commands.describe(meet_title="Meet name", host="Host for the meet", meet_date="Date shown on the panel")
+async def attendance_create(interaction: discord.Interaction, meet_title: str, host: discord.Member, meet_date: str):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    ch = bot.get_channel(ATT_RSVP_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        ch = await bot.fetch_channel(ATT_RSVP_CHANNEL_ID)
+    meet_id = _rsvp_make_id()
+    meet = RsvpMeet(
+        meet_id=meet_id, title=meet_title,
+        host_id=host.id, host_name=host.mention,
+        meet_date=meet_date, created_at=datetime.now(timezone.utc).isoformat(),
+        channel_id=ch.id,
+    )
+    _rsvp_meets[meet_id] = meet
+    view = AttendanceRsvpView(meet_id)
+    msg = await ch.send(embed=_rsvp_build_embed(meet), view=view)
+    meet.message_id = msg.id
+    bot.add_view(view, message_id=msg.id)
+    _rsvp_save_all()
+    await interaction.response.send_message(
+        f"RSVP panel created in {ch.mention} for **{meet_title}**.\nMeet ID: `{meet_id}`", ephemeral=True,
+    )
+
+
+@bot.tree.command(name="attendance-checkin", description="Mark a member as actually present at the meet (staff only)")
+@app_commands.describe(meet_id="Meet ID from the attendance panel", member="Member to check in")
+async def attendance_checkin(interaction: discord.Interaction, meet_id: str, member: discord.Member):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    meet = _rsvp_meets.get(meet_id)
+    if not meet:
+        return await interaction.response.send_message("Meet ID not found.", ephemeral=True)
+    meet.checked_in.add(member.id)
+    if interaction.guild:
+        _rsvp_update_stats(interaction.guild, member.id)
+    _rsvp_save_all()
+    await _rsvp_refresh_message(meet)
+    entry = _rsvp_leaderboard.get(str(member.id), {})
+    await interaction.response.send_message(
+        f"Checked in {member.mention} for **{meet.title}**. Total check-ins: {entry.get('attendance_count', 1)}", ephemeral=True,
+    )
+
+
+@bot.tree.command(name="attendance-close", description="Close a meet RSVP panel and post final results (staff only)")
+@app_commands.describe(meet_id="Meet ID from the attendance panel", total_players="Total players in lobby")
+async def attendance_close(interaction: discord.Interaction, meet_id: str, total_players: int):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    meet = _rsvp_meets.get(meet_id)
+    if not meet:
+        return await interaction.response.send_message("Meet ID not found.", ephemeral=True)
+    meet.closed = True
+    _rsvp_save_all()
+    await _rsvp_refresh_message(meet)
+    ch = bot.get_channel(meet.channel_id)
+    if isinstance(ch, discord.TextChannel):
+        no_shows = max(0, len(meet.attendees_yes) - len(meet.checked_in))
+        result_embed = discord.Embed(
+            title="📊 DIFF Meet Results",
+            description="Final attendance results for this meet.",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        result_embed.add_field(name="Meet", value=meet.title, inline=True)
+        result_embed.add_field(name="Host", value=meet.host_name, inline=True)
+        result_embed.add_field(name="Lobby Size", value=str(total_players), inline=True)
+        result_embed.add_field(name="✅ Checked In", value=str(len(meet.checked_in)), inline=True)
+        result_embed.add_field(name="❌ No Shows", value=str(no_shows), inline=True)
+        result_embed.add_field(name="❓ Maybe", value=str(len(meet.attendees_maybe)), inline=True)
+        result_embed.set_footer(text="Attach your lobby screenshot below this post.")
+        await ch.send(embed=result_embed)
+    await interaction.response.send_message(
+        f"Attendance closed for **{meet.title}** and final results posted.", ephemeral=True,
+    )
+
+
+@bot.tree.command(name="attendance-leaderboard", description="Show the most active DIFF members by meet attendance")
+async def attendance_leaderboard(interaction: discord.Interaction):
+    if not _rsvp_leaderboard:
+        return await interaction.response.send_message("No attendance data yet.", ephemeral=True)
+    top = sorted(_rsvp_leaderboard.values(), key=lambda x: x.get("attendance_count", 0), reverse=True)[:10]
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for idx, entry in enumerate(top, start=1):
+        prefix = medals[idx - 1] if idx <= 3 else f"{idx}."
+        lines.append(f"{prefix} <@{entry['user_id']}> — **{entry.get('attendance_count', 0)}** meet(s) attended")
+    embed = discord.Embed(
+        title="🏆 DIFF Attendance Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Attendance is tracked from check-ins, not RSVP votes.")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="attendance-promotions", description="Show promotion suggestions based on meet attendance")
+async def attendance_promotions(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    if not _rsvp_promotions:
+        return await interaction.response.send_message("No promotion suggestions yet.", ephemeral=True)
+    lines = []
+    for item in _rsvp_promotions[-10:][::-1]:
+        lines.append(
+            f"📈 <@{item['user_id']}> — {item['current_role']} → **{item['suggested_role']}** "
+            f"({item.get('attendance_count', 0)} attends)"
+        )
+    embed = discord.Embed(
+        title="📈 Attendance Promotion Suggestions",
+        description="\n".join(lines),
+        color=discord.Color.purple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Review suggestions manually before promoting anyone.")
+    embed.add_field(
+        name="Thresholds",
+        value="Crew Member → Host: 5 | Host → Manager: 10 | Manager → Co-Leader: 18 | Co-Leader → Leader: 30",
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # =========================
