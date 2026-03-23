@@ -127,6 +127,9 @@ TICKET_APP_BRIDGE_FILE = os.path.join(DATA_FOLDER, "diff_ticket_app_bridge.json"
 COLOR_OPS_STATE_FILE = os.path.join(DATA_FOLDER, "diff_color_ops_state.json")
 INTERVIEW_OUTCOME_LOG_CHANNEL_ID = STAFF_LOGS_CHANNEL_ID
 INTERVIEW_OUTCOME_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+INTERVIEW_OUTCOME_ONBOARDING_CHANNEL_ID = INTERVIEW_PANEL_CHANNEL_ID
+INTERVIEW_OUTCOME_AUTO_CLOSE = True
+INTERVIEW_OUTCOME_CLOSE_DELAY = 10
 FUS_DM_ON_INTERVIEW = True
 FUS_DM_ON_APPROVAL = True
 FUS_DM_ON_DENIAL = True
@@ -5711,6 +5714,7 @@ async def _interview_outcome_send_log(
     result: str,
     notes: str,
     role_given: str | None = None,
+    ticket_channel: discord.TextChannel | None = None,
 ) -> None:
     channel = guild.get_channel(INTERVIEW_OUTCOME_LOG_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
@@ -5725,11 +5729,46 @@ async def _interview_outcome_send_log(
     embed.add_field(name="Applicant", value=applicant.mention, inline=True)
     embed.add_field(name="Handled By", value=interviewer.mention, inline=True)
     embed.add_field(name="Result", value=result, inline=True)
+    embed.add_field(name="Ticket Channel", value=ticket_channel.mention if ticket_channel else "Unknown", inline=True)
     embed.add_field(name="Role Given", value=role_given or "None", inline=True)
     embed.add_field(name="Date", value=datetime.now(timezone.utc).strftime("%Y-%m-%d"), inline=True)
     embed.add_field(name="Notes", value=notes if notes else "No notes added.", inline=False)
     embed.set_footer(text="Different Meets • Applicant Review Log")
     await channel.send(embed=embed)
+
+
+async def _interview_outcome_send_onboarding(guild: discord.Guild, applicant: discord.Member) -> None:
+    channel = guild.get_channel(INTERVIEW_OUTCOME_ONBOARDING_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    embed = discord.Embed(
+        title="🎉 Welcome to Different Meets",
+        description=(
+            f"{applicant.mention} has officially been accepted into **DIFF**.\n\n"
+            "Please welcome them to the crew and help them get settled in.\n\n"
+            "📌 Make sure to review the server, stay active, check announcements, "
+            "and be ready for upcoming meets and crew events."
+        ),
+        color=discord.Color.blue(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Different Meets • New Member Onboarding")
+    await channel.send(embed=embed)
+
+
+async def _interview_outcome_close_ticket(channel: discord.TextChannel, status: str) -> None:
+    try:
+        await channel.send(
+            f"🔒 This interview ticket has been marked as **{status}**.\n"
+            f"Closing this channel in **{INTERVIEW_OUTCOME_CLOSE_DELAY} seconds**."
+        )
+    except discord.HTTPException:
+        pass
+    await asyncio.sleep(INTERVIEW_OUTCOME_CLOSE_DELAY)
+    try:
+        await channel.delete(reason=f"DIFF interview ticket auto-closed after {status.lower()}.")
+    except discord.HTTPException:
+        pass
 
 
 async def _interview_outcome_dm_accept(applicant: discord.Member) -> None:
@@ -5769,6 +5808,8 @@ async def _interview_outcome_process_accept(
         await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
         return
 
+    ticket_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
+
     role = guild.get_role(CREW_MEMBER_ROLE_ID)
     assigned_role_name: str | None = None
     if role is not None:
@@ -5794,12 +5835,16 @@ async def _interview_outcome_process_accept(
     result_embed.set_footer(text="Different Meets • Interview Accepted")
 
     await _interview_outcome_dm_accept(applicant)
-    await _interview_outcome_send_log(guild, applicant, interviewer, "Accepted", notes, assigned_role_name)
+    await _interview_outcome_send_onboarding(guild, applicant)
+    await _interview_outcome_send_log(guild, applicant, interviewer, "Accepted", notes, assigned_role_name, ticket_channel)
 
     if interaction.response.is_done():
         await interaction.followup.send(embed=result_embed)
     else:
         await interaction.response.send_message(embed=result_embed)
+
+    if ticket_channel and INTERVIEW_OUTCOME_AUTO_CLOSE:
+        asyncio.ensure_future(_interview_outcome_close_ticket(ticket_channel, "Accepted"))
 
 
 async def _interview_outcome_process_deny(
@@ -5810,6 +5855,8 @@ async def _interview_outcome_process_deny(
     if guild is None or not isinstance(interviewer, discord.Member):
         await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
         return
+
+    ticket_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
 
     result_embed = discord.Embed(
         title="❌ Applicant Denied",
@@ -5825,12 +5872,15 @@ async def _interview_outcome_process_deny(
     result_embed.set_footer(text="Different Meets • Interview Denied")
 
     await _interview_outcome_dm_deny(applicant, notes)
-    await _interview_outcome_send_log(guild, applicant, interviewer, "Denied", notes)
+    await _interview_outcome_send_log(guild, applicant, interviewer, "Denied", notes, ticket_channel=ticket_channel)
 
     if interaction.response.is_done():
         await interaction.followup.send(embed=result_embed)
     else:
         await interaction.response.send_message(embed=result_embed)
+
+    if ticket_channel and INTERVIEW_OUTCOME_AUTO_CLOSE:
+        asyncio.ensure_future(_interview_outcome_close_ticket(ticket_channel, "Denied"))
 
 
 class ApplicantLookupModal(discord.ui.Modal, title="Interview Result"):
