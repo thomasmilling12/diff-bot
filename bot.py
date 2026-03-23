@@ -3587,6 +3587,7 @@ async def on_ready():
         bot.add_view(ColorSubmissionPanelView())
         bot.add_view(SubmissionActionView())
         bot.add_view(ControlHubView())
+        bot.add_view(ColorTeamPanelView())
     except Exception as e:
         print(f"View registration warning: {e}")
 
@@ -5143,6 +5144,135 @@ async def force_color_winner(interaction: discord.Interaction):
         await interaction.followup.send("Vote closed and winner posted.", ephemeral=True)
     else:
         await interaction.followup.send("No active vote to close.", ephemeral=True)
+
+
+# =========================
+# COLOR TEAM PANEL
+# =========================
+COLOR_TEAM_POST_CHANNEL_ID = 1485453653916520549
+COLOR_TEAM_PANEL_STATE_KEY = "color_team_panel_message_id"
+
+
+class ColorTeamPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(
+            label="Color Team Chat",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{GUILD_ID}/{COLOR_PANEL_CHANNEL_ID}",
+            emoji="🎨",
+        ))
+        self.add_item(discord.ui.Button(
+            label="Color Voting",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{GUILD_ID}/{COLOR_SUBMISSION_CHANNEL_ID}",
+            emoji="🗳️",
+        ))
+
+
+def _build_color_team_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🎨 DIFF Color Team Coordination",
+        description=(
+            "This panel is here to keep the **Color Team** organized and on the same page.\n\n"
+            "**What this area is used for:**\n"
+            "• Coordinating weekly crew color changes\n"
+            "• Discussing color ideas and submissions\n"
+            "• Preparing voting posts and announcements\n"
+            "• Keeping the team updated on current color plans\n\n"
+            "Use the buttons below to quickly access the main channels for coordination and voting."
+        ),
+        color=discord.Color.purple(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(
+        name="📌 Team Purpose",
+        value=(
+            "Work together to manage the crew's weekly color direction, planning, "
+            "and communication so everything stays clean, consistent, and organized."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="✅ Expectations",
+        value="Stay active • communicate clearly • help with planning • support weekly color operations",
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Color Team Panel")
+    return embed
+
+
+async def _post_or_refresh_color_team_panel(ping_role: bool = True) -> Optional[discord.Message]:
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return None
+    channel = guild.get_channel(COLOR_TEAM_POST_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return None
+
+    state = _load_diff_json(DIFF_PANEL_STATE_FILE)
+    msg_id = state.get(COLOR_TEAM_PANEL_STATE_KEY)
+    existing: Optional[discord.Message] = None
+    if msg_id:
+        try:
+            existing = await channel.fetch_message(int(msg_id))
+        except (discord.NotFound, discord.HTTPException):
+            existing = None
+
+    role = guild.get_role(COLOR_TEAM_ROLE_ID)
+    content = role.mention if (ping_role and role) else None
+    embed = _build_color_team_embed()
+    view = ColorTeamPanelView()
+
+    if existing:
+        await existing.edit(content=content, embed=embed, view=view)
+        return existing
+
+    msg = await channel.send(
+        content=content,
+        embed=embed,
+        view=view,
+        allowed_mentions=discord.AllowedMentions(roles=True),
+    )
+    state[COLOR_TEAM_PANEL_STATE_KEY] = msg.id
+    _save_diff_json(DIFF_PANEL_STATE_FILE, state)
+    return msg
+
+
+@bot.tree.command(name="post-color-team-panel", description="Post or refresh the Color Team coordination panel (staff only)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def post_color_team_panel(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    await _post_or_refresh_color_team_panel(ping_role=True)
+    await interaction.followup.send("Color team coordination panel posted/refreshed.", ephemeral=True)
+
+
+@bot.tree.command(name="refresh-color-team-panel", description="Refresh the Color Team panel in place without duplicating (staff only)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def refresh_color_team_panel(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    await _post_or_refresh_color_team_panel(ping_role=False)
+    await interaction.followup.send("Color team panel refreshed with no duplicate post.", ephemeral=True)
+
+
+@bot.tree.command(name="reset-color-team-panel", description="Reset the Color Team panel state and repost cleanly (admin only)")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_color_team_panel(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _load_diff_json(DIFF_PANEL_STATE_FILE)
+    state.pop(COLOR_TEAM_PANEL_STATE_KEY, None)
+    _save_diff_json(DIFF_PANEL_STATE_FILE, state)
+    await _post_or_refresh_color_team_panel(ping_role=True)
+    await interaction.followup.send("Color team panel reset and reposted cleanly.", ephemeral=True)
 
 
 # =========================
