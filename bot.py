@@ -1044,6 +1044,15 @@ class DeniedResultView(discord.ui.View):
         self.app_id = app_id
         self.applicant_id = applicant_id
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong. Please try again.", ephemeral=True)
+        except Exception:
+            pass
+
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="❌", custom_id="diff_denied_close")
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(view=None)
@@ -1060,6 +1069,7 @@ class DeniedResultView(discord.ui.View):
                 "You already requested more information for this denied application. Please wait for staff to respond.",
                 ephemeral=True,
             )
+        await interaction.response.defer(ephemeral=True)
         update_app(
             self.app_id,
             denied_info_requested=True,
@@ -1093,7 +1103,7 @@ class DeniedResultView(discord.ui.View):
                     await info_channel.send(embed=reply_embed, view=StaffReplyView(applicant_id=self.applicant_id, app_id=self.app_id))
                 except Exception:
                     pass
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Your request for more information has been sent to DIFF staff. Please wait for a response.",
             ephemeral=True,
         )
@@ -1103,6 +1113,15 @@ class DeniedResultView(discord.ui.View):
 # APPLICATION REVIEW VIEW
 # =========================
 class ReviewView(discord.ui.View):
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong. Please try again.", ephemeral=True)
+        except Exception:
+            pass
+
     def __init__(self, app_id: str, applicant_id: int):
         super().__init__(timeout=None)
         self.app_id = app_id
@@ -1139,12 +1158,14 @@ class ReviewView(discord.ui.View):
         applicant = interaction.guild.get_member(self.applicant_id)
         if applicant is None:
             return await interaction.response.send_message("Applicant is no longer in the server.", ephemeral=True)
+        await interaction.response.defer()
         approved_role = interaction.guild.get_role(APPROVED_MEMBER_ROLE_ID)
         if approved_role:
             try:
                 await applicant.add_roles(approved_role, reason=f"DIFF application #{self.app_id} approved by {interaction.user}")
             except discord.Forbidden:
-                return await interaction.response.send_message("I don't have permission to assign that role.", ephemeral=True)
+                await interaction.followup.send("I don't have permission to assign that role.", ephemeral=True)
+                return
         await self._finalize(interaction, "Approved", interaction.user, close_ticket=True)
         await safe_dm(applicant, f"Your DIFF application **#{self.app_id}** was **approved**. Welcome to DIFF! 🎉")
         clear_reapply_cooldown(applicant.id)
@@ -1207,11 +1228,17 @@ class ReviewView(discord.ui.View):
             reviewed_at=utc_now().isoformat(),
             decision_reason=record.get("deny_reason") if new_status == "Denied" else record.get("decision_reason"),
         )
-        embed = interaction.message.embeds[0]
+        embed = interaction.message.embeds[0] if interaction.message and interaction.message.embeds else discord.Embed()
         embed.color = discord.Color.green() if new_status == "Approved" else discord.Color.red()
         embed.set_footer(text=f"Status: {new_status} • Reviewed by {reviewer}")
         embed.timestamp = utc_now()
-        await interaction.response.edit_message(embed=embed, view=self)
+        if interaction.response.is_done():
+            try:
+                await interaction.edit_original_response(embed=embed, view=self)
+            except discord.HTTPException:
+                pass
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
         guild = interaction.guild
         if guild:
             tracker_channel = guild.get_channel(APPLICATION_TRACKER_CHANNEL_ID)
@@ -2958,6 +2985,15 @@ class CrewPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong. Please try again.", ephemeral=True)
+        except Exception:
+            pass
+
     @discord.ui.button(label="Crew Requirements", emoji="📋", style=discord.ButtonStyle.primary, custom_id="crew_requirements_btn")
     async def crew_requirements(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
@@ -3060,6 +3096,15 @@ class DiffPanel(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(discord.ui.Button(label="📝 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_URL, row=0))
         self.add_item(discord.ui.Button(label="🎨 Crew Color Voting", style=discord.ButtonStyle.link, url=COLOR_CHANNEL_URL, row=0))
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong. Please try again.", ephemeral=True)
+        except Exception:
+            pass
 
     @discord.ui.button(label="⚠️ Strike System", style=discord.ButtonStyle.primary, custom_id="diff_panel_strike", row=1)
     async def strike(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -5105,6 +5150,15 @@ class SubmissionActionView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong. Please try again.", ephemeral=True)
+        except Exception:
+            pass
+
     @discord.ui.button(label="Approve Color", style=discord.ButtonStyle.success, emoji="🏆", custom_id="diff_approve_color_button_v3")
     async def approve_color_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
@@ -5113,13 +5167,14 @@ class SubmissionActionView(discord.ui.View):
         submission = data["submissions"].get(str(interaction.message.id))
         if not submission:
             return await interaction.response.send_message("Submission not found in the system.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
         submission["status"] = "approved"
         submission["approved_at"] = _cs_utc_now()
         _cs_add_stat(data, int(submission["author_id"]), "manual_approvals", 1)
         _cs_save(data)
         await _cs_update_submission_message(submission, extra_footer="Approved by leadership")
         await _cs_post_winner_announcement(interaction.guild, submission, manual=True)
-        await interaction.response.send_message("Color approved and announcement posted.", ephemeral=True)
+        await interaction.followup.send("Color approved and announcement posted.", ephemeral=True)
 
     @discord.ui.button(label="Lock Submission", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="diff_lock_submission_button_v3")
     async def lock_submission_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -5129,11 +5184,12 @@ class SubmissionActionView(discord.ui.View):
         submission = data["submissions"].get(str(interaction.message.id))
         if not submission:
             return await interaction.response.send_message("Submission not found in the system.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
         submission["status"] = "locked"
         submission["locked_at"] = _cs_utc_now()
         _cs_save(data)
         await _cs_update_submission_message(submission, disable_view=True, extra_footer="Locked by leadership")
-        await interaction.response.send_message("Submission locked.", ephemeral=True)
+        await interaction.followup.send("Submission locked.", ephemeral=True)
 
 
 def _cs_build_panel_embed() -> discord.Embed:
@@ -8439,6 +8495,15 @@ class SupportDropdownView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(SupportDropdown())
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong. Please try again.", ephemeral=True)
+        except Exception:
+            pass
+
 
 @bot.tree.command(name="post-support-panel", description="Post the DIFF Support Center dropdown panel (staff only)")
 async def post_support_panel(interaction: discord.Interaction) -> None:
@@ -9732,6 +9797,15 @@ class JoinPlatformView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(JoinPlatformSelect())
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong. Please try again.", ephemeral=True)
+        except Exception:
+            pass
+
     @discord.ui.button(
         label="🔔 Notify Me For Meets",
         style=discord.ButtonStyle.primary,
@@ -9761,6 +9835,15 @@ class JoinPlatformView(discord.ui.View):
 class JoinTicketView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong. Please try again.", ephemeral=True)
+        except Exception:
+            pass
 
     def _staff_check(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
