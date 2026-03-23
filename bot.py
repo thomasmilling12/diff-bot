@@ -4410,6 +4410,7 @@ COLOR_PANEL_CHANNEL_ID = 1177436572304556084
 COLOR_SUBMISSION_CHANNEL_ID = 1177434999381831680
 COLOR_ANNOUNCEMENT_CHANNEL_ID = 1108181679308283965
 COLOR_SYSTEM_FILE = os.path.join(DATA_FOLDER, "diff_color_system_data.json")
+COLOR_PANEL_STATE_FILE = os.path.join(DATA_FOLDER, "diff_color_panel_state.json")
 COLOR_TZ = ZoneInfo("America/New_York")
 COLOR_SCHEDULE_HOUR = 12
 AUTO_LOCK_DAYS = 21
@@ -4819,11 +4820,7 @@ class SubmissionActionView(discord.ui.View):
         await interaction.response.send_message("Submission locked.", ephemeral=True)
 
 
-@bot.tree.command(name="post-color-panel", description="Post the DIFF color submission panel (staff only)")
-async def post_color_panel(interaction: discord.Interaction):
-    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Staff only.", ephemeral=True)
-    panel_ch = await _cs_fetch_channel(COLOR_PANEL_CHANNEL_ID)
+def _cs_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🎨 DIFF Color Submission Panel",
         description=(
@@ -4845,8 +4842,47 @@ async def post_color_panel(interaction: discord.Interaction):
         color=discord.Color.blurple(),
     )
     embed.set_footer(text="DIFF • Advanced Color Team System")
-    await panel_ch.send(embed=embed, view=ColorSubmissionPanelView())
+    return embed
+
+
+@bot.tree.command(name="post-color-panel", description="Post the DIFF color submission panel (staff only)")
+async def post_color_panel(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    panel_ch = await _cs_fetch_channel(COLOR_PANEL_CHANNEL_ID)
+    msg = await panel_ch.send(embed=_cs_build_panel_embed(), view=ColorSubmissionPanelView())
+    _save_diff_json(COLOR_PANEL_STATE_FILE, {"channel_id": panel_ch.id, "message_id": msg.id})
     await interaction.response.send_message(f"Color submission panel posted in {panel_ch.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="refresh-color-panel", description="Refresh the existing DIFF color submission panel (staff only)")
+async def refresh_color_panel(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    panel_ch = bot.get_channel(COLOR_PANEL_CHANNEL_ID)
+    if not isinstance(panel_ch, discord.TextChannel):
+        panel_ch = await bot.fetch_channel(COLOR_PANEL_CHANNEL_ID)
+    await interaction.response.defer(ephemeral=True)
+    message = None
+    state = _load_diff_json(COLOR_PANEL_STATE_FILE)
+    message_id = state.get("message_id")
+    if message_id:
+        try:
+            message = await panel_ch.fetch_message(int(message_id))
+        except (discord.NotFound, discord.HTTPException):
+            message = None
+    if message is None:
+        async for msg in panel_ch.history(limit=50):
+            if msg.author.id == bot.user.id and msg.embeds:
+                message = msg
+                _save_diff_json(COLOR_PANEL_STATE_FILE, {"channel_id": panel_ch.id, "message_id": msg.id})
+                break
+    if message is None:
+        return await interaction.followup.send(
+            "No panel message found. Use `/post-color-panel` to post one first.", ephemeral=True
+        )
+    await message.edit(embed=_cs_build_panel_embed(), view=ColorSubmissionPanelView())
+    await interaction.followup.send("Color panel refreshed ✅", ephemeral=True)
 
 
 @bot.tree.command(name="color-stats", description="Show the DIFF color team leaderboard")
