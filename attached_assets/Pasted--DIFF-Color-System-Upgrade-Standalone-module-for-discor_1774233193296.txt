@@ -1,0 +1,201 @@
+# DIFF Color System Upgrade
+# Standalone module for discord.py 2.x bots
+# Features:
+# - Button-based crew color voting
+# - Auto winner announcement
+# - Clean embed panels (LSU-style)
+# - Staff-only controls for Leader / Co-Leader / Manager
+#
+# HOW TO USE:
+# 1) Save this file as diff_color_upgrade.py next to your bot.py
+# 2) Fill in the CONFIG section below
+# 3) In bot.py, add:
+#       from diff_color_upgrade import setup_color_system
+#       setup_color_system(bot)
+# 4) Restart your bot
+#
+# Optional:
+# - Use persistent views by keeping custom_id values unchanged
+# - Replace in-memory state with JSON/database later if you want votes to survive restarts
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+GUILD_ID = 850386896509337710
+
+# Public channel where vote panels + winner posts go
+CREW_COLORS_CHANNEL_ID = 0  # put your public crew-colors channel id here
+
+# Optional private channel where color team can use commands
+COLOR_TEAM_CHANNEL_ID = 0  # put your private color team/submission channel id here
+
+# Roles allowed to create / close votes
+LEADER_ROLE_ID = 850391095845584937
+CO_LEADER_ROLE_ID = 850391378559238235
+MANAGER_ROLE_ID = 990011447193006101
+
+# Optional role pings for public vote / winner posts
+CREW_MEMBER_ROLE_ID = 886702076552441927
+COLOR_TEAM_ROLE_ID = 1273067317642788906  # update if needed
+
+# Branding
+DIFF_LOGO_URL = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
+EMBED_FOOTER = "Different Meets"
+ACCENT_COLOR = discord.Color.blue()
+
+# Set how long votes last by default
+DEFAULT_VOTE_HOURS = 24
+
+
+# ============================================================
+# STATE
+# ============================================================
+@dataclass
+class ColorVoteState:
+    title: str
+    color_name: str
+    image_url: str
+    created_by_id: int
+    channel_id: int
+    message_id: Optional[int] = None
+    end_time: Optional[datetime] = None
+    is_closed: bool = False
+    votes: Dict[int, str] = field(default_factory=dict)  # user_id -> yes/no
+
+    @property
+    def yes_count(self) -> int:
+        return sum(1 for v in self.votes.values() if v == "yes")
+
+    @property
+    def no_count(self) -> int:
+        return sum(1 for v in self.votes.values() if v == "no")
+
+    @property
+    def total_votes(self) -> int:
+        return len(self.votes)
+
+
+ACTIVE_VOTES: Dict[int, ColorVoteState] = {}
+ANNOUNCE_LOCK = asyncio.Lock()
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def has_staff_access(member: discord.Member) -> bool:
+    allowed_roles = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    return any(role.id in allowed_roles for role in member.roles)
+
+
+def format_dt(dt: datetime) -> str:
+    ts = int(dt.timestamp())
+    return f"<t:{ts}:F> (<t:{ts}:R>)"
+
+
+def build_vote_embed(state: ColorVoteState) -> discord.Embed:
+    embed = discord.Embed(
+        title="🎨 DIFF Crew Color Voting",
+        description=(
+            f"Vote on this week's crew color selection.\n\n"
+            f"**Color Name:** *{state.color_name}*\n"
+            f"**Status:** {'Closed' if state.is_closed else 'Open'}"
+        ),
+        color=ACCENT_COLOR,
+        timestamp=utc_now(),
+    )
+    if state.image_url:
+        embed.set_image(url=state.image_url)
+    embed.add_field(name="✅ Approve", value=str(state.yes_count), inline=True)
+    embed.add_field(name="❌ Pass", value=str(state.no_count), inline=True)
+    embed.add_field(name="📊 Total Votes", value=str(state.total_votes), inline=True)
+    if state.end_time and not state.is_closed:
+        embed.add_field(name="⏰ Voting Ends", value=format_dt(state.end_time), inline=False)
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text=EMBED_FOOTER)
+    return embed
+
+
+def build_winner_embed(state: ColorVoteState) -> discord.Embed:
+    embed = discord.Embed(
+        title="🏆 Official Crew Color Announcement",
+        description=(
+            "The crew color has been finalized for this week.\n\n"
+            f"**Color Name:** *{state.color_name}*\n\n"
+            "📸 *Color preview attached below*"
+        ),
+        color=ACCENT_COLOR,
+        timestamp=utc_now(),
+    )
+    if state.image_url:
+        embed.set_image(url=state.image_url)
+    embed.add_field(name="✅ Approvals", value=str(state.yes_count), inline=True)
+    embed.add_field(name="❌ Pass", value=str(state.no_count), inline=True)
+    embed.add_field(name="📊 Total Votes", value=str(state.total_votes), inline=True)
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text=EMBED_FOOTER)
+    return embed
+
+
+def build_no_winner_embed(state: ColorVoteState) -> discord.Embed:
+    embed = discord.Embed(
+        title="⚠️ Crew Color Vote Closed",
+        description=(
+            f"Voting has ended for **{state.color_name}**.\n\n"
+            "This selection was not approved at this time."
+        ),
+        color=discord.Color.orange(),
+        timestamp=utc_now(),
+    )
+    if state.image_url:
+        embed.set_image(url=state.image_url)
+    embed.add_field(name="✅ Approvals", value=str(state.yes_count), inline=True)
+    embed.add_field(name="❌ Pass", value=str(state.no_count), inline=True)
+    embed.add_field(name="📊 Total Votes", value=str(state.total_votes), inline=True)
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text=EMBED_FOOTER)
+    return embed
+
+
+async def safe_edit_vote_message(bot: commands.Bot, state: ColorVoteState) -> None:
+    if not state.message_id:
+        return
+    channel = bot.get_channel(state.channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    try:
+        msg = await channel.fetch_message(state.message_id)
+        await msg.edit(embed=build_vote_embed(state), view=ColorVoteView(bot, state.message_id))
+    except discord.NotFound:
+        pass
+    except discord.HTTPException:
+        pass
+
+
+async def close_vote_and_announce(bot: commands.Bot, message_id: int, closed_by: Optional[int] = None) -> bool:
+    async with ANNOUNCE_LOCK:
+        state = ACTIVE_VOTES.get(message_id)
+        if not state or state.is_closed:
+            return False
+
+        state.is_closed = True
+        await safe_edit_vote_message(bot, state)
+
+        channel = bot.get_channel(state.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return False
