@@ -3644,6 +3644,7 @@ async def on_ready():
 
     bot.loop.create_task(application_timeout_loop())
     bot.loop.create_task(_tab_refresh_all_panels())
+    bot.loop.create_task(_startup_refresh_all_panels())
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
@@ -6207,6 +6208,74 @@ async def _tab_refresh_all_panels() -> None:
             await _tab_update_panel(channel, member, state)
         except Exception:
             pass
+
+
+async def _startup_refresh_all_panels() -> None:
+    await asyncio.sleep(5)
+
+    async def _safe_edit(channel_id: int, message_id: int, embed_fn, view_fn) -> None:
+        try:
+            ch = bot.get_channel(channel_id)
+            if ch is None:
+                ch = await bot.fetch_channel(channel_id)
+            if not isinstance(ch, discord.TextChannel):
+                return
+            msg = await ch.fetch_message(message_id)
+            await msg.edit(embed=embed_fn(), view=view_fn())
+        except Exception:
+            pass
+
+    try:
+        interview_data = _interview_panel_load()
+        ch_id = interview_data.get("channel_id")
+        msg_id = interview_data.get("message_id")
+        if ch_id and msg_id:
+            await _safe_edit(int(ch_id), int(msg_id), _build_interview_panel_embed, InterviewInfoView)
+    except Exception:
+        pass
+
+    try:
+        color_state = _load_diff_json(COLOR_PANEL_STATE_FILE)
+        ch_id = color_state.get("channel_id")
+        msg_id = color_state.get("message_id")
+        if ch_id and msg_id:
+            await _safe_edit(int(ch_id), int(msg_id), _cs_build_panel_embed, ColorSubmissionPanelView)
+    except Exception:
+        pass
+
+    try:
+        panel_state = _load_diff_json(DIFF_PANEL_STATE_FILE)
+        color_team_msg_id = panel_state.get(COLOR_TEAM_PANEL_STATE_KEY)
+        if color_team_msg_id:
+            guild = bot.guilds[0] if bot.guilds else None
+            if guild:
+                ch = guild.get_channel(COLOR_TEAM_POST_CHANNEL_ID)
+                if isinstance(ch, discord.TextChannel):
+                    try:
+                        msg = await ch.fetch_message(int(color_team_msg_id))
+                        await msg.edit(embed=_build_color_team_embed(), view=ColorTeamPanelView())
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    try:
+        hub_data = _load_diff_json(ATT_CONTROL_HUB_FILE)
+        ch_id = hub_data.get("channel_id")
+        msg_id = hub_data.get("message_id")
+        if ch_id and msg_id:
+            await _safe_edit(int(ch_id), int(msg_id), _rsvp_build_control_hub_embed, ControlHubView)
+    except Exception:
+        pass
+
+    try:
+        outcome_data = _interview_outcome_load()
+        ch_id = outcome_data.get("channel_id")
+        msg_id = outcome_data.get("message_id")
+        if ch_id and msg_id:
+            await _safe_edit(int(ch_id), int(msg_id), _build_interview_outcome_embed, InterviewOutcomeView)
+    except Exception:
+        pass
 
 
 async def _tab_update_panel(channel: discord.TextChannel, member: discord.Member, state: dict) -> None:
