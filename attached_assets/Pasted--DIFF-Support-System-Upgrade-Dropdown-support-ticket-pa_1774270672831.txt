@@ -1,0 +1,663 @@
+
+"""
+DIFF Support System Upgrade
+- Dropdown support ticket panel
+- Logo + banner support on panel embeds
+- Ticket logs + transcript system
+- Application auto-questions
+- Staff review panel with Accept / Deny buttons
+
+discord.py 2.x extension / cog
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+GUILD_ID = 850386896509337710
+SUPPORT_PANEL_CHANNEL_ID = 1156363575150002226
+
+# Staff logs / transcript logs channel
+STAFF_LOGS_CHANNEL_ID = 1485265848099799163
+
+# Optional category override for tickets.
+# If None, tickets will be created in the same category as the support panel channel.
+TICKET_CATEGORY_ID = None
+
+# Leadership / staff roles
+LEADER_ROLE_ID = 850391095845584937
+CO_LEADER_ROLE_ID = 850391378559238235
+MANAGER_ROLE_ID = 990011447193006101
+HOST_ROLE_ID = 1055823929358430248
+
+# Optional support team role if you have one
+SUPPORT_STAFF_ROLE_ID = None
+
+# Role to assign when an application is approved
+APPROVED_STAFF_ROLE_ID = HOST_ROLE_ID
+
+# Branding
+BRAND_NAME = "DIFF Support Center"
+
+# Paste your actual URLs here if you want them shown automatically
+LOGO_URL = ""
+BANNER_URL = ""
+
+# If True, /post_support_panel will remove old bot-made support panels in the support channel
+DELETE_OLD_PANELS_ON_REPOST = True
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def clean_name(value: str) -> str:
+    value = value.lower().strip()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = re.sub(r"-{2,}", "-", value).strip("-")
+    return value or "user"
+
+
+def role_mention(role_id: Optional[int]) -> str:
+    return f"<@&{role_id}>" if role_id else ""
+
+
+def has_any_role(member: discord.Member, role_ids: set[int]) -> bool:
+    return any(role.id in role_ids for role in member.roles)
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def format_dt(dt: datetime) -> str:
+    unix = int(dt.timestamp())
+    return f"<t:{unix}:F>"
+
+
+@dataclass(frozen=True)
+class TicketType:
+    key: str
+    label: str
+    emoji: str
+    description: str
+    title: str
+    long_description: str
+    ping_role_id: Optional[int]
+
+    @property
+    def channel_prefix(self) -> str:
+        return self.key
+
+
+TICKET_TYPES: dict[str, TicketType] = {
+    "report": TicketType(
+        key="report",
+        label="🛡️ Report",
+        emoji="🛡️",
+        description="Report behavior issues, trolling, griefing, or rule breaking.",
+        title="Report Ticket",
+        long_description=(
+            "Report a DIFF member, meet attender, or any issue involving behavior, "
+            "rule breaking, disrespect, trolling, or meet disruption.\n\n"
+            "**Use this if you need to notify staff about:**\n"
+            "• Rule violations\n"
+            "• Toxic behavior\n"
+            "• Disrespect toward members or hosts\n"
+            "• Griefing, trolling, or disruption at meets\n"
+            "• Any situation that needs staff review"
+        ),
+        ping_role_id=MANAGER_ROLE_ID,
+    ),
+    "appeal": TicketType(
+        key="appeal",
+        label="⚠️ Appeal",
+        emoji="⚠️",
+        description="Appeal a ban, strike, warning, or other staff action.",
+        title="Appeal Ticket",
+        long_description=(
+            "Submit an appeal for a ban, strike, warning, or other staff action taken "
+            "against your account.\n\n"
+            "**Use this if you believe:**\n"
+            "• A punishment was unfair\n"
+            "• You want a second review\n"
+            "• You are ready to take accountability and request another chance\n\n"
+            "Please make sure your appeal is honest, respectful, and detailed."
+        ),
+        ping_role_id=LEADER_ROLE_ID,
+    ),
+    "support": TicketType(
+        key="support",
+        label="🚗 Support",
+        emoji="🚗",
+        description="Get help with questions, rules, roles, channels, or DIFF systems.",
+        title="Support Ticket",
+        long_description=(
+            "Get help with general server questions, meet information, crew systems, "
+            "channels, roles, or other DIFF-related support.\n\n"
+            "**Use this for:**\n"
+            "• General questions about the server\n"
+            "• Help understanding meet rules or requirements\n"
+            "• Assistance with channels, roles, or permissions\n"
+            "• Questions about schedules, crew activities, or DIFF systems"
+        ),
+        ping_role_id=SUPPORT_STAFF_ROLE_ID or HOST_ROLE_ID,
+    ),
+    "apply": TicketType(
+        key="apply",
+        label="📩 Apply",
+        emoji="📩",
+        description="Apply for a DIFF staff position.",
+        title="Staff Application Ticket",
+        long_description=(
+            "Apply for a DIFF staff position and show your interest in helping the crew "
+            "grow and improve.\n\n"
+            "**Use this if you want to:**\n"
+            "• Join the staff team\n"
+            "• Take on more responsibility in DIFF\n"
+            "• Help with hosting, management, support, or community growth\n\n"
+            "Please only apply if you are active, mature, professional, and ready to "
+            "contribute consistently."
+        ),
+        ping_role_id=CO_LEADER_ROLE_ID,
+    ),
+}
+
+
+APPLICATION_QUESTIONS = [
+    "What DIFF staff role are you applying for?",
+    "How long have you been in DIFF?",
+    "Why do you want to join the staff team?",
+    "What makes you a strong fit for DIFF staff?",
+    "How active are you in the server and at meets?",
+    "How would you handle disrespect, trolling, or meet disruption?",
+    "What days / times are you usually available?",
+]
+
+
+def apply_branding(embed: discord.Embed) -> discord.Embed:
+    if LOGO_URL:
+        embed.set_thumbnail(url=LOGO_URL)
+    if BANNER_URL:
+        embed.set_image(url=BANNER_URL)
+    embed.set_footer(text="Different Meets • Support System")
+    return embed
+
+
+def build_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title=BRAND_NAME,
+        description=(
+            "Need help with something in the server or during a meet? Use the dropdown "
+            "below to contact the right staff team.\n\n"
+            "Whether you have a concern, need assistance, want to appeal a punishment, "
+            "or are interested in joining the DIFF staff team, this panel is here to "
+            "direct you to the correct place quickly and clearly.\n\n"
+            "**Please select the option that best matches your situation below.**"
+        ),
+        color=discord.Color.blue(),
+    )
+    for ticket in TICKET_TYPES.values():
+        embed.add_field(name=ticket.label, value=ticket.long_description, inline=False)
+    return apply_branding(embed)
+
+
+def build_ticket_embed(ticket: TicketType, user: discord.Member) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"{ticket.emoji} {ticket.title}",
+        description=(
+            f"{user.mention}, your ticket has been created.\n\n"
+            f"{ticket.long_description}\n\n"
+            "**Please explain your situation clearly and include as much detail as possible.**"
+        ),
+        color=discord.Color.blue(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="Opened By", value=f"{user.mention} (`{user.id}`)", inline=False)
+    embed.add_field(name="Category", value=ticket.label, inline=True)
+    embed.add_field(name="Status", value="Open", inline=True)
+    return apply_branding(embed)
+
+
+def build_application_questions_embed(user: discord.Member) -> discord.Embed:
+    embed = discord.Embed(
+        title="📋 DIFF Staff Application Questions",
+        description=(
+            f"{user.mention}, please answer each question below in this ticket.\n\n"
+            "**Take your time and be detailed, honest, and professional.**"
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(
+        name="Questions",
+        value="\n".join(f"**{i}.** {question}" for i, question in enumerate(APPLICATION_QUESTIONS, start=1)),
+        inline=False,
+    )
+    embed.add_field(
+        name="Review Process",
+        value=(
+            "Once you answer everything, DIFF leadership can review your application "
+            "and use the panel below to approve or deny it."
+        ),
+        inline=False,
+    )
+    return apply_branding(embed)
+
+
+def build_application_review_embed(applicant: discord.Member) -> discord.Embed:
+    embed = discord.Embed(
+        title="🧾 Staff Review Panel",
+        description=(
+            f"Applicant: {applicant.mention}\n\n"
+            "Leadership can review this application and choose one of the actions below."
+        ),
+        color=discord.Color.dark_blue(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(
+        name="Actions",
+        value=(
+            "✅ **Accept** — Approve the application and assign the configured staff role\n"
+            "❌ **Deny** — Deny the application and log the decision"
+        ),
+        inline=False,
+    )
+    return apply_branding(embed)
+
+
+def build_log_embed(action: str, user: discord.Member, ticket_type: TicketType, channel: discord.TextChannel) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"📁 Ticket {action}",
+        color=discord.Color.dark_blue(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="User", value=f"{user.mention} (`{user.id}`)", inline=False)
+    embed.add_field(name="Type", value=ticket_type.label, inline=True)
+    embed.add_field(name="Channel", value=channel.name, inline=True)
+    embed.add_field(name="Time", value=format_dt(utc_now()), inline=False)
+    return apply_branding(embed)
+
+
+def build_decision_embed(applicant: discord.Member, reviewer: discord.Member, approved: bool) -> discord.Embed:
+    color = discord.Color.green() if approved else discord.Color.red()
+    title = "✅ Application Approved" if approved else "❌ Application Denied"
+    desc = (
+        f"Applicant: {applicant.mention}\n"
+        f"Reviewed By: {reviewer.mention}\n\n"
+        f"Decision: {'Approved' if approved else 'Denied'}"
+    )
+    embed = discord.Embed(title=title, description=desc, color=color, timestamp=utc_now())
+    return apply_branding(embed)
+
+
+async def find_existing_ticket(guild: discord.Guild, member: discord.Member, ticket_type: TicketType) -> Optional[discord.TextChannel]:
+    prefix = f"{ticket_type.channel_prefix}-{clean_name(member.name)}"
+    for channel in guild.text_channels:
+        if channel.name.startswith(prefix) and channel.topic:
+            if f"ticket_owner={member.id}" in channel.topic and f"ticket_type={ticket_type.key}" in channel.topic:
+                return channel
+    return None
+
+
+def parse_topic_value(topic: Optional[str], key: str) -> Optional[str]:
+    if not topic:
+        return None
+    match = re.search(rf"{re.escape(key)}=([^|]+)", topic)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+async def export_transcript(channel: discord.TextChannel) -> discord.File:
+    messages = []
+    async for msg in channel.history(limit=None, oldest_first=True):
+        created = msg.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+        header = f"[{created}] {msg.author} ({msg.author.id})"
+        content = msg.content or ""
+        attachments = ""
+        if msg.attachments:
+            attachments = "\n" + "\n".join(f"[Attachment] {a.url}" for a in msg.attachments)
+        embeds = ""
+        if msg.embeds:
+            embed_lines = []
+            for emb in msg.embeds:
+                if emb.title:
+                    embed_lines.append(f"[Embed Title] {emb.title}")
+                if emb.description:
+                    embed_lines.append(f"[Embed Description] {emb.description}")
+                for field in emb.fields:
+                    embed_lines.append(f"[Embed Field] {field.name}: {field.value}")
+            if embed_lines:
+                embeds = "\n" + "\n".join(embed_lines)
+        messages.append(f"{header}\n{content}{attachments}{embeds}\n{'-'*60}\n")
+
+    text = "".join(messages) if messages else "No messages found."
+    buffer = io.BytesIO(text.encode("utf-8"))
+    safe_name = channel.name[:80]
+    return discord.File(buffer, filename=f"{safe_name}-transcript.txt")
+
+
+# =========================================================
+# VIEWS
+# =========================================================
+
+class CloseTicketView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="diff_support_close_ticket")
+    async def close_ticket(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("This can only be used in a ticket channel.", ephemeral=True)
+            return
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Member check failed.", ephemeral=True)
+            return
+
+        channel = interaction.channel
+        owner_id = parse_topic_value(channel.topic, "ticket_owner")
+        is_owner = owner_id == str(interaction.user.id)
+        staff_role_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+        if SUPPORT_STAFF_ROLE_ID:
+            staff_role_ids.add(SUPPORT_STAFF_ROLE_ID)
+        is_staff = has_any_role(interaction.user, staff_role_ids)
+
+        if not (is_owner or is_staff or interaction.user.guild_permissions.manage_channels):
+            await interaction.response.send_message("You do not have permission to close this ticket.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("Closing ticket and saving transcript...", ephemeral=True)
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        ticket_type_key = parse_topic_value(channel.topic, "ticket_type") or "support"
+        ticket_type = TICKET_TYPES.get(ticket_type_key, TICKET_TYPES["support"])
+
+        transcript_file = await export_transcript(channel)
+
+        if isinstance(logs_channel, discord.TextChannel):
+            embed = discord.Embed(
+                title="🧾 Ticket Closed",
+                description=(
+                    f"Closed By: {interaction.user.mention}\n"
+                    f"Channel: `{channel.name}`\n"
+                    f"Type: {ticket_type.label}\n"
+                    f"Closed At: {format_dt(utc_now())}"
+                ),
+                color=discord.Color.red(),
+                timestamp=utc_now(),
+            )
+            owner_display = parse_topic_value(channel.topic, "ticket_owner")
+            if owner_display:
+                embed.add_field(name="Ticket Owner ID", value=owner_display, inline=False)
+            apply_branding(embed)
+            await logs_channel.send(embed=embed, file=transcript_file)
+
+        await asyncio.sleep(1.5)
+        await channel.delete(reason=f"Ticket closed by {interaction.user} ({interaction.user.id})")
+
+
+class ApplicationReviewView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    async def _check_permission(self, interaction: discord.Interaction) -> bool:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return False
+        allowed_roles = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+        return has_any_role(interaction.user, allowed_roles) or interaction.user.guild_permissions.manage_guild
+
+    @discord.ui.button(label="Accept", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_app_accept")
+    async def accept_application(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self._check_permission(interaction):
+            await interaction.response.send_message("Only DIFF leadership can approve applications.", ephemeral=True)
+            return
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel) or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This action can only be used in the server.", ephemeral=True)
+            return
+
+        applicant_id_raw = parse_topic_value(interaction.channel.topic, "ticket_owner")
+        if not applicant_id_raw or not applicant_id_raw.isdigit():
+            await interaction.response.send_message("Could not detect the application owner from this ticket.", ephemeral=True)
+            return
+
+        applicant = interaction.guild.get_member(int(applicant_id_raw))
+        if applicant is None:
+            await interaction.response.send_message("The applicant is no longer in the server.", ephemeral=True)
+            return
+
+        role = interaction.guild.get_role(APPROVED_STAFF_ROLE_ID) if APPROVED_STAFF_ROLE_ID else None
+        if role:
+            try:
+                await applicant.add_roles(role, reason=f"Application approved by {interaction.user}")
+            except discord.HTTPException:
+                pass
+
+        embed = build_decision_embed(applicant, interaction.user, approved=True)
+        await interaction.response.send_message("Application approved.", ephemeral=True)
+        await interaction.channel.send(embed=embed)
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            await logs_channel.send(embed=embed)
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)
+
+    @discord.ui.button(label="Deny", emoji="❌", style=discord.ButtonStyle.danger, custom_id="diff_app_deny")
+    async def deny_application(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await self._check_permission(interaction):
+            await interaction.response.send_message("Only DIFF leadership can deny applications.", ephemeral=True)
+            return
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel) or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This action can only be used in the server.", ephemeral=True)
+            return
+
+        applicant_id_raw = parse_topic_value(interaction.channel.topic, "ticket_owner")
+        if not applicant_id_raw or not applicant_id_raw.isdigit():
+            await interaction.response.send_message("Could not detect the application owner from this ticket.", ephemeral=True)
+            return
+
+        applicant = interaction.guild.get_member(int(applicant_id_raw))
+        if applicant is None:
+            await interaction.response.send_message("The applicant is no longer in the server.", ephemeral=True)
+            return
+
+        embed = build_decision_embed(applicant, interaction.user, approved=False)
+        await interaction.response.send_message("Application denied.", ephemeral=True)
+        await interaction.channel.send(embed=embed)
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            await logs_channel.send(embed=embed)
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)
+
+
+class SupportDropdown(discord.ui.Select):
+    def __init__(self) -> None:
+        options = [
+            discord.SelectOption(
+                label=ticket.label,
+                value=ticket.key,
+                description=ticket.description[:100],
+                emoji=ticket.emoji,
+            )
+            for ticket in TICKET_TYPES.values()
+        ]
+        super().__init__(
+            placeholder="Choose the support option that best fits your situation...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="diff_support_dropdown_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This dropdown can only be used inside the server.", ephemeral=True)
+            return
+
+        ticket = TICKET_TYPES[self.values[0]]
+        existing = await find_existing_ticket(interaction.guild, interaction.user, ticket)
+        if existing:
+            await interaction.response.send_message(
+                f"You already have an open {ticket.label} ticket: {existing.mention}",
+                ephemeral=True,
+            )
+            return
+
+        panel_channel = interaction.guild.get_channel(SUPPORT_PANEL_CHANNEL_ID)
+        category = None
+
+        if TICKET_CATEGORY_ID:
+            category = interaction.guild.get_channel(TICKET_CATEGORY_ID)
+        elif isinstance(panel_channel, discord.TextChannel):
+            category = panel_channel.category
+
+        if not isinstance(category, discord.CategoryChannel):
+            await interaction.response.send_message(
+                "Ticket category is not configured correctly. Set TICKET_CATEGORY_ID or place the panel inside a category.",
+                ephemeral=True,
+            )
+            return
+
+        staff_role_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+        if SUPPORT_STAFF_ROLE_ID:
+            staff_role_ids.add(SUPPORT_STAFF_ROLE_ID)
+
+        overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True,
+            ),
+        }
+
+        me = interaction.guild.me
+        if me:
+            overwrites[me] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_channels=True,
+                manage_messages=True,
+                attach_files=True,
+                embed_links=True,
+            )
+
+        for role_id in staff_role_ids:
+            role = interaction.guild.get_role(role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    manage_messages=True,
+                    attach_files=True,
+                    embed_links=True,
+                )
+
+        channel_name = f"{ticket.channel_prefix}-{clean_name(interaction.user.name)}"
+        topic = f"ticket_owner={interaction.user.id} | ticket_type={ticket.key}"
+
+        channel = await interaction.guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites,
+            topic=topic,
+            reason=f"{ticket.title} opened by {interaction.user} ({interaction.user.id})",
+        )
+
+        ping_text = " ".join(filter(None, [interaction.user.mention, role_mention(ticket.ping_role_id)]))
+
+        await channel.send(
+            content=ping_text or None,
+            embed=build_ticket_embed(ticket, interaction.user),
+            view=CloseTicketView(),
+        )
+
+        if ticket.key == "apply":
+            await channel.send(embed=build_application_questions_embed(interaction.user))
+            await channel.send(embed=build_application_review_embed(interaction.user), view=ApplicationReviewView())
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            await logs_channel.send(embed=build_log_embed("Opened", interaction.user, ticket, channel))
+
+        await interaction.response.send_message(
+            f"Your {ticket.label} ticket has been created: {channel.mention}",
+            ephemeral=True,
+        )
+
+
+class SupportDropdownView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self.add_item(SupportDropdown())
+
+
+# =========================================================
+# COG
+# =========================================================
+
+class DiffSupportSystemUpgrade(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+
+    async def cog_load(self) -> None:
+        self.bot.add_view(SupportDropdownView())
+        self.bot.add_view(CloseTicketView())
+        self.bot.add_view(ApplicationReviewView())
+
+    @app_commands.command(name="post_support_panel", description="Post the DIFF Support Center support ticket panel.")
+    async def post_support_panel(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command can only be used inside the server.", ephemeral=True)
+            return
+
+        allowed_roles = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+        if not (has_any_role(interaction.user, allowed_roles) or interaction.user.guild_permissions.manage_guild):
+            await interaction.response.send_message("Only DIFF leadership can post this panel.", ephemeral=True)
+            return
+
+        channel = interaction.guild.get_channel(SUPPORT_PANEL_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("Support panel channel was not found.", ephemeral=True)
+            return
+
+        if DELETE_OLD_PANELS_ON_REPOST:
+            try:
+                async for msg in channel.history(limit=50):
+                    if msg.author.id == self.bot.user.id and any(embed.title == BRAND_NAME for embed in msg.embeds):
+                        try:
+                            await msg.delete()
+                        except discord.HTTPException:
+                            pass
+            except discord.HTTPException:
+                pass
+
+        await channel.send(embed=build_panel_embed(), view=SupportDropdownView())
+        await interaction.response.send_message(f"Support panel posted in {channel.mention}.", ephemeral=True)
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(DiffSupportSystemUpgrade(bot))
