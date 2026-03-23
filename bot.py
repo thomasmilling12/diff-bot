@@ -9919,6 +9919,38 @@ async def post_join_panel(interaction: discord.Interaction) -> None:
     await interaction.followup.send(f"Join Hub panel posted in {channel.mention}.", ephemeral=True)
 
 
+@bot.tree.command(name="refresh-join-panel", description="Refresh the DIFF Join Hub panel in place, or repost it if missing (staff only)")
+async def refresh_join_panel(interaction: discord.Interaction) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    channel = interaction.guild.get_channel(JOIN_PANEL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return await interaction.response.send_message("Join panel channel not found.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    existing: discord.Message | None = None
+    try:
+        async for msg in channel.history(limit=30):
+            if msg.author.id == bot.user.id and any(e.title and "JOIN HUB" in e.title.upper() for e in msg.embeds):
+                existing = msg
+                break
+    except discord.HTTPException:
+        pass
+    if existing:
+        try:
+            await existing.edit(embed=_join_build_panel_embed(), view=JoinPlatformView())
+            return await interaction.followup.send(f"Join Hub panel refreshed in {channel.mention}.", ephemeral=True)
+        except discord.HTTPException:
+            pass
+    await channel.send(embed=_join_build_panel_embed(), view=JoinPlatformView())
+    await interaction.followup.send(f"Join Hub panel reposted in {channel.mention} (no existing panel found).", ephemeral=True)
+
+
 # =========================
 # START BOT
 # =========================
