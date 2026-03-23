@@ -127,6 +127,12 @@ TICKET_APP_BRIDGE_FILE = os.path.join(DATA_FOLDER, "diff_ticket_app_bridge.json"
 COLOR_OPS_STATE_FILE = os.path.join(DATA_FOLDER, "diff_color_ops_state.json")
 INTERVIEW_OUTCOME_LOG_CHANNEL_ID = STAFF_LOGS_CHANNEL_ID
 INTERVIEW_OUTCOME_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+FUS_DM_ON_INTERVIEW = True
+FUS_DM_ON_APPROVAL = True
+FUS_DM_ON_DENIAL = True
+FUS_AUTO_CLOSE_ENABLED = False
+FUS_AUTO_CLOSE_DELAY_SECONDS = 30
+FUS_TICKET_KEYWORDS = ("ticket", "application", "app", "apply")
 
 DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
 DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
@@ -3605,6 +3611,8 @@ async def on_ready():
         color_schedule_loop.start()
     if not color_ops_refresh_loop.is_running():
         color_ops_refresh_loop.start()
+    if not ticket_scan_loop.is_running():
+        ticket_scan_loop.start()
 
     _rsvp_load_all()
     for _rsvp_mid, _rsvp_rec in _rsvp_meets.items():
@@ -6046,6 +6054,69 @@ async def _tab_post_staff_log(title: str, description: str, color: discord.Color
     await channel.send(embed=embed)
 
 
+async def _fus_safe_dm(member: discord.Member, message: str) -> None:
+    try:
+        await member.send(message)
+    except Exception:
+        pass
+
+
+def _fus_detect_applicant(channel: discord.TextChannel) -> discord.Member | None:
+    guild = channel.guild
+    for target, overwrite in channel.overwrites.items():
+        if not isinstance(target, discord.Member):
+            continue
+        if target.bot:
+            continue
+        if _interview_outcome_can_manage(target):
+            continue
+        if overwrite.view_channel is True or overwrite.send_messages is True:
+            return target
+    name = channel.name.lower()
+    for member in guild.members:
+        if member.bot or _interview_outcome_can_manage(member):
+            continue
+        compact = member.name.lower().replace(" ", "-")
+        if compact in name:
+            return member
+    return None
+
+
+async def _fus_handle_approval(member: discord.Member, channel: discord.TextChannel, notes: str) -> None:
+    guild = channel.guild
+    role = guild.get_role(CREW_MEMBER_ROLE_ID)
+    if role:
+        try:
+            await member.add_roles(role, reason="DIFF application approved")
+        except Exception:
+            pass
+    if FUS_DM_ON_APPROVAL:
+        await _fus_safe_dm(
+            member,
+            f"Your DIFF application has been **Approved**.\n\n"
+            f"**Notes:** {notes}\n"
+            "Welcome to Different Meets.",
+        )
+    try:
+        await channel.send(
+            f"✅ {member.mention} has been approved."
+            + (f" Role assigned: {role.mention}" if role else "")
+        )
+    except Exception:
+        pass
+    if FUS_AUTO_CLOSE_ENABLED:
+        await channel.send(f"🧼 This ticket will close in **{FUS_AUTO_CLOSE_DELAY_SECONDS} seconds**.")
+        asyncio.ensure_future(_fus_delayed_close(channel, FUS_AUTO_CLOSE_DELAY_SECONDS))
+
+
+async def _fus_delayed_close(channel: discord.TextChannel, delay: int) -> None:
+    await asyncio.sleep(delay)
+    try:
+        await channel.delete(reason="DIFF application workflow complete")
+    except Exception:
+        pass
+
+
 async def _tab_update_panel(channel: discord.TextChannel, member: discord.Member, state: dict) -> None:
     app = _tab_get_app(state, member.id)
     embed = _tab_build_status_embed(member, app)
@@ -6115,6 +6186,13 @@ class InterviewScheduleModal(discord.ui.Modal, title="Schedule Interview"):
             ),
             discord.Color.orange(),
         )
+        if FUS_DM_ON_INTERVIEW:
+            await _fus_safe_dm(
+                member,
+                f"Your DIFF application has moved to the **Interview Scheduled** stage.\n\n"
+                f"**Interview Time:** {self.interview_time}\n"
+                f"**Notes:** {self.notes or 'No notes provided.'}",
+            )
         if isinstance(interaction.channel, discord.TextChannel):
             await _tab_update_panel(interaction.channel, member, state)
         await interaction.response.send_message(f"Interview scheduled for {member.mention}.", ephemeral=True)
@@ -6168,6 +6246,18 @@ class ApplicationResultModal(discord.ui.Modal):
         )
         if isinstance(interaction.channel, discord.TextChannel):
             await _tab_update_panel(interaction.channel, member, state)
+            if self.result_name == "Approved":
+                await _fus_handle_approval(member, interaction.channel, str(self.result_notes) if self.result_notes else "No notes provided.")
+            else:
+                if FUS_DM_ON_DENIAL:
+                    await _fus_safe_dm(
+                        member,
+                        f"Your DIFF application has been **Denied**.\n\n"
+                        f"**Notes:** {self.result_notes or 'No notes provided.'}",
+                    )
+                if FUS_AUTO_CLOSE_ENABLED:
+                    await interaction.channel.send(f"🧼 This ticket will close in **{FUS_AUTO_CLOSE_DELAY_SECONDS} seconds**.")
+                    asyncio.ensure_future(_fus_delayed_close(interaction.channel, FUS_AUTO_CLOSE_DELAY_SECONDS))
         await interaction.response.send_message(
             f"Application marked as **{self.result_name}** for {member.mention}.", ephemeral=True
         )
@@ -6297,6 +6387,69 @@ async def link_application_ticket(interaction: discord.Interaction, member: disc
     )
 
 
+@bot.tree.command(name="setup-application-ticket", description="Auto-detect the applicant in this ticket and attach the review panel (staff only)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def setup_application_ticket(interaction: discord.Interaction):
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Use this command inside a ticket text channel.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    applicant = _fus_detect_applicant(interaction.channel)
+    if applicant is None:
+        return await interaction.followup.send(
+            "I could not auto-detect the applicant in this ticket. "
+            "Use `/send-application-review-panel @member` to link manually.", ephemeral=True
+        )
+    state = _tab_load()
+    app = _tab_get_app(state, applicant.id)
+    now = _tab_now()
+    app.update({
+        "display_name": applicant.display_name,
+        "submitted_at": app.get("submitted_at") or now,
+        "status": app.get("status") or "Applied",
+        "last_updated_at": now,
+    })
+    ticket_key = str(interaction.channel.id)
+    state["ticket_links"].setdefault(ticket_key, {})["member_id"] = applicant.id
+    await _tab_update_panel(interaction.channel, applicant, state)
+    await _tab_post_staff_log(
+        "🔗 Ticket Auto-Connected",
+        (
+            f"**Applicant:** {applicant.mention}\n"
+            f"**Ticket:** {interaction.channel.mention}\n"
+            f"**Status:** {app['status']}"
+        ),
+        discord.Color.blurple(),
+    )
+    await interaction.followup.send(f"Review panel attached for {applicant.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="rebuild-application-panel", description="Rebuild the review panel in this ticket if it was deleted (staff only)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def rebuild_application_panel(interaction: discord.Interaction):
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Use this command inside a ticket text channel.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _tab_load()
+    ticket_key = str(interaction.channel.id)
+    link = state["ticket_links"].get(ticket_key)
+    if link and link.get("member_id"):
+        applicant = interaction.guild.get_member(int(link["member_id"])) if interaction.guild else None
+    else:
+        applicant = _fus_detect_applicant(interaction.channel)
+    if applicant is None:
+        return await interaction.followup.send("Could not find the applicant for this ticket.", ephemeral=True)
+    state["ticket_links"].setdefault(ticket_key, {}).pop("panel_message_id", None)
+    state["ticket_links"][ticket_key]["member_id"] = applicant.id
+    await _tab_update_panel(interaction.channel, applicant, state)
+    await interaction.followup.send("Application review panel rebuilt.", ephemeral=True)
+
+
 @bot.tree.command(name="application-status", description="Show the linked application status for this ticket (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def application_status(interaction: discord.Interaction):
@@ -6316,6 +6469,55 @@ async def application_status(interaction: discord.Interaction):
     app = _tab_get_app(state, member.id)
     embed = _tab_build_status_embed(member, app)
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@tasks.loop(minutes=2)
+async def ticket_scan_loop():
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return
+    state = _tab_load()
+    for channel in guild.text_channels:
+        name = channel.name.lower()
+        if not any(word in name for word in FUS_TICKET_KEYWORDS):
+            continue
+        ticket_key = str(channel.id)
+        link = state["ticket_links"].get(ticket_key, {})
+        if link.get("panel_message_id"):
+            continue
+        try:
+            applicant = _fus_detect_applicant(channel)
+        except Exception:
+            continue
+        if applicant is None:
+            continue
+        app = _tab_get_app(state, applicant.id)
+        now = _tab_now()
+        app.update({
+            "display_name": applicant.display_name,
+            "submitted_at": app.get("submitted_at") or now,
+            "status": app.get("status") or "Applied",
+            "last_updated_at": now,
+        })
+        state["ticket_links"].setdefault(ticket_key, {})["member_id"] = applicant.id
+        try:
+            await _tab_update_panel(channel, applicant, state)
+            await _tab_post_staff_log(
+                "🔗 Ticket Auto-Connected",
+                (
+                    f"**Applicant:** {applicant.mention}\n"
+                    f"**Ticket:** {channel.mention}\n"
+                    f"**Status:** {app['status']}"
+                ),
+                discord.Color.blurple(),
+            )
+        except Exception:
+            continue
+
+
+@ticket_scan_loop.before_loop
+async def before_ticket_scan_loop():
+    await bot.wait_until_ready()
 
 
 # =========================
