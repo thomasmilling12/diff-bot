@@ -122,7 +122,10 @@ DIFF_PANEL_CHANNEL_ID = 1103086800458760262
 DIFF_PANEL_STATE_FILE = os.path.join(DATA_FOLDER, "diff_panel_state.json")
 INTERVIEW_PANEL_CHANNEL_ID = 1103849042296963112
 INTERVIEW_PANEL_FILE = os.path.join(DATA_FOLDER, "diff_interview_panel.json")
+INTERVIEW_OUTCOME_FILE = os.path.join(DATA_FOLDER, "diff_interview_outcome_panel.json")
 COLOR_OPS_STATE_FILE = os.path.join(DATA_FOLDER, "diff_color_ops_state.json")
+INTERVIEW_OUTCOME_LOG_CHANNEL_ID = STAFF_LOGS_CHANNEL_ID
+INTERVIEW_OUTCOME_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
 
 DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
 DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
@@ -3592,6 +3595,7 @@ async def on_ready():
         bot.add_view(ControlHubView())
         bot.add_view(ColorTeamPanelView())
         bot.add_view(InterviewInfoView())
+        bot.add_view(InterviewOutcomeView())
     except Exception as e:
         print(f"View registration warning: {e}")
 
@@ -5652,6 +5656,318 @@ async def refresh_interview_panel(interaction: discord.Interaction):
         return
     await _post_or_refresh_interview_panel()
     await interaction.followup.send("Interview panel refreshed.", ephemeral=True)
+
+
+# =========================
+# INTERVIEW OUTCOME SYSTEM
+# =========================
+
+def _interview_outcome_load() -> dict:
+    return _load_diff_json(INTERVIEW_OUTCOME_FILE) or {}
+
+
+def _interview_outcome_save(data: dict) -> None:
+    _save_diff_json(INTERVIEW_OUTCOME_FILE, data)
+
+
+def _interview_outcome_can_manage(member: discord.Member) -> bool:
+    return any(r.id in INTERVIEW_OUTCOME_ALLOWED_ROLES for r in member.roles)
+
+
+def _build_interview_outcome_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="✅ DIFF Interview Results Panel",
+        description=(
+            "*Use this panel after the applicant interview is complete.*\n\n"
+            "This system helps staff finalize interview decisions in a clean, professional, "
+            "and trackable way inside the ticket.\n\n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+            "✅ **Accept Applicant** — approve the applicant, assign the crew role, and log the result\n\n"
+            "❌ **Deny Applicant** — mark the applicant as denied and send a clean result log\n\n"
+            "📌 **Applicant Reminder** — quick checklist before choosing the final result\n\n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+            "🎯 Keep decisions respectful, consistent, and clearly logged for staff review."
+        ),
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Different Meets • Interview Outcome System")
+    return embed
+
+
+async def _interview_outcome_send_log(
+    guild: discord.Guild,
+    applicant: discord.Member,
+    interviewer: discord.Member,
+    result: str,
+    notes: str,
+    role_given: str | None = None,
+) -> None:
+    channel = guild.get_channel(INTERVIEW_OUTCOME_LOG_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    color = discord.Color.green() if result == "Accepted" else discord.Color.red()
+    icon = "✅" if result == "Accepted" else "❌"
+    embed = discord.Embed(
+        title=f"{icon} Interview Result Logged",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Applicant", value=applicant.mention, inline=True)
+    embed.add_field(name="Handled By", value=interviewer.mention, inline=True)
+    embed.add_field(name="Result", value=result, inline=True)
+    embed.add_field(name="Role Given", value=role_given or "None", inline=True)
+    embed.add_field(name="Date", value=datetime.now(timezone.utc).strftime("%Y-%m-%d"), inline=True)
+    embed.add_field(name="Notes", value=notes if notes else "No notes added.", inline=False)
+    embed.set_footer(text="Different Meets • Applicant Review Log")
+    await channel.send(embed=embed)
+
+
+async def _interview_outcome_dm_accept(applicant: discord.Member) -> None:
+    try:
+        await applicant.send(
+            "✅ **Welcome to Different Meets (DIFF)!**\n\n"
+            "Your interview has been accepted.\n\n"
+            "Please make sure you review the server information, stay active, "
+            "and represent DIFF the right way at meets and events.\n\n"
+            "Welcome to the crew."
+        )
+    except discord.HTTPException:
+        pass
+
+
+async def _interview_outcome_dm_deny(applicant: discord.Member, notes: str) -> None:
+    msg = (
+        "❌ **DIFF Interview Update**\n\n"
+        "Thank you for taking the time to interview with Different Meets.\n\n"
+        "At this time, your application was not accepted. "
+        "Please continue improving and feel free to reapply in the future.\n\n"
+    )
+    if notes:
+        msg += f"**Notes:** {notes}"
+    try:
+        await applicant.send(msg)
+    except discord.HTTPException:
+        pass
+
+
+async def _interview_outcome_process_accept(
+    interaction: discord.Interaction, applicant: discord.Member, notes: str
+) -> None:
+    guild = interaction.guild
+    interviewer = interaction.user
+    if guild is None or not isinstance(interviewer, discord.Member):
+        await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+        return
+
+    role = guild.get_role(CREW_MEMBER_ROLE_ID)
+    assigned_role_name: str | None = None
+    if role is not None:
+        try:
+            await applicant.add_roles(role, reason=f"Accepted into DIFF by {interviewer}")
+            assigned_role_name = role.name
+        except discord.HTTPException:
+            assigned_role_name = "Role assignment failed"
+
+    result_embed = discord.Embed(
+        title="✅ Applicant Accepted",
+        description=(
+            f"{applicant.mention} has been accepted into **Different Meets (DIFF)**.\n\n"
+            "Please welcome them to the crew and make sure they understand the expectations, "
+            "crew standards, and activity requirements."
+        ),
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    result_embed.add_field(name="Handled By", value=interviewer.mention, inline=True)
+    result_embed.add_field(name="Crew Role", value=assigned_role_name or "Not assigned", inline=True)
+    result_embed.add_field(name="Notes", value=notes if notes else "No notes added.", inline=False)
+    result_embed.set_footer(text="Different Meets • Interview Accepted")
+
+    await _interview_outcome_dm_accept(applicant)
+    await _interview_outcome_send_log(guild, applicant, interviewer, "Accepted", notes, assigned_role_name)
+
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=result_embed)
+    else:
+        await interaction.response.send_message(embed=result_embed)
+
+
+async def _interview_outcome_process_deny(
+    interaction: discord.Interaction, applicant: discord.Member, notes: str
+) -> None:
+    guild = interaction.guild
+    interviewer = interaction.user
+    if guild is None or not isinstance(interviewer, discord.Member):
+        await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+        return
+
+    result_embed = discord.Embed(
+        title="❌ Applicant Denied",
+        description=(
+            f"{applicant.mention} has been marked as **not accepted** for DIFF at this time.\n\n"
+            "Make sure all feedback stays respectful and professional."
+        ),
+        color=discord.Color.red(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    result_embed.add_field(name="Handled By", value=interviewer.mention, inline=True)
+    result_embed.add_field(name="Notes", value=notes if notes else "No notes added.", inline=False)
+    result_embed.set_footer(text="Different Meets • Interview Denied")
+
+    await _interview_outcome_dm_deny(applicant, notes)
+    await _interview_outcome_send_log(guild, applicant, interviewer, "Denied", notes)
+
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=result_embed)
+    else:
+        await interaction.response.send_message(embed=result_embed)
+
+
+class ApplicantLookupModal(discord.ui.Modal, title="Interview Result"):
+    applicant_input = discord.ui.TextInput(
+        label="Applicant User ID",
+        placeholder="Paste the applicant Discord user ID here",
+        required=True,
+        max_length=25,
+    )
+    reason_input = discord.ui.TextInput(
+        label="Notes / Reason",
+        placeholder="Optional notes for logs or feedback",
+        required=False,
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+    )
+
+    def __init__(self, action: str):
+        super().__init__()
+        self.action = action
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
+        if not _interview_outcome_can_manage(interaction.user):
+            return await interaction.response.send_message("You do not have permission to use this panel.", ephemeral=True)
+
+        raw_id = str(self.applicant_input.value).strip().replace("<@", "").replace(">", "").replace("!", "")
+        try:
+            applicant_id = int(raw_id)
+        except ValueError:
+            return await interaction.response.send_message("That user ID is not valid.", ephemeral=True)
+
+        applicant = interaction.guild.get_member(applicant_id)
+        if applicant is None:
+            try:
+                applicant = await interaction.guild.fetch_member(applicant_id)
+            except (discord.NotFound, discord.HTTPException):
+                applicant = None
+
+        if applicant is None:
+            return await interaction.response.send_message(
+                "I could not find that applicant in the server. Make sure they are still in the server and paste the correct user ID.",
+                ephemeral=True,
+            )
+
+        notes = str(self.reason_input.value).strip()
+        if self.action == "accept":
+            await _interview_outcome_process_accept(interaction, applicant, notes)
+        else:
+            await _interview_outcome_process_deny(interaction, applicant, notes)
+
+
+class InterviewOutcomeView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Accept Applicant",
+        emoji="✅",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_interview_accept",
+        row=0,
+    )
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
+        if not _interview_outcome_can_manage(interaction.user):
+            return await interaction.response.send_message(
+                "Only Leader, Co-Leader, or Manager can use this outcome panel.", ephemeral=True
+            )
+        await interaction.response.send_modal(ApplicantLookupModal("accept"))
+
+    @discord.ui.button(
+        label="Deny Applicant",
+        emoji="❌",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_interview_deny",
+        row=0,
+    )
+    async def deny_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
+        if not _interview_outcome_can_manage(interaction.user):
+            return await interaction.response.send_message(
+                "Only Leader, Co-Leader, or Manager can use this outcome panel.", ephemeral=True
+            )
+        await interaction.response.send_modal(ApplicantLookupModal("deny"))
+
+    @discord.ui.button(
+        label="Applicant Reminder",
+        emoji="📌",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_interview_reminder",
+        row=1,
+    )
+    async def reminder_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        text = (
+            "__**Interview Result Reminder**__\n\n"
+            "• Confirm the applicant finished the interview\n"
+            "• Review their answers carefully\n"
+            "• Keep notes professional and clear\n"
+            "• If accepted, make sure they understand DIFF expectations\n"
+            "• If denied, be respectful and explain the reason clearly\n"
+            "• Use this panel only after the interview is fully completed"
+        )
+        await interaction.response.send_message(text, ephemeral=True)
+
+
+async def _post_or_refresh_interview_outcome_panel(channel: discord.TextChannel) -> None:
+    data = _interview_outcome_load()
+    embed = _build_interview_outcome_embed()
+    view = InterviewOutcomeView()
+    old_ch_id = data.get("channel_id")
+    old_msg_id = data.get("message_id")
+    if old_ch_id and old_msg_id:
+        old_channel = bot.get_channel(int(old_ch_id))
+        if isinstance(old_channel, discord.TextChannel):
+            try:
+                old_msg = await old_channel.fetch_message(int(old_msg_id))
+                if old_channel.id == channel.id:
+                    await old_msg.edit(embed=embed, view=view)
+                    return
+                else:
+                    try:
+                        await old_msg.delete()
+                    except discord.HTTPException:
+                        pass
+            except (discord.NotFound, discord.HTTPException):
+                pass
+    msg = await channel.send(embed=embed, view=view)
+    _interview_outcome_save({"channel_id": channel.id, "message_id": msg.id})
+
+
+@bot.tree.command(name="post-interview-results-panel", description="Post the accept/deny interview results panel in this channel (Leader/Co-Leader/Manager only)")
+async def post_interview_results_panel(interaction: discord.Interaction):
+    if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Run this command in the ticket channel where you want the panel.", ephemeral=True)
+    if not isinstance(interaction.user, discord.Member) or not _interview_outcome_can_manage(interaction.user):
+        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can post this panel.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    await _post_or_refresh_interview_outcome_panel(interaction.channel)
+    await interaction.followup.send(f"Interview results panel posted in {interaction.channel.mention}.", ephemeral=True)
 
 
 # =========================
