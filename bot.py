@@ -978,14 +978,40 @@ class RespondButton(discord.ui.Button):
             return await interaction.response.send_message("Server only.", ephemeral=True)
         if not is_staff_reviewer(interaction.user):
             return await interaction.response.send_message("Only staff can use this.", ephemeral=True)
+
         ticket_owner = None
-        async for msg in interaction.channel.history(limit=20):
-            if not msg.author.bot:
-                ticket_owner = interaction.guild.get_member(msg.author.id)
-                break
+
+        try:
+            tab_state = _tab_load()
+            ticket_key = str(interaction.channel.id)
+            linked_member_id = tab_state.get("ticket_links", {}).get(ticket_key, {}).get("member_id")
+            if linked_member_id:
+                ticket_owner = interaction.guild.get_member(int(linked_member_id))
+                if ticket_owner is None:
+                    try:
+                        ticket_owner = await interaction.guild.fetch_member(int(linked_member_id))
+                    except Exception:
+                        ticket_owner = None
+        except Exception:
+            pass
+
+        if ticket_owner is None:
+            try:
+                detected = _fus_detect_applicant(interaction.channel)
+                if detected:
+                    ticket_owner = detected
+            except Exception:
+                pass
+
+        if ticket_owner is None:
+            async for msg in interaction.channel.history(limit=20):
+                if not msg.author.bot:
+                    ticket_owner = interaction.guild.get_member(msg.author.id)
+                    break
+
         if ticket_owner is None:
             return await interaction.response.send_message(
-                "❌ Could not detect the ticket owner. Make sure they have sent a message in this channel.",
+                "❌ Could not detect the ticket owner. Try linking them first with `/setup-application-ticket` or ask them to send a message in this channel.",
                 ephemeral=True,
             )
         await interaction.response.send_message(
@@ -2415,7 +2441,7 @@ def build_meet_info_embed() -> discord.Embed:
 
 def build_meet_info_view(guild_id: int) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
-    view.add_item(discord.ui.Button(label="Meet Rules", style=discord.ButtonStyle.link, emoji="📜", url=build_channel_link(guild_id, MEET_RULES_CHANNEL_ID)))
+    view.add_item(discord.ui.Button(label="General Rules", style=discord.ButtonStyle.link, emoji="📜", url=build_channel_link(guild_id, MEET_RULES_CHANNEL_ID)))
     view.add_item(discord.ui.Button(label="Join Meets", style=discord.ButtonStyle.link, emoji="📥", url=build_channel_link(guild_id, JOIN_MEETS_CHANNEL_ID)))
     view.add_item(discord.ui.Button(label="Upcoming Meet", style=discord.ButtonStyle.link, emoji="📅", url=build_channel_link(guild_id, UPCOMING_MEET_CHANNEL_ID)))
     view.add_item(discord.ui.Button(label="Support Tickets", style=discord.ButtonStyle.link, emoji="🎟️", url=build_channel_link(guild_id, SUPPORT_TICKETS_CHANNEL_ID)))
