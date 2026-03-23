@@ -1,0 +1,383 @@
+import json
+import os
+from datetime import datetime
+
+import discord
+from discord.ext import commands, tasks
+
+# =========================================================
+# DIFF Crew Hierarchy + Attendance Panel
+# Drop this file into your current bot and load it as an extension.
+#
+# Features:
+# - Posts ONE crew hierarchy panel and refreshes the SAME message
+# - Posts ONE attendance panel and refreshes the SAME message
+# - Shows online / offline / idle / dnd status counts
+# - Shows role-based hierarchy sections
+# - Prevents duplicate panel spam by saving message IDs
+#
+# Requirements:
+# - discord.py 2.x
+# - Intents.members = True
+# - Intents.presences = True
+#
+# Load with:
+#   await bot.load_extension("diff_hierarchy_panel")
+# or if using old sync style:
+#   bot.load_extension("diff_hierarchy_panel")
+# =========================================================
+
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+GUILD_ID = 850386896509337710
+
+# Channel IDs
+HIERARCHY_CHANNEL_ID = 1387218854454759496
+ATTENDANCE_CHANNEL_ID = 1485469927312850974
+
+# Role IDs
+ROLE_IDS = {
+    "Leader": 850391095845584937,
+    "Co-Leader": 850391378559238235,
+    "Manager": 990011447193006101,
+    "Host": 1055823929358430248,
+    "Designer Team": 1128901233160245278,
+    "Content Team": 1110037666147336293,
+    "Color Team": 1115495008670330902,
+    "Crew Member": 886702076552441927,
+}
+
+# Refresh settings
+AUTO_REFRESH_MINUTES = 5
+
+# Files
+STATE_FILE = "diff_hierarchy_panel_state.json"
+
+
+def _load_state():
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_state(data: dict):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+class DiffHierarchyPanel(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.state = _load_state()
+        self.panel_refresh.start()
+
+    def cog_unload(self):
+        self.panel_refresh.cancel()
+
+    # -------------------------------------------------
+    # HELPERS
+    # -------------------------------------------------
+    def get_guild(self):
+        return self.bot.get_guild(GUILD_ID)
+
+    def get_role_members(self, guild: discord.Guild, role_id: int):
+        role = guild.get_role(role_id)
+        if not role:
+            return []
+        return sorted(role.members, key=lambda m: m.display_name.lower())
+
+    def format_member_line(self, member: discord.Member):
+        status_emoji = {
+            discord.Status.online: "🟢",
+            discord.Status.idle: "🌙",
+            discord.Status.dnd: "⛔",
+            discord.Status.offline: "⚫",
+        }.get(member.status, "⚫")
+
+        return f"{status_emoji} {member.mention} — `{member.display_name}`"
+
+    def count_statuses(self, members):
+        counts = {"online": 0, "idle": 0, "dnd": 0, "offline": 0}
+        seen = set()
+
+        for member in members:
+            if member.id in seen:
+                continue
+            seen.add(member.id)
+
+            if member.status == discord.Status.online:
+                counts["online"] += 1
+            elif member.status == discord.Status.idle:
+                counts["idle"] += 1
+            elif member.status == discord.Status.dnd:
+                counts["dnd"] += 1
+            else:
+                counts["offline"] += 1
+
+        return counts
+
+    def get_hierarchy_members(self, guild: discord.Guild):
+        hierarchy = {}
+        all_unique_members = {}
+
+        for section_name, role_id in ROLE_IDS.items():
+            members = self.get_role_members(guild, role_id)
+            hierarchy[section_name] = members
+            for member in members:
+                all_unique_members[member.id] = member
+
+        return hierarchy, list(all_unique_members.values())
+
+    def chunk_lines(self, lines, limit=1000):
+        chunks = []
+        current = ""
+
+        for line in lines:
+            if len(current) + len(line) + 1 > limit:
+                chunks.append(current.strip())
+                current = line + "\n"
+            else:
+                current += line + "\n"
+
+        if current.strip():
+            chunks.append(current.strip())
+
+        return chunks or ["No members found."]
+
+    async def fetch_existing_message(self, channel: discord.TextChannel, key: str):
+        message_id = self.state.get(key)
+        if not message_id:
+            return None
+
+        try:
+            return await channel.fetch_message(message_id)
+        except discord.NotFound:
+            return None
+        except discord.HTTPException:
+            return None
+
+    async def upsert_panel(self, channel: discord.TextChannel, key: str, *, embed: discord.Embed, view=None):
+        existing = await self.fetch_existing_message(channel, key)
+
+        if existing:
+            await existing.edit(embed=embed, view=view)
+            return existing
+
+        msg = await channel.send(embed=embed, view=view)
+        self.state[key] = msg.id
+        _save_state(self.state)
+        return msg
+
+    # -------------------------------------------------
+    # EMBEDS
+    # -------------------------------------------------
+    def build_hierarchy_embeds(self, guild: discord.Guild):
+        hierarchy, all_members = self.get_hierarchy_members(guild)
+        status_counts = self.count_statuses(all_members)
+
+        embed = discord.Embed(
+            title="📌 DIFF Crew Hierarchy",
+            description=(
+                "Live crew hierarchy panel for **Different Meets**.\n\n"
+                "This panel refreshes automatically and updates the **same message**."
+            ),
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow(),
+        )
+
+        embed.add_field(
+            name="📊 Crew Status",
+            value=(
+                f"🟢 Online: **{status_counts['online']}**\n"
+                f"🌙 Idle: **{status_counts['idle']}**\n"
+                f"⛔ DND: **{status_counts['dnd']}**\n"
+                f"⚫ Offline: **{status_counts['offline']}**"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🧭 Sections",
+            value=(
+                "Leader\n"
+                "Co-Leader\n"
+                "Manager\n"
+                "Host\n"
+                "Designer Team\n"
+                "Content Team\n"
+                "Color Team\n"
+                "Crew Member"
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="Different Meets • Auto-refresh enabled • No duplicate panels")
+        return [embed] + self.build_hierarchy_member_embeds(hierarchy)
+
+    def build_hierarchy_member_embeds(self, hierarchy: dict):
+        embeds = []
+        order = [
+            "Leader",
+            "Co-Leader",
+            "Manager",
+            "Host",
+            "Designer Team",
+            "Content Team",
+            "Color Team",
+            "Crew Member",
+        ]
+
+        for section in order:
+            members = hierarchy.get(section, [])
+            lines = [self.format_member_line(m) for m in members] or ["No members in this section."]
+            chunks = self.chunk_lines(lines, limit=3500)
+
+            for i, chunk in enumerate(chunks, start=1):
+                title = f"👥 {section}"
+                if len(chunks) > 1:
+                    title += f" ({i}/{len(chunks)})"
+
+                embed = discord.Embed(
+                    title=title,
+                    description=chunk,
+                    color=discord.Color.dark_blue(),
+                    timestamp=datetime.utcnow(),
+                )
+                embed.set_footer(text="Status: online / idle / dnd / offline")
+                embeds.append(embed)
+
+        return embeds
+
+    def build_attendance_embed(self, guild: discord.Guild):
+        crew_role = guild.get_role(ROLE_IDS["Crew Member"])
+        crew_members = sorted(crew_role.members, key=lambda m: m.display_name.lower()) if crew_role else []
+
+        online_members = [m for m in crew_members if m.status != discord.Status.offline]
+        offline_members = [m for m in crew_members if m.status == discord.Status.offline]
+
+        online_preview = "\n".join(self.format_member_line(m) for m in online_members[:20]) or "No online crew members right now."
+        offline_preview = "\n".join(self.format_member_line(m) for m in offline_members[:20]) or "No offline crew members right now."
+
+        embed = discord.Embed(
+            title="📊 DIFF Crew Attendance Status",
+            description=(
+                "Quick live attendance view for **Different Meets Crew Members**.\n\n"
+                "Use this panel to see who is currently active and who is offline."
+            ),
+            color=discord.Color.green(),
+            timestamp=datetime.utcnow(),
+        )
+
+        embed.add_field(
+            name="✅ Active Right Now",
+            value=f"**{len(online_members)}** members\n\n{online_preview}",
+            inline=False,
+        )
+        embed.add_field(
+            name="🌙 Offline Right Now",
+            value=f"**{len(offline_members)}** members\n\n{offline_preview}",
+            inline=False,
+        )
+        embed.set_footer(text="Auto-refresh enabled • Same panel updates instead of reposting")
+        return embed
+
+    # -------------------------------------------------
+    # POST / REFRESH
+    # -------------------------------------------------
+    async def post_or_refresh_hierarchy(self):
+        guild = self.get_guild()
+        if guild is None:
+            return
+
+        channel = guild.get_channel(HIERARCHY_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embeds = self.build_hierarchy_embeds(guild)
+
+        key_base = "hierarchy_panel"
+        for index, embed in enumerate(embeds):
+            key = f"{key_base}_{index}"
+            existing = await self.fetch_existing_message(channel, key)
+            if existing:
+                await existing.edit(embed=embed, view=None)
+            else:
+                msg = await channel.send(embed=embed)
+                self.state[key] = msg.id
+
+        # Delete old extra stored messages if role/member count shrinks
+        current_count = len(embeds)
+        stale_keys = [
+            k for k in list(self.state.keys())
+            if k.startswith(f"{key_base}_") and int(k.split("_")[-1]) >= current_count
+        ]
+
+        for stale_key in stale_keys:
+            try:
+                old_msg = await channel.fetch_message(self.state[stale_key])
+                await old_msg.delete()
+            except Exception:
+                pass
+            self.state.pop(stale_key, None)
+
+        _save_state(self.state)
+
+    async def post_or_refresh_attendance(self):
+        guild = self.get_guild()
+        if guild is None:
+            return
+
+        channel = guild.get_channel(ATTENDANCE_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embed = self.build_attendance_embed(guild)
+        await self.upsert_panel(channel, "attendance_panel", embed=embed, view=None)
+
+    # -------------------------------------------------
+    # LOOP
+    # -------------------------------------------------
+    @tasks.loop(minutes=AUTO_REFRESH_MINUTES)
+    async def panel_refresh(self):
+        await self.bot.wait_until_ready()
+        try:
+            await self.post_or_refresh_hierarchy()
+            await self.post_or_refresh_attendance()
+        except Exception as e:
+            print(f"[DIFF PANEL ERROR] {e}")
+
+    @panel_refresh.before_loop
+    async def before_panel_refresh(self):
+        await self.bot.wait_until_ready()
+
+    # -------------------------------------------------
+    # COMMANDS
+    # -------------------------------------------------
+    @commands.hybrid_command(name="refresh_diff_panels", description="Refresh the DIFF hierarchy and attendance panels.")
+    @commands.has_permissions(manage_guild=True)
+    async def refresh_diff_panels(self, ctx: commands.Context):
+        await self.post_or_refresh_hierarchy()
+        await self.post_or_refresh_attendance()
+        await ctx.reply("✅ DIFF hierarchy panel and attendance panel refreshed.", mention_author=False)
+
+    @commands.hybrid_command(name="reset_diff_panels", description="Reset saved panel message IDs and repost clean panels.")
+    @commands.has_permissions(administrator=True)
+    async def reset_diff_panels(self, ctx: commands.Context):
+        keys_to_remove = [k for k in self.state.keys() if k.startswith("hierarchy_panel_") or k == "attendance_panel"]
+        for k in keys_to_remove:
+            self.state.pop(k, None)
+        _save_state(self.state)
+
+        await self.post_or_refresh_hierarchy()
+        await self.post_or_refresh_attendance()
+        await ctx.reply("🧼 Saved panel IDs cleared and panels reposted cleanly.", mention_author=False)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffHierarchyPanel(bot))
