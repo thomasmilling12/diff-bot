@@ -4905,6 +4905,34 @@ async def color_schedule_loop():
             data = _cs_load()
             data["schedule"]["last_winner_post_date"] = current_date
             _cs_save(data)
+
+    weekly_state = _weekly_color_load()
+    if (now.weekday() == 0 and now.hour == COLOR_SCHEDULE_HOUR and 0 <= now.minute <= 4):
+        monday_key = _weekly_color_today_key("monday")
+        if weekly_state.get("last_monday_team_post") != current_date:
+            role = guild.get_role(COLOR_TEAM_ROLE_ID)
+            ping = role.mention if role else "@Color Team"
+            await _weekly_color_send_or_edit(
+                monday_key,
+                f"{ping} Weekly color announced — prep next vote.",
+                _weekly_color_monday_embed(),
+            )
+            weekly_state = _weekly_color_load()
+            weekly_state["last_monday_team_post"] = current_date
+            _weekly_color_save(weekly_state)
+    if (now.weekday() == 1 and now.hour == COLOR_SCHEDULE_HOUR and 0 <= now.minute <= 4):
+        tuesday_key = _weekly_color_today_key("tuesday")
+        if weekly_state.get("last_tuesday_team_post") != current_date:
+            role = guild.get_role(COLOR_TEAM_ROLE_ID)
+            ping = role.mention if role else "@Color Team"
+            await _weekly_color_send_or_edit(
+                tuesday_key,
+                f"{ping} Voting is live — direct members.",
+                _weekly_color_tuesday_embed(),
+            )
+            weekly_state = _weekly_color_load()
+            weekly_state["last_tuesday_team_post"] = current_date
+            _weekly_color_save(weekly_state)
     now_utc = datetime.now(timezone.utc)
     changed = False
     current_vote = data.get("current_vote") or {}
@@ -5151,6 +5179,80 @@ async def force_color_winner(interaction: discord.Interaction):
 # =========================
 COLOR_TEAM_POST_CHANNEL_ID = 1485453653916520549
 COLOR_TEAM_PANEL_STATE_KEY = "color_team_panel_message_id"
+WEEKLY_COLOR_STATE_FILE = os.path.join(DATA_FOLDER, "diff_weekly_color_state.json")
+
+
+def _weekly_color_load() -> dict:
+    return _load_diff_json(WEEKLY_COLOR_STATE_FILE) or {}
+
+
+def _weekly_color_save(state: dict) -> None:
+    _save_diff_json(WEEKLY_COLOR_STATE_FILE, state)
+
+
+def _weekly_color_today_key(name: str) -> str:
+    now = datetime.now(COLOR_TZ)
+    return f"{name}_{now.strftime('%Y_%m_%d')}"
+
+
+def _weekly_color_monday_embed() -> discord.Embed:
+    return (
+        discord.Embed(
+            title="🎨 Weekly Color Update",
+            description="New color is live.\n\nColor Team — start preparing the next vote.",
+            color=discord.Color.purple(),
+            timestamp=datetime.utcnow(),
+        )
+        .add_field(
+            name="What to do",
+            value="• Plan next colors\n• Coordinate in chat\n• Prepare voting",
+            inline=False,
+        )
+        .set_footer(text="Different Meets • Color Team")
+    )
+
+
+def _weekly_color_tuesday_embed() -> discord.Embed:
+    return (
+        discord.Embed(
+            title="🗳️ Voting Now Live",
+            description="Voting has started.\n\nGuide members and keep things organized.",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow(),
+        )
+        .add_field(
+            name="Focus",
+            value="• Direct traffic\n• Monitor voting\n• Stay active",
+            inline=False,
+        )
+        .set_footer(text="Different Meets • Color Team")
+    )
+
+
+async def _weekly_color_send_or_edit(key: str, content: str, embed: discord.Embed) -> None:
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return
+    channel = guild.get_channel(COLOR_TEAM_POST_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    state = _weekly_color_load()
+    view = ColorTeamPanelView()
+    if key in state:
+        try:
+            msg = await channel.fetch_message(int(state[key]))
+            await msg.edit(content=content, embed=embed, view=view)
+            return
+        except (discord.NotFound, discord.HTTPException):
+            pass
+    msg = await channel.send(
+        content=content,
+        embed=embed,
+        view=view,
+        allowed_mentions=discord.AllowedMentions(roles=True),
+    )
+    state[key] = msg.id
+    _weekly_color_save(state)
 
 
 class ColorTeamPanelView(discord.ui.View):
@@ -5273,6 +5375,44 @@ async def reset_color_team_panel(interaction: discord.Interaction):
     _save_diff_json(DIFF_PANEL_STATE_FILE, state)
     await _post_or_refresh_color_team_panel(ping_role=True)
     await interaction.followup.send("Color team panel reset and reposted cleanly.", ephemeral=True)
+
+
+@bot.tree.command(name="test-monday-color", description="Manually trigger the Monday color team update post (staff only)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def test_monday_color(interaction: discord.Interaction):
+    if interaction.guild is None:
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    role = interaction.guild.get_role(COLOR_TEAM_ROLE_ID)
+    ping = role.mention if role else "@Color Team"
+    await _weekly_color_send_or_edit(
+        _weekly_color_today_key("monday"),
+        f"{ping} Weekly color announced — prep next vote.",
+        _weekly_color_monday_embed(),
+    )
+    await interaction.followup.send("Monday color team post sent.", ephemeral=True)
+
+
+@bot.tree.command(name="test-tuesday-color", description="Manually trigger the Tuesday voting live post (staff only)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def test_tuesday_color(interaction: discord.Interaction):
+    if interaction.guild is None:
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    role = interaction.guild.get_role(COLOR_TEAM_ROLE_ID)
+    ping = role.mention if role else "@Color Team"
+    await _weekly_color_send_or_edit(
+        _weekly_color_today_key("tuesday"),
+        f"{ping} Voting is live — direct members.",
+        _weekly_color_tuesday_embed(),
+    )
+    await interaction.followup.send("Tuesday color team post sent.", ephemeral=True)
 
 
 # =========================

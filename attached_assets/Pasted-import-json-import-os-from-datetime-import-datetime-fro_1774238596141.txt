@@ -1,0 +1,171 @@
+import json
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import discord
+from discord.ext import commands, tasks
+
+# =========================================================
+# DIFF Weekly Color Automation (V2 - Clean + Connected)
+# =========================================================
+
+GUILD_ID = 850386896509337710
+
+POST_CHANNEL_ID = 1485453653916520549
+COLOR_TEAM_ROLE_ID = 1115495008670330902
+
+COLOR_TEAM_CHAT_CHANNEL_ID = 1177436572304556084
+COLOR_VOTING_CHANNEL_ID = 1177434999381831680
+
+TIMEZONE = "America/New_York"
+STATE_FILE = "diff_weekly_color_state.json"
+
+
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {}
+    with open(STATE_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_state(data):
+    with open(STATE_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+class ColorButtons(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+        self.add_item(discord.ui.Button(
+            label="Color Team Chat",
+            url=f"https://discord.com/channels/{GUILD_ID}/{COLOR_TEAM_CHAT_CHANNEL_ID}",
+            style=discord.ButtonStyle.link,
+            emoji="🎨"
+        ))
+
+        self.add_item(discord.ui.Button(
+            label="Color Voting",
+            url=f"https://discord.com/channels/{GUILD_ID}/{COLOR_VOTING_CHANNEL_ID}",
+            style=discord.ButtonStyle.link,
+            emoji="🗳️"
+        ))
+
+
+class WeeklyColor(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.state = load_state()
+        self.loop.start()
+
+    def cog_unload(self):
+        self.loop.cancel()
+
+    def today_key(self, name):
+        now = datetime.now(ZoneInfo(TIMEZONE))
+        return f"{name}_{now.strftime('%Y_%m_%d')}"
+
+    async def get_channel(self):
+        guild = self.bot.get_guild(GUILD_ID)
+        return guild.get_channel(POST_CHANNEL_ID)
+
+    async def send_or_edit(self, key, content, embed):
+        channel = await self.get_channel()
+        if not channel:
+            return
+
+        view = ColorButtons()
+
+        if key in self.state:
+            try:
+                msg = await channel.fetch_message(self.state[key])
+                await msg.edit(content=content, embed=embed, view=view)
+                return
+            except:
+                pass
+
+        msg = await channel.send(content=content, embed=embed, view=view,
+                                 allowed_mentions=discord.AllowedMentions(roles=True))
+        self.state[key] = msg.id
+        save_state(self.state)
+
+    def monday_embed(self):
+        return discord.Embed(
+            title="🎨 Weekly Color Update",
+            description="New color is live.
+
+Color Team — start preparing the next vote.",
+            color=discord.Color.purple(),
+            timestamp=datetime.utcnow()
+        ).add_field(
+            name="What to do",
+            value="• Plan next colors
+• Coordinate in chat
+• Prepare voting",
+            inline=False
+        )
+
+    def tuesday_embed(self):
+        return discord.Embed(
+            title="🗳️ Voting Now Live",
+            description="Voting has started.
+
+Guide members and keep things organized.",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        ).add_field(
+            name="Focus",
+            value="• Direct traffic
+• Monitor voting
+• Stay active",
+            inline=False
+        )
+
+    @tasks.loop(minutes=1)
+    async def loop(self):
+        await self.bot.wait_until_ready()
+        now = datetime.now(ZoneInfo(TIMEZONE))
+
+        guild = self.bot.get_guild(GUILD_ID)
+        role = guild.get_role(COLOR_TEAM_ROLE_ID)
+
+        if now.weekday() == 0 and now.hour == 12 and now.minute == 0:
+            await self.send_or_edit(
+                self.today_key("monday"),
+                f"{role.mention} Weekly color announced — prep next vote.",
+                self.monday_embed()
+            )
+
+        if now.weekday() == 1 and now.hour == 12 and now.minute == 0:
+            await self.send_or_edit(
+                self.today_key("tuesday"),
+                f"{role.mention} Voting is live — direct members.",
+                self.tuesday_embed()
+            )
+
+    @commands.hybrid_command()
+    async def test_monday(self, ctx):
+        guild = ctx.guild
+        role = guild.get_role(COLOR_TEAM_ROLE_ID)
+        await self.send_or_edit(
+            self.today_key("monday"),
+            f"{role.mention} Weekly color announced — prep next vote.",
+            self.monday_embed()
+        )
+        await ctx.reply("Monday post sent")
+
+    @commands.hybrid_command()
+    async def test_tuesday(self, ctx):
+        guild = ctx.guild
+        role = guild.get_role(COLOR_TEAM_ROLE_ID)
+        await self.send_or_edit(
+            self.today_key("tuesday"),
+            f"{role.mention} Voting is live — direct members.",
+            self.tuesday_embed()
+        )
+        await ctx.reply("Tuesday post sent")
+
+
+async def setup(bot):
+    await bot.add_cog(WeeklyColor(bot))
