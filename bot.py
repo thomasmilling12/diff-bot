@@ -2088,26 +2088,33 @@ def build_live_attendance_embed(guild: discord.Guild) -> discord.Embed:
     online = [m for m in crew_members if m.status != discord.Status.offline]
     offline = [m for m in crew_members if m.status == discord.Status.offline]
 
-    def _fmt(members: list) -> str:
+    def _chunk_members(members: list) -> list[str]:
         if not members:
-            return "None right now."
-        result_lines = []
-        char_budget = 980
-        used = 0
-        for i, m in enumerate(members):
+            return ["None right now."]
+        chunks = []
+        current_lines: list[str] = []
+        current_len = 0
+        for m in members:
             line = f"{get_member_status_emoji(m)} {m.mention} — `{m.display_name}`"
-            cost = len(line) + (1 if result_lines else 0)
-            remaining = len(members) - i
-            overflow_line = f"…and {remaining} more"
-            if used + cost + len(overflow_line) + 1 > char_budget and i < len(members) - 1:
-                result_lines.append(overflow_line)
-                break
-            if used + cost > char_budget:
-                result_lines.append(f"…and {len(members) - i} more")
-                break
-            result_lines.append(line)
-            used += cost
-        return "\n".join(result_lines)
+            cost = len(line) + (1 if current_lines else 0)
+            if current_len + cost > 1000 and current_lines:
+                chunks.append("\n".join(current_lines))
+                current_lines = [line]
+                current_len = len(line)
+            else:
+                current_lines.append(line)
+                current_len += cost
+        if current_lines:
+            chunks.append("\n".join(current_lines))
+        return chunks
+
+    online_chunks = _chunk_members(online)
+    offline_chunks = _chunk_members(offline)
+
+    total_fields = len(online_chunks) + len(offline_chunks)
+    if total_fields > 25:
+        online_chunks = online_chunks[:12]
+        offline_chunks = offline_chunks[:12]
 
     embed = discord.Embed(
         title=LIVE_ATTENDANCE_PANEL_TITLE,
@@ -2119,16 +2126,15 @@ def build_live_attendance_embed(guild: discord.Guild) -> discord.Embed:
         color=discord.Color.green(),
         timestamp=datetime.utcnow(),
     )
-    embed.add_field(
-        name=f"✅ Active Right Now ({len(online)})",
-        value=_fmt(online),
-        inline=False,
-    )
-    embed.add_field(
-        name=f"⚫ Offline Right Now ({len(offline)})",
-        value=_fmt(offline),
-        inline=False,
-    )
+
+    for i, chunk in enumerate(online_chunks):
+        header = f"✅ Active Right Now ({len(online)})" if i == 0 else f"✅ Active (continued)"
+        embed.add_field(name=header, value=chunk, inline=False)
+
+    for i, chunk in enumerate(offline_chunks):
+        header = f"⚫ Offline Right Now ({len(offline)})" if i == 0 else f"⚫ Offline (continued)"
+        embed.add_field(name=header, value=chunk, inline=False)
+
     embed.set_footer(text="Different Meets • Auto-refreshes every 5 min • Same panel, no duplicates")
     return embed
 
