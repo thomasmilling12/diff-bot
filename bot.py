@@ -6277,6 +6277,24 @@ async def _startup_refresh_all_panels() -> None:
     except Exception:
         pass
 
+    try:
+        meet_info_msg_id = data.get("meet_info_message_id")
+        if meet_info_msg_id:
+            guild = bot.guilds[0] if bot.guilds else None
+            if guild:
+                ch = guild.get_channel(MEET_INFO_CHANNEL_ID)
+                if isinstance(ch, discord.TextChannel):
+                    try:
+                        msg = await ch.fetch_message(int(meet_info_msg_id))
+                        await msg.edit(
+                            embed=build_meet_info_embed(),
+                            view=build_meet_info_view(guild.id),
+                        )
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
 
 async def _tab_update_panel(channel: discord.TextChannel, member: discord.Member, state: dict) -> None:
     app = _tab_get_app(state, member.id)
