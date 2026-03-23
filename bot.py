@@ -9445,6 +9445,26 @@ def _join_parse_user_id(topic: str | None) -> str | None:
         return None
 
 
+def _join_parse_psn(topic: str | None) -> str:
+    if not topic or "PSN:" not in topic:
+        return "Unknown"
+    try:
+        raw = topic.split("PSN:")[1]
+        return raw.split("|")[0].strip() or "Unknown"
+    except IndexError:
+        return "Unknown"
+
+
+def _join_sanitize_psn(text: str) -> str:
+    return text.strip().replace("\n", "").replace("\r", "")[:28]
+
+
+def _join_sanitize_channel_name(psn: str) -> str:
+    safe = "".join(c if c.isalnum() or c == "-" else "-" for c in psn.lower())
+    safe = "-".join(p for p in safe.split("-") if p)
+    return f"join-{safe}"[:90] or "join-ps"
+
+
 def _join_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🏁 DIFF MEETS — OFFICIAL JOIN HUB",
@@ -9458,7 +9478,7 @@ def _join_build_panel_embed() -> discord.Embed:
             "🤝 If you also want to join the crew, head to your crew application area after getting set up.",
             "",
             "━━━━━━━━━━━━━━━━━━━━━━",
-            "🎮 **PlayStation** — Apply directly through a private ticket",
+            "🎮 **PlayStation** — Enter your PSN and open a private join ticket",
             "🟢 **Xbox** — Redirects to our partners at **MMI Meets**",
             "💻 **PC** — Redirects to our partners at **MMI Meets**",
             "━━━━━━━━━━━━━━━━━━━━━━",
@@ -9473,22 +9493,24 @@ def _join_build_panel_embed() -> discord.Embed:
     return embed
 
 
-def _join_build_ticket_embed(member: discord.Member) -> discord.Embed:
+def _join_build_ticket_embed(member: discord.Member, psn_name: str = "", nickname_status: str = "") -> discord.Embed:
+    lines = [f"{member.mention}, your PSN name has been submitted.", ""]
+    if psn_name:
+        lines.append(f"**PSN Name:** {psn_name}")
+    if nickname_status:
+        lines.append(f"**Nickname Status:** {nickname_status}")
+    lines += [
+        "",
+        "**Now only do this:**",
+        "• Send **10 car photos** showing your builds",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "✅ Staff can review using the buttons below.",
+        "🔒 When finished, staff can close the ticket.",
+    ]
     embed = discord.Embed(
         title="🎮 PlayStation Join Application",
-        description="\n".join([
-            f"{member.mention}, welcome to your private join ticket.",
-            "",
-            "**Please complete the following:**",
-            "1. Change your Discord name to: **🅸🅳 - PSN Name**",
-            "2. Send your **PSN name** in this ticket",
-            "3. Send **10 car photos** showing your builds",
-            "4. Wait for **Leader / Co-Leader / Manager** review",
-            "",
-            "━━━━━━━━━━━━━━━━━━━━━━",
-            "✅ Staff can review using the buttons below.",
-            "🔒 When finished, staff can close the ticket.",
-        ]),
+        description="\n".join(lines),
         color=discord.Color.from_str("#111111"),
     )
     if DIFF_LOGO_URL:
@@ -9527,7 +9549,7 @@ class JoinPlatformSelect(discord.ui.Select):
                 discord.SelectOption(
                     label="PlayStation",
                     value="playstation",
-                    description="Open a private join application ticket",
+                    description="Enter PSN, get renamed, then open a ticket",
                     emoji="🎮",
                 ),
                 discord.SelectOption(
@@ -9582,10 +9604,47 @@ class JoinPlatformSelect(discord.ui.Select):
                     f"You already have an open join ticket: {ch.mention}", ephemeral=True
                 )
 
+        await interaction.response.send_modal(JoinPsnModal())
+
+
+class JoinPsnModal(discord.ui.Modal, title="PlayStation Join"):
+    psn_name = discord.ui.TextInput(
+        label="Enter your PSN name",
+        placeholder="Example: Frostyy2003",
+        required=True,
+        max_length=28,
+        min_length=2,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+
+        clean_psn = _join_sanitize_psn(str(self.psn_name))
+
         try:
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return
+
+        nickname_status: str
+        target_nick = f"🅸🅳 - {clean_psn}"
+        try:
+            if interaction.user.top_role < interaction.guild.me.top_role:
+                await interaction.user.edit(nick=target_nick, reason="DIFF join system PSN name sync")
+                nickname_status = f"Changed to {target_nick}"
+            else:
+                nickname_status = "Could not change nickname automatically (role hierarchy)"
+        except discord.Forbidden:
+            nickname_status = "Could not change nickname automatically (missing Manage Nicknames)"
+        except discord.HTTPException:
+            nickname_status = "Nickname change failed"
+
+        category = interaction.guild.get_channel(JOIN_TICKET_CATEGORY_ID)
+        if not isinstance(category, discord.CategoryChannel):
+            return await interaction.followup.send(
+                "Join ticket category is not configured. Please contact staff.", ephemeral=True
+            )
 
         overwrites: dict = {
             interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -9610,13 +9669,11 @@ class JoinPlatformSelect(discord.ui.Select):
                     attach_files=True, embed_links=True,
                 )
 
-        safe_name = "".join(c if c.isalnum() or c == "-" else "" for c in interaction.user.name.lower())[:20] or "user"
-        channel_name = f"join-{safe_name}"
         channel = await interaction.guild.create_text_channel(
-            name=channel_name,
+            name=_join_sanitize_channel_name(clean_psn),
             category=category,
             overwrites=overwrites,
-            topic=f"DIFF PlayStation Join Application | JOIN_USER:{interaction.user.id}",
+            topic=f"DIFF PlayStation Join Application | JOIN_USER:{interaction.user.id} | PSN:{clean_psn}",
             reason=f"PS Join ticket opened by {interaction.user} ({interaction.user.id})",
         )
 
@@ -9625,24 +9682,24 @@ class JoinPlatformSelect(discord.ui.Select):
             r = interaction.guild.get_role(rid)
             if r:
                 ping_parts.append(r.mention)
-        allowed_role_ids = [rid for rid in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID)
-                            if interaction.guild.get_role(rid)]
         await channel.send(
             content=" ".join(ping_parts),
-            embed=_join_build_ticket_embed(interaction.user),
+            embed=_join_build_ticket_embed(interaction.user, psn_name=clean_psn, nickname_status=nickname_status),
             view=JoinTicketView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True),
         )
 
+        from datetime import timezone as _tz
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
-            from datetime import timezone as _tz
             log_embed = discord.Embed(
                 title="📥 New Join Application",
                 description="\n".join([
                     f"**User:** {interaction.user.mention}",
                     f"**Platform:** PlayStation",
+                    f"**PSN:** {clean_psn}",
                     f"**Ticket:** {channel.mention}",
+                    f"**Nickname Status:** {nickname_status}",
                     f"**Status:** Pending Review",
                 ]),
                 color=discord.Color.gold(),
@@ -9658,7 +9715,7 @@ class JoinPlatformSelect(discord.ui.Select):
 
         await interaction.followup.send(
             f"Your PlayStation join ticket has been created: {channel.mention}\n"
-            "Please complete the steps listed in your ticket and a staff member will review you shortly.",
+            "Please send your **10 car photos** and a staff member will review you shortly.",
             ephemeral=True,
         )
 
@@ -9696,6 +9753,8 @@ class JoinTicketView(discord.ui.View):
         if member is None:
             return await interaction.response.send_message("That user is no longer in the server.", ephemeral=True)
 
+        psn = _join_parse_psn(interaction.channel.topic)
+
         await interaction.response.send_message(f"{member.mention} has been accepted.", ephemeral=True)
 
         role = interaction.guild.get_role(PS5_ROLE_ID)
@@ -9712,6 +9771,7 @@ class JoinTicketView(discord.ui.View):
             description="\n".join([
                 f"{member.mention}, your PlayStation join application has been **approved**.",
                 "",
+                f"**PSN:** {psn}",
                 "Welcome to DIFF Meets.",
                 "Stay ready for meet posts, announcements, and instructions.",
             ]),
@@ -9727,6 +9787,7 @@ class JoinTicketView(discord.ui.View):
             await member.send(embed=discord.Embed(
                 title="✅ You were accepted into DIFF Meets",
                 description="\n".join([
+                    f"**PSN:** {psn}",
                     "Your PlayStation join application was approved.",
                     "",
                     "Welcome in.",
@@ -9743,6 +9804,7 @@ class JoinTicketView(discord.ui.View):
                 title="✅ Join Application Accepted",
                 description="\n".join([
                     f"**User:** {member.mention}",
+                    f"**PSN:** {psn}",
                     f"**Reviewed by:** {interaction.user.mention}",
                     f"**Ticket:** {interaction.channel.mention}",
                     f"**Role Added:** {role.mention if role else 'Not configured'}",
@@ -9782,6 +9844,8 @@ class JoinTicketView(discord.ui.View):
             except discord.HTTPException:
                 member = None
 
+        psn = _join_parse_psn(interaction.channel.topic)
+
         await interaction.response.send_message(
             f"Application denied.{f' {member.mention} was notified by DM.' if member else ''}",
             ephemeral=True,
@@ -9792,6 +9856,7 @@ class JoinTicketView(discord.ui.View):
                 await member.send(embed=discord.Embed(
                     title="❌ DIFF Join Application Update",
                     description="\n".join([
+                        f"**PSN:** {psn}",
                         "Your PlayStation join application was not accepted at this time.",
                         "",
                         "You can improve your builds, presentation, or application details and apply again later.",
@@ -9807,6 +9872,7 @@ class JoinTicketView(discord.ui.View):
             title="❌ Application Denied",
             description="\n".join([
                 f"{member.mention if member else f'<@{uid_raw}>'}, your PlayStation join application was **denied** at this time.",
+                f"**PSN:** {psn}",
                 "",
                 "You may improve your builds and reapply in the future.",
             ]),
@@ -9824,6 +9890,7 @@ class JoinTicketView(discord.ui.View):
                 title="❌ Join Application Denied",
                 description="\n".join([
                     f"**User:** {member.mention if member else f'<@{uid_raw}>'}",
+                    f"**PSN:** {psn}",
                     f"**Reviewed by:** {interaction.user.mention}",
                     f"**Ticket:** {interaction.channel.mention}",
                 ]),
