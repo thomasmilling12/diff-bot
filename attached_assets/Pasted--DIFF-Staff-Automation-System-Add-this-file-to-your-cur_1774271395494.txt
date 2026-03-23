@@ -1,0 +1,615 @@
+"""
+DIFF Staff Automation System
+Add this file to your current discord.py bot project.
+
+What this file adds:
+- Auto DM + staff feedback system for ticket decisions
+- Full staff performance tracker
+- Leaderboard command
+- Promotion suggestion logging
+- Manual stat add commands for tickets, applications, and meets
+- Optional automatic tracking when using review buttons in this file
+
+Recommended use:
+- Add this file as a cog, for example:
+    cogs/diff_staff_automation.py
+- Load it in your bot:
+    await bot.load_extension("cogs.diff_staff_automation")
+
+Notes:
+- This is designed to be safe to add to an existing bot.
+- Stats are stored in a local JSON file.
+- You can connect this to your existing support/app system by either:
+  1) using the review panel in this file, or
+  2) calling the stat update helpers manually in your own code later.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+GUILD_ID = 850386896509337710
+
+# Channels
+STAFF_LOGS_CHANNEL_ID = 1485265848099799163
+LEADERBOARD_CHANNEL_ID = 1485282044392243290
+PROMOTION_LOG_CHANNEL_ID = 1485265848099799163
+
+# Roles
+LEADER_ROLE_ID = 850391095845584937
+CO_LEADER_ROLE_ID = 850391378559238235
+MANAGER_ROLE_ID = 990011447193006101
+HOST_ROLE_ID = 1055823929358430248
+
+# Optional roles
+SUPPORT_STAFF_ROLE_ID = None
+CREW_MEMBER_ROLE_ID = 886702076552441927
+
+# Suggested promotion path
+PROMOTION_FLOW = {
+    CREW_MEMBER_ROLE_ID: HOST_ROLE_ID,
+    HOST_ROLE_ID: MANAGER_ROLE_ID,
+    MANAGER_ROLE_ID: CO_LEADER_ROLE_ID,
+    CO_LEADER_ROLE_ID: LEADER_ROLE_ID,
+}
+
+# Branding
+BRAND_NAME = "DIFF Staff Automation"
+LOGO_URL = ""
+BANNER_URL = ""
+
+# Data storage
+DATA_FILE = "diff_staff_stats.json"
+
+# Thresholds for promotion suggestions
+PROMOTION_THRESHOLDS = {
+    "tickets_handled": 8,
+    "applications_reviewed": 4,
+    "meets_hosted": 4,
+    "score": 18,
+}
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+def unix_ts(dt: Optional[datetime] = None) -> int:
+    dt = dt or utc_now()
+    return int(dt.timestamp())
+
+def fmt_dt(dt: Optional[datetime] = None) -> str:
+    return f"<t:{unix_ts(dt)}:F>"
+
+def clean_name(value: str) -> str:
+    value = value.lower().strip()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = re.sub(r"-{2,}", "-", value).strip("-")
+    return value or "user"
+
+def role_mention(role_id: Optional[int]) -> str:
+    return f"<@&{role_id}>" if role_id else ""
+
+def apply_branding(embed: discord.Embed) -> discord.Embed:
+    if LOGO_URL:
+        embed.set_thumbnail(url=LOGO_URL)
+    if BANNER_URL:
+        embed.set_image(url=BANNER_URL)
+    embed.set_footer(text="Different Meets • Staff Automation")
+    return embed
+
+def has_any_role(member: discord.Member, role_ids: set[int]) -> bool:
+    return any(role.id in role_ids for role in member.roles)
+
+def leadership_check(member: discord.Member) -> bool:
+    allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    return has_any_role(member, allowed) or member.guild_permissions.manage_guild
+
+def staff_check(member: discord.Member) -> bool:
+    allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+    if SUPPORT_STAFF_ROLE_ID:
+        allowed.add(SUPPORT_STAFF_ROLE_ID)
+    return has_any_role(member, allowed) or member.guild_permissions.manage_guild
+
+def score_user(stats: dict) -> int:
+    return (
+        stats.get("tickets_handled", 0) * 2
+        + stats.get("applications_reviewed", 0) * 3
+        + stats.get("meets_hosted", 0) * 2
+        + stats.get("reports_resolved", 0) * 2
+        + stats.get("appeals_reviewed", 0) * 2
+    )
+
+def next_promotion_role(member: discord.Member) -> Optional[int]:
+    current_ids = {r.id for r in member.roles}
+    for current_role_id, next_role_id in PROMOTION_FLOW.items():
+        if current_role_id in current_ids and next_role_id not in current_ids:
+            return next_role_id
+    return None
+
+@dataclass
+class DecisionMessage:
+    approved_subject: str = "DIFF Staff Application Update"
+    denied_subject: str = "DIFF Staff Application Decision"
+
+    @property
+    def approved_body(self) -> str:
+        return (
+            "You have been approved for the DIFF staff team.\n\n"
+            "Congratulations, and thank you for showing interest in helping the crew grow.\n\n"
+            "A leadership member reviewed your application and chose to move forward with you. "
+            "Please remain active, professional, and consistent as you step into this role.\n\n"
+            "Be ready to support the community, assist members, and represent DIFF the right way.\n\n"
+            "— Different Meets"
+        )
+
+    @property
+    def denied_body(self) -> str:
+        return (
+            "Thank you for applying for the DIFF staff team.\n\n"
+            "After review, your application was not approved at this time.\n\n"
+            "This does not mean you cannot improve and apply again later. Keep staying active, "
+            "show maturity, support the community, and continue building your presence in DIFF.\n\n"
+            "We appreciate your interest and effort.\n\n"
+            "— Different Meets"
+        )
+
+
+# =========================================================
+# STORAGE
+# =========================================================
+
+class StatsStore:
+    def __init__(self, file_path: str) -> None:
+        self.path = Path(file_path)
+        self.data = self._load()
+
+    def _default(self) -> dict:
+        return {
+            "users": {},
+            "last_reset": utc_now().isoformat(),
+        }
+
+    def _load(self) -> dict:
+        if not self.path.exists():
+            data = self._default()
+            self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            return data
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            data = self._default()
+            self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            return data
+
+    def save(self) -> None:
+        self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+
+    def ensure_user(self, user_id: int) -> dict:
+        key = str(user_id)
+        if key not in self.data["users"]:
+            self.data["users"][key] = {
+                "tickets_handled": 0,
+                "applications_reviewed": 0,
+                "meets_hosted": 0,
+                "reports_resolved": 0,
+                "appeals_reviewed": 0,
+                "accepted_apps": 0,
+                "denied_apps": 0,
+                "last_updated": utc_now().isoformat(),
+            }
+        return self.data["users"][key]
+
+    def add_stat(self, user_id: int, field: str, amount: int = 1) -> dict:
+        user = self.ensure_user(user_id)
+        user[field] = int(user.get(field, 0)) + amount
+        user["last_updated"] = utc_now().isoformat()
+        self.save()
+        return user
+
+    def set_stat(self, user_id: int, field: str, value: int) -> dict:
+        user = self.ensure_user(user_id)
+        user[field] = int(value)
+        user["last_updated"] = utc_now().isoformat()
+        self.save()
+        return user
+
+    def reset_all(self) -> None:
+        self.data = self._default()
+        self.save()
+
+    def leaderboard(self) -> list[tuple[int, dict]]:
+        users = []
+        for user_id, stats in self.data["users"].items():
+            users.append((int(user_id), stats))
+        users.sort(key=lambda x: score_user(x[1]), reverse=True)
+        return users
+
+
+# =========================================================
+# EMBEDS
+# =========================================================
+
+def build_stats_embed(member: discord.Member, stats: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="📊 DIFF Staff Performance Snapshot",
+        description=f"Stats for {member.mention}",
+        color=discord.Color.blue(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="Tickets Handled", value=str(stats.get("tickets_handled", 0)), inline=True)
+    embed.add_field(name="Applications Reviewed", value=str(stats.get("applications_reviewed", 0)), inline=True)
+    embed.add_field(name="Meets Hosted", value=str(stats.get("meets_hosted", 0)), inline=True)
+    embed.add_field(name="Reports Resolved", value=str(stats.get("reports_resolved", 0)), inline=True)
+    embed.add_field(name="Appeals Reviewed", value=str(stats.get("appeals_reviewed", 0)), inline=True)
+    embed.add_field(name="Score", value=str(score_user(stats)), inline=True)
+    return apply_branding(embed)
+
+def build_leaderboard_embed(guild: discord.Guild, leaderboard_rows: list[tuple[int, dict]]) -> discord.Embed:
+    embed = discord.Embed(
+        title="🏆 DIFF Staff Performance Leaderboard",
+        description="Top active staff members based on handled tickets, reviewed applications, and hosted meets.",
+        color=discord.Color.gold(),
+        timestamp=utc_now(),
+    )
+
+    if not leaderboard_rows:
+        embed.add_field(name="No Data Yet", value="No staff stats have been recorded yet.", inline=False)
+        return apply_branding(embed)
+
+    lines = []
+    for idx, (user_id, stats) in enumerate(leaderboard_rows[:10], start=1):
+        member = guild.get_member(user_id)
+        display = member.mention if member else f"<@{user_id}>"
+        lines.append(
+            f"**#{idx}** {display}\n"
+            f"Score: **{score_user(stats)}** | "
+            f"Tickets: **{stats.get('tickets_handled', 0)}** | "
+            f"Apps: **{stats.get('applications_reviewed', 0)}** | "
+            f"Meets: **{stats.get('meets_hosted', 0)}**"
+        )
+
+    embed.add_field(name="Top Staff", value="\n\n".join(lines), inline=False)
+    return apply_branding(embed)
+
+def build_promotion_embed(member: discord.Member, stats: dict, next_role: discord.Role) -> discord.Embed:
+    embed = discord.Embed(
+        title="📈 Promotion Suggestion",
+        description=(
+            f"User: {member.mention}\n"
+            f"Current Suggested Next Role: {next_role.mention}\n\n"
+            "This user has reached the DIFF activity threshold for a promotion review."
+        ),
+        color=discord.Color.green(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="Tickets Handled", value=str(stats.get("tickets_handled", 0)), inline=True)
+    embed.add_field(name="Applications Reviewed", value=str(stats.get("applications_reviewed", 0)), inline=True)
+    embed.add_field(name="Meets Hosted", value=str(stats.get("meets_hosted", 0)), inline=True)
+    embed.add_field(name="Reports Resolved", value=str(stats.get("reports_resolved", 0)), inline=True)
+    embed.add_field(name="Appeals Reviewed", value=str(stats.get("appeals_reviewed", 0)), inline=True)
+    embed.add_field(name="Activity Score", value=str(score_user(stats)), inline=True)
+    return apply_branding(embed)
+
+def build_log_embed(title: str, description: str, color: discord.Color) -> discord.Embed:
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color,
+        timestamp=utc_now(),
+    )
+    return apply_branding(embed)
+
+
+# =========================================================
+# REVIEW VIEW
+# =========================================================
+
+class StaffReviewView(discord.ui.View):
+    def __init__(self, cog: "DiffStaffAutomation") -> None:
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def _get_applicant(self, interaction: discord.Interaction) -> Optional[discord.Member]:
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            return None
+        topic = interaction.channel.topic or ""
+        match = re.search(r"ticket_owner=(\d+)", topic)
+        if not match:
+            return None
+        return interaction.guild.get_member(int(match.group(1)))
+
+    async def _handle_decision(self, interaction: discord.Interaction, approved: bool) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This action only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can use this panel.", ephemeral=True)
+            return
+
+        applicant = await self._get_applicant(interaction)
+        if applicant is None:
+            await interaction.response.send_message("Could not detect the applicant from this ticket.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            f"Application {'approved' if approved else 'denied'} and logged.",
+            ephemeral=True,
+        )
+
+        # Update stats for reviewer
+        self.cog.store.add_stat(interaction.user.id, "applications_reviewed", 1)
+        self.cog.store.add_stat(interaction.user.id, "accepted_apps" if approved else "denied_apps", 1)
+
+        # Role assignment on approval
+        if approved:
+            role = interaction.guild.get_role(HOST_ROLE_ID)
+            if role and role not in applicant.roles:
+                try:
+                    await applicant.add_roles(role, reason=f"Application approved by {interaction.user}")
+                except discord.HTTPException:
+                    pass
+
+        # Channel message
+        channel_embed = build_log_embed(
+            "✅ Application Approved" if approved else "❌ Application Denied",
+            f"Applicant: {applicant.mention}\nReviewed By: {interaction.user.mention}",
+            discord.Color.green() if approved else discord.Color.red(),
+        )
+        await interaction.channel.send(embed=channel_embed)
+
+        # Auto DM
+        await self.cog.send_decision_dm(applicant, approved=approved)
+
+        # Staff logs
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            log_embed = build_log_embed(
+                "🧾 Staff Application Decision",
+                (
+                    f"Applicant: {applicant.mention}\n"
+                    f"Reviewed By: {interaction.user.mention}\n"
+                    f"Decision: {'Approved' if approved else 'Denied'}\n"
+                    f"Time: {fmt_dt()}"
+                ),
+                discord.Color.blue(),
+            )
+            await logs_channel.send(embed=log_embed)
+
+        # Promotion suggestion check
+        await self.cog.check_and_send_promotion_suggestion(interaction.guild, interaction.user)
+
+        # disable buttons on the original review message
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅", custom_id="diff_staff_auto_accept")
+    async def accept(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._handle_decision(interaction, approved=True)
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌", custom_id="diff_staff_auto_deny")
+    async def deny(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._handle_decision(interaction, approved=False)
+
+
+# =========================================================
+# COG
+# =========================================================
+
+class DiffStaffAutomation(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self.store = StatsStore(DATA_FILE)
+        self.dm_templates = DecisionMessage()
+
+    async def cog_load(self) -> None:
+        self.bot.add_view(StaffReviewView(self))
+
+    async def send_decision_dm(self, member: discord.Member, approved: bool) -> bool:
+        try:
+            embed = discord.Embed(
+                title=self.dm_templates.approved_subject if approved else self.dm_templates.denied_subject,
+                description=self.dm_templates.approved_body if approved else self.dm_templates.denied_body,
+                color=discord.Color.green() if approved else discord.Color.red(),
+                timestamp=utc_now(),
+            )
+            apply_branding(embed)
+            await member.send(embed=embed)
+            return True
+        except discord.HTTPException:
+            return False
+
+    async def check_and_send_promotion_suggestion(self, guild: discord.Guild, member: discord.Member) -> None:
+        stats = self.store.ensure_user(member.id)
+        score = score_user(stats)
+        if (
+            stats.get("tickets_handled", 0) < PROMOTION_THRESHOLDS["tickets_handled"]
+            and stats.get("applications_reviewed", 0) < PROMOTION_THRESHOLDS["applications_reviewed"]
+            and stats.get("meets_hosted", 0) < PROMOTION_THRESHOLDS["meets_hosted"]
+            and score < PROMOTION_THRESHOLDS["score"]
+        ):
+            return
+
+        next_role_id = next_promotion_role(member)
+        if not next_role_id:
+            return
+
+        next_role = guild.get_role(next_role_id)
+        if not next_role:
+            return
+
+        channel = guild.get_channel(PROMOTION_LOG_CHANNEL_ID)
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(embed=build_promotion_embed(member, stats, next_role))
+
+    async def post_leaderboard(self, guild: discord.Guild, target_channel: discord.TextChannel) -> None:
+        leaderboard_rows = self.store.leaderboard()
+        await target_channel.send(embed=build_leaderboard_embed(guild, leaderboard_rows))
+
+    # -----------------------------------------------------
+    # Commands
+    # -----------------------------------------------------
+
+    @app_commands.command(name="staff_stats", description="View DIFF staff performance stats for a member.")
+    async def staff_stats(self, interaction: discord.Interaction, member: discord.Member) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not staff_check(interaction.user):
+            await interaction.response.send_message("Only DIFF staff can use this command.", ephemeral=True)
+            return
+
+        stats = self.store.ensure_user(member.id)
+        await interaction.response.send_message(embed=build_stats_embed(member, stats), ephemeral=True)
+
+    @app_commands.command(name="staff_add_ticket", description="Add handled ticket stats to a DIFF staff member.")
+    async def staff_add_ticket(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can update stats.", ephemeral=True)
+            return
+
+        self.store.add_stat(member.id, "tickets_handled", amount)
+        stats = self.store.ensure_user(member.id)
+
+        if isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message(
+                f"Added **{amount}** handled ticket(s) to {member.mention}.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message("Stat updated.", ephemeral=True)
+
+        await self.check_and_send_promotion_suggestion(interaction.guild, member)
+
+    @app_commands.command(name="staff_add_application", description="Add reviewed application stats to a DIFF staff member.")
+    async def staff_add_application(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can update stats.", ephemeral=True)
+            return
+
+        self.store.add_stat(member.id, "applications_reviewed", amount)
+        await interaction.response.send_message(f"Added **{amount}** reviewed application(s) to {member.mention}.", ephemeral=True)
+        await self.check_and_send_promotion_suggestion(interaction.guild, member)
+
+    @app_commands.command(name="staff_add_meet", description="Add hosted meet stats to a DIFF staff member.")
+    async def staff_add_meet(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can update stats.", ephemeral=True)
+            return
+
+        self.store.add_stat(member.id, "meets_hosted", amount)
+        await interaction.response.send_message(f"Added **{amount}** hosted meet(s) to {member.mention}.", ephemeral=True)
+        await self.check_and_send_promotion_suggestion(interaction.guild, member)
+
+    @app_commands.command(name="staff_add_report", description="Add resolved report stats to a DIFF staff member.")
+    async def staff_add_report(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can update stats.", ephemeral=True)
+            return
+
+        self.store.add_stat(member.id, "reports_resolved", amount)
+        await interaction.response.send_message(f"Added **{amount}** resolved report(s) to {member.mention}.", ephemeral=True)
+        await self.check_and_send_promotion_suggestion(interaction.guild, member)
+
+    @app_commands.command(name="staff_add_appeal", description="Add reviewed appeal stats to a DIFF staff member.")
+    async def staff_add_appeal(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can update stats.", ephemeral=True)
+            return
+
+        self.store.add_stat(member.id, "appeals_reviewed", amount)
+        await interaction.response.send_message(f"Added **{amount}** reviewed appeal(s) to {member.mention}.", ephemeral=True)
+        await self.check_and_send_promotion_suggestion(interaction.guild, member)
+
+    @app_commands.command(name="staff_post_leaderboard", description="Post the DIFF staff leaderboard.")
+    async def staff_post_leaderboard(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can post the leaderboard.", ephemeral=True)
+            return
+
+        channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("Leaderboard channel not found.", ephemeral=True)
+            return
+
+        await self.post_leaderboard(interaction.guild, channel)
+        await interaction.response.send_message(f"Leaderboard posted in {channel.mention}.", ephemeral=True)
+
+    @app_commands.command(name="staff_reset_stats", description="Reset all DIFF staff stats.")
+    async def staff_reset_stats(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can reset stats.", ephemeral=True)
+            return
+
+        self.store.reset_all()
+        await interaction.response.send_message("All staff stats have been reset.", ephemeral=True)
+
+    @app_commands.command(name="post_staff_review_panel", description="Post an Accept / Deny review panel in the current ticket.")
+    async def post_staff_review_panel(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can post review panels.", ephemeral=True)
+            return
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("This command must be used in a ticket channel.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🧾 DIFF Staff Review Panel",
+            description=(
+                "Leadership can review this application using the buttons below.\n\n"
+                "✅ Accept — approve the application, DM the user, log the decision, and assign host role\n"
+                "❌ Deny — deny the application, DM the user, and log the decision"
+            ),
+            color=discord.Color.blurple(),
+            timestamp=utc_now(),
+        )
+        apply_branding(embed)
+        await interaction.channel.send(embed=embed, view=StaffReviewView(self))
+        await interaction.response.send_message("Review panel posted.", ephemeral=True)
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(DiffStaffAutomation(bot))

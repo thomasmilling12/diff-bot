@@ -3635,6 +3635,7 @@ async def on_ready():
         bot.add_view(SupportDropdownView())
         bot.add_view(SupportCloseButton())
         bot.add_view(SupportApplicationReviewView())
+        bot.add_view(StaffReviewView())
         _tab_state = _tab_load()
         _seen_member_ids: set[int] = set()
         for _link in _tab_state.get("ticket_links", {}).values():
@@ -8440,6 +8441,444 @@ async def post_support_panel(interaction: discord.Interaction) -> None:
         pass
     await channel.send(embed=_supp_build_panel_embed(), view=SupportDropdownView())
     await interaction.followup.send(f"Support panel posted in {channel.mention}.", ephemeral=True)
+
+
+# =========================
+# DIFF STAFF AUTOMATION SYSTEM
+# =========================
+
+_STAFF_DATA_FILE = "diff_data/diff_staff_stats.json"
+_PROMOTION_LOG_CHANNEL_ID = STAFF_LOGS_CHANNEL_ID
+
+_PROMOTION_FLOW: dict[int, int] = {
+    CREW_MEMBER_ROLE_ID: HOST_ROLE_ID,
+    HOST_ROLE_ID: MANAGER_ROLE_ID,
+    MANAGER_ROLE_ID: CO_LEADER_ROLE_ID,
+    CO_LEADER_ROLE_ID: LEADER_ROLE_ID,
+}
+
+_PROMOTION_THRESHOLDS = {
+    "tickets_handled": 8,
+    "applications_reviewed": 4,
+    "meets_hosted": 4,
+    "score": 18,
+}
+
+_STAFF_DM_APPROVED_TITLE = "DIFF Staff Application Update"
+_STAFF_DM_DENIED_TITLE = "DIFF Staff Application Decision"
+_STAFF_DM_APPROVED_BODY = (
+    "You have been approved for the DIFF staff team.\n\n"
+    "Congratulations, and thank you for showing interest in helping the crew grow.\n\n"
+    "A leadership member reviewed your application and chose to move forward with you. "
+    "Please remain active, professional, and consistent as you step into this role.\n\n"
+    "Be ready to support the community, assist members, and represent DIFF the right way.\n\n"
+    "— Different Meets"
+)
+_STAFF_DM_DENIED_BODY = (
+    "Thank you for applying for the DIFF staff team.\n\n"
+    "After review, your application was not approved at this time.\n\n"
+    "This does not mean you cannot improve and apply again later. Keep staying active, "
+    "show maturity, support the community, and continue building your presence in DIFF.\n\n"
+    "We appreciate your interest and effort.\n\n"
+    "— Different Meets"
+)
+
+
+class _StatsStore:
+    def __init__(self, file_path: str) -> None:
+        from pathlib import Path as _Path
+        self.path = _Path(file_path)
+        self.data = self._load()
+
+    def _default(self) -> dict:
+        from datetime import timezone as _tz
+        return {"users": {}, "last_reset": datetime.now(_tz.utc).isoformat()}
+
+    def _load(self) -> dict:
+        if not self.path.exists():
+            d = self._default()
+            self.path.write_text(json.dumps(d, indent=2), encoding="utf-8")
+            return d
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            d = self._default()
+            self.path.write_text(json.dumps(d, indent=2), encoding="utf-8")
+            return d
+
+    def save(self) -> None:
+        self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+
+    def ensure_user(self, user_id: int) -> dict:
+        key = str(user_id)
+        if key not in self.data["users"]:
+            from datetime import timezone as _tz
+            self.data["users"][key] = {
+                "tickets_handled": 0,
+                "applications_reviewed": 0,
+                "meets_hosted": 0,
+                "reports_resolved": 0,
+                "appeals_reviewed": 0,
+                "accepted_apps": 0,
+                "denied_apps": 0,
+                "last_updated": datetime.now(_tz.utc).isoformat(),
+            }
+        return self.data["users"][key]
+
+    def add_stat(self, user_id: int, field: str, amount: int = 1) -> dict:
+        from datetime import timezone as _tz
+        user = self.ensure_user(user_id)
+        user[field] = int(user.get(field, 0)) + amount
+        user["last_updated"] = datetime.now(_tz.utc).isoformat()
+        self.save()
+        return user
+
+    def reset_all(self) -> None:
+        self.data = self._default()
+        self.save()
+
+    def leaderboard(self) -> list[tuple[int, dict]]:
+        rows = [(int(uid), stats) for uid, stats in self.data["users"].items()]
+        rows.sort(key=lambda x: _staff_score(x[1]), reverse=True)
+        return rows
+
+
+def _staff_score(stats: dict) -> int:
+    return (
+        stats.get("tickets_handled", 0) * 2
+        + stats.get("applications_reviewed", 0) * 3
+        + stats.get("meets_hosted", 0) * 2
+        + stats.get("reports_resolved", 0) * 2
+        + stats.get("appeals_reviewed", 0) * 2
+    )
+
+
+def _staff_next_promo_role(member: discord.Member) -> int | None:
+    current_ids = {r.id for r in member.roles}
+    for cur, nxt in _PROMOTION_FLOW.items():
+        if cur in current_ids and nxt not in current_ids:
+            return nxt
+    return None
+
+
+_staff_store = _StatsStore(_STAFF_DATA_FILE)
+
+
+async def _staff_send_dm(member: discord.Member, approved: bool) -> None:
+    from datetime import timezone as _tz
+    try:
+        embed = discord.Embed(
+            title=_STAFF_DM_APPROVED_TITLE if approved else _STAFF_DM_DENIED_TITLE,
+            description=_STAFF_DM_APPROVED_BODY if approved else _STAFF_DM_DENIED_BODY,
+            color=discord.Color.green() if approved else discord.Color.red(),
+            timestamp=datetime.now(_tz.utc),
+        )
+        embed.set_footer(text="Different Meets • Staff System")
+        await member.send(embed=embed)
+    except discord.HTTPException:
+        pass
+
+
+async def _staff_check_promotion(guild: discord.Guild, member: discord.Member) -> None:
+    from datetime import timezone as _tz
+    stats = _staff_store.ensure_user(member.id)
+    score = _staff_score(stats)
+    meets_threshold = (
+        stats.get("tickets_handled", 0) >= _PROMOTION_THRESHOLDS["tickets_handled"]
+        or stats.get("applications_reviewed", 0) >= _PROMOTION_THRESHOLDS["applications_reviewed"]
+        or stats.get("meets_hosted", 0) >= _PROMOTION_THRESHOLDS["meets_hosted"]
+        or score >= _PROMOTION_THRESHOLDS["score"]
+    )
+    if not meets_threshold:
+        return
+    next_role_id = _staff_next_promo_role(member)
+    if not next_role_id:
+        return
+    next_role = guild.get_role(next_role_id)
+    if not next_role:
+        return
+    log_channel = guild.get_channel(_PROMOTION_LOG_CHANNEL_ID)
+    if not isinstance(log_channel, discord.TextChannel):
+        return
+    now = datetime.now(_tz.utc)
+    embed = discord.Embed(
+        title="📈 Promotion Suggestion",
+        description=(
+            f"User: {member.mention}\n"
+            f"Suggested Next Role: {next_role.mention}\n\n"
+            "This staff member has reached the DIFF activity threshold for a promotion review."
+        ),
+        color=discord.Color.green(),
+        timestamp=now,
+    )
+    embed.add_field(name="Tickets Handled", value=str(stats.get("tickets_handled", 0)), inline=True)
+    embed.add_field(name="Apps Reviewed", value=str(stats.get("applications_reviewed", 0)), inline=True)
+    embed.add_field(name="Meets Hosted", value=str(stats.get("meets_hosted", 0)), inline=True)
+    embed.add_field(name="Reports Resolved", value=str(stats.get("reports_resolved", 0)), inline=True)
+    embed.add_field(name="Appeals Reviewed", value=str(stats.get("appeals_reviewed", 0)), inline=True)
+    embed.add_field(name="Activity Score", value=str(score), inline=True)
+    embed.set_footer(text="Different Meets • Staff Automation")
+    try:
+        await log_channel.send(embed=embed)
+    except discord.HTTPException:
+        pass
+
+
+class StaffReviewView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    async def _get_applicant(self, interaction: discord.Interaction) -> discord.Member | None:
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            return None
+        owner_raw = _supp_parse_topic(interaction.channel.topic, "ticket_owner")
+        if not owner_raw or not owner_raw.isdigit():
+            return None
+        return interaction.guild.get_member(int(owner_raw))
+
+    async def _handle(self, interaction: discord.Interaction, approved: bool) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+                and not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("Only DIFF leadership can use this panel.", ephemeral=True)
+
+        applicant = await self._get_applicant(interaction)
+        if applicant is None:
+            return await interaction.response.send_message("Could not detect the applicant from this ticket.", ephemeral=True)
+
+        await interaction.response.send_message(
+            f"Application {'approved' if approved else 'denied'} and logged.", ephemeral=True
+        )
+
+        _staff_store.add_stat(interaction.user.id, "applications_reviewed", 1)
+        _staff_store.add_stat(interaction.user.id, "accepted_apps" if approved else "denied_apps", 1)
+
+        if approved:
+            role = interaction.guild.get_role(_SUPP_APPROVED_STAFF_ROLE_ID)
+            if role and role not in applicant.roles:
+                try:
+                    await applicant.add_roles(role, reason=f"Application approved by {interaction.user}")
+                except discord.HTTPException:
+                    pass
+
+        from datetime import timezone as _tz
+        now = datetime.now(_tz.utc)
+        ch_embed = discord.Embed(
+            title="✅ Application Approved" if approved else "❌ Application Denied",
+            description=f"Applicant: {applicant.mention}\nReviewed By: {interaction.user.mention}",
+            color=discord.Color.green() if approved else discord.Color.red(),
+            timestamp=now,
+        )
+        ch_embed.set_footer(text="Different Meets • Staff System")
+        if isinstance(interaction.channel, discord.TextChannel):
+            await interaction.channel.send(embed=ch_embed)
+
+        await _staff_send_dm(applicant, approved=approved)
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            log_embed = discord.Embed(
+                title="🧾 Staff Application Decision",
+                description=(
+                    f"Applicant: {applicant.mention}\n"
+                    f"Reviewed By: {interaction.user.mention}\n"
+                    f"Decision: {'Approved' if approved else 'Denied'}\n"
+                    f"Time: <t:{int(now.timestamp())}:F>"
+                ),
+                color=discord.Color.blue(),
+                timestamp=now,
+            )
+            log_embed.set_footer(text="Different Meets • Staff System")
+            try:
+                await logs_channel.send(embed=log_embed)
+            except discord.HTTPException:
+                pass
+
+        await _staff_check_promotion(interaction.guild, interaction.user)
+
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Accept", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_staff_auto_accept")
+    async def accept(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._handle(interaction, approved=True)
+
+    @discord.ui.button(label="Deny", emoji="❌", style=discord.ButtonStyle.danger, custom_id="diff_staff_auto_deny")
+    async def deny(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._handle(interaction, approved=False)
+
+
+@bot.tree.command(name="staff-stats", description="View DIFF staff performance stats for a member (staff only)")
+@app_commands.describe(member="The staff member to look up")
+async def staff_stats(interaction: discord.Interaction, member: discord.Member) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    stats = _staff_store.ensure_user(member.id)
+    from datetime import timezone as _tz
+    embed = discord.Embed(
+        title="📊 DIFF Staff Performance Snapshot",
+        description=f"Stats for {member.mention}",
+        color=discord.Color.blue(),
+        timestamp=datetime.now(_tz.utc),
+    )
+    embed.add_field(name="Tickets Handled", value=str(stats.get("tickets_handled", 0)), inline=True)
+    embed.add_field(name="Apps Reviewed", value=str(stats.get("applications_reviewed", 0)), inline=True)
+    embed.add_field(name="Meets Hosted", value=str(stats.get("meets_hosted", 0)), inline=True)
+    embed.add_field(name="Reports Resolved", value=str(stats.get("reports_resolved", 0)), inline=True)
+    embed.add_field(name="Appeals Reviewed", value=str(stats.get("appeals_reviewed", 0)), inline=True)
+    embed.add_field(name="Score", value=str(_staff_score(stats)), inline=True)
+    embed.set_footer(text="Different Meets • Staff Automation")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="staff-add-ticket", description="Add handled ticket stats to a staff member (leadership only)")
+@app_commands.describe(member="Staff member to update", amount="Number of tickets to add (default 1)")
+async def staff_add_ticket(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+    _staff_store.add_stat(member.id, "tickets_handled", amount)
+    await interaction.response.send_message(f"Added **{amount}** handled ticket(s) to {member.mention}.", ephemeral=True)
+    await _staff_check_promotion(interaction.guild, member)
+
+
+@bot.tree.command(name="staff-add-application", description="Add reviewed application stats to a staff member (leadership only)")
+@app_commands.describe(member="Staff member to update", amount="Number of applications to add (default 1)")
+async def staff_add_application(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+    _staff_store.add_stat(member.id, "applications_reviewed", amount)
+    await interaction.response.send_message(f"Added **{amount}** reviewed application(s) to {member.mention}.", ephemeral=True)
+    await _staff_check_promotion(interaction.guild, member)
+
+
+@bot.tree.command(name="staff-add-meet", description="Add hosted meet stats to a staff member (leadership only)")
+@app_commands.describe(member="Staff member to update", amount="Number of meets to add (default 1)")
+async def staff_add_meet(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+    _staff_store.add_stat(member.id, "meets_hosted", amount)
+    await interaction.response.send_message(f"Added **{amount}** hosted meet(s) to {member.mention}.", ephemeral=True)
+    await _staff_check_promotion(interaction.guild, member)
+
+
+@bot.tree.command(name="staff-add-report", description="Add resolved report stats to a staff member (leadership only)")
+@app_commands.describe(member="Staff member to update", amount="Number of reports to add (default 1)")
+async def staff_add_report(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+    _staff_store.add_stat(member.id, "reports_resolved", amount)
+    await interaction.response.send_message(f"Added **{amount}** resolved report(s) to {member.mention}.", ephemeral=True)
+    await _staff_check_promotion(interaction.guild, member)
+
+
+@bot.tree.command(name="staff-add-appeal", description="Add reviewed appeal stats to a staff member (leadership only)")
+@app_commands.describe(member="Staff member to update", amount="Number of appeals to add (default 1)")
+async def staff_add_appeal(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+    _staff_store.add_stat(member.id, "appeals_reviewed", amount)
+    await interaction.response.send_message(f"Added **{amount}** reviewed appeal(s) to {member.mention}.", ephemeral=True)
+    await _staff_check_promotion(interaction.guild, member)
+
+
+@bot.tree.command(name="staff-post-leaderboard", description="Post the DIFF staff performance leaderboard (leadership only)")
+async def staff_post_leaderboard(interaction: discord.Interaction) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+    lb_channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
+    if not isinstance(lb_channel, discord.TextChannel):
+        return await interaction.response.send_message("Leaderboard channel not found.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    from datetime import timezone as _tz
+    rows = _staff_store.leaderboard()
+    embed = discord.Embed(
+        title="🏆 DIFF Staff Performance Leaderboard",
+        description="Top active staff members based on tickets, applications, and meets.",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(_tz.utc),
+    )
+    if not rows:
+        embed.add_field(name="No Data Yet", value="No staff stats recorded yet.", inline=False)
+    else:
+        lines: list[str] = []
+        for idx, (uid, stats) in enumerate(rows[:10], 1):
+            m = interaction.guild.get_member(uid)
+            display = m.mention if m else f"<@{uid}>"
+            lines.append(
+                f"**#{idx}** {display}\n"
+                f"Score: **{_staff_score(stats)}** | "
+                f"Tickets: **{stats.get('tickets_handled', 0)}** | "
+                f"Apps: **{stats.get('applications_reviewed', 0)}** | "
+                f"Meets: **{stats.get('meets_hosted', 0)}**"
+            )
+        embed.add_field(name="Top Staff", value="\n\n".join(lines), inline=False)
+    embed.set_footer(text="Different Meets • Staff Automation")
+    await lb_channel.send(embed=embed)
+    await interaction.followup.send(f"Leaderboard posted in {lb_channel.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="staff-reset-stats", description="Reset all DIFF staff performance stats (leadership only)")
+async def staff_reset_stats(interaction: discord.Interaction) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+    _staff_store.reset_all()
+    await interaction.response.send_message("All staff stats have been reset.", ephemeral=True)
+
+
+@bot.tree.command(name="post-staff-review-panel", description="Post an Accept / Deny review panel in the current ticket (leadership only)")
+async def post_staff_review_panel(interaction: discord.Interaction) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Must be used inside a ticket channel.", ephemeral=True)
+    from datetime import timezone as _tz
+    embed = discord.Embed(
+        title="🧾 DIFF Staff Review Panel",
+        description=(
+            "Leadership can review this application using the buttons below.\n\n"
+            "✅ **Accept** — Approve the application, DM the applicant, assign host role, and log the decision\n"
+            "❌ **Deny** — Deny the application, DM the applicant, and log the decision"
+        ),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_tz.utc),
+    )
+    embed.set_footer(text="Different Meets • Staff Automation")
+    await interaction.channel.send(embed=embed, view=StaffReviewView())
+    await interaction.response.send_message("Review panel posted.", ephemeral=True)
 
 
 # =========================
