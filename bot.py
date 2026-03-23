@@ -122,6 +122,7 @@ DIFF_PANEL_CHANNEL_ID = 1103086800458760262
 DIFF_PANEL_STATE_FILE = os.path.join(DATA_FOLDER, "diff_panel_state.json")
 INTERVIEW_PANEL_CHANNEL_ID = 1103849042296963112
 INTERVIEW_PANEL_FILE = os.path.join(DATA_FOLDER, "diff_interview_panel.json")
+COLOR_OPS_STATE_FILE = os.path.join(DATA_FOLDER, "diff_color_ops_state.json")
 
 DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
 DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
@@ -3597,6 +3598,8 @@ async def on_ready():
     _cs_ensure_file()
     if not color_schedule_loop.is_running():
         color_schedule_loop.start()
+    if not color_ops_refresh_loop.is_running():
+        color_ops_refresh_loop.start()
 
     _rsvp_load_all()
     for _rsvp_mid, _rsvp_rec in _rsvp_meets.items():
@@ -5649,6 +5652,476 @@ async def refresh_interview_panel(interaction: discord.Interaction):
         return
     await _post_or_refresh_interview_panel()
     await interaction.followup.send("Interview panel refreshed.", ephemeral=True)
+
+
+# =========================
+# COLOR OPS SYSTEM
+# =========================
+
+_COLOR_OPS_STATE_DEFAULTS: dict = {
+    "applications": {},
+    "colors": {
+        "history": [],
+        "active_entries": [],
+        "contributors": {},
+    },
+    "panel_messages": {},
+}
+
+
+def _color_ops_load() -> dict:
+    raw = _load_diff_json(COLOR_OPS_STATE_FILE)
+    if not raw:
+        return {k: v for k, v in _COLOR_OPS_STATE_DEFAULTS.items()}
+    for key, default in _COLOR_OPS_STATE_DEFAULTS.items():
+        raw.setdefault(key, default)
+    return raw
+
+
+def _color_ops_save(state: dict) -> None:
+    _save_diff_json(COLOR_OPS_STATE_FILE, state)
+
+
+def _color_ops_app_bucket(state: dict, user_id: int) -> dict:
+    key = str(user_id)
+    if key not in state["applications"]:
+        state["applications"][key] = {
+            "user_id": user_id,
+            "display_name": None,
+            "status": "Applied",
+            "submitted_at": None,
+            "interview_scheduled_for": None,
+            "interview_notes": None,
+            "result_notes": None,
+            "reviewed_by": None,
+        }
+    return state["applications"][key]
+
+
+def _color_ops_contributor_bucket(state: dict, user_id: int) -> dict:
+    key = str(user_id)
+    contributors = state["colors"]["contributors"]
+    if key not in contributors:
+        contributors[key] = {
+            "submission_count": 0,
+            "win_count": 0,
+            "last_submission_at": None,
+            "last_win_at": None,
+            "display_name": None,
+        }
+    return contributors[key]
+
+
+def _build_color_ops_stats_embed(state: dict) -> discord.Embed:
+    apps = state["applications"]
+    colors = state["colors"]
+    history = colors["history"]
+    contributors = colors["contributors"]
+
+    approved = sum(1 for x in apps.values() if x.get("status") == "Approved")
+    denied = sum(1 for x in apps.values() if x.get("status") == "Denied")
+    interviewing = sum(1 for x in apps.values() if x.get("status") == "Interview Scheduled")
+    applied = sum(1 for x in apps.values() if x.get("status") == "Applied")
+    total_submissions = sum(v.get("submission_count", 0) for v in contributors.values())
+    active_entries = len(colors["active_entries"])
+
+    embed = discord.Embed(
+        title="📊 DIFF Color + Application Stats",
+        description="Live tracking panel for color operations and application/interview flow.",
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(
+        name="🧾 Applications",
+        value=(
+            f"Applied: **{applied}**\n"
+            f"Interview Scheduled: **{interviewing}**\n"
+            f"Approved: **{approved}**\n"
+            f"Denied: **{denied}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎨 Color System",
+        value=(
+            f"Active Entries: **{active_entries}**\n"
+            f"Total Submissions Logged: **{total_submissions}**\n"
+            f"Total Winners Logged: **{len(history)}**"
+        ),
+        inline=False,
+    )
+    if history:
+        last = history[-1]
+        contrib_text = (
+            f"<@{last['contributor_id']}>" if last.get("contributor_id")
+            else "**Unknown**"
+        )
+        embed.add_field(
+            name="🏆 Most Recent Winner",
+            value=f"Color: **{last.get('color_name', 'Unknown')}**\nContributor: {contrib_text}",
+            inline=False,
+        )
+    embed.set_footer(text="Different Meets • Staff Logs • Auto-refresh enabled")
+    return embed
+
+
+def _build_color_ops_leaderboard_embed(state: dict) -> discord.Embed:
+    contributors = state["colors"]["contributors"]
+    sorted_rows = sorted(
+        contributors.items(),
+        key=lambda kv: (kv[1].get("win_count", 0), kv[1].get("submission_count", 0)),
+        reverse=True,
+    )
+    lines = []
+    for index, (user_id, data) in enumerate(sorted_rows[:10], start=1):
+        display = data.get("display_name") or f"User {user_id}"
+        wins = data.get("win_count", 0)
+        subs = data.get("submission_count", 0)
+        lines.append(f"**#{index}** {display} — 🏆 `{wins}` wins • 🎨 `{subs}` submissions")
+    if not lines:
+        lines.append("No contributor data logged yet.")
+
+    embed = discord.Embed(
+        title="🏆 DIFF Top Color Contributors",
+        description="Leaderboard for the most active and successful color contributors.",
+        color=discord.Color.purple(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="📈 Leaderboard", value="\n".join(lines), inline=False)
+    embed.add_field(
+        name="📌 Notes",
+        value=(
+            "This panel updates from logged color submissions and weekly winners.\n"
+            "Buttons below go straight to the team coordination channels."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Color Team Leaderboard • No duplicate panels")
+    return embed
+
+
+def _build_color_ops_application_embed(
+    member: discord.Member, app_data: dict, title: str, color: discord.Color
+) -> discord.Embed:
+    embed = discord.Embed(title=title, color=color, timestamp=datetime.utcnow())
+    embed.add_field(name="Member", value=member.mention, inline=False)
+    embed.add_field(name="Status", value=f"**{app_data.get('status', 'Unknown')}**", inline=True)
+    embed.add_field(name="Submitted", value=app_data.get("submitted_at", "Not logged"), inline=True)
+    if app_data.get("interview_scheduled_for"):
+        embed.add_field(name="Interview Scheduled", value=app_data["interview_scheduled_for"], inline=False)
+    if app_data.get("interview_notes"):
+        embed.add_field(name="Interview Notes", value=app_data["interview_notes"], inline=False)
+    if app_data.get("result_notes"):
+        embed.add_field(name="Result Notes", value=app_data["result_notes"], inline=False)
+    if app_data.get("reviewed_by"):
+        embed.add_field(name="Reviewed By", value=app_data["reviewed_by"], inline=False)
+    embed.set_footer(text="Different Meets • Application / Interview System")
+    return embed
+
+
+def _build_color_ops_winner_embed(color_name: str, contributor_text: str, image_url: str | None) -> discord.Embed:
+    embed = discord.Embed(
+        title="🏆 Weekly Winning Color",
+        description=(
+            "The crew color has been decided for this cycle.\n\n"
+            f"**Winning Color:** {color_name}\n"
+            f"**Submitted By:** {contributor_text}\n\n"
+            "Use the buttons below for team coordination and the next vote flow."
+        ),
+        color=discord.Color.blue(),
+        timestamp=datetime.utcnow(),
+    )
+    if image_url:
+        embed.set_image(url=image_url)
+    embed.set_footer(text="Different Meets • Winner Auto Post")
+    return embed
+
+
+async def _color_ops_upsert_panel(
+    channel: discord.TextChannel,
+    state: dict,
+    key: str,
+    embed: discord.Embed,
+    view: discord.ui.View | None = None,
+    content: str | None = None,
+) -> None:
+    msg_id = state["panel_messages"].get(key)
+    if msg_id:
+        try:
+            msg = await channel.fetch_message(int(msg_id))
+            await msg.edit(content=content, embed=embed, view=view)
+            return
+        except (discord.NotFound, discord.HTTPException):
+            pass
+    msg = await channel.send(
+        content=content,
+        embed=embed,
+        view=view,
+        allowed_mentions=discord.AllowedMentions(roles=True),
+    )
+    state["panel_messages"][key] = msg.id
+
+
+async def _color_ops_refresh_panels() -> None:
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return
+    state = _color_ops_load()
+    staff_logs = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    color_notice = guild.get_channel(COLOR_TEAM_POST_CHANNEL_ID)
+
+    if isinstance(staff_logs, discord.TextChannel):
+        await _color_ops_upsert_panel(
+            staff_logs, state, "color_ops_stats_panel",
+            embed=_build_color_ops_stats_embed(state),
+        )
+    if isinstance(color_notice, discord.TextChannel):
+        role = guild.get_role(COLOR_TEAM_ROLE_ID)
+        await _color_ops_upsert_panel(
+            color_notice, state, "color_ops_leaderboard_panel",
+            embed=_build_color_ops_leaderboard_embed(state),
+            view=ColorTeamPanelView(),
+            content=role.mention if role else None,
+        )
+    _color_ops_save(state)
+
+
+@tasks.loop(minutes=5)
+async def color_ops_refresh_loop():
+    try:
+        await _color_ops_refresh_panels()
+    except Exception as e:
+        print(f"[COLOR OPS AUTO REFRESH ERROR] {e}")
+
+
+@color_ops_refresh_loop.before_loop
+async def before_color_ops_refresh_loop():
+    await bot.wait_until_ready()
+
+
+# Application / Interview commands
+
+@bot.tree.command(name="log-application", description="Log a member application into the system (staff only)")
+@app_commands.describe(member="The applicant", notes="Optional notes")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def log_application(interaction: discord.Interaction, member: discord.Member, notes: str = "Application logged."):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _color_ops_load()
+    app = _color_ops_app_bucket(state, member.id)
+    now_str = datetime.now(COLOR_TZ).strftime("%Y-%m-%d %I:%M %p ET")
+    app.update({
+        "display_name": member.display_name,
+        "status": "Applied",
+        "submitted_at": now_str,
+        "result_notes": notes,
+        "reviewed_by": interaction.user.mention,
+    })
+    _color_ops_save(state)
+    embed = _build_color_ops_application_embed(member, app, "🧾 New Application Logged", discord.Color.blurple())
+    staff_logs = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
+    if isinstance(staff_logs, discord.TextChannel):
+        await staff_logs.send(embed=embed)
+    await _color_ops_refresh_panels()
+    await interaction.followup.send(f"Application logged for {member.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="schedule-interview", description="Connect an interview time to an existing application (staff only)")
+@app_commands.describe(member="The applicant", when_text="When the interview is (e.g. 'Friday 8pm ET')", notes="Optional notes")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def schedule_interview(interaction: discord.Interaction, member: discord.Member, when_text: str, notes: str = "Interview scheduled."):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _color_ops_load()
+    app = _color_ops_app_bucket(state, member.id)
+    now_str = datetime.now(COLOR_TZ).strftime("%Y-%m-%d %I:%M %p ET")
+    if not app.get("submitted_at"):
+        app["submitted_at"] = now_str
+    app.update({
+        "display_name": member.display_name,
+        "status": "Interview Scheduled",
+        "interview_scheduled_for": when_text,
+        "interview_notes": notes,
+        "reviewed_by": interaction.user.mention,
+    })
+    _color_ops_save(state)
+    embed = _build_color_ops_application_embed(member, app, "🎤 Interview Scheduled", discord.Color.orange())
+    staff_logs = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
+    if isinstance(staff_logs, discord.TextChannel):
+        await staff_logs.send(embed=embed)
+    await _color_ops_refresh_panels()
+    await interaction.followup.send(f"Interview connected to {member.mention}'s application.", ephemeral=True)
+
+
+@bot.tree.command(name="application-result", description="Set the final result for a member application (staff only)")
+@app_commands.describe(member="The applicant", result="approved / denied / pending", notes="Optional notes")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def application_result(interaction: discord.Interaction, member: discord.Member, result: str, notes: str = "No extra notes provided."):
+    normalized = result.strip().lower()
+    if normalized not in {"approved", "denied", "pending"}:
+        return await interaction.response.send_message(
+            "Use one of: `approved`, `denied`, or `pending`.", ephemeral=True
+        )
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _color_ops_load()
+    app = _color_ops_app_bucket(state, member.id)
+    now_str = datetime.now(COLOR_TZ).strftime("%Y-%m-%d %I:%M %p ET")
+    if not app.get("submitted_at"):
+        app["submitted_at"] = now_str
+    color_map = {"approved": discord.Color.green(), "denied": discord.Color.red(), "pending": discord.Color.gold()}
+    title_map = {"approved": "✅ Application Approved", "denied": "❌ Application Denied", "pending": "⏳ Application Pending"}
+    app.update({
+        "display_name": member.display_name,
+        "status": normalized.title(),
+        "result_notes": notes,
+        "reviewed_by": interaction.user.mention,
+    })
+    _color_ops_save(state)
+    embed = _build_color_ops_application_embed(member, app, title_map[normalized], color_map[normalized])
+    staff_logs = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
+    if isinstance(staff_logs, discord.TextChannel):
+        await staff_logs.send(embed=embed)
+    await _color_ops_refresh_panels()
+    await interaction.followup.send(f"Application result updated for {member.mention}.", ephemeral=True)
+
+
+# Color submission / winner commands
+
+@bot.tree.command(name="log-color-submission", description="Log a color submission and track contributor stats (staff only)")
+@app_commands.describe(contributor="Who submitted the color", color_name="Name of the color", image_url="Optional image URL")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def log_color_submission(interaction: discord.Interaction, contributor: discord.Member, color_name: str, image_url: str = ""):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _color_ops_load()
+    now_str = datetime.now(COLOR_TZ).strftime("%Y-%m-%d %I:%M %p ET")
+    entry = {
+        "color_name": color_name,
+        "contributor_id": contributor.id,
+        "contributor_name": contributor.display_name,
+        "image_url": image_url or None,
+        "submitted_at": now_str,
+    }
+    state["colors"]["active_entries"].append(entry)
+    bucket = _color_ops_contributor_bucket(state, contributor.id)
+    bucket["submission_count"] += 1
+    bucket["last_submission_at"] = now_str
+    bucket["display_name"] = contributor.display_name
+    _color_ops_save(state)
+
+    embed = discord.Embed(
+        title="🎨 Color Submission Logged",
+        description=(
+            f"**Color:** {color_name}\n"
+            f"**Contributor:** {contributor.mention}\n"
+            f"**Logged By:** {interaction.user.mention}"
+        ),
+        color=discord.Color.purple(),
+        timestamp=datetime.utcnow(),
+    )
+    if image_url:
+        embed.set_image(url=image_url)
+    embed.set_footer(text="Different Meets • Color Submission Tracker")
+    staff_logs = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
+    if isinstance(staff_logs, discord.TextChannel):
+        await staff_logs.send(embed=embed)
+    await _color_ops_refresh_panels()
+    await interaction.followup.send(f"Color submission logged for {contributor.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="set-color-winner", description="Set the winning color, update stats, and auto-post the winner announcement (staff only)")
+@app_commands.describe(color_name="Winning color name", contributor="Who submitted it", image_url="Optional image URL")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def set_color_winner(interaction: discord.Interaction, color_name: str, contributor: discord.Member, image_url: str = ""):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _color_ops_load()
+    now_str = datetime.now(COLOR_TZ).strftime("%Y-%m-%d %I:%M %p ET")
+    winner_entry = {
+        "color_name": color_name,
+        "contributor_id": contributor.id,
+        "contributor_name": contributor.display_name,
+        "image_url": image_url or None,
+        "won_at": now_str,
+    }
+    state["colors"]["history"].append(winner_entry)
+    bucket = _color_ops_contributor_bucket(state, contributor.id)
+    bucket["win_count"] += 1
+    bucket["last_win_at"] = now_str
+    bucket["display_name"] = contributor.display_name
+    state["colors"]["active_entries"] = [
+        x for x in state["colors"]["active_entries"]
+        if not (x.get("color_name", "").lower() == color_name.lower()
+                and x.get("contributor_id") == contributor.id)
+    ]
+    _color_ops_save(state)
+
+    staff_embed = discord.Embed(
+        title="🏆 Winning Color Logged",
+        description=(
+            f"**Winning Color:** {color_name}\n"
+            f"**Contributor:** {contributor.mention}\n"
+            f"**Logged By:** {interaction.user.mention}"
+        ),
+        color=discord.Color.blue(),
+        timestamp=datetime.utcnow(),
+    )
+    if image_url:
+        staff_embed.set_image(url=image_url)
+    staff_embed.set_footer(text="Different Meets • Winner Tracker")
+    staff_logs = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
+    if isinstance(staff_logs, discord.TextChannel):
+        await staff_logs.send(embed=staff_embed)
+
+    public_embed = _build_color_ops_winner_embed(color_name, contributor.mention, image_url or None)
+    color_notice = interaction.guild.get_channel(COLOR_TEAM_POST_CHANNEL_ID) if interaction.guild else None
+    if isinstance(color_notice, discord.TextChannel):
+        role = interaction.guild.get_role(COLOR_TEAM_ROLE_ID) if interaction.guild else None
+        await color_notice.send(
+            content=role.mention if role else None,
+            embed=public_embed,
+            view=ColorTeamPanelView(),
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+
+    await _color_ops_refresh_panels()
+    await interaction.followup.send(f"Winner set and announced for **{color_name}**.", ephemeral=True)
+
+
+@bot.tree.command(name="refresh-color-ops-panels", description="Refresh the color stats and contributor leaderboard panels (staff only)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def refresh_color_ops_panels(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    await _color_ops_refresh_panels()
+    await interaction.followup.send("Color ops panels refreshed.", ephemeral=True)
+
+
+@bot.tree.command(name="reset-color-ops-panels", description="Reset saved panel IDs and repost clean panels (admin only)")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_color_ops_panels(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _color_ops_load()
+    state["panel_messages"] = {}
+    _color_ops_save(state)
+    await _color_ops_refresh_panels()
+    await interaction.followup.send("Color ops panel IDs reset and panels reposted cleanly.", ephemeral=True)
 
 
 # =========================
