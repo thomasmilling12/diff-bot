@@ -8271,6 +8271,7 @@ class SupportApplicationReviewView(discord.ui.View):
         applicant = interaction.guild.get_member(int(applicant_id_raw))
         if applicant is None:
             return await interaction.response.send_message("The applicant is no longer in the server.", ephemeral=True)
+        await interaction.response.send_message("Application approved.", ephemeral=True)
         role = interaction.guild.get_role(_SUPP_APPROVED_STAFF_ROLE_ID) if _SUPP_APPROVED_STAFF_ROLE_ID else None
         if role:
             try:
@@ -8278,7 +8279,6 @@ class SupportApplicationReviewView(discord.ui.View):
             except discord.HTTPException:
                 pass
         embed = _supp_build_decision_embed(applicant, interaction.user, approved=True)
-        await interaction.response.send_message("Application approved.", ephemeral=True)
         await interaction.channel.send(embed=embed)
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
@@ -8340,11 +8340,6 @@ class SupportDropdown(discord.ui.Select):
             return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
 
         ticket = _TICKET_TYPES[self.values[0]]
-        existing = await _supp_find_existing_ticket(interaction.guild, interaction.user, ticket)
-        if existing:
-            return await interaction.response.send_message(
-                f"You already have an open {ticket.label} ticket: {existing.mention}", ephemeral=True
-            )
 
         panel_channel = interaction.guild.get_channel(SUPPORT_PANEL_CHANNEL_ID)
         category = None
@@ -8357,6 +8352,17 @@ class SupportDropdown(discord.ui.Select):
             return await interaction.response.send_message(
                 "Ticket category is not set up correctly. Please ask staff to check the configuration.",
                 ephemeral=True,
+            )
+
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
+        existing = await _supp_find_existing_ticket(interaction.guild, interaction.user, ticket)
+        if existing:
+            return await interaction.followup.send(
+                f"You already have an open {ticket.label} ticket: {existing.mention}", ephemeral=True
             )
 
         staff_role_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
@@ -8411,7 +8417,7 @@ class SupportDropdown(discord.ui.Select):
             except discord.HTTPException:
                 pass
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Your {ticket.label} ticket has been created: {channel.mention}", ephemeral=True
         )
 
