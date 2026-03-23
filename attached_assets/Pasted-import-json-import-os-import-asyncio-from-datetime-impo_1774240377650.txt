@@ -1,0 +1,570 @@
+import json
+import os
+import asyncio
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import discord
+from discord.ext import commands, tasks
+
+# =========================================================
+# DIFF Final Upgrade System
+# =========================================================
+#
+# What this file adds:
+# - Auto-detect applicant from the ticket channel permissions
+# - Auto-post review panel in the ticket
+# - Staff buttons:
+#     Mark Applied
+#     Schedule Interview
+#     Approve
+#     Deny
+# - DM applicant on status updates
+# - Optional auto role assignment on approval
+# - Optional welcome message in the ticket
+# - Optional auto-close timer after approval/denial
+# - Same review panel refreshes instead of duplicating
+#
+# Commands:
+#   /setup_application_ticket
+#   /application_status
+#   /rebuild_application_panel
+#
+# Load with:
+#   await bot.load_extension("diff_final_upgrade_system")
+# =========================================================
+
+GUILD_ID = 850386896509337710
+TIMEZONE = "America/New_York"
+STATE_FILE = "diff_final_upgrade_system_state.json"
+
+# Channels
+STAFF_LOGS_CHANNEL_ID = 1485265848099799163
+
+# Staff roles allowed to review
+ALLOWED_STAFF_ROLE_IDS = {
+    850391095845584937,   # Leader
+    850391378559238235,   # Co-Leader
+    990011447193006101,   # Manager
+}
+
+# Optional role to assign on approval
+APPROVED_ROLE_ID = 886702076552441927  # Crew Member
+
+# Auto-close settings
+AUTO_CLOSE_ENABLED = False
+AUTO_CLOSE_DELAY_SECONDS = 30
+
+# DM toggles
+DM_ON_INTERVIEW = True
+DM_ON_APPROVAL = True
+DM_ON_DENIAL = True
+
+# Ticket naming hints to help auto-detect
+TICKET_KEYWORDS = ("ticket", "application", "app", "apply")
+
+
+def utcnow():
+    return datetime.utcnow()
+
+
+def now_et():
+    return datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p ET")
+
+
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {"applications": {}, "tickets": {}}
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"applications": {}, "tickets": {}}
+
+
+def save_state(state: dict):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+
+class InterviewModal(discord.ui.Modal, title="Schedule Interview"):
+    interview_time = discord.ui.TextInput(
+        label="Interview time",
+        placeholder="Example: Friday 7:30 PM ET",
+        required=True,
+        max_length=100,
+    )
+    notes = discord.ui.TextInput(
+        label="Interview notes",
+        placeholder="Optional notes for the applicant or staff",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    def __init__(self, cog, member_id: int):
+        super().__init__()
+        self.cog = cog
+        self.member_id = member_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = guild.get_member(self.member_id) if guild else None
+        if member is None:
+            await interaction.response.send_message("Applicant not found in this server.", ephemeral=True)
+            return
+
+        app = self.cog.get_app(member.id)
+        app["display_name"] = member.display_name
+        app["status"] = "Interview Scheduled"
+        app["submitted_at"] = app.get("submitted_at") or now_et()
+        app["interview_scheduled_for"] = str(self.interview_time)
+        app["interview_notes"] = str(self.notes) if self.notes else "No notes provided."
+        app["reviewed_by"] = interaction.user.mention
+        app["last_updated_at"] = now_et()
+        save_state(self.cog.state)
+
+        await self.cog.post_staff_log(
+            title="🎤 Interview Scheduled",
+            description=(
+                f"**Applicant:** {member.mention}\n"
+                f"**Interview:** {self.interview_time}\n"
+                f"**Notes:** {self.notes or 'No notes provided.'}\n"
+                f"**Reviewed By:** {interaction.user.mention}\n"
+                f"**Ticket:** {interaction.channel.mention}"
+            ),
+            color=discord.Color.orange(),
+        )
+
+        if DM_ON_INTERVIEW:
+            await self.cog.safe_dm(
+                member,
+                f"Your DIFF application has moved to the **Interview Scheduled** stage.\n\n"
+                f"**Interview Time:** {self.interview_time}\n"
+                f"**Notes:** {self.notes or 'No notes provided.'}"
+            )
+
+        await self.cog.update_ticket_panel(interaction.channel, member)
+        await interaction.response.send_message(
+            f"✅ Interview scheduled for {member.mention}.",
+            ephemeral=True,
+        )
+
+
+class DecisionModal(discord.ui.Modal):
+    notes = discord.ui.TextInput(
+        label="Decision notes",
+        placeholder="Optional feedback or notes",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    def __init__(self, cog, member_id: int, result: str):
+        self.cog = cog
+        self.member_id = member_id
+        self.result = result
+        super().__init__(title=f"{result} Application")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = guild.get_member(self.member_id) if guild else None
+        if member is None:
+            await interaction.response.send_message("Applicant not found in this server.", ephemeral=True)
+            return
+
+        app = self.cog.get_app(member.id)
+        app["display_name"] = member.display_name
+        app["status"] = self.result
+        app["submitted_at"] = app.get("submitted_at") or now_et()
+        app["result_notes"] = str(self.notes) if self.notes else "No notes provided."
+        app["reviewed_by"] = interaction.user.mention
+        app["last_updated_at"] = now_et()
+        save_state(self.cog.state)
+
+        color = discord.Color.green() if self.result == "Approved" else discord.Color.red()
+
+        await self.cog.post_staff_log(
+            title="✅ Application Approved" if self.result == "Approved" else "❌ Application Denied",
+            description=(
+                f"**Applicant:** {member.mention}\n"
+                f"**Status:** {self.result}\n"
+                f"**Notes:** {self.notes or 'No notes provided.'}\n"
+                f"**Reviewed By:** {interaction.user.mention}\n"
+                f"**Ticket:** {interaction.channel.mention}"
+            ),
+            color=color,
+        )
+
+        if self.result == "Approved":
+            await self.cog.handle_approval(member, interaction.channel, str(self.notes) if self.notes else "No notes provided.")
+        else:
+            if DM_ON_DENIAL:
+                await self.cog.safe_dm(
+                    member,
+                    f"Your DIFF application has been **Denied**.\n\n"
+                    f"**Notes:** {self.notes or 'No notes provided.'}"
+                )
+
+        await self.cog.update_ticket_panel(interaction.channel, member)
+
+        if self.result == "Denied" and AUTO_CLOSE_ENABLED:
+            await interaction.channel.send(f"🧼 This ticket will close in **{AUTO_CLOSE_DELAY_SECONDS} seconds**.")
+            asyncio.create_task(self.cog.delayed_close(interaction.channel, AUTO_CLOSE_DELAY_SECONDS))
+
+        await interaction.response.send_message(
+            f"✅ Application marked as **{self.result}** for {member.mention}.",
+            ephemeral=True,
+        )
+
+
+class ReviewView(discord.ui.View):
+    def __init__(self, cog, member_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.member_id = member_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return False
+
+        if not self.cog.is_staff(interaction.user):
+            await interaction.response.send_message(
+                "You do not have permission to use these review buttons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Mark Applied", style=discord.ButtonStyle.secondary, emoji="🧾")
+    async def mark_applied(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.guild.get_member(self.member_id) if interaction.guild else None
+        if member is None:
+            await interaction.response.send_message("Applicant not found in this server.", ephemeral=True)
+            return
+
+        app = self.cog.get_app(member.id)
+        app["display_name"] = member.display_name
+        app["status"] = "Applied"
+        app["submitted_at"] = app.get("submitted_at") or now_et()
+        app["reviewed_by"] = interaction.user.mention
+        app["last_updated_at"] = now_et()
+        save_state(self.cog.state)
+
+        await self.cog.post_staff_log(
+            title="🧾 Application Marked Applied",
+            description=(
+                f"**Applicant:** {member.mention}\n"
+                f"**Reviewed By:** {interaction.user.mention}\n"
+                f"**Ticket:** {interaction.channel.mention}"
+            ),
+            color=discord.Color.blurple(),
+        )
+
+        await self.cog.update_ticket_panel(interaction.channel, member)
+        await interaction.response.send_message(f"✅ {member.mention} marked as applied.", ephemeral=True)
+
+    @discord.ui.button(label="Schedule Interview", style=discord.ButtonStyle.primary, emoji="🎤")
+    async def schedule_interview(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(InterviewModal(self.cog, self.member_id))
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="✅")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(DecisionModal(self.cog, self.member_id, "Approved"))
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌")
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(DecisionModal(self.cog, self.member_id, "Denied"))
+
+
+class DiffFinalUpgradeSystem(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.state = load_state()
+        self.ticket_scan.start()
+
+    def cog_unload(self):
+        self.ticket_scan.cancel()
+
+    def is_staff(self, member: discord.Member) -> bool:
+        return any(role.id in ALLOWED_STAFF_ROLE_IDS for role in member.roles)
+
+    def get_guild(self):
+        return self.bot.get_guild(GUILD_ID)
+
+    def get_app(self, user_id: int):
+        key = str(user_id)
+        apps = self.state["applications"]
+        if key not in apps:
+            apps[key] = {
+                "user_id": user_id,
+                "display_name": None,
+                "status": "Applied",
+                "submitted_at": None,
+                "interview_scheduled_for": None,
+                "interview_notes": None,
+                "result_notes": None,
+                "reviewed_by": None,
+                "last_updated_at": None,
+            }
+        return apps[key]
+
+    async def safe_dm(self, member: discord.Member, message: str):
+        try:
+            await member.send(message)
+        except Exception:
+            pass
+
+    async def post_staff_log(self, title: str, description: str, color: discord.Color):
+        guild = self.get_guild()
+        if guild is None:
+            return
+        channel = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=utcnow(),
+        )
+        embed.set_footer(text="Different Meets • Staff Logs")
+        await channel.send(embed=embed)
+
+    def detect_applicant_from_ticket(self, channel: discord.TextChannel):
+        guild = channel.guild
+        for target, overwrite in channel.overwrites.items():
+            if isinstance(target, discord.Member):
+                if target.bot:
+                    continue
+                if self.is_staff(target):
+                    continue
+                perms = overwrite
+                if perms.view_channel is True or perms.send_messages is True:
+                    return target
+
+        # Fallback: use name pattern if possible
+        name = channel.name.lower()
+        for member in guild.members:
+            if member.bot or self.is_staff(member):
+                continue
+            compact = member.name.lower().replace(" ", "-")
+            if compact in name:
+                return member
+        return None
+
+    def build_embed(self, member: discord.Member):
+        app = self.get_app(member.id)
+
+        embed = discord.Embed(
+            title="📋 Application Review Panel",
+            description=(
+                f"This ticket is connected to **{member.mention}**.\n\n"
+                "Use the buttons below to move the applicant through the review process."
+            ),
+            color=discord.Color.blue(),
+            timestamp=utcnow(),
+        )
+        embed.add_field(name="Applicant", value=member.mention, inline=False)
+        embed.add_field(name="Current Status", value=f"**{app.get('status', 'Unknown')}**", inline=True)
+        embed.add_field(name="Submitted", value=app.get("submitted_at") or "Not logged", inline=True)
+
+        if app.get("interview_scheduled_for"):
+            embed.add_field(name="Interview Scheduled", value=app["interview_scheduled_for"], inline=False)
+        if app.get("interview_notes"):
+            embed.add_field(name="Interview Notes", value=app["interview_notes"], inline=False)
+        if app.get("result_notes"):
+            embed.add_field(name="Result Notes", value=app["result_notes"], inline=False)
+        if app.get("reviewed_by"):
+            embed.add_field(name="Last Reviewed By", value=app["reviewed_by"], inline=False)
+
+        embed.set_footer(text="Different Meets • Final Upgrade System")
+        return embed
+
+    async def update_ticket_panel(self, channel: discord.TextChannel, member: discord.Member):
+        ticket_key = str(channel.id)
+        ticket_data = self.state["tickets"].setdefault(ticket_key, {})
+        ticket_data["member_id"] = member.id
+
+        embed = self.build_embed(member)
+        view = ReviewView(self, member.id)
+        panel_id = ticket_data.get("panel_message_id")
+
+        if panel_id:
+            try:
+                msg = await channel.fetch_message(panel_id)
+                await msg.edit(embed=embed, view=view)
+                save_state(self.state)
+                return
+            except Exception:
+                pass
+
+        msg = await channel.send(embed=embed, view=view)
+        ticket_data["panel_message_id"] = msg.id
+        save_state(self.state)
+
+    async def handle_approval(self, member: discord.Member, channel: discord.TextChannel, notes: str):
+        guild = channel.guild
+        role = guild.get_role(APPROVED_ROLE_ID)
+        if role:
+            try:
+                await member.add_roles(role, reason="DIFF application approved")
+            except Exception:
+                pass
+
+        if DM_ON_APPROVAL:
+            await self.safe_dm(
+                member,
+                "Your DIFF application has been **Approved**.\n\n"
+                f"**Notes:** {notes}\n"
+                "Welcome to Different Meets."
+            )
+
+        try:
+            await channel.send(
+                f"✅ {member.mention} has been approved."
+                + (f" Role assigned: {role.mention}" if role else "")
+            )
+        except Exception:
+            pass
+
+        if AUTO_CLOSE_ENABLED:
+            await channel.send(f"🧼 This ticket will close in **{AUTO_CLOSE_DELAY_SECONDS} seconds**.")
+            asyncio.create_task(self.delayed_close(channel, AUTO_CLOSE_DELAY_SECONDS))
+
+    async def delayed_close(self, channel: discord.TextChannel, delay: int):
+        await asyncio.sleep(delay)
+        try:
+            await channel.delete(reason="DIFF application workflow complete")
+        except Exception:
+            pass
+
+    @tasks.loop(minutes=2)
+    async def ticket_scan(self):
+        await self.bot.wait_until_ready()
+        guild = self.get_guild()
+        if guild is None:
+            return
+
+        for channel in guild.text_channels:
+            name = channel.name.lower()
+            if not any(word in name for word in TICKET_KEYWORDS):
+                continue
+
+            ticket_key = str(channel.id)
+            ticket_data = self.state["tickets"].get(ticket_key, {})
+            if ticket_data.get("panel_message_id"):
+                continue
+
+            applicant = self.detect_applicant_from_ticket(channel)
+            if applicant is None:
+                continue
+
+            app = self.get_app(applicant.id)
+            app["display_name"] = applicant.display_name
+            app["submitted_at"] = app.get("submitted_at") or now_et()
+            app["status"] = app.get("status") or "Applied"
+            app["last_updated_at"] = now_et()
+            save_state(self.state)
+
+            try:
+                await self.update_ticket_panel(channel, applicant)
+                await self.post_staff_log(
+                    title="🔗 Ticket Auto-Connected",
+                    description=(
+                        f"**Applicant:** {applicant.mention}\n"
+                        f"**Ticket:** {channel.mention}\n"
+                        f"**Status:** {app['status']}"
+                    ),
+                    color=discord.Color.blurple(),
+                )
+            except Exception:
+                continue
+
+    @ticket_scan.before_loop
+    async def before_ticket_scan(self):
+        await self.bot.wait_until_ready()
+
+    @commands.hybrid_command(
+        name="setup_application_ticket",
+        description="Auto-detect the applicant in this ticket and attach the review panel."
+    )
+    @commands.has_permissions(manage_guild=True)
+    async def setup_application_ticket(self, ctx: commands.Context):
+        if not isinstance(ctx.channel, discord.TextChannel):
+            await ctx.reply("Use this in a text ticket channel.", mention_author=False)
+            return
+
+        applicant = self.detect_applicant_from_ticket(ctx.channel)
+        if applicant is None:
+            await ctx.reply("I could not auto-detect the applicant in this ticket.", mention_author=False)
+            return
+
+        app = self.get_app(applicant.id)
+        app["display_name"] = applicant.display_name
+        app["submitted_at"] = app.get("submitted_at") or now_et()
+        app["status"] = app.get("status") or "Applied"
+        app["last_updated_at"] = now_et()
+        save_state(self.state)
+
+        await self.update_ticket_panel(ctx.channel, applicant)
+        await ctx.reply(
+            f"✅ Review panel attached for {applicant.mention}.",
+            mention_author=False,
+        )
+
+    @commands.hybrid_command(
+        name="application_status",
+        description="Show the linked application status for this ticket."
+    )
+    @commands.has_permissions(manage_guild=True)
+    async def application_status(self, ctx: commands.Context):
+        if not isinstance(ctx.channel, discord.TextChannel):
+            await ctx.reply("Use this in a ticket channel.", mention_author=False)
+            return
+
+        ticket_data = self.state["tickets"].get(str(ctx.channel.id))
+        if not ticket_data:
+            await ctx.reply("This ticket is not connected yet.", mention_author=False)
+            return
+
+        member = ctx.guild.get_member(ticket_data.get("member_id")) if ctx.guild else None
+        if member is None:
+            await ctx.reply("The linked applicant is no longer in the server.", mention_author=False)
+            return
+
+        await ctx.reply(embed=self.build_embed(member), mention_author=False)
+
+    @commands.hybrid_command(
+        name="rebuild_application_panel",
+        description="Rebuild the current ticket review panel if it was deleted."
+    )
+    @commands.has_permissions(manage_guild=True)
+    async def rebuild_application_panel(self, ctx: commands.Context):
+        if not isinstance(ctx.channel, discord.TextChannel):
+            await ctx.reply("Use this in a ticket channel.", mention_author=False)
+            return
+
+        ticket_key = str(ctx.channel.id)
+        ticket_data = self.state["tickets"].get(ticket_key)
+        if not ticket_data:
+            applicant = self.detect_applicant_from_ticket(ctx.channel)
+            if applicant is None:
+                await ctx.reply("I could not detect the applicant for this ticket.", mention_author=False)
+                return
+        else:
+            applicant = ctx.guild.get_member(ticket_data.get("member_id")) if ctx.guild else None
+            if applicant is None:
+                await ctx.reply("The linked applicant is no longer in the server.", mention_author=False)
+                return
+
+        self.state["tickets"].setdefault(ticket_key, {}).pop("panel_message_id", None)
+        save_state(self.state)
+        await self.update_ticket_panel(ctx.channel, applicant)
+        await ctx.reply("✅ Application review panel rebuilt.", mention_author=False)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffFinalUpgradeSystem(bot))

@@ -123,6 +123,7 @@ DIFF_PANEL_STATE_FILE = os.path.join(DATA_FOLDER, "diff_panel_state.json")
 INTERVIEW_PANEL_CHANNEL_ID = 1103849042296963112
 INTERVIEW_PANEL_FILE = os.path.join(DATA_FOLDER, "diff_interview_panel.json")
 INTERVIEW_OUTCOME_FILE = os.path.join(DATA_FOLDER, "diff_interview_outcome_panel.json")
+TICKET_APP_BRIDGE_FILE = os.path.join(DATA_FOLDER, "diff_ticket_app_bridge.json")
 COLOR_OPS_STATE_FILE = os.path.join(DATA_FOLDER, "diff_color_ops_state.json")
 INTERVIEW_OUTCOME_LOG_CHANNEL_ID = STAFF_LOGS_CHANNEL_ID
 INTERVIEW_OUTCOME_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
@@ -5968,6 +5969,353 @@ async def post_interview_results_panel(interaction: discord.Interaction):
         return
     await _post_or_refresh_interview_outcome_panel(interaction.channel)
     await interaction.followup.send(f"Interview results panel posted in {interaction.channel.mention}.", ephemeral=True)
+
+
+# =========================
+# TICKET APPLICATION BRIDGE
+# =========================
+
+def _tab_load() -> dict:
+    raw = _load_diff_json(TICKET_APP_BRIDGE_FILE)
+    if not raw:
+        return {"applications": {}, "ticket_links": {}}
+    raw.setdefault("applications", {})
+    raw.setdefault("ticket_links", {})
+    return raw
+
+
+def _tab_save(state: dict) -> None:
+    _save_diff_json(TICKET_APP_BRIDGE_FILE, state)
+
+
+def _tab_get_app(state: dict, user_id: int) -> dict:
+    key = str(user_id)
+    if key not in state["applications"]:
+        state["applications"][key] = {
+            "user_id": user_id,
+            "display_name": None,
+            "status": "Applied",
+            "submitted_at": None,
+            "interview_scheduled_for": None,
+            "interview_notes": None,
+            "result_notes": None,
+            "reviewed_by": None,
+            "last_updated_at": None,
+        }
+    return state["applications"][key]
+
+
+def _tab_now() -> str:
+    return datetime.now(COLOR_TZ).strftime("%Y-%m-%d %I:%M %p ET")
+
+
+def _tab_build_status_embed(member: discord.Member, app: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="📋 Application Review Panel",
+        description=(
+            f"Use the buttons below to move **{member.mention}** through the application process.\n\n"
+            "This ticket is now directly connected to application review and interview actions."
+        ),
+        color=discord.Color.blue(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="Applicant", value=member.mention, inline=False)
+    embed.add_field(name="Current Status", value=f"**{app.get('status', 'Unknown')}**", inline=True)
+    embed.add_field(name="Submitted", value=app.get("submitted_at") or "Not logged", inline=True)
+    if app.get("interview_scheduled_for"):
+        embed.add_field(name="Interview Scheduled", value=app["interview_scheduled_for"], inline=False)
+    if app.get("interview_notes"):
+        embed.add_field(name="Interview Notes", value=app["interview_notes"], inline=False)
+    if app.get("result_notes"):
+        embed.add_field(name="Result Notes", value=app["result_notes"], inline=False)
+    if app.get("reviewed_by"):
+        embed.add_field(name="Last Reviewed By", value=app["reviewed_by"], inline=False)
+    embed.set_footer(text="Different Meets • Ticket Application Bridge")
+    return embed
+
+
+async def _tab_post_staff_log(title: str, description: str, color: discord.Color) -> None:
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return
+    channel = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    embed = discord.Embed(title=title, description=description, color=color, timestamp=datetime.utcnow())
+    embed.set_footer(text="Different Meets • Staff Logs")
+    await channel.send(embed=embed)
+
+
+async def _tab_update_panel(channel: discord.TextChannel, member: discord.Member, state: dict) -> None:
+    app = _tab_get_app(state, member.id)
+    embed = _tab_build_status_embed(member, app)
+    view = ApplicationReviewView(member.id)
+    ticket_key = str(channel.id)
+    panel_msg_id = state["ticket_links"].get(ticket_key, {}).get("panel_message_id")
+    if panel_msg_id:
+        try:
+            msg = await channel.fetch_message(int(panel_msg_id))
+            await msg.edit(embed=embed, view=view)
+            _tab_save(state)
+            return
+        except (discord.NotFound, discord.HTTPException):
+            pass
+    msg = await channel.send(embed=embed, view=view)
+    state["ticket_links"].setdefault(ticket_key, {})["panel_message_id"] = msg.id
+    _tab_save(state)
+
+
+class InterviewScheduleModal(discord.ui.Modal, title="Schedule Interview"):
+    interview_time = discord.ui.TextInput(
+        label="Interview time",
+        placeholder="Example: Friday 7:30 PM ET",
+        max_length=100,
+        required=True,
+    )
+    notes = discord.ui.TextInput(
+        label="Interview notes",
+        placeholder="Any notes for staff or the applicant",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    def __init__(self, member_id: int):
+        super().__init__()
+        self.member_id = member_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        member = interaction.guild.get_member(self.member_id)
+        if member is None:
+            return await interaction.response.send_message("Applicant not found in this server.", ephemeral=True)
+
+        state = _tab_load()
+        app = _tab_get_app(state, member.id)
+        now = _tab_now()
+        app.update({
+            "display_name": member.display_name,
+            "status": "Interview Scheduled",
+            "interview_scheduled_for": str(self.interview_time),
+            "interview_notes": str(self.notes) if self.notes else "No notes provided.",
+            "reviewed_by": interaction.user.mention,
+            "submitted_at": app.get("submitted_at") or now,
+            "last_updated_at": now,
+        })
+        _tab_save(state)
+
+        await _tab_post_staff_log(
+            "🎤 Interview Scheduled",
+            (
+                f"**Applicant:** {member.mention}\n"
+                f"**Interview:** {self.interview_time}\n"
+                f"**Notes:** {self.notes or 'No notes provided.'}\n"
+                f"**Reviewed By:** {interaction.user.mention}"
+            ),
+            discord.Color.orange(),
+        )
+        if isinstance(interaction.channel, discord.TextChannel):
+            await _tab_update_panel(interaction.channel, member, state)
+        await interaction.response.send_message(f"Interview scheduled for {member.mention}.", ephemeral=True)
+
+
+class ApplicationResultModal(discord.ui.Modal):
+    result_notes = discord.ui.TextInput(
+        label="Result notes",
+        placeholder="Reason or final notes",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    def __init__(self, member_id: int, result_name: str):
+        super().__init__(title=f"{result_name} Application")
+        self.member_id = member_id
+        self.result_name = result_name
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        member = interaction.guild.get_member(self.member_id)
+        if member is None:
+            return await interaction.response.send_message("Applicant not found in this server.", ephemeral=True)
+
+        state = _tab_load()
+        app = _tab_get_app(state, member.id)
+        now = _tab_now()
+        app.update({
+            "display_name": member.display_name,
+            "status": self.result_name,
+            "result_notes": str(self.result_notes) if self.result_notes else "No notes provided.",
+            "reviewed_by": interaction.user.mention,
+            "submitted_at": app.get("submitted_at") or now,
+            "last_updated_at": now,
+        })
+        _tab_save(state)
+
+        color = discord.Color.green() if self.result_name == "Approved" else discord.Color.red()
+        icon = "✅" if self.result_name == "Approved" else "❌"
+        await _tab_post_staff_log(
+            f"{icon} Application {self.result_name}",
+            (
+                f"**Applicant:** {member.mention}\n"
+                f"**Status:** {self.result_name}\n"
+                f"**Notes:** {self.result_notes or 'No notes provided.'}\n"
+                f"**Reviewed By:** {interaction.user.mention}"
+            ),
+            color,
+        )
+        if isinstance(interaction.channel, discord.TextChannel):
+            await _tab_update_panel(interaction.channel, member, state)
+        await interaction.response.send_message(
+            f"Application marked as **{self.result_name}** for {member.mention}.", ephemeral=True
+        )
+
+
+class ApplicationReviewView(discord.ui.View):
+    def __init__(self, target_member_id: int):
+        super().__init__(timeout=None)
+        self.target_member_id = target_member_id
+
+    async def _check_staff(self, interaction: discord.Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member) or not _interview_outcome_can_manage(interaction.user):
+            await interaction.response.send_message(
+                "You do not have permission to use these review buttons.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Mark Applied", style=discord.ButtonStyle.secondary, emoji="🧾")
+    async def mark_applied(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_staff(interaction):
+            return
+        if interaction.guild is None:
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        member = interaction.guild.get_member(self.target_member_id)
+        if member is None:
+            return await interaction.response.send_message("Applicant not found in this server.", ephemeral=True)
+
+        state = _tab_load()
+        app = _tab_get_app(state, member.id)
+        now = _tab_now()
+        app.update({
+            "display_name": member.display_name,
+            "status": "Applied",
+            "submitted_at": app.get("submitted_at") or now,
+            "reviewed_by": interaction.user.mention,
+            "last_updated_at": now,
+        })
+        _tab_save(state)
+
+        await _tab_post_staff_log(
+            "🧾 Application Linked",
+            (
+                f"**Applicant:** {member.mention}\n"
+                f"**Status:** Applied\n"
+                f"**Linked By:** {interaction.user.mention}\n"
+                f"**Ticket:** {interaction.channel.mention}"
+            ),
+            discord.Color.blurple(),
+        )
+        if isinstance(interaction.channel, discord.TextChannel):
+            await _tab_update_panel(interaction.channel, member, state)
+        await interaction.response.send_message(f"{member.mention} marked as applied.", ephemeral=True)
+
+    @discord.ui.button(label="Schedule Interview", style=discord.ButtonStyle.primary, emoji="🎤")
+    async def schedule_interview(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_staff(interaction):
+            return
+        await interaction.response.send_modal(InterviewScheduleModal(self.target_member_id))
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="✅")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_staff(interaction):
+            return
+        await interaction.response.send_modal(ApplicationResultModal(self.target_member_id, "Approved"))
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌")
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_staff(interaction):
+            return
+        await interaction.response.send_modal(ApplicationResultModal(self.target_member_id, "Denied"))
+
+
+@bot.tree.command(name="send-application-review-panel", description="Post the application review panel for a member in this ticket (staff only)")
+@app_commands.describe(member="The applicant to link to this ticket")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def send_application_review_panel(interaction: discord.Interaction, member: discord.Member):
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Run this command inside the ticket channel.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _tab_load()
+    ticket_key = str(interaction.channel.id)
+    state["ticket_links"].setdefault(ticket_key, {})["member_id"] = member.id
+    await _tab_update_panel(interaction.channel, member, state)
+    await interaction.followup.send(
+        f"Application review panel connected to {member.mention} in this ticket.", ephemeral=True
+    )
+
+
+@bot.tree.command(name="link-application-ticket", description="Link the current ticket channel to an applicant and log it (staff only)")
+@app_commands.describe(member="The applicant to link")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def link_application_ticket(interaction: discord.Interaction, member: discord.Member):
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Run this command inside the ticket channel.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _tab_load()
+    app = _tab_get_app(state, member.id)
+    now = _tab_now()
+    app.update({
+        "display_name": member.display_name,
+        "submitted_at": app.get("submitted_at") or now,
+        "status": app.get("status") or "Applied",
+        "last_updated_at": now,
+        "reviewed_by": interaction.user.mention,
+    })
+    ticket_key = str(interaction.channel.id)
+    state["ticket_links"].setdefault(ticket_key, {})["member_id"] = member.id
+    await _tab_update_panel(interaction.channel, member, state)
+    await _tab_post_staff_log(
+        "🔗 Ticket Linked to Application",
+        (
+            f"**Applicant:** {member.mention}\n"
+            f"**Ticket:** {interaction.channel.mention}\n"
+            f"**Linked By:** {interaction.user.mention}"
+        ),
+        discord.Color.blurple(),
+    )
+    await interaction.followup.send(
+        f"This ticket is now linked to {member.mention}'s application.", ephemeral=True
+    )
+
+
+@bot.tree.command(name="application-status", description="Show the linked application status for this ticket (staff only)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def application_status(interaction: discord.Interaction):
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Run this command inside a ticket channel.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    state = _tab_load()
+    link = state["ticket_links"].get(str(interaction.channel.id))
+    if not link or not link.get("member_id"):
+        return await interaction.followup.send("This ticket is not linked to an application yet.", ephemeral=True)
+    member = interaction.guild.get_member(int(link["member_id"])) if interaction.guild else None
+    if member is None:
+        return await interaction.followup.send("That linked applicant is no longer in the server.", ephemeral=True)
+    app = _tab_get_app(state, member.id)
+    embed = _tab_build_status_embed(member, app)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # =========================

@@ -1,0 +1,409 @@
+import asyncio
+import json
+import os
+from datetime import datetime, timezone
+from typing import Optional
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+DATA_DIR = "data"
+OUTCOME_PANEL_FILE = os.path.join(DATA_DIR, "interview_outcome_panel_v2.json")
+
+# ====== CONFIG ======
+CREW_MEMBER_ROLE_ID = 886702076552441927
+INTERVIEW_LOG_CHANNEL_ID = 1485265848099799163
+ONBOARDING_CHANNEL_ID = 1103849042296963112  # Change this if you want the public welcome in another channel.
+
+ALLOWED_STAFF_ROLE_IDS = {
+    850391095845584937,  # Leader
+    850391378559238235,  # Co-Leader
+    990011447193006101,  # Manager
+}
+# ====================
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
+class OutcomePanelStorage:
+    @staticmethod
+    def load_panel_data() -> dict:
+        if not os.path.exists(OUTCOME_PANEL_FILE):
+            return {}
+        try:
+            with open(OUTCOME_PANEL_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    @staticmethod
+    def save_panel_data(data: dict):
+        with open(OUTCOME_PANEL_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+
+class ApplicantLookupModal(discord.ui.Modal):
+    def __init__(self, cog: "InterviewOutcomeCogV2", action: str):
+        super().__init__(title="Interview Result")
+        self.cog = cog
+        self.action = action
+
+        self.applicant_input = discord.ui.TextInput(
+            label="Applicant User ID",
+            placeholder="Paste the applicant Discord user ID here",
+            required=True,
+            max_length=25,
+        )
+        self.reason_input = discord.ui.TextInput(
+            label="Notes / Reason",
+            placeholder="Optional notes for logs or feedback",
+            required=False,
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+        )
+        self.add_item(self.applicant_input)
+        self.add_item(self.reason_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
+            return
+
+        if not self.cog.user_can_manage_results(interaction.user):
+            await interaction.response.send_message("You do not have permission to use this panel.", ephemeral=True)
+            return
+
+        raw_id = str(self.applicant_input.value).strip().replace("<@", "").replace(">", "").replace("!", "")
+        try:
+            applicant_id = int(raw_id)
+        except ValueError:
+            await interaction.response.send_message("That user ID is not valid.", ephemeral=True)
+            return
+
+        applicant = interaction.guild.get_member(applicant_id)
+        if applicant is None:
+            try:
+                applicant = await interaction.guild.fetch_member(applicant_id)
+            except (discord.NotFound, discord.HTTPException):
+                applicant = None
+
+        if applicant is None:
+            await interaction.response.send_message(
+                "I could not find that applicant in the server. Make sure they are still in the server and paste the correct user ID.",
+                ephemeral=True,
+            )
+            return
+
+        notes = str(self.reason_input.value).strip()
+        if self.action == "accept":
+            await self.cog.process_accept(interaction, applicant, notes)
+        else:
+            await self.cog.process_deny(interaction, applicant, notes)
+
+
+class InterviewOutcomeView(discord.ui.View):
+    def __init__(self, cog: "InterviewOutcomeCogV2"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Accept Applicant",
+        emoji="✅",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_interview_accept_v2",
+        row=0,
+    )
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
+            return
+
+        if not self.cog.user_can_manage_results(interaction.user):
+            await interaction.response.send_message(
+                "Only Leader, Co-Leader, or Manager can use this outcome panel.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(ApplicantLookupModal(self.cog, "accept"))
+
+    @discord.ui.button(
+        label="Deny Applicant",
+        emoji="❌",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_interview_deny_v2",
+        row=0,
+    )
+    async def deny_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
+            return
+
+        if not self.cog.user_can_manage_results(interaction.user):
+            await interaction.response.send_message(
+                "Only Leader, Co-Leader, or Manager can use this outcome panel.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(ApplicantLookupModal(self.cog, "deny"))
+
+    @discord.ui.button(
+        label="Applicant Reminder",
+        emoji="📌",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_interview_reminder_v2",
+        row=1,
+    )
+    async def reminder_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        text = (
+            "__**Interview Result Reminder**__\n\n"
+            "• Confirm the applicant finished the interview\n"
+            "• Review their answers carefully\n"
+            "• Keep notes professional and clear\n"
+            "• If accepted, make sure they understand DIFF expectations\n"
+            "• If denied, be respectful and explain the reason clearly\n"
+            "• Use this panel only after the interview is fully completed"
+        )
+        await interaction.response.send_message(text, ephemeral=True)
+
+
+class InterviewOutcomeCogV2(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.panel_data = OutcomePanelStorage.load_panel_data()
+        self.bot.add_view(InterviewOutcomeView(self))
+
+    def user_can_manage_results(self, member: discord.Member) -> bool:
+        return any(role.id in ALLOWED_STAFF_ROLE_IDS for role in member.roles)
+
+    def build_panel_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="✅ DIFF Interview Results Panel",
+            description=(
+                "*Use this panel after the applicant interview is complete.*\n\n"
+                "This version includes automatic onboarding and automatic ticket closing.\n\n"
+                "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+                "✅ **Accept Applicant** — approve the applicant, assign the crew role, send onboarding, and close the ticket\n\n"
+                "❌ **Deny Applicant** — mark the applicant as denied, send a clean result log, and close the ticket\n\n"
+                "📌 **Applicant Reminder** — quick checklist before choosing the final result\n\n"
+                "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+                "🎯 Keep decisions respectful, consistent, and clearly logged for staff review."
+            ),
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text="Different Meets • Interview Outcome System V2")
+        return embed
+
+    async def post_or_refresh_panel(self, channel: discord.TextChannel) -> discord.Message:
+        old_channel_id = self.panel_data.get("channel_id")
+        old_message_id = self.panel_data.get("message_id")
+
+        if old_channel_id and old_message_id:
+            old_channel = self.bot.get_channel(old_channel_id)
+            if isinstance(old_channel, discord.TextChannel):
+                try:
+                    old_message = await old_channel.fetch_message(old_message_id)
+                    if old_channel.id == channel.id:
+                        await old_message.edit(embed=self.build_panel_embed(), view=InterviewOutcomeView(self))
+                        self.panel_data = {"channel_id": channel.id, "message_id": old_message.id}
+                        OutcomePanelStorage.save_panel_data(self.panel_data)
+                        return old_message
+                    try:
+                        await old_message.delete()
+                    except discord.HTTPException:
+                        pass
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+
+        message = await channel.send(embed=self.build_panel_embed(), view=InterviewOutcomeView(self))
+        self.panel_data = {"channel_id": channel.id, "message_id": message.id}
+        OutcomePanelStorage.save_panel_data(self.panel_data)
+        return message
+
+    async def send_log(
+        self,
+        guild: discord.Guild,
+        applicant: discord.Member,
+        interviewer: discord.Member,
+        result: str,
+        notes: str,
+        ticket_channel: Optional[discord.TextChannel],
+        role_given: Optional[str] = None,
+    ):
+        channel = guild.get_channel(INTERVIEW_LOG_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        color = discord.Color.green() if result == "Accepted" else discord.Color.red()
+        embed = discord.Embed(
+            title=f"{'✅' if result == 'Accepted' else '❌'} Interview Result Logged",
+            color=color,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Applicant", value=applicant.mention, inline=True)
+        embed.add_field(name="Handled By", value=interviewer.mention, inline=True)
+        embed.add_field(name="Result", value=result, inline=True)
+        embed.add_field(name="Ticket Channel", value=ticket_channel.mention if ticket_channel else "Unknown", inline=True)
+        embed.add_field(name="Role Given", value=role_given or "None", inline=True)
+        embed.add_field(name="Date", value=datetime.now(timezone.utc).strftime("%Y-%m-%d"), inline=True)
+        embed.add_field(name="Notes", value=notes if notes else "No notes added.", inline=False)
+        embed.set_footer(text="Different Meets • Applicant Review Log")
+        await channel.send(embed=embed)
+
+    async def try_dm_accept(self, applicant: discord.Member):
+        message = (
+            "✅ **Welcome to Different Meets (DIFF)!**\n\n"
+            "Your interview has been accepted.\n\n"
+            "Please make sure you review the server information, stay active, "
+            "and represent DIFF the right way at meets and events.\n\n"
+            "Welcome to the crew."
+        )
+        try:
+            await applicant.send(message)
+        except discord.HTTPException:
+            pass
+
+    async def try_dm_deny(self, applicant: discord.Member, notes: str):
+        message = (
+            "❌ **DIFF Interview Update**\n\n"
+            "Thank you for taking the time to interview with Different Meets.\n\n"
+            "At this time, your application was not accepted. "
+            "Please continue improving and feel free to reapply in the future.\n\n"
+        )
+        if notes:
+            message += f"**Notes:** {notes}"
+        try:
+            await applicant.send(message)
+        except discord.HTTPException:
+            pass
+
+    async def send_onboarding_message(self, guild: discord.Guild, applicant: discord.Member):
+        channel = guild.get_channel(ONBOARDING_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embed = discord.Embed(
+            title="🎉 Welcome to Different Meets",
+            description=(
+                f"{applicant.mention} has officially been accepted into **DIFF**.\n\n"
+                "Please welcome them to the crew and help them get settled in.\n\n"
+                "📌 Make sure to review the server, stay active, check announcements, "
+                "and be ready for upcoming meets and crew events."
+            ),
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text="Different Meets • New Member Onboarding")
+        await channel.send(embed=embed)
+
+    async def close_ticket_channel(self, channel: discord.TextChannel, status: str):
+        try:
+            await channel.send(
+                f"🔒 This interview ticket has been marked as **{status}**.\n"
+                "Closing this channel in **10 seconds**."
+            )
+        except discord.HTTPException:
+            pass
+
+        await asyncio.sleep(10)
+
+        try:
+            await channel.delete(reason=f"DIFF interview ticket auto-closed after {status.lower()}.")
+        except discord.HTTPException:
+            pass
+
+    async def process_accept(self, interaction: discord.Interaction, applicant: discord.Member, notes: str):
+        guild = interaction.guild
+        interviewer = interaction.user
+        ticket_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
+
+        if guild is None or not isinstance(interviewer, discord.Member):
+            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+            return
+
+        assigned_role_name = None
+        role = guild.get_role(CREW_MEMBER_ROLE_ID)
+        if role is not None:
+            try:
+                await applicant.add_roles(role, reason=f"Accepted into DIFF by {interviewer}")
+                assigned_role_name = role.name
+            except discord.HTTPException:
+                assigned_role_name = "Role assignment failed"
+
+        result_embed = discord.Embed(
+            title="✅ Applicant Accepted",
+            description=(
+                f"{applicant.mention} has been accepted into **Different Meets (DIFF)**.\n\n"
+                "Please welcome them to the crew and make sure they understand the expectations, "
+                "crew standards, and activity requirements."
+            ),
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        result_embed.add_field(name="Handled By", value=interviewer.mention, inline=True)
+        result_embed.add_field(name="Crew Role", value=assigned_role_name or "Not assigned", inline=True)
+        result_embed.add_field(name="Notes", value=notes if notes else "No notes added.", inline=False)
+        result_embed.set_footer(text="Different Meets • Interview Accepted")
+
+        await self.try_dm_accept(applicant)
+        await self.send_onboarding_message(guild, applicant)
+        await self.send_log(guild, applicant, interviewer, "Accepted", notes, ticket_channel, assigned_role_name)
+
+        await interaction.response.send_message(embed=result_embed)
+        if ticket_channel:
+            self.bot.loop.create_task(self.close_ticket_channel(ticket_channel, "Accepted"))
+
+    async def process_deny(self, interaction: discord.Interaction, applicant: discord.Member, notes: str):
+        guild = interaction.guild
+        interviewer = interaction.user
+        ticket_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
+
+        if guild is None or not isinstance(interviewer, discord.Member):
+            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+            return
+
+        result_embed = discord.Embed(
+            title="❌ Applicant Denied",
+            description=(
+                f"{applicant.mention} has been marked as **not accepted** for DIFF at this time.\n\n"
+                "Make sure all feedback stays respectful and professional."
+            ),
+            color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        result_embed.add_field(name="Handled By", value=interviewer.mention, inline=True)
+        result_embed.add_field(name="Notes", value=notes if notes else "No notes added.", inline=False)
+        result_embed.set_footer(text="Different Meets • Interview Denied")
+
+        await self.try_dm_deny(applicant, notes)
+        await self.send_log(guild, applicant, interviewer, "Denied", notes, ticket_channel)
+
+        await interaction.response.send_message(embed=result_embed)
+        if ticket_channel:
+            self.bot.loop.create_task(self.close_ticket_channel(ticket_channel, "Denied"))
+
+    @app_commands.command(name="post_interview_results_panel_v2", description="Post or refresh the DIFF accept / deny interview panel with auto close and onboarding.")
+    async def post_interview_results_panel_v2(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("Run this command in the ticket channel where you want the panel.", ephemeral=True)
+            return
+
+        if not isinstance(interaction.user, discord.Member) or not self.user_can_manage_results(interaction.user):
+            await interaction.response.send_message(
+                "Only Leader, Co-Leader, or Manager can post this panel.",
+                ephemeral=True,
+            )
+            return
+
+        await self.post_or_refresh_panel(interaction.channel)
+        await interaction.response.send_message(
+            f"Interview results panel posted or refreshed in {interaction.channel.mention}.",
+            ephemeral=True,
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(InterviewOutcomeCogV2(bot))
