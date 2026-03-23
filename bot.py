@@ -3606,6 +3606,23 @@ async def on_ready():
         bot.add_view(ColorTeamPanelView())
         bot.add_view(InterviewInfoView())
         bot.add_view(InterviewOutcomeView())
+        _tab_state = _tab_load()
+        _seen_member_ids: set[int] = set()
+        for _link in _tab_state.get("ticket_links", {}).values():
+            _mid = _link.get("member_id")
+            _panel_msg_id = _link.get("panel_message_id")
+            if _mid:
+                _mid_int = int(_mid)
+                _view_instance = ApplicationReviewView(_mid_int)
+                if _panel_msg_id:
+                    try:
+                        bot.add_view(_view_instance, message_id=int(_panel_msg_id))
+                    except Exception:
+                        pass
+                elif _mid_int not in _seen_member_ids:
+                    bot.add_view(_view_instance)
+                _seen_member_ids.add(_mid_int)
+        del _tab_state, _seen_member_ids
     except Exception as e:
         print(f"View registration warning: {e}")
 
@@ -3626,6 +3643,7 @@ async def on_ready():
                 pass
 
     bot.loop.create_task(application_timeout_loop())
+    bot.loop.create_task(_tab_refresh_all_panels())
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
@@ -6167,6 +6185,30 @@ async def _fus_delayed_close(channel: discord.TextChannel, delay: int) -> None:
         pass
 
 
+async def _tab_refresh_all_panels() -> None:
+    await asyncio.sleep(3)
+    state = _tab_load()
+    for ticket_key, link_data in list(state.get("ticket_links", {}).items()):
+        member_id = link_data.get("member_id")
+        channel_id = int(ticket_key)
+        if not member_id:
+            continue
+        channel = bot.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            continue
+        guild = channel.guild
+        member = guild.get_member(int(member_id))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(member_id))
+            except Exception:
+                continue
+        try:
+            await _tab_update_panel(channel, member, state)
+        except Exception:
+            pass
+
+
 async def _tab_update_panel(channel: discord.TextChannel, member: discord.Member, state: dict) -> None:
     app = _tab_get_app(state, member.id)
     embed = _tab_build_status_embed(member, app)
@@ -6317,6 +6359,9 @@ class ApplicationReviewView(discord.ui.View):
     def __init__(self, target_member_id: int):
         super().__init__(timeout=None)
         self.target_member_id = target_member_id
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id:
+                item.custom_id = f"{item.custom_id}:{target_member_id}"
 
     async def _check_staff(self, interaction: discord.Interaction) -> bool:
         if not isinstance(interaction.user, discord.Member) or not _interview_outcome_can_manage(interaction.user):
@@ -6326,7 +6371,7 @@ class ApplicationReviewView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Mark Applied", style=discord.ButtonStyle.secondary, emoji="🧾")
+    @discord.ui.button(label="Mark Applied", style=discord.ButtonStyle.secondary, emoji="🧾", custom_id="tab_mark_applied")
     async def mark_applied(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._check_staff(interaction):
             return
@@ -6362,19 +6407,19 @@ class ApplicationReviewView(discord.ui.View):
             await _tab_update_panel(interaction.channel, member, state)
         await interaction.response.send_message(f"{member.mention} marked as applied.", ephemeral=True)
 
-    @discord.ui.button(label="Schedule Interview", style=discord.ButtonStyle.primary, emoji="🎤")
+    @discord.ui.button(label="Schedule Interview", style=discord.ButtonStyle.primary, emoji="🎤", custom_id="tab_schedule_interview")
     async def schedule_interview(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._check_staff(interaction):
             return
         await interaction.response.send_modal(InterviewScheduleModal(self.target_member_id))
 
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="✅")
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="✅", custom_id="tab_approve")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._check_staff(interaction):
             return
         await interaction.response.send_modal(ApplicationResultModal(self.target_member_id, "Approved"))
 
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌")
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌", custom_id="tab_deny")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._check_staff(interaction):
             return
