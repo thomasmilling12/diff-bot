@@ -81,6 +81,13 @@ CONTENT_TEAM_ROLE_ID = 1110037666147336293
 COLOR_TEAM_ROLE_ID = 1115495008670330902
 CREW_MEMBER_ROLE_ID = 886702076552441927
 PS5_ROLE_ID = 1485668852921798849
+NOTIFY_ROLE_ID = 1138691141009674260
+JOIN_WELCOME_CHANNEL_ID = 1485687906382123331
+_JOIN_UNLOCK_CHANNEL_IDS: tuple[int, ...] = (
+    1047178296191885402,
+    1047178360431841362,
+    1484768466023223418,
+)
 
 CREW_PANEL_CHANNEL_ID = 1103847009653358612
 CREW_APPLICATIONS_CHANNEL_ID = 1485238837943734373
@@ -9725,6 +9732,31 @@ class JoinPlatformView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(JoinPlatformSelect())
 
+    @discord.ui.button(
+        label="🔔 Notify Me For Meets",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_join_notify",
+        row=1,
+    )
+    async def notify_toggle(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        role = interaction.guild.get_role(NOTIFY_ROLE_ID)
+        if not role:
+            return await interaction.response.send_message("Notify role not found. Please contact staff.", ephemeral=True)
+        if role in interaction.user.roles:
+            try:
+                await interaction.user.remove_roles(role, reason="DIFF notify toggle — OFF")
+            except discord.HTTPException:
+                return await interaction.response.send_message("Failed to remove role. Try again.", ephemeral=True)
+            await interaction.response.send_message("🔕 Meet notifications **OFF** — you've been removed from the notify role.", ephemeral=True)
+        else:
+            try:
+                await interaction.user.add_roles(role, reason="DIFF notify toggle — ON")
+            except discord.HTTPException:
+                return await interaction.response.send_message("Failed to add role. Try again.", ephemeral=True)
+            await interaction.response.send_message("🔔 Meet notifications **ON** — you'll be pinged for meets.", ephemeral=True)
+
 
 class JoinTicketView(discord.ui.View):
     def __init__(self) -> None:
@@ -9757,10 +9789,45 @@ class JoinTicketView(discord.ui.View):
 
         await interaction.response.send_message(f"{member.mention} has been accepted.", ephemeral=True)
 
-        role = interaction.guild.get_role(PS5_ROLE_ID)
-        if role:
+        roles_to_add = []
+        for rid in (PS5_ROLE_ID, MEET_ATTENDER_ROLE_ID):
+            r = interaction.guild.get_role(rid)
+            if r:
+                roles_to_add.append(r)
+        if roles_to_add:
             try:
-                await member.add_roles(role, reason=f"PS join approved by {interaction.user}")
+                await member.add_roles(*roles_to_add, reason=f"PS join approved by {interaction.user}")
+            except discord.HTTPException:
+                pass
+        role = interaction.guild.get_role(PS5_ROLE_ID)
+
+        for ch_id in _JOIN_UNLOCK_CHANNEL_IDS:
+            ch = interaction.guild.get_channel(ch_id)
+            if isinstance(ch, discord.TextChannel):
+                try:
+                    await ch.set_permissions(member, view_channel=True, reason="DIFF join approved")
+                except discord.HTTPException:
+                    pass
+
+        welcome_channel = interaction.guild.get_channel(JOIN_WELCOME_CHANNEL_ID)
+        if isinstance(welcome_channel, discord.TextChannel):
+            welcome_embed = discord.Embed(
+                title="Welcome to DIFF Meets",
+                description="\n".join([
+                    f"{member.mention} has joined the DIFF car meet community.",
+                    "",
+                    f"**PSN:** {psn}",
+                    "Stay ready for meet posts, announcements, and instructions.",
+                ]),
+                color=discord.Color.green(),
+            )
+            if DIFF_BANNER_URL:
+                welcome_embed.set_image(url=DIFF_BANNER_URL)
+            if DIFF_LOGO_URL:
+                welcome_embed.set_thumbnail(url=DIFF_LOGO_URL)
+            welcome_embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
+            try:
+                await welcome_channel.send(content=member.mention, embed=welcome_embed)
             except discord.HTTPException:
                 pass
 

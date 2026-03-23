@@ -1,0 +1,205 @@
+// ===============================
+// DIFF FULL SYSTEM (FINAL)
+// ===============================
+
+const {
+  EmbedBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType,
+  PermissionsBitField,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
+} = require('discord.js');
+
+module.exports = (client) => {
+
+const CONFIG = {
+  panelChannelId: '1277084633858576406',
+
+  ticketCategoryId: 'PUT_TICKET_CATEGORY_ID_HERE',
+  staffLogsChannelId: 'PUT_STAFF_LOGS_CHANNEL_ID_HERE',
+  welcomeChannelId: 'PUT_WELCOME_CHANNEL_ID_HERE',
+
+  psMeetRoleId: 'PUT_PS_MEET_ROLE_ID_HERE',
+  notifyRoleId: 'PUT_NOTIFY_ROLE_ID_HERE',
+
+  meetAttenderRoleId: '850392317751066705',
+
+  unlockChannels: [
+    '1047178296191885402',
+    '1047178360431841362',
+    '1484768466023223418'
+  ],
+
+  leader: '850391095845584937',
+  coleader: '850391378559238235',
+  manager: '990011447193006101'
+};
+
+// ===============================
+// PANEL
+// ===============================
+
+client.once('ready', async () => {
+  const ch = await client.channels.fetch(CONFIG.panelChannelId);
+
+  const embed = new EmbedBuilder()
+    .setTitle('🏁 DIFF MEETS — OFFICIAL JOIN HUB')
+    .setDescription('Select your platform to begin');
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('platform')
+    .setPlaceholder('Select platform')
+    .addOptions([
+      { label: 'PlayStation', value: 'ps' },
+      { label: 'Xbox', value: 'xbox' },
+      { label: 'PC', value: 'pc' }
+    ]);
+
+  const notify = new ButtonBuilder()
+    .setCustomId('notify')
+    .setLabel('Notify Me For Meets')
+    .setStyle(ButtonStyle.Primary);
+
+  await ch.send({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(menu),
+      new ActionRowBuilder().addComponents(notify)
+    ]
+  });
+});
+
+// ===============================
+// MODAL
+// ===============================
+
+client.on('interactionCreate', async (i) => {
+
+if (i.isStringSelectMenu()) {
+
+  if (i.values[0] === 'xbox' || i.values[0] === 'pc') {
+    return i.reply({
+      content: 'Join MMI: https://discord.gg/mmi\nGo to #join-car-meet',
+      ephemeral: true
+    });
+  }
+
+  if (i.values[0] === 'ps') {
+    const modal = new ModalBuilder()
+      .setCustomId('psnModal')
+      .setTitle('Please fill this out');
+
+    const input = new TextInputBuilder()
+      .setCustomId('psn')
+      .setLabel('Gamertag *')
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder('Enter your PSN gamertag')
+      .setRequired(true);
+
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+
+    return i.showModal(modal);
+  }
+}
+
+// ===============================
+// MODAL SUBMIT
+// ===============================
+
+if (i.isModalSubmit()) {
+
+  const psn = i.fields.getTextInputValue('psn');
+  const nick = `🅸🅳 - ${psn}`;
+
+  try {
+    const member = await i.guild.members.fetch(i.user.id);
+    await member.setNickname(nick);
+  } catch {}
+
+  const ticket = await i.guild.channels.create({
+    name: `join-${psn}`,
+    type: ChannelType.GuildText,
+    parent: CONFIG.ticketCategoryId,
+    permissionOverwrites: [
+      { id: i.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+      { id: i.user.id, allow: [PermissionsBitField.Flags.ViewChannel] },
+      { id: CONFIG.leader, allow: [PermissionsBitField.Flags.ViewChannel] },
+      { id: CONFIG.coleader, allow: [PermissionsBitField.Flags.ViewChannel] },
+      { id: CONFIG.manager, allow: [PermissionsBitField.Flags.ViewChannel] }
+    ]
+  });
+
+  await ticket.send({
+    content: `${i.user}\nSend 10 car photos.`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('accept').setLabel('Accept').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('deny').setLabel('Deny').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('close').setLabel('Close').setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  });
+
+  return i.reply({ content: `Ticket created: ${ticket}`, ephemeral: true });
+}
+
+// ===============================
+// BUTTONS
+// ===============================
+
+if (i.isButton()) {
+
+  if (i.customId === 'notify') {
+    const m = i.member;
+    if (m.roles.cache.has(CONFIG.notifyRoleId)) {
+      await m.roles.remove(CONFIG.notifyRoleId);
+      return i.reply({ content: 'Notifications OFF', ephemeral: true });
+    } else {
+      await m.roles.add(CONFIG.notifyRoleId);
+      return i.reply({ content: 'Notifications ON', ephemeral: true });
+    }
+  }
+
+  if (i.customId === 'accept') {
+    const user = i.channel.permissionOverwrites.cache.find(p => p.type === 1)?.id;
+    const member = await i.guild.members.fetch(user);
+
+    await member.roles.add(CONFIG.meetAttenderRoleId);
+
+    if (CONFIG.psMeetRoleId !== 'PUT_PS_MEET_ROLE_ID_HERE') {
+      await member.roles.add(CONFIG.psMeetRoleId);
+    }
+
+    for (const id of CONFIG.unlockChannels) {
+      const ch = await i.guild.channels.fetch(id);
+      await ch.permissionOverwrites.edit(member.id, { ViewChannel: true });
+    }
+
+    const welcome = await i.guild.channels.fetch(CONFIG.welcomeChannelId);
+
+    await welcome.send({
+      content: `${member}`,
+      embeds: [new EmbedBuilder().setTitle('Welcome to DIFF').setDescription('You are now approved')]
+    });
+
+    return i.reply({ content: 'Accepted', ephemeral: true });
+  }
+
+  if (i.customId === 'deny') {
+    return i.reply({ content: 'Denied', ephemeral: true });
+  }
+
+  if (i.customId === 'close') {
+    await i.reply({ content: 'Closing...', ephemeral: true });
+    setTimeout(() => i.channel.delete(), 2000);
+  }
+}
+
+});
+
+};
