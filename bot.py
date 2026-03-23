@@ -1908,6 +1908,32 @@ def format_role_member_lines(role: discord.Role) -> str:
     return header + "\n" + "\n".join(trimmed_lines)
 
 
+def _count_hierarchy_statuses(guild: discord.Guild) -> dict:
+    all_role_ids = [
+        LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID,
+        HOST_ROLE_ID, DESIGNER_TEAM_ROLE_ID, CONTENT_TEAM_ROLE_ID, COLOR_TEAM_ROLE_ID,
+    ]
+    seen: set = set()
+    counts = {"online": 0, "idle": 0, "dnd": 0, "offline": 0}
+    for role_id in all_role_ids:
+        role = guild.get_role(role_id)
+        if not role:
+            continue
+        for m in role.members:
+            if m.id in seen:
+                continue
+            seen.add(m.id)
+            if m.status == discord.Status.online:
+                counts["online"] += 1
+            elif m.status == discord.Status.idle:
+                counts["idle"] += 1
+            elif m.status == discord.Status.dnd:
+                counts["dnd"] += 1
+            else:
+                counts["offline"] += 1
+    return counts
+
+
 def build_hierarchy_embeds(guild: discord.Guild):
     role_sections = [
         ("👑 Leadership", [
@@ -1931,6 +1957,8 @@ def build_hierarchy_embeds(guild: discord.Guild):
         f"Need help? Open <#{SUPPORT_TICKETS_CHANNEL_ID}>.",
     ]
 
+    status_counts = _count_hierarchy_statuses(guild)
+
     embeds = []
     for index, (section_title, entries) in enumerate(role_sections):
         embed = discord.Embed(
@@ -1940,6 +1968,19 @@ def build_hierarchy_embeds(guild: discord.Guild):
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_image(url=DIFF_BANNER_URL)
+
+        if index == 0:
+            embed.add_field(
+                name="📊 Staff Status",
+                value=(
+                    f"🟢 Online: **{status_counts['online']}**\u2003"
+                    f"🌙 Idle: **{status_counts['idle']}**\u2003"
+                    f"⛔ DND: **{status_counts['dnd']}**\u2003"
+                    f"⚫ Offline: **{status_counts['offline']}**"
+                ),
+                inline=False,
+            )
+
         embed.add_field(
             name=section_title,
             value="━━━━━━━━━━━━━━━━━━━━",
@@ -1949,18 +1990,9 @@ def build_hierarchy_embeds(guild: discord.Guild):
         for role_id, label in entries:
             role = guild.get_role(role_id)
             if role is None:
-                embed.add_field(
-                    name=label,
-                    value="Role not found.",
-                    inline=False,
-                )
+                embed.add_field(name=label, value="Role not found.", inline=False)
                 continue
-
-            embed.add_field(
-                name="\u200b",
-                value=format_role_member_lines(role),
-                inline=False,
-            )
+            embed.add_field(name="\u200b", value=format_role_member_lines(role), inline=False)
 
         embed.set_footer(
             text=f"DIFF Meets • Last updated {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
@@ -2043,6 +2075,128 @@ def build_hierarchy_support_view() -> discord.ui.View:
         url=build_channel_link(GUILD_ID, SUPPORT_TICKETS_CHANNEL_ID),
     ))
     return view
+
+
+LIVE_ATTENDANCE_CHANNEL_ID = 1485469927312850974
+LIVE_ATTENDANCE_PANEL_TITLE = "📊 DIFF Crew Attendance Status"
+
+
+def build_live_attendance_embed(guild: discord.Guild) -> discord.Embed:
+    crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+    crew_members = sorted(crew_role.members, key=lambda m: m.display_name.lower()) if crew_role else []
+
+    online = [m for m in crew_members if m.status != discord.Status.offline]
+    offline = [m for m in crew_members if m.status == discord.Status.offline]
+
+    def _fmt(members: list, limit: int = 25) -> str:
+        lines = [f"{get_member_status_emoji(m)} {m.mention} — `{m.display_name}`" for m in members[:limit]]
+        if not lines:
+            return "None right now."
+        extra = len(members) - limit
+        if extra > 0:
+            lines.append(f"…and {extra} more")
+        return "\n".join(lines)
+
+    embed = discord.Embed(
+        title=LIVE_ATTENDANCE_PANEL_TITLE,
+        description=(
+            "Live attendance snapshot for **Different Meets** crew members.\n"
+            "This panel refreshes automatically every 5 minutes.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.green(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(
+        name=f"✅ Active Right Now ({len(online)})",
+        value=_fmt(online),
+        inline=False,
+    )
+    embed.add_field(
+        name=f"⚫ Offline Right Now ({len(offline)})",
+        value=_fmt(offline),
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Auto-refreshes every 5 min • Same panel, no duplicates")
+    return embed
+
+
+async def post_or_refresh_live_attendance(guild: discord.Guild) -> None:
+    channel = guild.get_channel(LIVE_ATTENDANCE_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    embed = build_live_attendance_embed(guild)
+    state = _load_diff_json(DIFF_PANEL_STATE_FILE)
+    message_id = state.get("live_attendance_message_id")
+    message = None
+
+    if message_id:
+        try:
+            message = await channel.fetch_message(int(message_id))
+        except (discord.NotFound, discord.HTTPException):
+            message = None
+
+    if message is None:
+        async for msg in channel.history(limit=30):
+            if msg.author.id == bot.user.id and msg.embeds and msg.embeds[0].title == LIVE_ATTENDANCE_PANEL_TITLE:
+                message = msg
+                break
+
+    if message:
+        try:
+            await message.edit(embed=embed)
+        except Exception:
+            message = None
+
+    if message is None:
+        message = await channel.send(embed=embed)
+
+    state["live_attendance_message_id"] = message.id
+    _save_diff_json(DIFF_PANEL_STATE_FILE, state)
+
+
+@tasks.loop(minutes=5)
+async def hierarchy_attendance_loop():
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return
+    try:
+        hierarchy_message_ids = data.get("hierarchy_message_ids", [])
+        if hierarchy_message_ids:
+            channel = guild.get_channel(HIERARCHY_CHANNEL_ID)
+            if isinstance(channel, discord.TextChannel):
+                embeds = build_hierarchy_embeds(guild)
+                support_view = build_hierarchy_support_view()
+                msgs = []
+                for mid in hierarchy_message_ids:
+                    try:
+                        msgs.append(await channel.fetch_message(mid))
+                    except Exception:
+                        msgs = []
+                        break
+                if msgs and len(msgs) == len(embeds):
+                    for i, (msg, emb) in enumerate(zip(msgs, embeds)):
+                        is_last = i == len(embeds) - 1
+                        try:
+                            await msg.edit(
+                                content="## DIFF Hierarchy Panel" if i == 0 else None,
+                                embed=emb,
+                                view=support_view if is_last else discord.ui.View(),
+                            )
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+    try:
+        await post_or_refresh_live_attendance(guild)
+    except Exception:
+        pass
+
+
+@hierarchy_attendance_loop.before_loop
+async def before_hierarchy_attendance_loop():
+    await bot.wait_until_ready()
 
 
 async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
@@ -3431,6 +3585,9 @@ async def on_ready():
 
     bot.loop.create_task(application_timeout_loop())
 
+    if not hierarchy_attendance_loop.is_running():
+        hierarchy_attendance_loop.start()
+
     status_message_id = data.get("panel_message_id")
 
 
@@ -4234,6 +4391,26 @@ async def hierarchy_command_error(interaction: discord.Interaction, error: app_c
             await interaction.response.send_message(msg, ephemeral=True)
     except discord.NotFound:
         pass
+
+@bot.tree.command(name="refresh-live-attendance", description="Post or refresh the live crew attendance status panel")
+@app_commands.checks.has_permissions(administrator=True)
+async def refresh_live_attendance_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        try:
+            await interaction.response.send_message("Use this in the server.", ephemeral=True)
+        except discord.NotFound:
+            pass
+        return
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    try:
+        await post_or_refresh_live_attendance(interaction.guild)
+        await interaction.followup.send("Live attendance panel posted/refreshed.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {e}", ephemeral=True)
+
 
 # =========================
 # APPLICATION COMMANDS
