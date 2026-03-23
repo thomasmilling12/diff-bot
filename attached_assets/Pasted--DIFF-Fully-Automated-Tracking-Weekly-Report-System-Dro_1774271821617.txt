@@ -1,0 +1,628 @@
+"""
+DIFF Fully Automated Tracking + Weekly Report System
+Drop-in discord.py 2.x cog
+
+What this adds:
+- Fully automatic staff tracking for ticket channels
+- Tracks who actually handled tickets based on replies in ticket channels
+- Auto-awards stats when tickets close
+- Auto-tracks application review decisions from Accept / Deny buttons
+- Weekly leaderboard report
+- Weekly top performer post
+- Weekly auto reset
+- Optional manual force-run command for leadership
+
+How it works:
+- Ticket channels should include this in the channel topic:
+    ticket_owner=USER_ID | ticket_type=report/support/appeal/apply
+- Staff activity is detected when staff members send messages inside ticket channels
+- When a ticket channel is deleted, the system uses its cached activity to award stats
+- If your review buttons use custom IDs containing "accept" or "deny", the system will track those too
+
+Recommended file name:
+    cogs/diff_auto_tracking.py
+
+Load:
+    await bot.load_extension("cogs.diff_auto_tracking")
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional
+
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+GUILD_ID = 850386896509337710
+
+# Channels
+STAFF_LOGS_CHANNEL_ID = 1485265848099799163
+LEADERBOARD_CHANNEL_ID = 1485282044392243290
+WEEKLY_REPORT_CHANNEL_ID = 1485282044392243290
+
+# Roles
+LEADER_ROLE_ID = 850391095845584937
+CO_LEADER_ROLE_ID = 850391378559238235
+MANAGER_ROLE_ID = 990011447193006101
+HOST_ROLE_ID = 1055823929358430248
+SUPPORT_STAFF_ROLE_ID = None
+CREW_MEMBER_ROLE_ID = 886702076552441927
+
+# Branding
+BRAND_NAME = "DIFF Automated Staff Tracker"
+LOGO_URL = ""
+BANNER_URL = ""
+
+# Data files
+DATA_FILE = "diff_auto_staff_stats.json"
+CACHE_FILE = "diff_ticket_activity_cache.json"
+
+# Weekly schedule
+# Monday at 12:00 PM America/New_York style target.
+# This bot uses UTC math internally and assumes Eastern time target.
+WEEKLY_REPORT_WEEKDAY = 0   # Monday = 0
+WEEKLY_REPORT_HOUR_UTC = 16 # 12 PM Eastern during EDT, 16 UTC works for many cases
+WEEKLY_REPORT_MINUTE_UTC = 0
+
+# Minimum staff messages required in a ticket to count as handled
+MIN_MESSAGES_TO_COUNT_TICKET = 1
+
+# Promotion thresholds
+PROMOTION_THRESHOLDS = {
+    "tickets_handled": 8,
+    "applications_reviewed": 4,
+    "meets_hosted": 4,
+    "score": 18,
+}
+
+PROMOTION_FLOW = {
+    CREW_MEMBER_ROLE_ID: HOST_ROLE_ID,
+    HOST_ROLE_ID: MANAGER_ROLE_ID,
+    MANAGER_ROLE_ID: CO_LEADER_ROLE_ID,
+    CO_LEADER_ROLE_ID: LEADER_ROLE_ID,
+}
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+def ts() -> int:
+    return int(utc_now().timestamp())
+
+def fmt_dt(dt: Optional[datetime] = None) -> str:
+    dt = dt or utc_now()
+    return f"<t:{int(dt.timestamp())}:F>"
+
+def apply_branding(embed: discord.Embed) -> discord.Embed:
+    if LOGO_URL:
+        embed.set_thumbnail(url=LOGO_URL)
+    if BANNER_URL:
+        embed.set_image(url=BANNER_URL)
+    embed.set_footer(text="Different Meets • Automated Tracking")
+    return embed
+
+def has_any_role(member: discord.Member, role_ids: set[int]) -> bool:
+    return any(role.id in role_ids for role in member.roles)
+
+def leadership_check(member: discord.Member) -> bool:
+    allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    return has_any_role(member, allowed) or member.guild_permissions.manage_guild
+
+def staff_check(member: discord.Member) -> bool:
+    allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+    if SUPPORT_STAFF_ROLE_ID:
+        allowed.add(SUPPORT_STAFF_ROLE_ID)
+    return has_any_role(member, allowed) or member.guild_permissions.manage_guild
+
+def parse_topic_value(topic: Optional[str], key: str) -> Optional[str]:
+    if not topic:
+        return None
+    match = re.search(rf"{re.escape(key)}=([^|]+)", topic)
+    return match.group(1).strip() if match else None
+
+def score_user(stats: dict) -> int:
+    return (
+        stats.get("tickets_handled", 0) * 2
+        + stats.get("applications_reviewed", 0) * 3
+        + stats.get("meets_hosted", 0) * 2
+        + stats.get("reports_resolved", 0) * 2
+        + stats.get("appeals_reviewed", 0) * 2
+        + stats.get("accepted_apps", 0) * 1
+    )
+
+def next_promotion_role(member: discord.Member) -> Optional[int]:
+    current_ids = {r.id for r in member.roles}
+    for current_role_id, next_role_id in PROMOTION_FLOW.items():
+        if current_role_id in current_ids and next_role_id not in current_ids:
+            return next_role_id
+    return None
+
+def is_ticket_channel(channel: discord.abc.GuildChannel) -> bool:
+    if not isinstance(channel, discord.TextChannel):
+        return False
+    if not channel.topic:
+        return False
+    return "ticket_owner=" in channel.topic and "ticket_type=" in channel.topic
+
+# =========================================================
+# STORAGE
+# =========================================================
+
+class JsonStore:
+    def __init__(self, path: str, default_factory):
+        self.path = Path(path)
+        self.default_factory = default_factory
+        self.data = self._load()
+
+    def _load(self):
+        if not self.path.exists():
+            data = self.default_factory()
+            self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            return data
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            data = self.default_factory()
+            self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            return data
+
+    def save(self):
+        self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+
+class StatsStore(JsonStore):
+    def __init__(self, path: str):
+        super().__init__(path, self._default)
+
+    def _default(self):
+        return {
+            "users": {},
+            "weekly_history": [],
+            "last_reset": utc_now().isoformat(),
+        }
+
+    def ensure_user(self, user_id: int) -> dict:
+        key = str(user_id)
+        if key not in self.data["users"]:
+            self.data["users"][key] = {
+                "tickets_handled": 0,
+                "applications_reviewed": 0,
+                "meets_hosted": 0,
+                "reports_resolved": 0,
+                "appeals_reviewed": 0,
+                "accepted_apps": 0,
+                "denied_apps": 0,
+                "messages_in_tickets": 0,
+                "last_updated": utc_now().isoformat(),
+            }
+        return self.data["users"][key]
+
+    def add_stat(self, user_id: int, field: str, amount: int = 1) -> dict:
+        user = self.ensure_user(user_id)
+        user[field] = int(user.get(field, 0)) + amount
+        user["last_updated"] = utc_now().isoformat()
+        self.save()
+        return user
+
+    def leaderboard(self) -> list[tuple[int, dict]]:
+        rows = [(int(uid), stats) for uid, stats in self.data["users"].items()]
+        rows.sort(key=lambda item: score_user(item[1]), reverse=True)
+        return rows
+
+    def archive_and_reset_week(self):
+        snapshot = {
+            "ended_at": utc_now().isoformat(),
+            "leaderboard": self.leaderboard()[:10],
+        }
+        self.data["weekly_history"].append(snapshot)
+        self.data["users"] = {}
+        self.data["last_reset"] = utc_now().isoformat()
+        self.save()
+
+class TicketActivityStore(JsonStore):
+    def __init__(self, path: str):
+        super().__init__(path, self._default)
+
+    def _default(self):
+        return {
+            "tickets": {}
+        }
+
+    def ensure_ticket(self, channel_id: int, channel_name: str, ticket_type: str, owner_id: Optional[str]) -> dict:
+        key = str(channel_id)
+        if key not in self.data["tickets"]:
+            self.data["tickets"][key] = {
+                "channel_name": channel_name,
+                "ticket_type": ticket_type,
+                "owner_id": owner_id,
+                "staff_messages": {},
+                "created_at": utc_now().isoformat(),
+                "last_seen_at": utc_now().isoformat(),
+            }
+        return self.data["tickets"][key]
+
+    def add_staff_message(self, channel_id: int, channel_name: str, ticket_type: str, owner_id: Optional[str], user_id: int):
+        ticket = self.ensure_ticket(channel_id, channel_name, ticket_type, owner_id)
+        uid = str(user_id)
+        ticket["staff_messages"][uid] = int(ticket["staff_messages"].get(uid, 0)) + 1
+        ticket["last_seen_at"] = utc_now().isoformat()
+        self.save()
+
+    def pop_ticket(self, channel_id: int) -> Optional[dict]:
+        key = str(channel_id)
+        ticket = self.data["tickets"].pop(key, None)
+        self.save()
+        return ticket
+
+# =========================================================
+# EMBEDS
+# =========================================================
+
+def build_weekly_report_embed(guild: discord.Guild, leaderboard_rows: list[tuple[int, dict]]) -> discord.Embed:
+    embed = discord.Embed(
+        title="🏆 Weekly DIFF Staff Report",
+        description="Automatic weekly recap for DIFF staff performance.",
+        color=discord.Color.gold(),
+        timestamp=utc_now(),
+    )
+
+    if not leaderboard_rows:
+        embed.add_field(name="No Activity Logged", value="No staff activity was recorded this week.", inline=False)
+        return apply_branding(embed)
+
+    lines = []
+    for idx, (user_id, stats) in enumerate(leaderboard_rows[:10], start=1):
+        member = guild.get_member(user_id)
+        display = member.mention if member else f"<@{user_id}>"
+        lines.append(
+            f"**#{idx}** {display}\n"
+            f"Score: **{score_user(stats)}** | "
+            f"Tickets: **{stats.get('tickets_handled', 0)}** | "
+            f"Apps: **{stats.get('applications_reviewed', 0)}** | "
+            f"Meets: **{stats.get('meets_hosted', 0)}**"
+        )
+
+    embed.add_field(name="Leaderboard", value="\n\n".join(lines), inline=False)
+
+    top_user_id, top_stats = leaderboard_rows[0]
+    top_member = guild.get_member(top_user_id)
+    top_display = top_member.mention if top_member else f"<@{top_user_id}>"
+    embed.add_field(
+        name="🔥 Top Performer of the Week",
+        value=(
+            f"{top_display}\n"
+            f"Score: **{score_user(top_stats)}**\n"
+            f"Tickets Handled: **{top_stats.get('tickets_handled', 0)}**\n"
+            f"Applications Reviewed: **{top_stats.get('applications_reviewed', 0)}**\n"
+            f"Meets Hosted: **{top_stats.get('meets_hosted', 0)}**"
+        ),
+        inline=False,
+    )
+    return apply_branding(embed)
+
+def build_stats_embed(member: discord.Member, stats: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="📊 DIFF Automated Staff Stats",
+        description=f"Automatic tracking snapshot for {member.mention}",
+        color=discord.Color.blue(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="Tickets Handled", value=str(stats.get("tickets_handled", 0)), inline=True)
+    embed.add_field(name="Applications Reviewed", value=str(stats.get("applications_reviewed", 0)), inline=True)
+    embed.add_field(name="Meets Hosted", value=str(stats.get("meets_hosted", 0)), inline=True)
+    embed.add_field(name="Reports Resolved", value=str(stats.get("reports_resolved", 0)), inline=True)
+    embed.add_field(name="Appeals Reviewed", value=str(stats.get("appeals_reviewed", 0)), inline=True)
+    embed.add_field(name="Messages in Tickets", value=str(stats.get("messages_in_tickets", 0)), inline=True)
+    embed.add_field(name="Accepted Apps", value=str(stats.get("accepted_apps", 0)), inline=True)
+    embed.add_field(name="Denied Apps", value=str(stats.get("denied_apps", 0)), inline=True)
+    embed.add_field(name="Score", value=str(score_user(stats)), inline=True)
+    return apply_branding(embed)
+
+def build_log_embed(title: str, description: str, color: discord.Color) -> discord.Embed:
+    embed = discord.Embed(title=title, description=description, color=color, timestamp=utc_now())
+    return apply_branding(embed)
+
+def build_promotion_embed(member: discord.Member, stats: dict, next_role: discord.Role) -> discord.Embed:
+    embed = discord.Embed(
+        title="📈 Promotion Suggestion",
+        description=(
+            f"User: {member.mention}\n"
+            f"Suggested Next Role: {next_role.mention}\n\n"
+            "This staff member has reached the automated promotion review threshold."
+        ),
+        color=discord.Color.green(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="Tickets Handled", value=str(stats.get("tickets_handled", 0)), inline=True)
+    embed.add_field(name="Applications Reviewed", value=str(stats.get("applications_reviewed", 0)), inline=True)
+    embed.add_field(name="Meets Hosted", value=str(stats.get("meets_hosted", 0)), inline=True)
+    embed.add_field(name="Reports Resolved", value=str(stats.get("reports_resolved", 0)), inline=True)
+    embed.add_field(name="Appeals Reviewed", value=str(stats.get("appeals_reviewed", 0)), inline=True)
+    embed.add_field(name="Activity Score", value=str(score_user(stats)), inline=True)
+    return apply_branding(embed)
+
+# =========================================================
+# COG
+# =========================================================
+
+class DiffAutoTracking(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self.stats = StatsStore(DATA_FILE)
+        self.ticket_cache = TicketActivityStore(CACHE_FILE)
+        self.weekly_report_loop.start()
+
+    def cog_unload(self) -> None:
+        self.weekly_report_loop.cancel()
+
+    async def log_to_staff_logs(self, guild: discord.Guild, embed: discord.Embed) -> None:
+        channel = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(embed=embed)
+
+    async def check_promotion(self, guild: discord.Guild, member: discord.Member) -> None:
+        stats = self.stats.ensure_user(member.id)
+        score = score_user(stats)
+        if (
+            stats.get("tickets_handled", 0) < PROMOTION_THRESHOLDS["tickets_handled"]
+            and stats.get("applications_reviewed", 0) < PROMOTION_THRESHOLDS["applications_reviewed"]
+            and stats.get("meets_hosted", 0) < PROMOTION_THRESHOLDS["meets_hosted"]
+            and score < PROMOTION_THRESHOLDS["score"]
+        ):
+            return
+
+        next_role_id = next_promotion_role(member)
+        if not next_role_id:
+            return
+
+        next_role = guild.get_role(next_role_id)
+        if not next_role:
+            return
+
+        await self.log_to_staff_logs(guild, build_promotion_embed(member, stats, next_role))
+
+    async def finalize_ticket_tracking(self, guild: discord.Guild, channel_id: int) -> None:
+        ticket = self.ticket_cache.pop_ticket(channel_id)
+        if not ticket:
+            return
+
+        ticket_type = ticket.get("ticket_type", "support")
+        staff_messages = ticket.get("staff_messages", {})
+        awarded = []
+
+        for user_id_str, message_count in staff_messages.items():
+            if int(message_count) < MIN_MESSAGES_TO_COUNT_TICKET:
+                continue
+
+            user_id = int(user_id_str)
+            member = guild.get_member(user_id)
+            if not member:
+                continue
+
+            self.stats.add_stat(user_id, "messages_in_tickets", int(message_count))
+            self.stats.add_stat(user_id, "tickets_handled", 1)
+
+            if ticket_type == "report":
+                self.stats.add_stat(user_id, "reports_resolved", 1)
+            elif ticket_type == "appeal":
+                self.stats.add_stat(user_id, "appeals_reviewed", 1)
+
+            awarded.append((member, message_count))
+            await self.check_promotion(guild, member)
+
+        if awarded:
+            lines = []
+            for member, count in awarded:
+                lines.append(f"{member.mention} — {count} message(s)")
+            embed = build_log_embed(
+                "🎫 Ticket Auto Tracking Complete",
+                (
+                    f"Ticket: `{ticket.get('channel_name', 'unknown')}`\n"
+                    f"Type: **{ticket_type}**\n"
+                    f"Tracked Staff:\n" + "\n".join(lines)
+                ),
+                discord.Color.blurple(),
+            )
+            await self.log_to_staff_logs(guild, embed)
+
+    # -----------------------------------------------------
+    # EVENTS
+    # -----------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if not message.guild or message.author.bot:
+            return
+        if not isinstance(message.author, discord.Member):
+            return
+        if not isinstance(message.channel, discord.TextChannel):
+            return
+        if not is_ticket_channel(message.channel):
+            return
+        if not staff_check(message.author):
+            return
+
+        ticket_type = parse_topic_value(message.channel.topic, "ticket_type") or "support"
+        owner_id = parse_topic_value(message.channel.topic, "ticket_owner")
+        self.ticket_cache.add_staff_message(
+            channel_id=message.channel.id,
+            channel_name=message.channel.name,
+            ticket_type=ticket_type,
+            owner_id=owner_id,
+            user_id=message.author.id,
+        )
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
+        if not isinstance(channel, discord.TextChannel):
+            return
+        if channel.guild.id != GUILD_ID:
+            return
+        await self.finalize_ticket_tracking(channel.guild, channel.id)
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return
+        if interaction.guild.id != GUILD_ID:
+            return
+        if not interaction.data:
+            return
+
+        custom_id = interaction.data.get("custom_id")
+        if not isinstance(custom_id, str):
+            return
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return
+        if not is_ticket_channel(interaction.channel):
+            return
+        if not leadership_check(interaction.user):
+            return
+
+        lowered = custom_id.lower()
+        if "accept" in lowered or "deny" in lowered:
+            self.stats.add_stat(interaction.user.id, "applications_reviewed", 1)
+            if "accept" in lowered:
+                self.stats.add_stat(interaction.user.id, "accepted_apps", 1)
+                decision = "Approved"
+            else:
+                self.stats.add_stat(interaction.user.id, "denied_apps", 1)
+                decision = "Denied"
+
+            embed = build_log_embed(
+                "🧾 Application Auto Tracking",
+                (
+                    f"Reviewer: {interaction.user.mention}\n"
+                    f"Decision: **{decision}**\n"
+                    f"Channel: {interaction.channel.mention}\n"
+                    f"Time: {fmt_dt()}"
+                ),
+                discord.Color.green() if decision == "Approved" else discord.Color.red(),
+            )
+            await self.log_to_staff_logs(interaction.guild, embed)
+            await self.check_promotion(interaction.guild, interaction.user)
+
+    # -----------------------------------------------------
+    # WEEKLY LOOP
+    # -----------------------------------------------------
+
+    def seconds_until_next_run(self) -> float:
+        now = utc_now()
+        target = now.replace(
+            hour=WEEKLY_REPORT_HOUR_UTC,
+            minute=WEEKLY_REPORT_MINUTE_UTC,
+            second=0,
+            microsecond=0,
+        )
+        days_ahead = (WEEKLY_REPORT_WEEKDAY - now.weekday()) % 7
+        if days_ahead == 0 and target <= now:
+            days_ahead = 7
+        target = target + timedelta(days=days_ahead)
+        return max((target - now).total_seconds(), 30.0)
+
+    @tasks.loop(count=1)
+    async def weekly_report_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            await asyncio.sleep(self.seconds_until_next_run())
+            guild = self.bot.get_guild(GUILD_ID)
+            if guild is None:
+                continue
+
+            channel = guild.get_channel(WEEKLY_REPORT_CHANNEL_ID)
+            leaderboard_rows = self.stats.leaderboard()
+
+            if isinstance(channel, discord.TextChannel):
+                await channel.send(embed=build_weekly_report_embed(guild, leaderboard_rows))
+
+            self.stats.archive_and_reset_week()
+
+            await self.log_to_staff_logs(
+                guild,
+                build_log_embed(
+                    "🔄 Weekly Staff Stats Reset",
+                    f"Weekly report posted and stats reset automatically at {fmt_dt()}",
+                    discord.Color.orange(),
+                ),
+            )
+
+    # -----------------------------------------------------
+    # COMMANDS
+    # -----------------------------------------------------
+
+    @app_commands.command(name="auto_staff_stats", description="View automatically tracked DIFF staff stats.")
+    async def auto_staff_stats(self, interaction: discord.Interaction, member: discord.Member) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not staff_check(interaction.user):
+            await interaction.response.send_message("Only DIFF staff can use this command.", ephemeral=True)
+            return
+
+        stats = self.stats.ensure_user(member.id)
+        await interaction.response.send_message(embed=build_stats_embed(member, stats), ephemeral=True)
+
+    @app_commands.command(name="force_weekly_staff_report", description="Force post the weekly staff report and reset stats.")
+    async def force_weekly_staff_report(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can force the weekly report.", ephemeral=True)
+            return
+
+        channel = interaction.guild.get_channel(WEEKLY_REPORT_CHANNEL_ID)
+        leaderboard_rows = self.stats.leaderboard()
+
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(embed=build_weekly_report_embed(interaction.guild, leaderboard_rows))
+            self.stats.archive_and_reset_week()
+            await interaction.response.send_message(f"Weekly report posted in {channel.mention} and stats reset.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Weekly report channel not found.", ephemeral=True)
+
+    @app_commands.command(name="auto_add_meet_host", description="Add hosted meet stat to a staff member.")
+    async def auto_add_meet_host(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 20] = 1) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can update meet stats.", ephemeral=True)
+            return
+
+        self.stats.add_stat(member.id, "meets_hosted", amount)
+        await self.check_promotion(interaction.guild, member)
+        await interaction.response.send_message(f"Added **{amount}** hosted meet(s) to {member.mention}.", ephemeral=True)
+
+    @app_commands.command(name="post_auto_staff_leaderboard", description="Post the current automated staff leaderboard.")
+    async def post_auto_staff_leaderboard(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in the server.", ephemeral=True)
+            return
+        if not leadership_check(interaction.user):
+            await interaction.response.send_message("Only DIFF leadership can post the leaderboard.", ephemeral=True)
+            return
+
+        channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("Leaderboard channel not found.", ephemeral=True)
+            return
+
+        await channel.send(embed=build_weekly_report_embed(interaction.guild, self.stats.leaderboard()))
+        await interaction.response.send_message(f"Leaderboard posted in {channel.mention}.", ephemeral=True)
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(DiffAutoTracking(bot))
