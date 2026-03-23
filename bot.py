@@ -5157,13 +5157,13 @@ class ColorTeamPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(discord.ui.Button(
-            label="Color Team Chat",
+            label="Color Information",
             style=discord.ButtonStyle.link,
             url=f"https://discord.com/channels/{GUILD_ID}/{COLOR_PANEL_CHANNEL_ID}",
             emoji="🎨",
         ))
         self.add_item(discord.ui.Button(
-            label="Color Voting",
+            label="Color Submission",
             style=discord.ButtonStyle.link,
             url=f"https://discord.com/channels/{GUILD_ID}/{COLOR_SUBMISSION_CHANNEL_ID}",
             emoji="🗳️",
