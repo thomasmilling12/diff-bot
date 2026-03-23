@@ -8041,6 +8041,10 @@ _TICKET_TYPES: dict[str, _TicketType] = {
 
 
 def _supp_brand_embed(embed: discord.Embed) -> discord.Embed:
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    if DIFF_BANNER_URL:
+        embed.set_image(url=DIFF_BANNER_URL)
     embed.set_footer(text="Different Meets • Support System")
     return embed
 
@@ -8443,6 +8447,37 @@ async def post_support_panel(interaction: discord.Interaction) -> None:
     await interaction.followup.send(f"Support panel posted in {channel.mention}.", ephemeral=True)
 
 
+@bot.tree.command(name="refresh-support-panel", description="Delete and repost the DIFF Support Center panel with the latest branding (staff only)")
+async def refresh_support_panel(interaction: discord.Interaction) -> None:
+    if not interaction.guild:
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    channel = interaction.guild.get_channel(SUPPORT_PANEL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return await interaction.response.send_message("Support panel channel not found.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    deleted = 0
+    try:
+        async for msg in channel.history(limit=50):
+            if msg.author.id == bot.user.id and any(e.title == _SUPPORT_BRAND for e in msg.embeds):
+                try:
+                    await msg.delete()
+                    deleted += 1
+                except discord.HTTPException:
+                    pass
+    except discord.HTTPException:
+        pass
+    await channel.send(embed=_supp_build_panel_embed(), view=SupportDropdownView())
+    await interaction.followup.send(
+        f"Support panel refreshed in {channel.mention} (removed {deleted} old panel(s)).",
+        ephemeral=True,
+    )
+
+
 # =========================
 # DIFF STAFF AUTOMATION SYSTEM
 # =========================
@@ -8617,6 +8652,10 @@ async def _staff_check_promotion(guild: discord.Guild, member: discord.Member) -
     embed.add_field(name="Reports Resolved", value=str(stats.get("reports_resolved", 0)), inline=True)
     embed.add_field(name="Appeals Reviewed", value=str(stats.get("appeals_reviewed", 0)), inline=True)
     embed.add_field(name="Activity Score", value=str(score), inline=True)
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    if DIFF_BANNER_URL:
+        embed.set_image(url=DIFF_BANNER_URL)
     embed.set_footer(text="Different Meets • Staff Automation")
     try:
         await log_channel.send(embed=embed)
