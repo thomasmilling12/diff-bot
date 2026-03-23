@@ -2088,14 +2088,26 @@ def build_live_attendance_embed(guild: discord.Guild) -> discord.Embed:
     online = [m for m in crew_members if m.status != discord.Status.offline]
     offline = [m for m in crew_members if m.status == discord.Status.offline]
 
-    def _fmt(members: list, limit: int = 25) -> str:
-        lines = [f"{get_member_status_emoji(m)} {m.mention} — `{m.display_name}`" for m in members[:limit]]
-        if not lines:
+    def _fmt(members: list) -> str:
+        if not members:
             return "None right now."
-        extra = len(members) - limit
-        if extra > 0:
-            lines.append(f"…and {extra} more")
-        return "\n".join(lines)
+        result_lines = []
+        char_budget = 980
+        used = 0
+        for i, m in enumerate(members):
+            line = f"{get_member_status_emoji(m)} {m.mention} — `{m.display_name}`"
+            cost = len(line) + (1 if result_lines else 0)
+            remaining = len(members) - i
+            overflow_line = f"…and {remaining} more"
+            if used + cost + len(overflow_line) + 1 > char_budget and i < len(members) - 1:
+                result_lines.append(overflow_line)
+                break
+            if used + cost > char_budget:
+                result_lines.append(f"…and {len(members) - i} more")
+                break
+            result_lines.append(line)
+            used += cost
+        return "\n".join(result_lines)
 
     embed = discord.Embed(
         title=LIVE_ATTENDANCE_PANEL_TITLE,
