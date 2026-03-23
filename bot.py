@@ -4387,6 +4387,7 @@ async def staffdashboard(interaction: discord.Interaction):
 # =========================
 # COLOR SUBMISSION PANEL
 # =========================
+COLOR_PANEL_CHANNEL_ID = 1177436572304556084
 COLOR_SUBMISSION_CHANNEL_ID = 1177434999381831680
 
 
@@ -4481,30 +4482,35 @@ class ColorSubmissionPanelView(discord.ui.View):
 async def post_color_panel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
-    channel = bot.get_channel(COLOR_SUBMISSION_CHANNEL_ID)
-    if channel is None:
-        channel = await bot.fetch_channel(COLOR_SUBMISSION_CHANNEL_ID)
+    panel_ch = bot.get_channel(COLOR_PANEL_CHANNEL_ID)
+    if panel_ch is None:
+        panel_ch = await bot.fetch_channel(COLOR_PANEL_CHANNEL_ID)
     embed = discord.Embed(
         title="🎨 DIFF Color Submission Panel",
         description=(
-            "**Color Team Instructions**\n\n"
+            "**Color Team Guide**\n\n"
             "Use the button below to submit a new crew color for review.\n\n"
             "**What to include:**\n"
             "• Color name\n"
             "• HEX code\n"
             "• Image link for the preview car\n\n"
-            "**Submission Notes:**\n"
-            "• Keep colors clean and realistic\n"
-            "• Make sure the HEX code is correct\n"
-            "• Use a clear car image that matches the color well\n"
-            "• Every submission will automatically receive review reactions\n\n"
+            "**Before submitting:**\n"
+            "• Keep the color clean and realistic\n"
+            "• Double-check the HEX code\n"
+            "• Use a clear image that shows the color well\n"
+            "• Make sure the submission is meet-ready\n\n"
+            "**How it works:**\n"
+            "• Press **Submit Color**\n"
+            "• Fill out the form\n"
+            "• Your submission will be posted in the review channel automatically\n"
+            "• Review reactions will be added right away\n\n"
             "Press **Submit Color** below to begin."
         ),
         color=discord.Color.blurple(),
     )
     embed.set_footer(text="DIFF • Color Team System")
-    await channel.send(embed=embed, view=ColorSubmissionPanelView())
-    await interaction.response.send_message(f"Color submission panel posted in {channel.mention}.", ephemeral=True)
+    await panel_ch.send(embed=embed, view=ColorSubmissionPanelView())
+    await interaction.response.send_message(f"Color submission panel posted in {panel_ch.mention}.", ephemeral=True)
 
 
 # =========================
