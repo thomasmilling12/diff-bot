@@ -6,8 +6,8 @@ expertMode = true
 packages = ["nano"]
 
 [deployment]
-run = ["sh", "-c", "python bot.py"]
-deploymentTarget = "cloudrun"
+run = ["python", "bot.py"]
+deploymentTarget = "vm"
 
 [[ports]]
 localPort = 3000
