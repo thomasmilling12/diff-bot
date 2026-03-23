@@ -120,6 +120,8 @@ SUPPORT_CHANNEL_ID = 1156363575150002226
 ACTIVITY_MEETS_FILE = os.path.join(DATA_FOLDER, "diff_activity_meets.json")
 DIFF_PANEL_CHANNEL_ID = 1103086800458760262
 DIFF_PANEL_STATE_FILE = os.path.join(DATA_FOLDER, "diff_panel_state.json")
+INTERVIEW_PANEL_CHANNEL_ID = 1103849042296963112
+INTERVIEW_PANEL_FILE = os.path.join(DATA_FOLDER, "diff_interview_panel.json")
 
 DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
 DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
@@ -3588,6 +3590,7 @@ async def on_ready():
         bot.add_view(SubmissionActionView())
         bot.add_view(ControlHubView())
         bot.add_view(ColorTeamPanelView())
+        bot.add_view(InterviewInfoView())
     except Exception as e:
         print(f"View registration warning: {e}")
 
@@ -5413,6 +5416,239 @@ async def test_tuesday_color(interaction: discord.Interaction):
         _weekly_color_tuesday_embed(),
     )
     await interaction.followup.send("Tuesday color team post sent.", ephemeral=True)
+
+
+# =========================
+# CREW INTERVIEW PANEL
+# =========================
+
+def _interview_panel_load() -> dict:
+    return _load_diff_json(INTERVIEW_PANEL_FILE) or {}
+
+
+def _interview_panel_save(data: dict) -> None:
+    _save_diff_json(INTERVIEW_PANEL_FILE, data)
+
+
+def _build_interview_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🎤 Crew Interview Zone",
+        description=(
+            "*This panel is the staff interview guide for bringing new members into DIFF.*\n\n"
+            "Use the buttons below during interviews to stay organized, cover every required topic, "
+            "and keep the process clean, professional, and consistent.\n\n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+            "🗣️ **Interview Speech** — Open with the official DIFF introduction\n\n"
+            "❓ **Interview Questions** — Ask every required question for new applicants\n\n"
+            "🎉 **Crew Events** — Explain the types of events and expectations in DIFF\n\n"
+            "📌 **Crew Positions** — Show the roles members can work toward in the crew\n\n"
+            "✅ **End of Interview** — Close out the interview the right way\n\n"
+            "👑 **Leadership Team** — Show who applicants can contact for help or questions\n\n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+            "📘 Keep interviews smooth, respectful, and professional so every applicant gets the same clear DIFF experience."
+        ),
+        color=discord.Color.blue(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Different Meets • Staff Interview Panel")
+    return embed
+
+
+class InterviewInfoView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Interview Speech",
+        emoji="🗣️",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_interview_speech",
+        row=0,
+    )
+    async def interview_speech(self, interaction: discord.Interaction, button: discord.ui.Button):
+        text = (
+            "__**Interview Speech**__\n\n"
+            "*Hello, (Player Name). Welcome to our crew interview. This is (Present your name). "
+            "Also, give some info about when you joined the crew and your role. After that, tell the applicant "
+            "some history about DIFF, which has been around since 2020 under various names. We came to PS5 back in 2022. "
+            "We are an active crew and community looking for active members to help out in the car meet scene. "
+            "Before you ask them questions, ask them if they have any questions before we get started.*"
+        )
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @discord.ui.button(
+        label="Interview Questions",
+        emoji="❓",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_interview_questions",
+        row=0,
+    )
+    async def interview_questions(self, interaction: discord.Interaction, button: discord.ui.Button):
+        text = (
+            "__**Interview Questions**__\n\n"
+            "*You don't have to answer the questions in order but you do have to ask them all of the questions.*\n\n"
+            "■ *All DIFF members must be over the age of 18. Just to confirm how old are you?*\n\n"
+            "■ *We are a clean car community. Do you know the difference between clean cars and being a ricer? "
+            "If so, please explain.*\n\n"
+            "■ *Car knowledge is extremely important. Can you provide me with a car brand made in Japan, Europe, "
+            "& America? What is your dream car?*\n\n"
+            "■ *How often are you able to check Discord? We do a lot of communication via this Discord server. "
+            "You have to be able to react to weekly roll calls, & crew color announcements.*\n\n"
+            "■ *A good working headset is required for all members. You have to be able to speak when needed.*\n\n"
+            "■ *You are required to set DIFF as active to all meets you attend within this crew and community meets. "
+            "Failed to wear a crew tag to meets will result in a strike.*\n\n"
+            "■ *You must wear the crew jackets to all DIFF meets, and crew events.*\n\n"
+            "■ *Are you aware of our meet time which is 8pm EST? You have to join the meet 30 mins early. "
+            "You're required to attend at least one meet a week. If you can't attend you must let someone on Management know in advance.*\n\n"
+            "■ *Why do you want to join our crew Different Meets (DIFF)? What roles are you considering trying out for the crew?*"
+        )
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @discord.ui.button(
+        label="Crew Events",
+        emoji="🎉",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_interview_events",
+        row=0,
+    )
+    async def crew_events(self, interaction: discord.Interaction, button: discord.ui.Button):
+        text = (
+            "__**Crew Events**__\n\n"
+            "*We offer a range of events in our crew.*\n\n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+            "■ *Monthly crew meetings on Discord (Meetings are mandatory to attend). "
+            "If you can't attend you must let someone in management know in advance.*\n\n"
+            "■ *Weekly crew meets, and crew color photoshoots.*\n\n"
+            "■ *Crew events on other games if requested by another member.*"
+        )
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @discord.ui.button(
+        label="Crew Positions",
+        emoji="📌",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_interview_positions",
+        row=1,
+    )
+    async def crew_positions(self, interaction: discord.Interaction, button: discord.ui.Button):
+        text = (
+            "__**Crew Positions**__\n\n"
+            "*If you're interested in any one of these roles, please message the Leader or Co-Leader of DIFF.*\n\n"
+            "■ **Crew Managers**\n"
+            "■ **Crew Meet Hosts**\n"
+            "■ **Crew Content Creators**\n"
+            "■ **Crew Designer Team**\n"
+            "■ **Crew Color Team Members**"
+        )
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @discord.ui.button(
+        label="End of Interview",
+        emoji="✅",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_interview_end",
+        row=1,
+    )
+    async def end_of_interview(self, interaction: discord.Interaction, button: discord.ui.Button):
+        text = (
+            "__**End of Interview**__\n\n"
+            "*Before you end the interview, ask them if they have any questions, comments, or concerns. "
+            "Please say welcome to the crew and that you hope they enjoy their stay here.*\n\n"
+            "*We expect all of our members to carry themselves professionally inside and outside the crew. "
+            "Make sure you are always representing the crew in a positive light. Having a healthy relationship "
+            "with fellow crew members and meet attendees is extremely important. Do you understand?*"
+        )
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @discord.ui.button(
+        label="Leadership Team",
+        emoji="👑",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_interview_leadership",
+        row=1,
+    )
+    async def leadership_team(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        leader_text = f"<@&{LEADER_ROLE_ID}>"
+        co_leader_text = f"<@&{CO_LEADER_ROLE_ID}>"
+        manager_text = f"<@&{MANAGER_ROLE_ID}>"
+
+        if guild is not None:
+            if guild.get_role(LEADER_ROLE_ID) is None:
+                leader_text = "**Leader role not set**"
+            if guild.get_role(CO_LEADER_ROLE_ID) is None:
+                co_leader_text = "**Co-Leader role not set**"
+            if guild.get_role(MANAGER_ROLE_ID) is None:
+                manager_text = "**Manager role not set**"
+
+        text = (
+            "__**Crew Leadership & Management Team**__\n\n"
+            "*Please direct the applicant you're interviewing to the higher-ups list so they know who to contact "
+            "if they have any questions, comments, or concerns.*\n\n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+            f"👑 **Leader:** {leader_text}\n\n"
+            f"🛡️ **Co-Leader:** {co_leader_text}\n\n"
+            f"📋 **Managers:** {manager_text}\n\n"
+            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
+            "**STARTED THIS CREW ON AUGUST 20TH 2020**"
+        )
+        await interaction.response.send_message(text, ephemeral=True)
+
+
+async def _post_or_refresh_interview_panel() -> None:
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return
+    channel = guild.get_channel(INTERVIEW_PANEL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    data = _interview_panel_load()
+    embed = _build_interview_panel_embed()
+    view = InterviewInfoView()
+    old_ch_id = data.get("channel_id")
+    old_msg_id = data.get("message_id")
+    if old_ch_id and old_msg_id:
+        old_channel = guild.get_channel(int(old_ch_id))
+        if isinstance(old_channel, discord.TextChannel):
+            try:
+                old_msg = await old_channel.fetch_message(int(old_msg_id))
+                if old_channel.id == channel.id:
+                    await old_msg.edit(embed=embed, view=view)
+                    return
+                else:
+                    try:
+                        await old_msg.delete()
+                    except discord.HTTPException:
+                        pass
+            except (discord.NotFound, discord.HTTPException):
+                pass
+    msg = await channel.send(embed=embed, view=view)
+    _interview_panel_save({"channel_id": channel.id, "message_id": msg.id})
+
+
+@bot.tree.command(name="post-interview-panel", description="Post or refresh the Crew Interview Zone panel (staff only)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def post_interview_panel(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    await _post_or_refresh_interview_panel()
+    guild = interaction.guild
+    channel = guild.get_channel(INTERVIEW_PANEL_CHANNEL_ID) if guild else None
+    mention = channel.mention if isinstance(channel, discord.TextChannel) else "the interview channel"
+    await interaction.followup.send(f"Interview panel posted or refreshed in {mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="refresh-interview-panel", description="Refresh the interview panel in place without reposting (staff only)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def refresh_interview_panel(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    await _post_or_refresh_interview_panel()
+    await interaction.followup.send("Interview panel refreshed.", ephemeral=True)
 
 
 # =========================
