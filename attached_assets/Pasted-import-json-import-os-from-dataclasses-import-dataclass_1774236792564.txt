@@ -1,0 +1,718 @@
+import json
+import os
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from typing import Dict, Optional, Set, List
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+ATTENDANCE_CHANNEL_ID = 1485469927312850974
+PROMOTION_LOG_CHANNEL_ID = 1485265848099799163
+DATA_DIR = "data"
+ATTENDANCE_FILE = os.path.join(DATA_DIR, "attendance_data.json")
+LEADERBOARD_FILE = os.path.join(DATA_DIR, "attendance_leaderboard.json")
+PROMOTION_FILE = os.path.join(DATA_DIR, "promotion_suggestions.json")
+CONTROL_HUB_FILE = os.path.join(DATA_DIR, "control_hub_panel.json")
+
+# Update these if your role names are different in Discord.
+PROMOTION_PATH = {
+    "Crew Member": "Host",
+    "Host": "Manager",
+    "Manager": "Co-Leader",
+    "Co-Leader": "Leader",
+}
+
+PROMOTION_THRESHOLDS = {
+    "Crew Member": 5,
+    "Host": 10,
+    "Manager": 18,
+    "Co-Leader": 30,
+}
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
+@dataclass
+class MeetRecord:
+    meet_id: str
+    title: str
+    host_id: int
+    host_name: str
+    meet_date: str
+    created_at: str
+    channel_id: int
+    message_id: Optional[int] = None
+    attendees_yes: Optional[Set[int]] = None
+    attendees_maybe: Optional[Set[int]] = None
+    attendees_no: Optional[Set[int]] = None
+    checked_in: Optional[Set[int]] = None
+    closed: bool = False
+
+    def __post_init__(self):
+        self.attendees_yes = set(self.attendees_yes or [])
+        self.attendees_maybe = set(self.attendees_maybe or [])
+        self.attendees_no = set(self.attendees_no or [])
+        self.checked_in = set(self.checked_in or [])
+
+    def to_json(self):
+        data = asdict(self)
+        data["attendees_yes"] = list(self.attendees_yes)
+        data["attendees_maybe"] = list(self.attendees_maybe)
+        data["attendees_no"] = list(self.attendees_no)
+        data["checked_in"] = list(self.checked_in)
+        return data
+
+    @classmethod
+    def from_json(cls, data):
+        return cls(**data)
+
+
+class AttendanceStorage:
+    @staticmethod
+    def _read_json(path: str, default):
+        if not os.path.exists(path):
+            return default
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _write_json(path: str, data):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def load_meets(cls) -> Dict[str, MeetRecord]:
+        raw = cls._read_json(ATTENDANCE_FILE, {})
+        return {meet_id: MeetRecord.from_json(data) for meet_id, data in raw.items()}
+
+    @classmethod
+    def save_meets(cls, meets: Dict[str, MeetRecord]):
+        payload = {meet_id: record.to_json() for meet_id, record in meets.items()}
+        cls._write_json(ATTENDANCE_FILE, payload)
+
+    @classmethod
+    def load_leaderboard(cls):
+        return cls._read_json(LEADERBOARD_FILE, {})
+
+    @classmethod
+    def save_leaderboard(cls, leaderboard):
+        cls._write_json(LEADERBOARD_FILE, leaderboard)
+
+    @classmethod
+    def load_promotions(cls):
+        return cls._read_json(PROMOTION_FILE, [])
+
+    @classmethod
+    def save_promotions(cls, promotions):
+        cls._write_json(PROMOTION_FILE, promotions)
+
+    @classmethod
+    def load_control_hub(cls):
+        return cls._read_json(CONTROL_HUB_FILE, {})
+
+    @classmethod
+    def save_control_hub(cls, panel_data):
+        cls._write_json(CONTROL_HUB_FILE, panel_data)
+
+
+class AttendanceView(discord.ui.View):
+    def __init__(self, cog: "AttendanceSystem", meet_id: str):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.meet_id = meet_id
+
+    async def handle_vote(self, interaction: discord.Interaction, status: str):
+        if not interaction.user or interaction.user.bot:
+            return
+
+        meet = self.cog.meets.get(self.meet_id)
+        if not meet:
+            await interaction.response.send_message("This meet record no longer exists.", ephemeral=True)
+            return
+
+        if meet.closed:
+            await interaction.response.send_message("This attendance panel is already closed.", ephemeral=True)
+            return
+
+        user_id = interaction.user.id
+        meet.attendees_yes.discard(user_id)
+        meet.attendees_maybe.discard(user_id)
+        meet.attendees_no.discard(user_id)
+
+        if status == "yes":
+            meet.attendees_yes.add(user_id)
+            msg = "You are marked as **Pulling Up** ✅"
+        elif status == "maybe":
+            meet.attendees_maybe.add(user_id)
+            msg = "You are marked as **Maybe** ❓"
+        else:
+            meet.attendees_no.add(user_id)
+            msg = "You are marked as **Can't Make It** ❌"
+
+        self.cog.save_all()
+        await self.cog.refresh_meet_message(meet)
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @discord.ui.button(label="Pulling Up", emoji="✅", style=discord.ButtonStyle.success, custom_id="attendance_yes")
+    async def pulling_up(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_vote(interaction, "yes")
+
+    @discord.ui.button(label="Maybe", emoji="❓", style=discord.ButtonStyle.secondary, custom_id="attendance_maybe")
+    async def maybe(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_vote(interaction, "maybe")
+
+    @discord.ui.button(label="Can't Make It", emoji="❌", style=discord.ButtonStyle.danger, custom_id="attendance_no")
+    async def cant_make_it(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_vote(interaction, "no")
+
+
+class ControlHubView(discord.ui.View):
+    def __init__(self, cog: "AttendanceSystem"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="My Stats", emoji="📊", style=discord.ButtonStyle.primary, custom_id="control_hub_my_stats")
+    async def my_stats_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This button only works inside the server.", ephemeral=True)
+            return
+        embed = self.cog.build_member_stats_embed(interaction.user)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Leaderboard", emoji="🏆", style=discord.ButtonStyle.success, custom_id="control_hub_leaderboard")
+    async def leaderboard_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = self.cog.build_leaderboard_embed()
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Latest Meet", emoji="📅", style=discord.ButtonStyle.secondary, custom_id="control_hub_latest_meet")
+    async def latest_meet_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        meet = self.cog.get_latest_meet()
+        if not meet:
+            await interaction.response.send_message("No attendance panels have been created yet.", ephemeral=True)
+            return
+        embed = self.cog._build_embed(meet)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Promotion Suggestions", emoji="📈", style=discord.ButtonStyle.secondary, custom_id="control_hub_promotions")
+    async def promotions_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This button only works inside the server.", ephemeral=True)
+            return
+        allowed = {"Leader", "Co-Leader", "Manager"}
+        member_role_names = {role.name for role in interaction.user.roles}
+        if not member_role_names.intersection(allowed):
+            await interaction.response.send_message("Only DIFF leadership can view promotion suggestions.", ephemeral=True)
+            return
+        embed = self.cog.build_promotions_embed()
+        if embed is None:
+            await interaction.response.send_message("No promotion suggestions yet.", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class AttendanceSystem(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.meets: Dict[str, MeetRecord] = AttendanceStorage.load_meets()
+        self.leaderboard = AttendanceStorage.load_leaderboard()
+        self.promotions = AttendanceStorage.load_promotions()
+        self.control_hub_panel = AttendanceStorage.load_control_hub()
+
+        for meet_id, meet in self.meets.items():
+            if not meet.closed:
+                self.bot.add_view(AttendanceView(self, meet_id))
+
+        self.bot.add_view(ControlHubView(self))
+
+    def save_all(self):
+        AttendanceStorage.save_meets(self.meets)
+        AttendanceStorage.save_leaderboard(self.leaderboard)
+        AttendanceStorage.save_promotions(self.promotions)
+        AttendanceStorage.save_control_hub(self.control_hub_panel)
+
+    def _make_meet_id(self):
+        return datetime.now(timezone.utc).strftime("meet_%Y%m%d_%H%M%S")
+
+    def _build_embed(self, meet: MeetRecord) -> discord.Embed:
+        embed = discord.Embed(
+            title="📊 DIFF Meet Attendance",
+            description=(
+                "Use the buttons below to update your status for this meet.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Meet", value=meet.title, inline=True)
+        embed.add_field(name="Host", value=meet.host_name, inline=True)
+        embed.add_field(name="Date", value=meet.meet_date, inline=True)
+        embed.add_field(name="✅ Pulling Up", value=str(len(meet.attendees_yes)), inline=True)
+        embed.add_field(name="❓ Maybe", value=str(len(meet.attendees_maybe)), inline=True)
+        embed.add_field(name="❌ Can't Make It", value=str(len(meet.attendees_no)), inline=True)
+        embed.add_field(name="✅ Checked In", value=str(len(meet.checked_in)), inline=True)
+        embed.add_field(name="Status", value="Closed 🔒" if meet.closed else "Open ✅", inline=True)
+        embed.add_field(name="Meet ID", value=meet.meet_id, inline=True)
+        embed.set_footer(text="Different Meets • Attendance System")
+        return embed
+
+    async def refresh_meet_message(self, meet: MeetRecord):
+        channel = self.bot.get_channel(meet.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+        if not meet.message_id:
+            return
+        try:
+            message = await channel.fetch_message(meet.message_id)
+            view = None if meet.closed else AttendanceView(self, meet.meet_id)
+            await message.edit(embed=self._build_embed(meet), view=view)
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            pass
+
+    def get_top_tracked_role(self, member: discord.Member) -> str:
+        priority = ["Leader", "Co-Leader", "Manager", "Host", "Crew Member"]
+        member_role_names = {role.name for role in member.roles}
+        for role_name in priority:
+            if role_name in member_role_names:
+                return role_name
+        return "Crew Member"
+
+    def _get_entry(self, member: discord.Member) -> dict:
+        return self.leaderboard.get(str(member.id), {
+            "user_id": member.id,
+            "name": member.display_name,
+            "attendance_count": 0,
+            "current_role": self.get_top_tracked_role(member),
+            "last_attended": None,
+            "hosted_count": 0,
+            "rsvp_yes": 0,
+            "rsvp_maybe": 0,
+            "rsvp_no": 0,
+            "missed_after_rsvp": 0,
+            "promotion_logged_for": [],
+        })
+
+    def _attendance_rate(self, entry: dict) -> float:
+        yes = int(entry.get("rsvp_yes", 0))
+        attended = int(entry.get("attendance_count", 0))
+        if yes <= 0:
+            return 100.0 if attended > 0 else 0.0
+        return round((attended / yes) * 100, 1)
+
+    async def update_member_stats(self, guild: discord.Guild, user_id: int):
+        member = guild.get_member(user_id)
+        if not member:
+            return
+
+        entry = self._get_entry(member)
+        entry["name"] = member.display_name
+        entry["attendance_count"] = int(entry.get("attendance_count", 0)) + 1
+        entry["current_role"] = self.get_top_tracked_role(member)
+        entry["last_attended"] = datetime.now(timezone.utc).isoformat()
+        self.leaderboard[str(user_id)] = entry
+        self.save_all()
+
+    async def increment_host_stats(self, guild: discord.Guild, host_id: int):
+        member = guild.get_member(host_id)
+        if not member:
+            return
+        entry = self._get_entry(member)
+        entry["name"] = member.display_name
+        entry["current_role"] = self.get_top_tracked_role(member)
+        entry["hosted_count"] = int(entry.get("hosted_count", 0)) + 1
+        self.leaderboard[str(host_id)] = entry
+        self.save_all()
+
+    async def update_rsvp_stats(self, guild: discord.Guild, meet: MeetRecord):
+        member_ids: Set[int] = set(meet.attendees_yes) | set(meet.attendees_maybe) | set(meet.attendees_no) | set(meet.checked_in)
+        for user_id in member_ids:
+            member = guild.get_member(user_id)
+            if not member:
+                continue
+
+            entry = self._get_entry(member)
+            entry["name"] = member.display_name
+            entry["current_role"] = self.get_top_tracked_role(member)
+
+            if user_id in meet.attendees_yes:
+                entry["rsvp_yes"] = int(entry.get("rsvp_yes", 0)) + 1
+                if user_id not in meet.checked_in:
+                    entry["missed_after_rsvp"] = int(entry.get("missed_after_rsvp", 0)) + 1
+            elif user_id in meet.attendees_maybe:
+                entry["rsvp_maybe"] = int(entry.get("rsvp_maybe", 0)) + 1
+            elif user_id in meet.attendees_no:
+                entry["rsvp_no"] = int(entry.get("rsvp_no", 0)) + 1
+
+            self.leaderboard[str(user_id)] = entry
+
+        self.save_all()
+
+    def build_member_stats_embed(self, member: discord.Member) -> discord.Embed:
+        entry = self._get_entry(member)
+        attendance_count = int(entry.get("attendance_count", 0))
+        hosted_count = int(entry.get("hosted_count", 0))
+        rsvp_yes = int(entry.get("rsvp_yes", 0))
+        rsvp_maybe = int(entry.get("rsvp_maybe", 0))
+        rsvp_no = int(entry.get("rsvp_no", 0))
+        missed_after_rsvp = int(entry.get("missed_after_rsvp", 0))
+        rate = self._attendance_rate(entry)
+
+        sorted_entries = sorted(
+            self.leaderboard.values(),
+            key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))),
+            reverse=True,
+        )
+        rank = next((idx for idx, item in enumerate(sorted_entries, start=1) if int(item.get("user_id", 0)) == member.id), None)
+
+        embed = discord.Embed(
+            title="📈 My DIFF Stats",
+            description=f"Stats for {member.mention}",
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Current Role", value=entry.get("current_role", "Crew Member"), inline=True)
+        embed.add_field(name="Attendance Rank", value=f"#{rank}" if rank else "Unranked", inline=True)
+        embed.add_field(name="Attendance Rate", value=f"{rate}%", inline=True)
+        embed.add_field(name="✅ Meets Attended", value=str(attendance_count), inline=True)
+        embed.add_field(name="🎤 Meets Hosted", value=str(hosted_count), inline=True)
+        embed.add_field(name="✅ RSVP Pulling Up", value=str(rsvp_yes), inline=True)
+        embed.add_field(name="❓ RSVP Maybe", value=str(rsvp_maybe), inline=True)
+        embed.add_field(name="❌ RSVP Can't Make It", value=str(rsvp_no), inline=True)
+        embed.add_field(name="⚠️ No-Shows After RSVP", value=str(missed_after_rsvp), inline=True)
+
+        last_attended = entry.get("last_attended")
+        embed.set_footer(text=f"Last attended: {last_attended[:10] if last_attended else 'No check-ins yet'}")
+        return embed
+
+    async def maybe_log_promotion(self, guild: discord.Guild, member: discord.Member) -> Optional[dict]:
+        entry = self._get_entry(member)
+        entry["current_role"] = self.get_top_tracked_role(member)
+        current_role = entry.get("current_role", "Crew Member")
+        threshold = PROMOTION_THRESHOLDS.get(current_role)
+        next_role = PROMOTION_PATH.get(current_role)
+        promoted_for: List[str] = entry.setdefault("promotion_logged_for", [])
+
+        if not threshold or not next_role:
+            self.leaderboard[str(member.id)] = entry
+            self.save_all()
+            return None
+
+        attendance_count = int(entry.get("attendance_count", 0))
+        hosted_count = int(entry.get("hosted_count", 0))
+        attendance_rate = self._attendance_rate(entry)
+
+        qualifies = attendance_count >= threshold and attendance_rate >= 60.0
+        already_logged = next_role in promoted_for
+
+        if not qualifies or already_logged:
+            self.leaderboard[str(member.id)] = entry
+            self.save_all()
+            return None
+
+        suggestion = {
+            "user_id": member.id,
+            "name": member.display_name,
+            "current_role": current_role,
+            "suggested_role": next_role,
+            "attendance_count": attendance_count,
+            "hosted_count": hosted_count,
+            "attendance_rate": attendance_rate,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.promotions.append(suggestion)
+        promoted_for.append(next_role)
+        entry["promotion_logged_for"] = promoted_for
+        self.leaderboard[str(member.id)] = entry
+        self.save_all()
+        return suggestion
+
+    async def post_promotion_suggestion(self, guild: discord.Guild, suggestion: dict):
+        channel = guild.get_channel(PROMOTION_LOG_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embed = discord.Embed(
+            title="📈 Promotion Suggestion",
+            description="This member hit the auto-promotion threshold.",
+            color=discord.Color.purple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="User", value=f"<@{suggestion['user_id']}>", inline=True)
+        embed.add_field(name="Current Role", value=suggestion["current_role"], inline=True)
+        embed.add_field(name="Suggested Role", value=suggestion["suggested_role"], inline=True)
+        embed.add_field(name="✅ Meets Attended", value=str(suggestion["attendance_count"]), inline=True)
+        embed.add_field(name="🎤 Meets Hosted", value=str(suggestion["hosted_count"]), inline=True)
+        embed.add_field(name="📊 Attendance Rate", value=f"{suggestion['attendance_rate']}%", inline=True)
+        embed.set_footer(text="Review manually before changing roles.")
+        await channel.send(embed=embed)
+
+    async def evaluate_promotions_for_meet(self, guild: discord.Guild, meet: MeetRecord):
+        user_ids = set(meet.checked_in)
+        user_ids.add(meet.host_id)
+        for user_id in user_ids:
+            member = guild.get_member(user_id)
+            if not member:
+                continue
+            suggestion = await self.maybe_log_promotion(guild, member)
+            if suggestion:
+                await self.post_promotion_suggestion(guild, suggestion)
+
+
+    def get_latest_meet(self) -> Optional[MeetRecord]:
+        if not self.meets:
+            return None
+        return sorted(self.meets.values(), key=lambda m: m.created_at, reverse=True)[0]
+
+    def build_leaderboard_embed(self) -> discord.Embed:
+        if not self.leaderboard:
+            return discord.Embed(
+                title="🏆 DIFF Attendance Leaderboard",
+                description="No attendance data tracked yet.",
+                color=discord.Color.gold(),
+                timestamp=datetime.now(timezone.utc),
+            )
+
+        sorted_entries = sorted(
+            self.leaderboard.values(),
+            key=lambda x: (x.get("attendance_count", 0), x.get("hosted_count", 0)),
+            reverse=True,
+        )[:10]
+
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for idx, entry in enumerate(sorted_entries, start=1):
+            prefix = medals[idx - 1] if idx <= 3 else f"{idx}."
+            lines.append(
+                f"{prefix} <@{entry['user_id']}> — **{entry.get('attendance_count', 0)}** attended | "
+                f"**{entry.get('hosted_count', 0)}** hosted"
+            )
+
+        embed = discord.Embed(
+            title="🏆 DIFF Attendance Leaderboard",
+            description="\n".join(lines),
+            color=discord.Color.gold(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text="Attendance is tracked from check-ins, not just button votes.")
+        return embed
+
+    def build_promotions_embed(self) -> Optional[discord.Embed]:
+        if not self.promotions:
+            return None
+
+        lines = []
+        for item in self.promotions[-10:][::-1]:
+            lines.append(
+                f"📈 <@{item['user_id']}> — {item['current_role']} → **{item['suggested_role']}** "
+                f"| {item['attendance_count']} attended | {item.get('hosted_count', 0)} hosted"
+            )
+
+        embed = discord.Embed(
+            title="📈 Promotion Suggestions",
+            description="\n".join(lines),
+            color=discord.Color.purple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text="Auto suggestions are logged in your staff channel too.")
+        return embed
+
+    def build_control_hub_embed(self) -> discord.Embed:
+        latest_meet = self.get_latest_meet()
+        latest_meet_value = "No meet panel created yet."
+        if latest_meet:
+            latest_meet_value = f"**{latest_meet.title}**\nHost: {latest_meet.host_name}\nDate: {latest_meet.meet_date}"
+
+        embed = discord.Embed(
+            title="📌 DIFF Crew Control Hub",
+            description=(
+                "*The all-in-one crew hub for Different Meets.*\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "📊 **Attendance & Activity**\n"
+                "Use the buttons below to check your personal stats, open the leaderboard, "
+                "and quickly view your latest meet panel.\n\n"
+                "🎯 **What This Hub Controls**\n"
+                "• Attendance tracking\n"
+                "• My Stats\n"
+                "• Leaderboard\n"
+                "• Promotion suggestions for staff\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Attendance Channel", value=f"<#{ATTENDANCE_CHANNEL_ID}>", inline=True)
+        embed.add_field(name="Promotion Logs", value=f"<#{PROMOTION_LOG_CHANNEL_ID}>", inline=True)
+        embed.add_field(name="Latest Meet", value=latest_meet_value, inline=False)
+        embed.set_footer(text="Different Meets • Control Hub")
+        return embed
+
+    async def post_or_refresh_control_hub(self, channel: discord.TextChannel) -> discord.Message:
+        existing_channel_id = self.control_hub_panel.get("channel_id")
+        existing_message_id = self.control_hub_panel.get("message_id")
+
+        if existing_channel_id and existing_message_id:
+            old_channel = self.bot.get_channel(existing_channel_id)
+            if isinstance(old_channel, discord.TextChannel):
+                try:
+                    old_message = await old_channel.fetch_message(existing_message_id)
+                    if old_channel.id != channel.id:
+                        try:
+                            await old_message.delete()
+                        except discord.HTTPException:
+                            pass
+                    else:
+                        await old_message.edit(embed=self.build_control_hub_embed(), view=ControlHubView(self))
+                        self.control_hub_panel = {"channel_id": channel.id, "message_id": old_message.id}
+                        self.save_all()
+                        return old_message
+                except discord.NotFound:
+                    pass
+                except discord.HTTPException:
+                    pass
+
+        message = await channel.send(embed=self.build_control_hub_embed(), view=ControlHubView(self))
+        self.control_hub_panel = {"channel_id": channel.id, "message_id": message.id}
+        self.save_all()
+        return message
+
+    @app_commands.command(name="attendance_create", description="Create a new DIFF attendance panel.")
+    @app_commands.describe(meet_title="Meet name", host="Host for the meet", meet_date="Date shown on the panel")
+    async def attendance_create(self, interaction: discord.Interaction, meet_title: str, host: discord.Member, meet_date: str):
+        channel = interaction.client.get_channel(ATTENDANCE_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Attendance channel not found. Update ATTENDANCE_CHANNEL_ID in the file.",
+                ephemeral=True,
+            )
+            return
+
+        meet_id = self._make_meet_id()
+        meet = MeetRecord(
+            meet_id=meet_id,
+            title=meet_title,
+            host_id=host.id,
+            host_name=host.mention,
+            meet_date=meet_date,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            channel_id=channel.id,
+        )
+        self.meets[meet_id] = meet
+
+        view = AttendanceView(self, meet_id)
+        message = await channel.send(embed=self._build_embed(meet), view=view)
+        meet.message_id = message.id
+        self.bot.add_view(AttendanceView(self, meet_id))
+        await self.increment_host_stats(interaction.guild, host.id)
+        self.save_all()
+
+        await interaction.response.send_message(
+            f"Attendance panel created in {channel.mention} for **{meet_title}**.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="attendance_checkin", description="Mark a member as actually present after the meet starts.")
+    @app_commands.describe(meet_id="Meet ID from the attendance panel", member="Member to check in")
+    async def attendance_checkin(self, interaction: discord.Interaction, meet_id: str, member: discord.Member):
+        meet = self.meets.get(meet_id)
+        if not meet:
+            await interaction.response.send_message("Meet ID not found.", ephemeral=True)
+            return
+
+        if member.id in meet.checked_in:
+            await interaction.response.send_message(f"{member.mention} is already checked in.", ephemeral=True)
+            return
+
+        meet.checked_in.add(member.id)
+        self.save_all()
+        await self.update_member_stats(interaction.guild, member.id)
+        await self.refresh_meet_message(meet)
+        await interaction.response.send_message(
+            f"Checked in {member.mention} for **{meet.title}**.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="attendance_close", description="Close attendance and post final results.")
+    @app_commands.describe(meet_id="Meet ID from the attendance panel", total_players="Total players in lobby")
+    async def attendance_close(self, interaction: discord.Interaction, meet_id: str, total_players: int):
+        meet = self.meets.get(meet_id)
+        if not meet:
+            await interaction.response.send_message("Meet ID not found.", ephemeral=True)
+            return
+
+        if meet.closed:
+            await interaction.response.send_message("That meet is already closed.", ephemeral=True)
+            return
+
+        meet.closed = True
+        self.save_all()
+        await self.refresh_meet_message(meet)
+        await self.update_rsvp_stats(interaction.guild, meet)
+        await self.evaluate_promotions_for_meet(interaction.guild, meet)
+
+        channel = interaction.client.get_channel(meet.channel_id)
+        if isinstance(channel, discord.TextChannel):
+            result_embed = discord.Embed(
+                title="📊 DIFF Meet Results",
+                description="Final attendance results for this meet.",
+                color=discord.Color.green(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            result_embed.add_field(name="Meet", value=meet.title, inline=True)
+            result_embed.add_field(name="Host", value=meet.host_name, inline=True)
+            result_embed.add_field(name="Lobby Size", value=str(total_players), inline=True)
+            result_embed.add_field(name="✅ Checked In", value=str(len(meet.checked_in)), inline=True)
+            result_embed.add_field(name="❌ No Shows", value=str(max(0, len(meet.attendees_yes) - len(meet.checked_in))), inline=True)
+            result_embed.add_field(name="❓ Maybe", value=str(len(meet.attendees_maybe)), inline=True)
+            result_embed.set_footer(text="Attach your lobby screenshot below this post.")
+            await channel.send(embed=result_embed)
+
+        await interaction.response.send_message(
+            f"Attendance closed for **{meet.title}** and final results were posted.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="attendance_leaderboard", description="Show the top active DIFF members by attendance.")
+    async def attendance_leaderboard(self, interaction: discord.Interaction):
+        embed = self.build_leaderboard_embed()
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="attendance_promotions", description="Show promotion suggestions based on activity.")
+    async def attendance_promotions(self, interaction: discord.Interaction):
+        embed = self.build_promotions_embed()
+        if embed is None:
+            await interaction.response.send_message("No promotion suggestions yet.", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="control_hub_post", description="Post or refresh the DIFF control hub in this channel.")
+    async def control_hub_post(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("Run this inside the server channel where you want the panel posted.", ephemeral=True)
+            return
+
+        await self.post_or_refresh_control_hub(interaction.channel)
+        await interaction.response.send_message(
+            f"Control hub is now posted in {interaction.channel.mention}.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="my_stats", description="Show your DIFF attendance and activity stats.")
+    @app_commands.describe(member="Optional: check another member's stats")
+    async def my_stats(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
+        target = member or interaction.user
+        if not isinstance(target, discord.Member):
+            await interaction.response.send_message("Member not found.", ephemeral=True)
+            return
+
+        embed = self.build_member_stats_embed(target)
+        await interaction.response.send_message(embed=embed, ephemeral=member is None)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(AttendanceSystem(bot))

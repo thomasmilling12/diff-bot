@@ -3586,6 +3586,7 @@ async def on_ready():
         bot.add_view(DiffPanel())
         bot.add_view(ColorSubmissionPanelView())
         bot.add_view(SubmissionActionView())
+        bot.add_view(ControlHubView())
     except Exception as e:
         print(f"View registration warning: {e}")
 
@@ -5151,6 +5152,7 @@ ATT_RSVP_CHANNEL_ID = 1485469927312850974
 ATT_RSVP_FILE = os.path.join(DATA_FOLDER, "diff_rsvp_meets.json")
 ATT_LB_FILE = os.path.join(DATA_FOLDER, "diff_rsvp_leaderboard.json")
 ATT_PROMO_FILE = os.path.join(DATA_FOLDER, "diff_rsvp_promotions.json")
+ATT_CONTROL_HUB_FILE = os.path.join(DATA_FOLDER, "diff_control_hub_panel.json")
 
 ATT_PROMO_PATH = {
     "Crew Member": "Host",
@@ -5205,20 +5207,23 @@ class RsvpMeet:
 _rsvp_meets: Dict[str, RsvpMeet] = {}
 _rsvp_leaderboard: dict = {}
 _rsvp_promotions: list = []
+_rsvp_control_hub: dict = {}
 
 
 def _rsvp_load_all() -> None:
-    global _rsvp_meets, _rsvp_leaderboard, _rsvp_promotions
+    global _rsvp_meets, _rsvp_leaderboard, _rsvp_promotions, _rsvp_control_hub
     raw = _load_diff_json(ATT_RSVP_FILE)
     _rsvp_meets = {k: RsvpMeet.from_dict(v) for k, v in raw.items()} if raw else {}
     _rsvp_leaderboard = _load_diff_json(ATT_LB_FILE) or {}
     _rsvp_promotions = _load_diff_json(ATT_PROMO_FILE) or []
+    _rsvp_control_hub = _load_diff_json(ATT_CONTROL_HUB_FILE) or {}
 
 
 def _rsvp_save_all() -> None:
     _save_diff_json(ATT_RSVP_FILE, {k: v.to_dict() for k, v in _rsvp_meets.items()})
     _save_diff_json(ATT_LB_FILE, _rsvp_leaderboard)
     _save_diff_json(ATT_PROMO_FILE, _rsvp_promotions)
+    _save_diff_json(ATT_CONTROL_HUB_FILE, _rsvp_control_hub)
 
 
 def _rsvp_make_id() -> str:
@@ -5440,6 +5445,197 @@ class AttendanceRsvpView(discord.ui.View):
         await interaction.response.send_message(msg, ephemeral=True)
 
 
+def _rsvp_get_latest_meet() -> Optional[RsvpMeet]:
+    if not _rsvp_meets:
+        return None
+    return sorted(_rsvp_meets.values(), key=lambda m: m.created_at, reverse=True)[0]
+
+
+def _rsvp_build_leaderboard_embed() -> discord.Embed:
+    if not _rsvp_leaderboard:
+        return discord.Embed(
+            title="🏆 DIFF Attendance Leaderboard",
+            description="No attendance data tracked yet.",
+            color=discord.Color.gold(),
+            timestamp=datetime.now(timezone.utc),
+        )
+    top = sorted(
+        _rsvp_leaderboard.values(),
+        key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))),
+        reverse=True,
+    )[:10]
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for idx, entry in enumerate(top, start=1):
+        prefix = medals[idx - 1] if idx <= 3 else f"{idx}."
+        lines.append(
+            f"{prefix} <@{entry['user_id']}> — **{entry.get('attendance_count', 0)}** attended | "
+            f"**{entry.get('hosted_count', 0)}** hosted"
+        )
+    embed = discord.Embed(
+        title="🏆 DIFF Attendance Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Attendance is tracked from check-ins, not just button votes.")
+    return embed
+
+
+def _rsvp_build_promotions_embed() -> Optional[discord.Embed]:
+    if not _rsvp_promotions:
+        return None
+    lines = []
+    for item in _rsvp_promotions[-10:][::-1]:
+        lines.append(
+            f"📈 <@{item['user_id']}> — {item['current_role']} → **{item['suggested_role']}** "
+            f"| {item.get('attendance_count', 0)} attended | {item.get('hosted_count', 0)} hosted"
+        )
+    embed = discord.Embed(
+        title="📈 Promotion Suggestions",
+        description="\n".join(lines),
+        color=discord.Color.purple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Auto suggestions are also logged in the staff channel.")
+    return embed
+
+
+def _rsvp_build_control_hub_embed() -> discord.Embed:
+    latest = _rsvp_get_latest_meet()
+    if latest:
+        latest_value = f"**{latest.title}**\nHost: {latest.host_name}\nDate: {latest.meet_date}"
+    else:
+        latest_value = "No meet panel created yet."
+    embed = discord.Embed(
+        title="📌 DIFF Crew Control Hub",
+        description=(
+            "*The all-in-one crew hub for Different Meets.*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📊 **Attendance & Activity**\n"
+            "Use the buttons below to check your personal stats, open the leaderboard, "
+            "and quickly view your latest meet panel.\n\n"
+            "🎯 **What This Hub Controls**\n"
+            "• Attendance tracking\n"
+            "• My Stats\n"
+            "• Leaderboard\n"
+            "• Promotion suggestions for staff\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.blue(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Attendance Channel", value=f"<#{ATT_RSVP_CHANNEL_ID}>", inline=True)
+    embed.add_field(name="Promotion Logs", value=f"<#{STAFF_LOGS_CHANNEL_ID}>", inline=True)
+    embed.add_field(name="Latest Meet", value=latest_value, inline=False)
+    embed.set_footer(text="Different Meets • Control Hub")
+    return embed
+
+
+async def _rsvp_post_or_refresh_control_hub(channel: discord.TextChannel) -> discord.Message:
+    global _rsvp_control_hub
+    existing_channel_id = _rsvp_control_hub.get("channel_id")
+    existing_message_id = _rsvp_control_hub.get("message_id")
+    embed = _rsvp_build_control_hub_embed()
+    view = ControlHubView()
+
+    if existing_channel_id and existing_message_id:
+        old_ch = bot.get_channel(int(existing_channel_id))
+        if isinstance(old_ch, discord.TextChannel):
+            try:
+                old_msg = await old_ch.fetch_message(int(existing_message_id))
+                if old_ch.id != channel.id:
+                    try:
+                        await old_msg.delete()
+                    except discord.HTTPException:
+                        pass
+                else:
+                    await old_msg.edit(embed=embed, view=view)
+                    _rsvp_control_hub = {"channel_id": channel.id, "message_id": old_msg.id}
+                    _rsvp_save_all()
+                    return old_msg
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+    msg = await channel.send(embed=embed, view=view)
+    _rsvp_control_hub = {"channel_id": channel.id, "message_id": msg.id}
+    _rsvp_save_all()
+    return msg
+
+
+class ControlHubView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="My Stats", emoji="📊", style=discord.ButtonStyle.primary, custom_id="control_hub_my_stats")
+    async def my_stats_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This button only works inside the server.", ephemeral=True)
+            return
+        entry = _rsvp_leaderboard.get(str(interaction.user.id), {
+            "user_id": interaction.user.id,
+            "name": interaction.user.display_name,
+            "attendance_count": 0,
+            "hosted_count": 0,
+            "current_role": _rsvp_top_role(interaction.user),
+            "last_attended": None,
+            "rsvp_yes": 0,
+            "rsvp_maybe": 0,
+            "rsvp_no": 0,
+            "missed_after_rsvp": 0,
+        })
+        rate = _rsvp_attendance_rate(entry)
+        sorted_entries = sorted(
+            _rsvp_leaderboard.values(),
+            key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))),
+            reverse=True,
+        )
+        rank = next((i for i, e in enumerate(sorted_entries, 1) if int(e.get("user_id", 0)) == interaction.user.id), None)
+        embed = discord.Embed(
+            title="📈 My DIFF Stats",
+            description=f"Stats for {interaction.user.mention}",
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Current Role", value=entry.get("current_role", "Crew Member"), inline=True)
+        embed.add_field(name="Attendance Rank", value=f"#{rank}" if rank else "Unranked", inline=True)
+        embed.add_field(name="📊 Attendance Rate", value=f"{rate}%", inline=True)
+        embed.add_field(name="✅ Meets Attended", value=str(int(entry.get("attendance_count", 0))), inline=True)
+        embed.add_field(name="🎤 Meets Hosted", value=str(int(entry.get("hosted_count", 0))), inline=True)
+        embed.add_field(name="✅ RSVP Pulling Up", value=str(int(entry.get("rsvp_yes", 0))), inline=True)
+        embed.add_field(name="❓ RSVP Maybe", value=str(int(entry.get("rsvp_maybe", 0))), inline=True)
+        embed.add_field(name="❌ RSVP Can't Make It", value=str(int(entry.get("rsvp_no", 0))), inline=True)
+        embed.add_field(name="⚠️ No-Shows After RSVP", value=str(int(entry.get("missed_after_rsvp", 0))), inline=True)
+        last = entry.get("last_attended")
+        embed.set_footer(text=f"Last attended: {last[:10] if last else 'No check-ins yet'}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Leaderboard", emoji="🏆", style=discord.ButtonStyle.success, custom_id="control_hub_leaderboard")
+    async def leaderboard_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = _rsvp_build_leaderboard_embed()
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Latest Meet", emoji="📅", style=discord.ButtonStyle.secondary, custom_id="control_hub_latest_meet")
+    async def latest_meet_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        meet = _rsvp_get_latest_meet()
+        if not meet:
+            await interaction.response.send_message("No attendance panels have been created yet.", ephemeral=True)
+            return
+        embed = _rsvp_build_embed(meet)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Promotion Suggestions", emoji="📈", style=discord.ButtonStyle.secondary, custom_id="control_hub_promotions")
+    async def promotions_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            await interaction.response.send_message("Only DIFF staff can view promotion suggestions.", ephemeral=True)
+            return
+        embed = _rsvp_build_promotions_embed()
+        if embed is None:
+            await interaction.response.send_message("No promotion suggestions yet.", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="attendance-create", description="Create a live RSVP attendance panel for a meet (staff only)")
 @app_commands.describe(meet_title="Meet name", host="Host for the meet", meet_date="Date shown on the panel")
 async def attendance_create(interaction: discord.Interaction, meet_title: str, host: discord.Member, meet_date: str):
@@ -5637,6 +5833,23 @@ async def my_stats(interaction: discord.Interaction, member: Optional[discord.Me
     last = entry.get("last_attended")
     embed.set_footer(text=f"Last attended: {last[:10] if last else 'No check-ins yet'}")
     await interaction.response.send_message(embed=embed, ephemeral=member is None)
+
+
+@bot.tree.command(name="control-hub-post", description="Post or refresh the DIFF Crew Control Hub panel (staff only)")
+async def control_hub_post(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Run this inside a server text channel.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    try:
+        await _rsvp_post_or_refresh_control_hub(interaction.channel)
+        await interaction.followup.send(f"Control hub posted in {interaction.channel.mention}.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
 
 # =========================

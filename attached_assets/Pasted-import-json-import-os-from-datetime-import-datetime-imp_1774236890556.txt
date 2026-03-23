@@ -1,0 +1,186 @@
+import json
+import os
+from datetime import datetime
+
+import discord
+from discord.ext import commands
+
+# =========================================================
+# DIFF Color Team Notice Panel
+# Drop this file into your current bot and load it as an extension.
+#
+# Features:
+# - Posts ONE color team coordination panel
+# - Pings the Color Team role when posted/refreshed
+# - Adds 2 channel buttons
+# - Refreshes the SAME message instead of creating duplicates
+#
+# Load with:
+#   await bot.load_extension("diff_color_team_panel")
+# =========================================================
+
+GUILD_ID = 850386896509337710
+POST_CHANNEL_ID = 1485453653916520549
+
+COLOR_TEAM_ROLE_ID = 1115495008670330902
+
+COLOR_TEAM_CHAT_CHANNEL_ID = 1177436572304556084
+COLOR_VOTING_CHANNEL_ID = 1177434999381831680
+
+STATE_FILE = "diff_color_team_panel_state.json"
+
+
+def _load_state():
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_state(data: dict):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+class ColorTeamPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+        self.add_item(
+            discord.ui.Button(
+                label="Color Team Chat",
+                style=discord.ButtonStyle.link,
+                url=f"https://discord.com/channels/{GUILD_ID}/{COLOR_TEAM_CHAT_CHANNEL_ID}",
+                emoji="🎨",
+            )
+        )
+
+        self.add_item(
+            discord.ui.Button(
+                label="Color Voting",
+                style=discord.ButtonStyle.link,
+                url=f"https://discord.com/channels/{GUILD_ID}/{COLOR_VOTING_CHANNEL_ID}",
+                emoji="🗳️",
+            )
+        )
+
+
+class DiffColorTeamPanel(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.state = _load_state()
+
+    def get_guild(self):
+        return self.bot.get_guild(GUILD_ID)
+
+    def build_embed(self):
+        embed = discord.Embed(
+            title="🎨 DIFF Color Team Coordination",
+            description=(
+                "This panel is here to keep the **Color Team** organized and on the same page.\n\n"
+                "**What this area is used for:**\n"
+                "• coordinating weekly crew color changes\n"
+                "• discussing color ideas and submissions\n"
+                "• preparing voting posts and announcements\n"
+                "• keeping the team updated on current color plans\n\n"
+                "Use the buttons below to quickly access the main channels for coordination and voting."
+            ),
+            color=discord.Color.purple(),
+            timestamp=datetime.utcnow(),
+        )
+
+        embed.add_field(
+            name="📌 Team Purpose",
+            value=(
+                "Work together to manage the crew's weekly color direction, planning, "
+                "and communication so everything stays clean, consistent, and organized."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="✅ Expectations",
+            value=(
+                "Stay active • communicate clearly • help with planning • support weekly color operations"
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="Different Meets • Color Team Panel")
+        return embed
+
+    async def fetch_existing_message(self, channel: discord.TextChannel):
+        message_id = self.state.get("color_team_panel_message_id")
+        if not message_id:
+            return None
+        try:
+            return await channel.fetch_message(message_id)
+        except (discord.NotFound, discord.HTTPException):
+            return None
+
+    async def post_or_refresh_panel(self, ping_role: bool = True):
+        guild = self.get_guild()
+        if guild is None:
+            return None
+
+        channel = guild.get_channel(POST_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return None
+
+        role = guild.get_role(COLOR_TEAM_ROLE_ID)
+        ping_text = role.mention if role else "@Color Team"
+
+        embed = self.build_embed()
+        view = ColorTeamPanelView()
+
+        existing = await self.fetch_existing_message(channel)
+
+        if existing:
+            await existing.edit(content=ping_text if ping_role else None, embed=embed, view=view)
+            return existing
+
+        msg = await channel.send(
+            content=ping_text if ping_role else None,
+            embed=embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+        self.state["color_team_panel_message_id"] = msg.id
+        _save_state(self.state)
+        return msg
+
+    @commands.hybrid_command(
+        name="post_color_team_panel",
+        description="Post or refresh the DIFF color team coordination panel."
+    )
+    @commands.has_permissions(manage_guild=True)
+    async def post_color_team_panel(self, ctx: commands.Context):
+        await self.post_or_refresh_panel(ping_role=True)
+        await ctx.reply("✅ Color team coordination panel posted/refreshed.", mention_author=False)
+
+    @commands.hybrid_command(
+        name="refresh_color_team_panel",
+        description="Refresh the existing DIFF color team coordination panel without duplicates."
+    )
+    @commands.has_permissions(manage_guild=True)
+    async def refresh_color_team_panel(self, ctx: commands.Context):
+        await self.post_or_refresh_panel(ping_role=True)
+        await ctx.reply("♻️ Color team panel refreshed with no duplicate post.", mention_author=False)
+
+    @commands.hybrid_command(
+        name="reset_color_team_panel",
+        description="Reset saved color team panel message ID and repost a clean panel."
+    )
+    @commands.has_permissions(administrator=True)
+    async def reset_color_team_panel(self, ctx: commands.Context):
+        self.state.pop("color_team_panel_message_id", None)
+        _save_state(self.state)
+        await self.post_or_refresh_panel(ping_role=True)
+        await ctx.reply("🧼 Color team panel reset and reposted cleanly.", mention_author=False)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffColorTeamPanel(bot))
