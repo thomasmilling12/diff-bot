@@ -1,0 +1,73 @@
+DIFF JOIN SYSTEM FILE (COPY INTO YOUR BOT)
+
+const { 
+  EmbedBuilder, 
+  ActionRowBuilder, 
+  StringSelectMenuBuilder, 
+  ChannelType, 
+  PermissionsBitField 
+} = require('discord.js');
+
+module.exports = (client) => {
+
+  const PANEL_CHANNEL_ID = '1277084633858576406';
+  const TICKET_CATEGORY_ID = 'PUT_YOUR_CATEGORY_ID_HERE';
+
+  client.on('ready', async () => {
+    const channel = await client.channels.fetch(PANEL_CHANNEL_ID);
+
+    const embed = new EmbedBuilder()
+      .setTitle('🏁 DIFF MEETS — OFFICIAL JOIN HUB')
+      .setDescription('Select your platform below to join our GTA car meets.')
+      .setColor('#2b2d31');
+
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('join_platform')
+      .setPlaceholder('Select your platform')
+      .addOptions([
+        { label: 'PlayStation', value: 'ps' },
+        { label: 'Xbox', value: 'xbox' },
+        { label: 'PC', value: 'pc' }
+      ]);
+
+    const row = new ActionRowBuilder().addComponents(menu);
+
+    await channel.send({ embeds: [embed], components: [row] });
+  });
+
+  client.on('interactionCreate', async interaction => {
+    if (!interaction.isStringSelectMenu()) return;
+
+    if (interaction.values[0] === 'xbox' || interaction.values[0] === 'pc') {
+      return interaction.reply({
+        content: 'PC & Xbox meets are handled by MMI Meets: https://discord.gg/mmi\nGo to #join-car-meet',
+        ephemeral: true
+      });
+    }
+
+    if (interaction.values[0] === 'ps') {
+      const channel = await interaction.guild.channels.create({
+        name: `ps-join-${interaction.user.username}`,
+        type: ChannelType.GuildText,
+        parent: TICKET_CATEGORY_ID,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.id,
+            deny: [PermissionsBitField.Flags.ViewChannel]
+          },
+          {
+            id: interaction.user.id,
+            allow: [PermissionsBitField.Flags.ViewChannel]
+          }
+        ]
+      });
+
+      await channel.send(
+        `Welcome ${interaction.user}\nSet your name to: 🅸🅳 - PSN Name\nSend 10 car photos.`
+      );
+
+      await interaction.reply({ content: `Ticket created: ${channel}`, ephemeral: true });
+    }
+  });
+
+};

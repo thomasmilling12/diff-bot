@@ -1,5 +1,25 @@
 {
   "users": {},
-  "weekly_history": [],
-  "last_reset": "2026-03-23T13:20:41.465813+00:00"
+  "weekly_history": [
+    {
+      "ended_at": "2026-03-23T16:00:00.314004+00:00",
+      "leaderboard": [
+        [
+          708024998228525167,
+          {
+            "tickets_handled": 0,
+            "applications_reviewed": 1,
+            "meets_hosted": 0,
+            "reports_resolved": 0,
+            "appeals_reviewed": 0,
+            "accepted_apps": 1,
+            "denied_apps": 0,
+            "messages_in_tickets": 0,
+            "last_updated": "2026-03-23T15:30:42.807993+00:00"
+          }
+        ]
+      ]
+    }
+  ],
+  "last_reset": "2026-03-23T16:00:00.314026+00:00"
 }
