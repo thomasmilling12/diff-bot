@@ -1,0 +1,276 @@
+"""
+DIFF Welcome Hub Panel
+Standalone discord.py file/module for posting and refreshing a welcome hub panel.
+
+How to use:
+1) Put this file into your bot project.
+2) Make sure you have discord.py 2.x installed.
+3) Replace the placeholder channel IDs below if needed.
+4) Import and call `setup_welcome_hub(bot)` in your main bot file.
+5) Run the text command: !welcomehub
+   - It will post or refresh the panel in the configured channel.
+   - It will reuse the same message instead of creating duplicates.
+
+Target post channel:
+https://discord.com/channels/850386896509337710/1485687906382123331
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Optional
+
+import discord
+from discord.ext import commands
+
+# =========================
+# CONFIG
+# =========================
+GUILD_ID = 850386896509337710
+WELCOME_HUB_CHANNEL_ID = 1485687906382123331
+
+# Update these if you want buttons to link to exact channels
+RULES_CHANNEL_ID: Optional[int] = None
+SCHEDULE_CHANNEL_ID: Optional[int] = None
+ROLES_CHANNEL_ID: Optional[int] = None
+SUPPORT_CHANNEL_ID: Optional[int] = 1156363575150002226
+STATS_CHANNEL_ID: Optional[int] = None
+
+# Optional image/banner URL for the embed top image
+WELCOME_BANNER_URL: Optional[str] = None
+
+# Where the posted panel message ID is stored so refreshes edit the same panel
+STATE_FILE = Path("welcome_hub_state.json")
+
+# =========================
+# HELPERS
+# =========================
+def channel_mention(channel_id: Optional[int], fallback_text: str) -> str:
+    if channel_id:
+        return f"<#{channel_id}>"
+    return fallback_text
+
+
+def load_message_id() -> Optional[int]:
+    if not STATE_FILE.exists():
+        return None
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        message_id = data.get("welcome_hub_message_id")
+        return int(message_id) if message_id else None
+    except Exception:
+        return None
+
+
+def save_message_id(message_id: int) -> None:
+    STATE_FILE.write_text(
+        json.dumps({"welcome_hub_message_id": message_id}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def build_welcome_embed() -> discord.Embed:
+    description = (
+        "*The official hub for clean builds, organized meets, and a strong car community.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚗 **What is DIFF?**\n"
+        "Different Meets (DIFF) is a PS5-based GTA car meet community focused on "
+        "**clean, realistic builds**, organized meets, and a respectful environment.\n\n"
+        "We host:\n"
+        "🎬 Cinematic car meets\n"
+        "🏁 Themed events\n"
+        "📸 Photoshoots\n"
+        "🏆 Competitions & rankings\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 **Get Started:**\n"
+        "Use the buttons below to navigate the server and get set up.\n\n"
+        "• 📋 **Rules & Requirements** — Know the standards\n"
+        "• 🚗 **How Meets Work** — Learn how to join & participate\n"
+        "• 🧥 **Crew Roles** — Understand each role in DIFF\n"
+        f"• 📅 **Upcoming Meets** — View the schedule in {channel_mention(SCHEDULE_CHANNEL_ID, '`#meet-schedule`')}\n"
+        f"• 🎫 **Support** — Get help in {channel_mention(SUPPORT_CHANNEL_ID, '`#support`')}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⚠️ **DIFF Standards:**\n"
+        "• Clean & realistic builds only\n"
+        "• Respect all members\n"
+        "• No trolling, griefing, or rice behavior\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "*Stay active, stay consistent, and represent DIFF the right way.*\n\n"
+        "— **Different Meets**"
+    )
+
+    embed = discord.Embed(
+        title="📍 Welcome to Different Meets (DIFF)",
+        description=description,
+        color=discord.Color.blue(),
+    )
+    embed.set_footer(text="DIFF Welcome Hub")
+    if WELCOME_BANNER_URL:
+        embed.set_image(url=WELCOME_BANNER_URL)
+    return embed
+
+
+# =========================
+# VIEW
+# =========================
+class WelcomeHubView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Rules",
+        style=discord.ButtonStyle.secondary,
+        emoji="📋",
+        custom_id="diff_welcome_rules",
+        row=0,
+    )
+    async def rules_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        message = (
+            "**📋 DIFF Rules & Requirements**\n\n"
+            "• Clean and realistic builds only\n"
+            "• Respect staff and members\n"
+            "• No trolling, griefing, or toxic behavior\n"
+            "• Follow meet host instructions at all times\n"
+            "• Stay active and check Discord regularly\n"
+        )
+        if RULES_CHANNEL_ID:
+            message += f"\nFull rules: <#{RULES_CHANNEL_ID}>"
+        await interaction.response.send_message(message, ephemeral=True)
+
+    @discord.ui.button(
+        label="How Meets Work",
+        style=discord.ButtonStyle.secondary,
+        emoji="🚗",
+        custom_id="diff_welcome_meets",
+        row=0,
+    )
+    async def meets_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        message = (
+            "**🚗 How DIFF Meets Work**\n\n"
+            "1. Watch for the meet announcement and schedule.\n"
+            "2. Join on time and be ready with a clean vehicle.\n"
+            "3. Follow the host's parking and lineup instructions.\n"
+            "4. Drive responsibly and represent DIFF properly.\n"
+            "5. Enjoy the meet, photos, and community."
+        )
+        await interaction.response.send_message(message, ephemeral=True)
+
+    @discord.ui.button(
+        label="Schedule",
+        style=discord.ButtonStyle.link,
+        emoji="📅",
+        url=f"https://discord.com/channels/{GUILD_ID}/{SCHEDULE_CHANNEL_ID}" if SCHEDULE_CHANNEL_ID else "https://discord.com/channels/850386896509337710/1485687906382123331",
+        row=0,
+    )
+    async def schedule_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        pass
+
+    @discord.ui.button(
+        label="Crew Roles",
+        style=discord.ButtonStyle.link,
+        emoji="🧥",
+        url=f"https://discord.com/channels/{GUILD_ID}/{ROLES_CHANNEL_ID}" if ROLES_CHANNEL_ID else "https://discord.com/channels/850386896509337710/1485687906382123331",
+        row=1,
+    )
+    async def roles_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        pass
+
+    @discord.ui.button(
+        label="Support",
+        style=discord.ButtonStyle.link,
+        emoji="🎫",
+        url=f"https://discord.com/channels/{GUILD_ID}/{SUPPORT_CHANNEL_ID}" if SUPPORT_CHANNEL_ID else "https://discord.com/channels/850386896509337710/1156363575150002226",
+        row=1,
+    )
+    async def support_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        pass
+
+    @discord.ui.button(
+        label="My Stats",
+        style=discord.ButtonStyle.secondary,
+        emoji="📊",
+        custom_id="diff_welcome_stats",
+        row=1,
+    )
+    async def stats_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        message = (
+            "**📊 My Stats**\n\n"
+            "This button is ready for your future activity tracker.\n"
+            "Later, you can connect it to attendance, hosting, leaderboard, or promotion data."
+        )
+        if STATS_CHANNEL_ID:
+            message += f"\nStats channel: <#{STATS_CHANNEL_ID}>"
+        await interaction.response.send_message(message, ephemeral=True)
+
+
+# =========================
+# POST / REFRESH LOGIC
+# =========================
+async def post_or_refresh_welcome_hub(bot: commands.Bot) -> discord.Message:
+    channel = bot.get_channel(WELCOME_HUB_CHANNEL_ID)
+    if channel is None:
+        channel = await bot.fetch_channel(WELCOME_HUB_CHANNEL_ID)
+
+    if not isinstance(channel, discord.TextChannel):
+        raise RuntimeError("Configured welcome hub channel is not a text channel.")
+
+    embed = build_welcome_embed()
+    view = WelcomeHubView()
+
+    existing_message_id = load_message_id()
+    if existing_message_id:
+        try:
+            existing_message = await channel.fetch_message(existing_message_id)
+            await existing_message.edit(embed=embed, view=view)
+            return existing_message
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            pass
+
+    new_message = await channel.send(embed=embed, view=view)
+    save_message_id(new_message.id)
+    return new_message
+
+
+# =========================
+# COG
+# =========================
+class WelcomeHub(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self.bot.add_view(WelcomeHubView())  # persistent buttons
+
+    @commands.command(name="welcomehub")
+    @commands.has_permissions(administrator=True)
+    async def welcomehub_command(self, ctx: commands.Context) -> None:
+        try:
+            message = await post_or_refresh_welcome_hub(self.bot)
+            await ctx.reply(
+                f"Welcome Hub has been posted/refreshed in <#{WELCOME_HUB_CHANNEL_ID}>.\n"
+                f"Message ID: `{message.id}`",
+                mention_author=False,
+            )
+        except Exception as exc:
+            await ctx.reply(f"Failed to post Welcome Hub: `{exc}`", mention_author=False)
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        # Ensures persistent view is registered after restart
+        self.bot.add_view(WelcomeHubView())
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(WelcomeHub(bot))
+
+
+def setup_welcome_hub(bot: commands.Bot) -> None:
+    """
+    Optional helper if your bot does not use extension loading.
+    Example:
+        await bot.add_cog(WelcomeHub(bot))
+    """
+    # This function is here as a reminder for easier integration.
+    # If you use extensions, load this file as an extension instead.
+    pass

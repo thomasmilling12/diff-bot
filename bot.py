@@ -8421,6 +8421,7 @@ async def on_ready():
             await _popup_post_or_refresh(_g)
         except Exception as _e:
             print(f"[PopupMeet] on_ready refresh error: {_e}")
+    bot.add_view(_RsvpView())
     bot.add_view(_IgDropView())
     for _g in bot.guilds:
         try:
@@ -15140,6 +15141,218 @@ async def refresh_join_panel(interaction: discord.Interaction) -> None:
             pass
     await channel.send(embed=_join_build_panel_embed(), view=JoinPlatformView())
     await interaction.followup.send(f"Join Hub panel reposted in {channel.mention} (no existing panel found).", ephemeral=True)
+
+
+# =========================
+# RSVP + ATTENDANCE + SMART PING
+# =========================
+
+_RSVP_STORE: dict[int, dict] = {}
+
+
+def _rsvp_get(msg_id: int) -> dict:
+    return _RSVP_STORE.setdefault(msg_id, {
+        "attending": set(), "maybe": set(), "not_attending": set(),
+        "title": "Upcoming DIFF Meet", "notes": "No extra notes.",
+        "created_by": 0, "created_at": "",
+    })
+
+
+def _rsvp_set_choice(entry: dict, user_id: int, choice: str) -> None:
+    entry["attending"].discard(user_id)
+    entry["maybe"].discard(user_id)
+    entry["not_attending"].discard(user_id)
+    entry[choice].add(user_id)
+
+
+def _rsvp_build_embed(msg_id: int) -> discord.Embed:
+    e = _rsvp_get(msg_id)
+    embed = discord.Embed(
+        title="📅 DIFF Meet RSVP",
+        description=(
+            f"**Meet:** {e['title']}\n"
+            f"**Notes:** {e['notes']}\n\n"
+            "*Use the buttons below to confirm your availability.*\n\n"
+            "✅ **Attending** — You are confirmed\n"
+            "❓ **Maybe** — You might pull up\n"
+            "❌ **Not Attending** — You cannot make it\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "*Please respond honestly so DIFF can plan meets properly.*\n\n"
+            "— **Different Meets**"
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="✅ Attending", value=str(len(e["attending"])), inline=True)
+    embed.add_field(name="❓ Maybe", value=str(len(e["maybe"])), inline=True)
+    embed.add_field(name="❌ Not Attending", value=str(len(e["not_attending"])), inline=True)
+    embed.set_footer(text=f"Created {e['created_at']}")
+    return embed
+
+
+def _rsvp_mentions(guild: discord.Guild, ids: set) -> str:
+    lines = [guild.get_member(uid).mention for uid in sorted(ids) if guild.get_member(uid)]
+    return "\n".join(lines) if lines else "None"
+
+
+class _RsvpView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _handle(self, interaction: discord.Interaction, choice: str, label: str):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return
+        if not interaction.message or interaction.message.id not in _RSVP_STORE:
+            await interaction.response.send_message("This RSVP panel is no longer active.", ephemeral=True)
+            return
+        entry = _rsvp_get(interaction.message.id)
+        _rsvp_set_choice(entry, interaction.user.id, choice)
+        try:
+            await interaction.message.edit(embed=_rsvp_build_embed(interaction.message.id), view=self)
+        except discord.HTTPException:
+            pass
+        await interaction.response.send_message(
+            f"Your RSVP is set to **{label}** for **{entry['title']}**.", ephemeral=True
+        )
+
+    @discord.ui.button(label="Attending", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_rsvp_attending")
+    async def btn_attending(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "attending", "Attending")
+
+    @discord.ui.button(label="Maybe", emoji="❓", style=discord.ButtonStyle.primary, custom_id="diff_rsvp_maybe")
+    async def btn_maybe(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "maybe", "Maybe")
+
+    @discord.ui.button(label="Not Attending", emoji="❌", style=discord.ButtonStyle.danger, custom_id="diff_rsvp_not_attending")
+    async def btn_not_attending(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "not_attending", "Not Attending")
+
+
+@bot.command(name="send_rsvp_panel")
+@commands.guild_only()
+async def _cmd_send_rsvp_panel(ctx: commands.Context, *, meet_info: str = "Upcoming DIFF Meet | No extra notes."):
+    is_auth = (
+        ctx.author.guild_permissions.manage_guild
+        or any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", []))
+    )
+    if not is_auth:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    if "|" in meet_info:
+        title, notes = [p.strip() for p in meet_info.split("|", 1)]
+    else:
+        title, notes = meet_info.strip(), "No extra notes."
+    from datetime import datetime as _dt
+    created_at = _dt.now().strftime("%b %d, %Y • %I:%M %p")
+    tmp = await ctx.send(embed=discord.Embed(title="Loading RSVP...", color=discord.Color.blurple()), view=_RsvpView())
+    _RSVP_STORE[tmp.id] = {
+        "attending": set(), "maybe": set(), "not_attending": set(),
+        "title": title, "notes": notes, "created_by": ctx.author.id, "created_at": created_at,
+    }
+    await tmp.edit(embed=_rsvp_build_embed(tmp.id), view=_RsvpView())
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
+@bot.command(name="rsvp_export")
+@commands.guild_only()
+async def _cmd_rsvp_export(ctx: commands.Context, message_id: int):
+    is_auth = (
+        ctx.author.guild_permissions.manage_guild
+        or any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", []))
+    )
+    if not is_auth:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    if message_id not in _RSVP_STORE:
+        await ctx.send("No RSVP panel found with that message ID.", delete_after=10)
+        return
+    e = _rsvp_get(message_id)
+    embed = discord.Embed(
+        title="📊 DIFF RSVP Export",
+        description=f"**Meet:** {e['title']}",
+        color=discord.Color.green(),
+    )
+    embed.add_field(name=f"✅ Attending ({len(e['attending'])})", value=_rsvp_mentions(ctx.guild, e["attending"]) or "None", inline=False)
+    embed.add_field(name=f"❓ Maybe ({len(e['maybe'])})", value=_rsvp_mentions(ctx.guild, e["maybe"]) or "None", inline=False)
+    embed.add_field(name=f"❌ Not Attending ({len(e['not_attending'])})", value=_rsvp_mentions(ctx.guild, e["not_attending"]) or "None", inline=False)
+    embed.set_footer(text="Use the attending list for smart host pings if needed.")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="rsvp_ping_attending")
+@commands.guild_only()
+async def _cmd_rsvp_ping_attending(ctx: commands.Context, message_id: int):
+    is_auth = (
+        ctx.author.guild_permissions.manage_guild
+        or any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", []))
+    )
+    if not is_auth:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    if message_id not in _RSVP_STORE:
+        await ctx.send("No RSVP panel found with that message ID.", delete_after=10)
+        return
+    e = _rsvp_get(message_id)
+    mentions = [ctx.guild.get_member(uid).mention for uid in sorted(e["attending"]) if ctx.guild.get_member(uid)]
+    if not mentions:
+        await ctx.send("Nobody is marked as attending yet.", delete_after=8)
+        return
+    chunks, current = [], "✅ **DIFF RSVP Attending Ping**\n\n"
+    for m in mentions:
+        if len(current) + len(m) + 1 > 1900:
+            chunks.append(current)
+            current = ""
+        current += m + "\n"
+    if current:
+        chunks.append(current)
+    for chunk in chunks:
+        await ctx.send(chunk, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+
+
+@bot.command(name="log_meet_attendance")
+@commands.guild_only()
+async def _cmd_log_meet_attendance(ctx: commands.Context, total_players: int, diff_members_present: int, *, meet_name: str = "DIFF Meet"):
+    is_auth = (
+        ctx.author.guild_permissions.manage_guild
+        or any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", []))
+    )
+    if not is_auth:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    from datetime import datetime as _dt
+    embed = discord.Embed(title="📊 DIFF Meet Attendance", color=discord.Color.orange())
+    embed.add_field(name="Host", value=ctx.author.mention, inline=False)
+    embed.add_field(name="Meet Name", value=meet_name, inline=False)
+    embed.add_field(name="Date", value=_dt.now().strftime("%b %d, %Y"), inline=True)
+    embed.add_field(name="Total Players in Lobby", value=str(total_players), inline=True)
+    embed.add_field(name="DIFF Members Present", value=str(diff_members_present), inline=True)
+    embed.add_field(name="Screenshot", value="Attach lobby screenshot below.", inline=False)
+    embed.set_footer(text="Different Meets • Attendance Tracker")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="rsvp_help")
+@commands.guild_only()
+async def _cmd_rsvp_help(ctx: commands.Context):
+    embed = discord.Embed(
+        title="📘 DIFF RSVP System Help",
+        description=(
+            "`!send_rsvp_panel Meet Name | extra notes`\n"
+            "Posts an RSVP panel with live vote counts.\n\n"
+            "`!rsvp_export MESSAGE_ID`\n"
+            "Shows who is attending, maybe, or not attending.\n\n"
+            "`!rsvp_ping_attending MESSAGE_ID`\n"
+            "Pings only members marked as attending.\n\n"
+            "`!log_meet_attendance total diff_present Meet Name`\n"
+            "Posts a quick attendance log.\n\n"
+            "Note: RSVP data resets on bot restart (in-memory only)."
+        ),
+        color=discord.Color.blurple(),
+    )
+    await ctx.send(embed=embed)
 
 
 # =========================
