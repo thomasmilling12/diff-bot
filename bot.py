@@ -10,7 +10,7 @@ import sqlite3
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Set
 from zoneinfo import ZoneInfo
 import subprocess
@@ -7223,6 +7223,17 @@ class _OmRecord:
     ended: bool = False
     one_hour_sent: bool = False
     fifteen_sent: bool = False
+    started_at_ts: int | None = None
+    ended_at_ts: int | None = None
+    attendance_message_id: int | None = None
+    attendance_channel_id: int | None = None
+    rsvp_yes_ids: list = field(default_factory=list)
+    rsvp_maybe_ids: list = field(default_factory=list)
+    rsvp_no_ids: list = field(default_factory=list)
+    checked_in_ids: list = field(default_factory=list)
+    late_ids: list = field(default_factory=list)
+    unable_ids: list = field(default_factory=list)
+    no_show_ids: list = field(default_factory=list)
 
 
 def _om_load_records() -> dict:
@@ -7256,6 +7267,167 @@ def _om_upsert_record(record: _OmRecord) -> None:
     data = _om_load_records()
     data[str(record.message_id)] = asdict(record)
     _om_save_records(data)
+
+
+def _om_get_record_by_attendance_msg(attendance_msg_id: int) -> _OmRecord | None:
+    data = _om_load_records()
+    for raw in data.values():
+        if raw.get("attendance_message_id") == attendance_msg_id:
+            try:
+                return _OmRecord(**{k: v for k, v in raw.items() if k in _OmRecord.__dataclass_fields__})
+            except Exception:
+                pass
+    return None
+
+
+# ---- Stats store ----
+_OM_STATS_FILE = os.path.join(DATA_FOLDER, "diff_om_stats.json")
+_OM_LEADERBOARD_CHANNEL_ID = 1485282044392243290
+
+
+def _om_stats_load() -> dict:
+    try:
+        with open(_OM_STATS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"members": {}, "hosts": {}}
+
+
+def _om_stats_save(data: dict) -> None:
+    try:
+        with open(_OM_STATS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def _om_increment_member_stat(user_id: int, field_name: str, amount: int = 1) -> None:
+    data = _om_stats_load()
+    members = data.setdefault("members", {})
+    entry = members.setdefault(str(user_id), {"user_id": user_id, "attended": 0, "late": 0, "unable": 0, "no_shows": 0})
+    entry[field_name] = int(entry.get(field_name, 0)) + amount
+    _om_stats_save(data)
+
+
+def _om_increment_host_stat(user_id: int, field_name: str, amount: int = 1) -> None:
+    data = _om_stats_load()
+    hosts = data.setdefault("hosts", {})
+    entry = hosts.setdefault(str(user_id), {
+        "user_id": user_id, "meets_hosted": 0, "meets_completed": 0,
+        "total_attendance": 0, "total_late": 0, "total_no_shows": 0,
+    })
+    entry[field_name] = int(entry.get(field_name, 0)) + amount
+    _om_stats_save(data)
+
+
+async def _om_post_or_update_leaderboard() -> None:
+    channel = bot.get_channel(_OM_LEADERBOARD_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    data = _om_stats_load()
+    host_list = sorted(
+        data.get("hosts", {}).values(),
+        key=lambda x: (x.get("meets_completed", 0), x.get("total_attendance", 0)),
+        reverse=True,
+    )
+    member_list = sorted(
+        data.get("members", {}).values(),
+        key=lambda x: (x.get("attended", 0), -x.get("no_shows", 0)),
+        reverse=True,
+    )
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    host_lines = []
+    for i, s in enumerate(host_list[:10], 1):
+        prefix = medals.get(i, f"**{i}.**")
+        host_lines.append(
+            f"{prefix} <@{s['user_id']}> — Hosted: **{s.get('meets_hosted', 0)}** | "
+            f"Completed: **{s.get('meets_completed', 0)}** | "
+            f"Attendance: **{s.get('total_attendance', 0)}** | "
+            f"No-Shows: **{s.get('total_no_shows', 0)}**"
+        )
+    member_lines = []
+    for i, s in enumerate(member_list[:10], 1):
+        prefix = medals.get(i, f"**{i}.**")
+        member_lines.append(
+            f"{prefix} <@{s['user_id']}> — Attended: **{s.get('attended', 0)}** | "
+            f"Late: **{s.get('late', 0)}** | "
+            f"No-Shows: **{s.get('no_shows', 0)}**"
+        )
+    content = (
+        "🏆 **DIFF Activity Leaderboard**\n\n"
+        "**Top Hosts**\n"
+        + ("\n".join(host_lines) if host_lines else "No host data yet.")
+        + "\n\n**Top Members**\n"
+        + ("\n".join(member_lines) if member_lines else "No member data yet.")
+    )
+    try:
+        async for msg in channel.history(limit=15):
+            if msg.author == bot.user and "🏆 **DIFF Activity Leaderboard**" in (msg.content or ""):
+                await msg.edit(content=content)
+                return
+    except Exception:
+        pass
+    await channel.send(content)
+
+
+class _OmAttendanceView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _handle(self, interaction: discord.Interaction, state: str):
+        record = _om_get_record_by_attendance_msg(interaction.message.id)
+        if not record:
+            await interaction.response.send_message("Meet record not found.", ephemeral=True)
+            return
+        if record.ended:
+            await interaction.response.send_message("This meet has already ended.", ephemeral=True)
+            return
+        uid = interaction.user.id
+        record.checked_in_ids = [x for x in record.checked_in_ids if x != uid]
+        record.late_ids       = [x for x in record.late_ids       if x != uid]
+        record.unable_ids     = [x for x in record.unable_ids     if x != uid]
+        if state == "present":
+            record.checked_in_ids.append(uid)
+            reply = "✅ You've been checked in as **Present**."
+        elif state == "late":
+            record.late_ids.append(uid)
+            reply = "🕐 You've been marked as **Late**."
+        else:
+            record.unable_ids.append(uid)
+            reply = "❌ You've been marked as **Unable to Join**."
+        _om_upsert_record(record)
+        await interaction.response.send_message(reply, ephemeral=True)
+
+    @discord.ui.button(label="Present", style=discord.ButtonStyle.success, custom_id="diff_om_att:present")
+    async def btn_present(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "present")
+
+    @discord.ui.button(label="Late", style=discord.ButtonStyle.secondary, custom_id="diff_om_att:late")
+    async def btn_late(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "late")
+
+    @discord.ui.button(label="Unable to Join", style=discord.ButtonStyle.danger, custom_id="diff_om_att:unable")
+    async def btn_unable(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "unable")
+
+
+async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | None:
+    channel = bot.get_channel(MEET_ATTENDANCE_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return None
+    return await channel.send(
+        f"<@&{PS5_ROLE_ID}>\n\n"
+        f"📊 **DIFF Meet Attendance — {record.theme}**\n\n"
+        f"Host: <@{record.host_id}>\n"
+        f"Date: <t:{record.timestamp}:F>\n\n"
+        f"Use the buttons below to check in:\n"
+        f"• **Present** — you're here\n"
+        f"• **Late** — joining a bit late\n"
+        f"• **Unable to Join** — can't make it\n\n"
+        f"Your check-in is recorded for attendance stats and no-show tracking.",
+        view=_OmAttendanceView(),
+        allowed_mentions=discord.AllowedMentions(roles=True, users=False),
+    )
 
 
 def _om_get_counts(msg_id: int) -> dict:
@@ -7318,8 +7490,15 @@ class _OfficialMeetRSVPView(discord.ui.View):
                 await interaction.response.send_message("This meet has already ended.", ephemeral=True)
                 return
             record.started = True
+            record.started_at_ts = int(datetime.now(timezone.utc).timestamp())
+            att_msg = await _om_create_attendance_panel(record)
+            if att_msg:
+                record.attendance_message_id = att_msg.id
+                record.attendance_channel_id = att_msg.channel.id
             _om_upsert_record(record)
+            _om_increment_host_stat(record.host_id, "meets_hosted")
             ch = bot.get_channel(record.channel_id)
+            att_ref = f"<#{MEET_ATTENDANCE_CHANNEL_ID}>" if att_msg else "#attendance"
             if isinstance(ch, discord.TextChannel):
                 await ch.send(
                     f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>\n\n"
@@ -7328,7 +7507,8 @@ class _OfficialMeetRSVPView(discord.ui.View):
                     f"🎮 Join through the host: <@{record.host_id}>\n"
                     f"💬 Head to #chat for instructions\n\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"Stay clean, stay organized, and follow host direction.",
+                    f"📊 Attendance tracking is now open in {att_ref}.\n"
+                    f"Check in with **Present**, **Late**, or **Unable to Join**.",
                     allowed_mentions=discord.AllowedMentions(roles=True, users=True),
                 )
             await _om_staff_log("Meet Started", record, interaction.user)
@@ -7336,14 +7516,36 @@ class _OfficialMeetRSVPView(discord.ui.View):
                 if isinstance(child, discord.ui.Button) and child.custom_id == "diff_om_ctrl:start":
                     child.disabled = True
             await interaction.response.edit_message(view=self)
-            await interaction.followup.send("Meet marked as **live**.", ephemeral=True)
+            await interaction.followup.send(
+                f"Meet marked as **live**. Attendance panel opened in <#{MEET_ATTENDANCE_CHANNEL_ID}>.",
+                ephemeral=True,
+            )
 
         elif action == "end":
             if record.ended:
                 await interaction.response.send_message("This meet has already ended.", ephemeral=True)
                 return
             record.ended = True
+            record.ended_at_ts = int(datetime.now(timezone.utc).timestamp())
+            rsvp_pool = set(record.rsvp_yes_ids) | set(record.rsvp_maybe_ids)
+            if not rsvp_pool:
+                rsvp_pool = set(x for x in _om_rsvps.get(record.message_id, {}).get("yes", set()))
+                rsvp_pool |= set(x for x in _om_rsvps.get(record.message_id, {}).get("maybe", set()))
+            present_pool = set(record.checked_in_ids) | set(record.late_ids) | set(record.unable_ids)
+            record.no_show_ids = sorted(list(rsvp_pool - present_pool))
             _om_upsert_record(record)
+            for uid in set(record.checked_in_ids):
+                _om_increment_member_stat(uid, "attended")
+            for uid in set(record.late_ids):
+                _om_increment_member_stat(uid, "late")
+            for uid in set(record.unable_ids):
+                _om_increment_member_stat(uid, "unable")
+            for uid in set(record.no_show_ids):
+                _om_increment_member_stat(uid, "no_shows")
+            _om_increment_host_stat(record.host_id, "meets_completed")
+            _om_increment_host_stat(record.host_id, "total_attendance", len(set(record.checked_in_ids)))
+            _om_increment_host_stat(record.host_id, "total_late", len(set(record.late_ids)))
+            _om_increment_host_stat(record.host_id, "total_no_shows", len(set(record.no_show_ids)))
             ch = bot.get_channel(record.channel_id)
             if isinstance(ch, discord.TextChannel):
                 await ch.send(
@@ -7351,14 +7553,26 @@ class _OfficialMeetRSVPView(discord.ui.View):
                     f"Host: <@{record.host_id}>\n"
                     f"Theme: {record.theme}\n"
                     f"Scheduled Time: <t:{record.timestamp}:F>\n\n"
+                    f"**Attendance Summary**\n"
+                    f"• Present: **{len(set(record.checked_in_ids))}**\n"
+                    f"• Late: **{len(set(record.late_ids))}**\n"
+                    f"• Unable: **{len(set(record.unable_ids))}**\n"
+                    f"• No-Shows: **{len(set(record.no_show_ids))}**\n\n"
                     f"Thank you to everyone who attended and helped keep the meet clean."
                 )
             await _om_staff_log("Meet Ended", record, interaction.user)
+            try:
+                await _om_post_or_update_leaderboard()
+            except Exception:
+                pass
             for child in self.children:
                 if isinstance(child, discord.ui.Button) and child.custom_id in ("diff_om_ctrl:start", "diff_om_ctrl:end"):
                     child.disabled = True
             await interaction.response.edit_message(view=self)
-            await interaction.followup.send("Meet marked as **ended**.", ephemeral=True)
+            await interaction.followup.send(
+                "Meet marked as **ended**. Attendance stats saved and leaderboard updated.",
+                ephemeral=True,
+            )
 
     @discord.ui.button(label="Attending (0)", style=discord.ButtonStyle.success, custom_id="diff_om_rsvp:yes", row=0)
     async def btn_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -8194,6 +8408,7 @@ async def on_ready():
     bot.add_view(_RcAdminView())
     bot.add_view(_OfficialMeetRSVPView())
     bot.add_view(_OfficialMeetPanelView())
+    bot.add_view(_OmAttendanceView())
     asyncio.create_task(_om_restore_on_ready())
     bot.add_view(_PopupMeetPanelView())
     for _g in bot.guilds:
