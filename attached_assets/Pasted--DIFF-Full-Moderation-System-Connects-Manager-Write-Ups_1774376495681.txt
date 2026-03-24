@@ -1,0 +1,657 @@
+
+"""
+DIFF Full Moderation System
+Connects:
+- Manager Write-Ups
+- Strike Tracking
+- Meet Feedback
+- Attendance Tracking
+- Host Performance
+- Auto Flag / Alert System
+- Optional DM notifications
+
+discord.py 2.x
+
+This file is designed as a master moderation layer you can run alongside
+your existing DIFF systems.
+
+=========================================================
+WHAT THIS FILE DOES
+=========================================================
+1. Stores moderation profiles for members/hosts
+2. Pulls together:
+   - write-up counts
+   - strike counts
+   - feedback scores
+   - attendance counts
+   - host event stats
+3. Auto flags users/hosts when thresholds are hit
+4. Posts alerts to a moderation/staff channel
+5. Provides commands to update profiles manually
+6. Provides profile lookup and leaderboard commands
+
+=========================================================
+NOTE
+=========================================================
+This file is intentionally built to be easy to connect.
+You can use the provided helper methods from your other cogs/files:
+- register_writeup(...)
+- register_strike(...)
+- register_feedback(...)
+- register_attendance(...)
+- register_hosted_meet(...)
+
+Then call them whenever your other systems trigger.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, List
+
+import discord
+from discord.ext import commands
+
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+GUILD_ID = 850386896509337710
+
+# Main staff / moderation alert channel
+MOD_ALERT_CHANNEL_ID = 0  # set this
+
+# Optional public leaderboard / performance channel
+MOD_STATS_CHANNEL_ID = 0  # optional
+
+# Optional role ids for punishment / flags
+WARNING_ROLE_ID = 0
+RESTRICTED_ROLE_ID = 0
+HOST_REVIEW_ROLE_ID = 0
+
+# Optional: DM users when action is recorded
+SEND_DM_NOTIFICATIONS = True
+
+# Thresholds
+WARNING_THRESHOLD = 2
+RESTRICTED_THRESHOLD = 3
+CRITICAL_THRESHOLD = 4
+
+# Host review thresholds
+HOST_BAD_FEEDBACK_THRESHOLD = 2.5
+HOST_WRITEUP_THRESHOLD = 2
+HOST_LOW_ATTENDANCE_THRESHOLD = 2
+
+# Colors
+COLOR_PRIMARY = 0x1F6FEB
+COLOR_SUCCESS = 0x2ECC71
+COLOR_WARNING = 0xF39C12
+COLOR_DANGER = 0xE74C3C
+COLOR_MUTED = 0x95A5A6
+
+# Data
+DATA_DIR = "data"
+MOD_PROFILES_FILE = os.path.join(DATA_DIR, "moderation_profiles.json")
+HOST_PROFILES_FILE = os.path.join(DATA_DIR, "host_performance_profiles.json")
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def ensure_data_dir() -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def load_json(path: str, default):
+    ensure_data_dir()
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, indent=4)
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def save_json(path: str, data) -> None:
+    ensure_data_dir()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+
+def default_member_profile(user_id: int, display_name: str) -> Dict[str, Any]:
+    return {
+        "user_id": user_id,
+        "display_name": display_name,
+        "writeups": 0,
+        "strikes": 0,
+        "feedback_entries": 0,
+        "feedback_average": 0.0,
+        "attendance_count": 0,
+        "hosted_meets": 0,
+        "flags": [],
+        "last_updated": utcnow().isoformat(),
+    }
+
+
+def default_host_profile(user_id: int, display_name: str) -> Dict[str, Any]:
+    return {
+        "user_id": user_id,
+        "display_name": display_name,
+        "hosted_meets": 0,
+        "attendance_total": 0,
+        "attendance_average": 0.0,
+        "feedback_entries": 0,
+        "feedback_average": 0.0,
+        "host_writeups": 0,
+        "warnings": 0,
+        "review_flagged": False,
+        "last_updated": utcnow().isoformat(),
+    }
+
+
+# =========================================================
+# COG
+# =========================================================
+
+class FullModerationSystem(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        print("FullModerationSystem loaded.")
+
+    # -----------------------------------------------------
+    # STORAGE
+    # -----------------------------------------------------
+    def get_member_profiles(self) -> Dict[str, Any]:
+        return load_json(MOD_PROFILES_FILE, {})
+
+    def save_member_profiles(self, data: Dict[str, Any]) -> None:
+        save_json(MOD_PROFILES_FILE, data)
+
+    def get_host_profiles(self) -> Dict[str, Any]:
+        return load_json(HOST_PROFILES_FILE, {})
+
+    def save_host_profiles(self, data: Dict[str, Any]) -> None:
+        save_json(HOST_PROFILES_FILE, data)
+
+    def get_or_create_member_profile(self, user_id: int, display_name: str) -> Dict[str, Any]:
+        data = self.get_member_profiles()
+        key = str(user_id)
+        if key not in data:
+            data[key] = default_member_profile(user_id, display_name)
+            self.save_member_profiles(data)
+        return data[key]
+
+    def get_or_create_host_profile(self, user_id: int, display_name: str) -> Dict[str, Any]:
+        data = self.get_host_profiles()
+        key = str(user_id)
+        if key not in data:
+            data[key] = default_host_profile(user_id, display_name)
+            self.save_host_profiles(data)
+        return data[key]
+
+    # -----------------------------------------------------
+    # PUBLIC INTEGRATION METHODS
+    # -----------------------------------------------------
+    async def register_writeup(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        source: str = "writeup_system"
+    ) -> None:
+        data = self.get_member_profiles()
+        key = str(member.id)
+        profile = data.get(key, default_member_profile(member.id, str(member)))
+        profile["writeups"] += 1
+        profile["display_name"] = str(member)
+        profile["last_updated"] = utcnow().isoformat()
+        data[key] = profile
+        self.save_member_profiles(data)
+
+        await self.evaluate_member_status(guild, member, source=f"Write-Up Registered ({source})")
+
+    async def register_strike(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        source: str = "strike_system"
+    ) -> None:
+        data = self.get_member_profiles()
+        key = str(member.id)
+        profile = data.get(key, default_member_profile(member.id, str(member)))
+        profile["strikes"] += 1
+        profile["display_name"] = str(member)
+        profile["last_updated"] = utcnow().isoformat()
+        data[key] = profile
+        self.save_member_profiles(data)
+
+        await self.evaluate_member_status(guild, member, source=f"Strike Registered ({source})")
+
+    async def register_feedback(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        rating: float,
+        source: str = "feedback_system"
+    ) -> None:
+        data = self.get_member_profiles()
+        key = str(member.id)
+        profile = data.get(key, default_member_profile(member.id, str(member)))
+
+        old_avg = float(profile["feedback_average"])
+        old_count = int(profile["feedback_entries"])
+        new_count = old_count + 1
+        new_avg = ((old_avg * old_count) + float(rating)) / new_count
+
+        profile["feedback_entries"] = new_count
+        profile["feedback_average"] = round(new_avg, 2)
+        profile["display_name"] = str(member)
+        profile["last_updated"] = utcnow().isoformat()
+        data[key] = profile
+        self.save_member_profiles(data)
+
+    async def register_attendance(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        source: str = "attendance_system"
+    ) -> None:
+        data = self.get_member_profiles()
+        key = str(member.id)
+        profile = data.get(key, default_member_profile(member.id, str(member)))
+        profile["attendance_count"] += 1
+        profile["display_name"] = str(member)
+        profile["last_updated"] = utcnow().isoformat()
+        data[key] = profile
+        self.save_member_profiles(data)
+
+    async def register_hosted_meet(
+        self,
+        guild: discord.Guild,
+        host_member: discord.Member,
+        attendance_count: int = 0,
+        source: str = "host_system"
+    ) -> None:
+        member_data = self.get_member_profiles()
+        member_key = str(host_member.id)
+        member_profile = member_data.get(member_key, default_member_profile(host_member.id, str(host_member)))
+        member_profile["hosted_meets"] += 1
+        member_profile["display_name"] = str(host_member)
+        member_profile["last_updated"] = utcnow().isoformat()
+        member_data[member_key] = member_profile
+        self.save_member_profiles(member_data)
+
+        host_data = self.get_host_profiles()
+        host_key = str(host_member.id)
+        host_profile = host_data.get(host_key, default_host_profile(host_member.id, str(host_member)))
+        host_profile["hosted_meets"] += 1
+        host_profile["attendance_total"] += max(0, int(attendance_count))
+        if host_profile["hosted_meets"] > 0:
+            host_profile["attendance_average"] = round(
+                host_profile["attendance_total"] / host_profile["hosted_meets"], 2
+            )
+        host_profile["display_name"] = str(host_member)
+        host_profile["last_updated"] = utcnow().isoformat()
+        host_data[host_key] = host_profile
+        self.save_host_profiles(host_data)
+
+        await self.evaluate_host_status(guild, host_member, source=f"Hosted Meet Registered ({source})")
+
+    async def register_host_feedback(
+        self,
+        guild: discord.Guild,
+        host_member: discord.Member,
+        rating: float,
+        source: str = "feedback_system"
+    ) -> None:
+        host_data = self.get_host_profiles()
+        key = str(host_member.id)
+        profile = host_data.get(key, default_host_profile(host_member.id, str(host_member)))
+
+        old_avg = float(profile["feedback_average"])
+        old_count = int(profile["feedback_entries"])
+        new_count = old_count + 1
+        new_avg = ((old_avg * old_count) + float(rating)) / new_count
+
+        profile["feedback_entries"] = new_count
+        profile["feedback_average"] = round(new_avg, 2)
+        profile["display_name"] = str(host_member)
+        profile["last_updated"] = utcnow().isoformat()
+        host_data[key] = profile
+        self.save_host_profiles(host_data)
+
+        await self.evaluate_host_status(guild, host_member, source=f"Host Feedback Registered ({source})")
+
+    async def register_host_writeup(
+        self,
+        guild: discord.Guild,
+        host_member: discord.Member,
+        source: str = "writeup_system"
+    ) -> None:
+        host_data = self.get_host_profiles()
+        key = str(host_member.id)
+        profile = host_data.get(key, default_host_profile(host_member.id, str(host_member)))
+        profile["host_writeups"] += 1
+        profile["display_name"] = str(host_member)
+        profile["last_updated"] = utcnow().isoformat()
+        host_data[key] = profile
+        self.save_host_profiles(host_data)
+
+        await self.evaluate_host_status(guild, host_member, source=f"Host Write-Up Registered ({source})")
+
+    # -----------------------------------------------------
+    # ALERTS / ACTIONS
+    # -----------------------------------------------------
+    async def post_alert(self, guild: discord.Guild, title: str, description: str, color: int = COLOR_WARNING):
+        if not MOD_ALERT_CHANNEL_ID:
+            return
+        channel = guild.get_channel(MOD_ALERT_CHANNEL_ID)
+        if channel is None:
+            return
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=utcnow()
+        )
+        embed.set_footer(text="Different Meets • Full Moderation System")
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
+
+    async def safe_add_role(self, member: discord.Member, role_id: int, reason: str):
+        if not role_id:
+            return
+        role = member.guild.get_role(role_id)
+        if not role:
+            return
+        if role in member.roles:
+            return
+        try:
+            await member.add_roles(role, reason=reason)
+        except discord.HTTPException:
+            pass
+
+    async def safe_dm(self, member: discord.Member, message: str):
+        if not SEND_DM_NOTIFICATIONS:
+            return
+        try:
+            await member.send(message)
+        except discord.HTTPException:
+            pass
+
+    async def evaluate_member_status(self, guild: discord.Guild, member: discord.Member, source: str):
+        data = self.get_member_profiles()
+        profile = data.get(str(member.id))
+        if not profile:
+            return
+
+        strikes = int(profile["strikes"])
+        flags = set(profile.get("flags", []))
+
+        if strikes >= WARNING_THRESHOLD and "warning_flag" not in flags:
+            flags.add("warning_flag")
+            await self.safe_add_role(member, WARNING_ROLE_ID, "Reached moderation warning threshold")
+            await self.post_alert(
+                guild,
+                "⚠️ Member Warning Threshold Reached",
+                f"**Member:** {member.mention}\n**Strikes:** {strikes}\n**Source:** {source}",
+                COLOR_WARNING
+            )
+            await self.safe_dm(
+                member,
+                f"You have reached the DIFF warning threshold with **{strikes} strike(s)**. Please review server expectations."
+            )
+
+        if strikes >= RESTRICTED_THRESHOLD and "restricted_flag" not in flags:
+            flags.add("restricted_flag")
+            await self.safe_add_role(member, RESTRICTED_ROLE_ID, "Reached moderation restricted threshold")
+            await self.post_alert(
+                guild,
+                "🚨 Member Restricted Threshold Reached",
+                f"**Member:** {member.mention}\n**Strikes:** {strikes}\n**Source:** {source}",
+                COLOR_DANGER
+            )
+            await self.safe_dm(
+                member,
+                f"You have reached the DIFF restricted threshold with **{strikes} strike(s)**. Staff may review your access."
+            )
+
+        if strikes >= CRITICAL_THRESHOLD and "critical_flag" not in flags:
+            flags.add("critical_flag")
+            await self.post_alert(
+                guild,
+                "🛑 Critical Moderation Threshold Reached",
+                f"**Member:** {member.mention}\n**Strikes:** {strikes}\n**Source:** {source}\n\nStaff review is recommended immediately.",
+                COLOR_DANGER
+            )
+            await self.safe_dm(
+                member,
+                f"You have reached a critical moderation threshold with **{strikes} strike(s)**. Staff review may follow."
+            )
+
+        profile["flags"] = sorted(flags)
+        profile["last_updated"] = utcnow().isoformat()
+        data[str(member.id)] = profile
+        self.save_member_profiles(data)
+
+    async def evaluate_host_status(self, guild: discord.Guild, host_member: discord.Member, source: str):
+        data = self.get_host_profiles()
+        profile = data.get(str(host_member.id))
+        if not profile:
+            return
+
+        bad_feedback = float(profile["feedback_average"]) if profile["feedback_entries"] > 0 else 5.0
+        host_writeups = int(profile["host_writeups"])
+        attendance_avg = float(profile["attendance_average"]) if profile["hosted_meets"] > 0 else 999.0
+
+        should_flag = (
+            (profile["feedback_entries"] > 0 and bad_feedback <= HOST_BAD_FEEDBACK_THRESHOLD) or
+            (host_writeups >= HOST_WRITEUP_THRESHOLD) or
+            (profile["hosted_meets"] > 0 and attendance_avg <= HOST_LOW_ATTENDANCE_THRESHOLD)
+        )
+
+        if should_flag and not profile.get("review_flagged", False):
+            profile["review_flagged"] = True
+            profile["last_updated"] = utcnow().isoformat()
+            data[str(host_member.id)] = profile
+            self.save_host_profiles(data)
+
+            await self.safe_add_role(host_member, HOST_REVIEW_ROLE_ID, "Flagged for host performance review")
+            await self.post_alert(
+                guild,
+                "📉 Host Review Flagged",
+                (
+                    f"**Host:** {host_member.mention}\n"
+                    f"**Feedback Avg:** {profile['feedback_average']}/5\n"
+                    f"**Host Write-Ups:** {profile['host_writeups']}\n"
+                    f"**Attendance Avg:** {profile['attendance_average']}\n"
+                    f"**Source:** {source}"
+                ),
+                COLOR_WARNING
+            )
+            await self.safe_dm(
+                host_member,
+                "Your hosting profile has been flagged for review based on recent moderation/performance data."
+            )
+
+    # -----------------------------------------------------
+    # COMMANDS
+    # -----------------------------------------------------
+    @commands.command(name="modprofile")
+    @commands.has_permissions(manage_guild=True)
+    async def modprofile(self, ctx: commands.Context, member: discord.Member):
+        data = self.get_member_profiles()
+        profile = data.get(str(member.id))
+
+        if not profile:
+            await ctx.send("No moderation profile found for that member yet.")
+            return
+
+        embed = discord.Embed(
+            title=f"🛡️ Moderation Profile • {member}",
+            color=COLOR_PRIMARY
+        )
+        embed.add_field(name="Write-Ups", value=str(profile["writeups"]), inline=True)
+        embed.add_field(name="Strikes", value=str(profile["strikes"]), inline=True)
+        embed.add_field(name="Attendance", value=str(profile["attendance_count"]), inline=True)
+        embed.add_field(name="Hosted Meets", value=str(profile["hosted_meets"]), inline=True)
+        embed.add_field(name="Feedback Avg", value=f"{profile['feedback_average']}/5", inline=True)
+        embed.add_field(name="Flags", value=", ".join(profile["flags"]) if profile["flags"] else "None", inline=True)
+        embed.set_footer(text="Different Meets • Full Moderation System")
+        await ctx.send(embed=embed)
+
+    @commands.command(name="hostprofile")
+    @commands.has_permissions(manage_guild=True)
+    async def hostprofile(self, ctx: commands.Context, member: discord.Member):
+        data = self.get_host_profiles()
+        profile = data.get(str(member.id))
+
+        if not profile:
+            await ctx.send("No host profile found for that member yet.")
+            return
+
+        embed = discord.Embed(
+            title=f"🏁 Host Performance Profile • {member}",
+            color=COLOR_PRIMARY
+        )
+        embed.add_field(name="Hosted Meets", value=str(profile["hosted_meets"]), inline=True)
+        embed.add_field(name="Attendance Avg", value=str(profile["attendance_average"]), inline=True)
+        embed.add_field(name="Feedback Avg", value=f"{profile['feedback_average']}/5", inline=True)
+        embed.add_field(name="Feedback Entries", value=str(profile["feedback_entries"]), inline=True)
+        embed.add_field(name="Host Write-Ups", value=str(profile["host_writeups"]), inline=True)
+        embed.add_field(name="Review Flagged", value="Yes" if profile["review_flagged"] else "No", inline=True)
+        embed.set_footer(text="Different Meets • Full Moderation System")
+        await ctx.send(embed=embed)
+
+    @commands.command(name="hostleaderboard")
+    @commands.has_permissions(manage_guild=True)
+    async def hostleaderboard(self, ctx: commands.Context):
+        data = self.get_host_profiles()
+        if not data:
+            await ctx.send("No host data available yet.")
+            return
+
+        sorted_hosts = sorted(
+            data.values(),
+            key=lambda p: (float(p["feedback_average"]), float(p["attendance_average"]), int(p["hosted_meets"])),
+            reverse=True
+        )[:10]
+
+        lines = []
+        for i, p in enumerate(sorted_hosts, start=1):
+            lines.append(
+                f"**{i}. {p['display_name']}** — Feedback: {p['feedback_average']}/5 | Attendance: {p['attendance_average']} | Hosted: {p['hosted_meets']}"
+            )
+
+        embed = discord.Embed(
+            title="🏆 Host Performance Leaderboard",
+            description="\n".join(lines),
+            color=COLOR_SUCCESS
+        )
+        embed.set_footer(text="Different Meets • Full Moderation System")
+        await ctx.send(embed=embed)
+
+    @commands.command(name="modstats")
+    @commands.has_permissions(manage_guild=True)
+    async def modstats(self, ctx: commands.Context):
+        member_data = self.get_member_profiles()
+        host_data = self.get_host_profiles()
+
+        total_profiles = len(member_data)
+        total_hosts = len(host_data)
+        total_strikes = sum(int(p["strikes"]) for p in member_data.values())
+        total_writeups = sum(int(p["writeups"]) for p in member_data.values())
+        flagged_members = sum(1 for p in member_data.values() if p.get("flags"))
+        flagged_hosts = sum(1 for p in host_data.values() if p.get("review_flagged"))
+
+        embed = discord.Embed(
+            title="📊 Full Moderation Stats",
+            color=COLOR_PRIMARY
+        )
+        embed.add_field(name="Member Profiles", value=str(total_profiles), inline=True)
+        embed.add_field(name="Host Profiles", value=str(total_hosts), inline=True)
+        embed.add_field(name="Total Write-Ups", value=str(total_writeups), inline=True)
+        embed.add_field(name="Total Strikes", value=str(total_strikes), inline=True)
+        embed.add_field(name="Flagged Members", value=str(flagged_members), inline=True)
+        embed.add_field(name="Flagged Hosts", value=str(flagged_hosts), inline=True)
+        embed.set_footer(text="Different Meets • Full Moderation System")
+        await ctx.send(embed=embed)
+
+    # -----------------------------------------------------
+    # MANUAL ADMIN UPDATE COMMANDS
+    # -----------------------------------------------------
+    @commands.group(name="modsync", invoke_without_command=True)
+    @commands.has_permissions(manage_guild=True)
+    async def modsync(self, ctx: commands.Context):
+        await ctx.send(
+            "Available subcommands:\n"
+            "`modsync writeup @member`\n"
+            "`modsync strike @member`\n"
+            "`modsync attendance @member`\n"
+            "`modsync feedback @member <1-5>`\n"
+            "`modsync hostmeet @member <attendance_count>`\n"
+            "`modsync hostfeedback @member <1-5>`\n"
+            "`modsync hostwriteup @member`"
+        )
+
+    @modsync.command(name="writeup")
+    @commands.has_permissions(manage_guild=True)
+    async def modsync_writeup(self, ctx: commands.Context, member: discord.Member):
+        await self.register_writeup(ctx.guild, member, source="manual_command")
+        await ctx.send(f"✅ Registered a write-up for {member.mention}.")
+
+    @modsync.command(name="strike")
+    @commands.has_permissions(manage_guild=True)
+    async def modsync_strike(self, ctx: commands.Context, member: discord.Member):
+        await self.register_strike(ctx.guild, member, source="manual_command")
+        await ctx.send(f"✅ Registered a strike for {member.mention}.")
+
+    @modsync.command(name="attendance")
+    @commands.has_permissions(manage_guild=True)
+    async def modsync_attendance(self, ctx: commands.Context, member: discord.Member):
+        await self.register_attendance(ctx.guild, member, source="manual_command")
+        await ctx.send(f"✅ Registered attendance for {member.mention}.")
+
+    @modsync.command(name="feedback")
+    @commands.has_permissions(manage_guild=True)
+    async def modsync_feedback(self, ctx: commands.Context, member: discord.Member, rating: float):
+        await self.register_feedback(ctx.guild, member, rating, source="manual_command")
+        await ctx.send(f"✅ Registered feedback {rating}/5 for {member.mention}.")
+
+    @modsync.command(name="hostmeet")
+    @commands.has_permissions(manage_guild=True)
+    async def modsync_hostmeet(self, ctx: commands.Context, member: discord.Member, attendance_count: int = 0):
+        await self.register_hosted_meet(ctx.guild, member, attendance_count, source="manual_command")
+        await ctx.send(f"✅ Registered hosted meet for {member.mention}.")
+
+    @modsync.command(name="hostfeedback")
+    @commands.has_permissions(manage_guild=True)
+    async def modsync_hostfeedback(self, ctx: commands.Context, member: discord.Member, rating: float):
+        await self.register_host_feedback(ctx.guild, member, rating, source="manual_command")
+        await ctx.send(f"✅ Registered host feedback {rating}/5 for {member.mention}.")
+
+    @modsync.command(name="hostwriteup")
+    @commands.has_permissions(manage_guild=True)
+    async def modsync_hostwriteup(self, ctx: commands.Context, member: discord.Member):
+        await self.register_host_writeup(ctx.guild, member, source="manual_command")
+        await ctx.send(f"✅ Registered a host write-up for {member.mention}.")
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(FullModerationSystem(bot))
