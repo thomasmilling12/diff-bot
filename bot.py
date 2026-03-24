@@ -8206,6 +8206,12 @@ async def on_ready():
             await _popup_post_or_refresh(_g)
         except Exception as _e:
             print(f"[PopupMeet] on_ready refresh error: {_e}")
+    bot.add_view(_IgDropView())
+    for _g in bot.guilds:
+        try:
+            await _ig_panel_post_or_refresh(_g)
+        except Exception as _e:
+            print(f"[IGPanel] on_ready error: {_e}")
     if not _rc_ensure_loop.is_running():
         _rc_ensure_loop.start()
 
@@ -14003,6 +14009,13 @@ async def on_message(message: discord.Message) -> None:
     if not isinstance(message.channel, discord.TextChannel):
         return
 
+    # --- Instagram auto-post ---
+    if message.channel.id == _IG_CHANNEL_ID:
+        _ig_m = _IG_LINK_RE.search(message.content)
+        if _ig_m:
+            await _ig_handle_drop(message.channel, _ig_m.group(1))
+        return
+
     # --- Join channel photo progress tracking ---
     topic = message.channel.topic
     join_user_id = _join_parse_user_id(topic)
@@ -14912,6 +14925,212 @@ async def refresh_join_panel(interaction: discord.Interaction) -> None:
             pass
     await channel.send(embed=_join_build_panel_embed(), view=JoinPlatformView())
     await interaction.followup.send(f"Join Hub panel reposted in {channel.mention} (no existing panel found).", ephemeral=True)
+
+
+# =========================
+# IG AUTO POST SYSTEM
+# =========================
+
+_IG_CHANNEL_ID      = 1485830678980333568
+_IG_PING_ROLE_ID    = 1138690897077338265
+_IG_CONTENT_ROLE_ID = 1110037666147336293
+_IG_AUTO_REACTIONS  = ["🔥", "📸", "🏁"]
+_IG_PANEL_FILE      = os.path.join(DATA_FOLDER, "diff_ig_panel.json")
+
+_IG_LINK_RE = re.compile(
+    r"(https?://(?:www\.)?(?:instagram\.com|instagr\.am)/[^\s]+)",
+    re.IGNORECASE,
+)
+
+
+def _ig_panel_load() -> dict:
+    try:
+        with open(_IG_PANEL_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _ig_panel_save(data: dict):
+    try:
+        with open(_IG_PANEL_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def _ig_build_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📸 DIFF Social Feed",
+        color=discord.Color.magenta(),
+        description=(
+            "This is the official DIFF Instagram drop channel.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**How it works**\n"
+            "Drop a valid Instagram link anywhere in a message and the bot will:\n"
+            "• Auto-format it into a clean embed\n"
+            f"• Ping <@&{_IG_PING_ROLE_ID}>\n"
+            "• Add 🔥 📸 🏁 reaction prompts automatically\n\n"
+            "**React with**\n"
+            "🔥 — This was hard\n"
+            "📸 — I was there\n"
+            "🏁 — Pulling up next meet\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "*Staff can also use `!igpost <link>` to manually trigger a formatted drop.*"
+        ),
+    )
+    embed.set_footer(text="Different Meets • DIFF Social Feed")
+    return embed
+
+
+def _ig_user_allowed(member: discord.Member) -> bool:
+    role_ids = {r.id for r in member.roles}
+    return (
+        member.guild_permissions.manage_guild
+        or _IG_CONTENT_ROLE_ID in role_ids
+        or bool(role_ids & _JOIN_STAFF_ROLE_IDS)
+    )
+
+
+class _IgDropModal(discord.ui.Modal, title="📸 Drop IG Post"):
+    link_field = discord.ui.TextInput(
+        label="Instagram Link",
+        placeholder="https://www.instagram.com/p/...",
+        required=True,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.link_field.value.strip()
+        m = _IG_LINK_RE.search(raw)
+        if not m:
+            await interaction.response.send_message(
+                "That doesn't look like a valid Instagram link. Try again.", ephemeral=True
+            )
+            return
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("Can only post in a text channel.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        await _ig_handle_drop(channel, m.group(1))
+        await interaction.followup.send("Posted!", ephemeral=True)
+
+
+class _IgDropView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="📸 Drop IG Post",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_ig:drop",
+    )
+    async def drop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return
+        if not _ig_user_allowed(interaction.user):
+            await interaction.response.send_message(
+                "You need the Content Team role to post here.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(_IgDropModal())
+
+
+async def _ig_panel_post_or_refresh(guild: discord.Guild):
+    """Edit existing panel in place on startup; never creates a duplicate."""
+    channel = guild.get_channel(_IG_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await guild.fetch_channel(_IG_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+    data = _ig_panel_load()
+    msg_id = data.get(str(guild.id))
+    if msg_id:
+        try:
+            msg = await channel.fetch_message(int(msg_id))
+            await msg.edit(embed=_ig_build_panel_embed(), view=_IgDropView())
+            return
+        except discord.NotFound:
+            pass
+        except Exception:
+            return
+    msg = await channel.send(embed=_ig_build_panel_embed(), view=_IgDropView())
+    data[str(guild.id)] = msg.id
+    _ig_panel_save(data)
+    try:
+        await msg.pin()
+    except Exception:
+        pass
+
+
+async def _ig_handle_drop(channel: discord.TextChannel, link: str):
+    """Post a formatted IG drop embed and add reactions."""
+    ping = f"<@&{_IG_PING_ROLE_ID}>"
+    embed = discord.Embed(
+        title="DIFF Instagram Drop",
+        description=(
+            "A new DIFF post is live.\n\n"
+            "💬 **Show support:** like, comment, and share\n"
+            f"🔗 **Post Link:** {link}"
+        ),
+        color=discord.Color.magenta(),
+    )
+    embed.add_field(
+        name="Community Reactions",
+        value="🔥 = This was hard\n📸 = I was there\n🏁 = Pulling up next meet",
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • DIFF Social Feed")
+    sent = await channel.send(
+        content=f"{ping}\n\n🔥 __**NEW DIFF POST**__ 🔥",
+        embed=embed,
+        allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+    )
+    for emoji in _IG_AUTO_REACTIONS:
+        try:
+            await sent.add_reaction(emoji)
+        except Exception:
+            pass
+
+
+@bot.command(name="igpost")
+async def _cmd_igpost(ctx: commands.Context, *, link: str = ""):
+    is_auth = ctx.author.guild_permissions.manage_guild or any(
+        r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", [])
+    )
+    if not is_auth:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    m = _IG_LINK_RE.search(link)
+    if not m:
+        await ctx.send("Please include a valid Instagram link.", delete_after=8)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    if isinstance(ctx.channel, discord.TextChannel):
+        await _ig_handle_drop(ctx.channel, m.group(1))
+
+
+@bot.command(name="postigpanel")
+async def _cmd_postigpanel(ctx: commands.Context):
+    is_auth = ctx.author.guild_permissions.administrator or any(
+        r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", [])
+    )
+    if not is_auth:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _ig_panel_post_or_refresh(ctx.guild)
 
 
 # =========================

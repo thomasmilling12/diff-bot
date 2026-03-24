@@ -1,0 +1,210 @@
+"""
+DIFF IG Auto Post System
+Drop-in discord.py 2.x module
+
+What it does:
+- Watches one channel for Instagram links
+- When someone drops an IG link, bot auto formats the post
+- Auto pings your chosen role
+- Auto adds reactions
+- Optional: deletes the original raw message so the channel stays clean
+
+SETUP:
+1) Replace CHANNEL_ID and PING_ROLE_ID below
+2) Put this file next to your current bot file
+3) Load with:
+      await bot.load_extension("diff_ig_auto_post")
+   or:
+      await setup(bot)
+4) Make sure your bot has:
+   - Read Messages / View Channel
+   - Send Messages
+   - Add Reactions
+   - Manage Messages (only if DELETE_ORIGINAL_MESSAGE = True)
+   - Embed Links
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Optional
+
+import discord
+from discord.ext import commands
+
+# =========================
+# CONFIG
+# =========================
+
+CHANNEL_ID = 1485830678980333568
+PING_ROLE_ID = 0  # replace with your IG Updates / social role ID
+
+DELETE_ORIGINAL_MESSAGE = False
+AUTO_REACTIONS = ["🔥", "📸", "🏁"]
+FOOTER_TEXT = "Different Meets • DIFF Social Feed"
+
+INSTAGRAM_PATTERN = re.compile(
+    r"(https?://(?:www\.)?(?:instagram\.com|instagr\.am)/[^\s]+)",
+    re.IGNORECASE,
+)
+
+ALLOWED_ROLE_IDS: list[int] = []
+
+
+# =========================
+# HELPERS
+# =========================
+
+def has_allowed_role(member: discord.Member) -> bool:
+    if not ALLOWED_ROLE_IDS:
+        return True
+    member_role_ids = {role.id for role in member.roles}
+    return any(role_id in member_role_ids for role_id in ALLOWED_ROLE_IDS)
+
+
+def extract_instagram_link(text: str) -> Optional[str]:
+    match = INSTAGRAM_PATTERN.search(text)
+    return match.group(1) if match else None
+
+
+def get_ping_text(guild: discord.Guild) -> str:
+    role = guild.get_role(PING_ROLE_ID) if PING_ROLE_ID else None
+    return role.mention if role else ""
+
+
+def build_auto_caption(ping_text: str, link: str) -> tuple[str, discord.Embed]:
+    content = (
+        f"{ping_text}\n\n🔥 __**NEW DIFF POST**__ 🔥"
+        if ping_text
+        else "🔥 __**NEW DIFF POST**__ 🔥"
+    )
+
+    embed = discord.Embed(
+        title="DIFF Instagram Drop",
+        description=(
+            "A new DIFF post is live.\n\n"
+            "💬 **Show support:** like, comment, and share\n"
+            f"🔗 **Post Link:** {link}"
+        ),
+        color=discord.Color.magenta(),
+    )
+    embed.add_field(
+        name="Community Reactions",
+        value=(
+            "🔥 = This was hard\n"
+            "📸 = I was there\n"
+            "🏁 = Pulling up next meet"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=FOOTER_TEXT)
+    return content, embed
+
+
+# =========================
+# COG
+# =========================
+
+class DiffIGAutoPost(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    async def _send_formatted_post(
+        self,
+        channel: discord.TextChannel,
+        author: discord.Member,
+        link: str,
+    ) -> discord.Message:
+        ping_text = get_ping_text(channel.guild)
+        content, embed = build_auto_caption(ping_text, link)
+
+        sent = await channel.send(
+            content=content,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+        )
+
+        for emoji in AUTO_REACTIONS:
+            try:
+                await sent.add_reaction(emoji)
+            except discord.HTTPException:
+                pass
+
+        return sent
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+
+        if not message.guild or not isinstance(message.author, discord.Member):
+            return
+
+        if message.channel.id != CHANNEL_ID:
+            return
+
+        link = extract_instagram_link(message.content)
+        if not link:
+            return
+
+        ctx = await self.bot.get_context(message)
+        if ctx.valid:
+            return
+
+        await self._send_formatted_post(message.channel, message.author, link)
+
+        if DELETE_ORIGINAL_MESSAGE:
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
+
+    @commands.command(name="igpost")
+    @commands.guild_only()
+    async def igpost(self, ctx: commands.Context, *, link: str):
+        if not isinstance(ctx.author, discord.Member):
+            return
+
+        if not has_allowed_role(ctx.author):
+            await ctx.reply("You do not have permission to use this command.")
+            return
+
+        extracted = extract_instagram_link(link)
+        if not extracted:
+            await ctx.reply("Please send a valid Instagram link.")
+            return
+
+        await self._send_formatted_post(ctx.channel, ctx.author, extracted)
+
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            pass
+
+    @commands.command(name="igpost_test")
+    @commands.guild_only()
+    async def igpost_test(self, ctx: commands.Context):
+        if not isinstance(ctx.author, discord.Member):
+            return
+
+        if not has_allowed_role(ctx.author):
+            await ctx.reply("You do not have permission to use this command.")
+            return
+
+        embed = discord.Embed(
+            title="📸 DIFF Social Feed",
+            description=(
+                "This channel is used for new Instagram drops, recaps, reels, and DIFF media posts.\n\n"
+                "When a valid Instagram link is posted here, the bot will:\n"
+                "• auto format the message\n"
+                "• ping the selected role\n"
+                "• add reactions automatically"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text=FOOTER_TEXT)
+        await ctx.send(embed=embed)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffIGAutoPost(bot))
