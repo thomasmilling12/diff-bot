@@ -10011,6 +10011,12 @@ class JoinTicketView(discord.ui.View):
         except discord.HTTPException:
             pass
 
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.delete(reason=f"Join application accepted by {interaction.user}")
+        except discord.HTTPException:
+            pass
+
     @discord.ui.button(label="Deny", emoji="❌", style=discord.ButtonStyle.danger, custom_id="diff_join_deny")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._staff_check(interaction):
@@ -10093,6 +10099,12 @@ class JoinTicketView(discord.ui.View):
             child.disabled = True
         try:
             await interaction.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.delete(reason=f"Join application denied by {interaction.user}")
         except discord.HTTPException:
             pass
 
