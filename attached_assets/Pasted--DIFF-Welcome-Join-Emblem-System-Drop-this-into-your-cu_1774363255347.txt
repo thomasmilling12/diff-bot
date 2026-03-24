@@ -1,4 +1,23 @@
-from __future__ import annotations
+
+"""
+DIFF Welcome Join Emblem System
+--------------------------------
+Drop this into your current discord.py bot project.
+
+What it does:
+- Sends a welcome embed every time a member joins
+- Mentions the new member
+- Directs them to:
+    1) Welcome / info channel
+    2) Verification channel
+- Attaches a custom welcome emblem image
+- Uses one clean auto-post per join
+
+IMPORTANT:
+- Replace WELCOME_POST_CHANNEL_ID with the channel you want this posted in.
+- Keep your existing intents.members = True
+- Make sure your bot has permission to view/send messages and attach files.
+"""
 
 import discord
 from discord.ext import commands
@@ -9,14 +28,16 @@ from pathlib import Path
 # =========================================================
 GUILD_ID = 850386896509337710
 
+# USER PROVIDED CHANNELS
 WELCOME_INFO_CHANNEL_ID = 1047161846257438743
 VERIFY_CHANNEL_ID = 1277084633858576406
-WELCOME_POST_CHANNEL_ID = 1486006000808103986
-UNVERIFIED_ROLE_ID = 1486011550916411512
 
+# YOU LEFT THIS BLANK IN YOUR MESSAGE, SO FILL THIS IN:
+WELCOME_POST_CHANNEL_ID = 1486006000808103986  # <-- replace with your target channel ID
+
+# Optional branding
 SERVER_NAME = "Different Meets"
-EMBLEM_FILE_PATH = Path("diff_welcome_emblem.png")
-
+EMBLEM_FILE_PATH = Path("diff_welcome_emblem.png")  # keep png in same folder as this file
 
 # =========================================================
 # VIEW
@@ -24,6 +45,7 @@ EMBLEM_FILE_PATH = Path("diff_welcome_emblem.png")
 class WelcomeLinksView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+
         self.add_item(
             discord.ui.Button(
                 label="Open Welcome Channel",
@@ -32,6 +54,7 @@ class WelcomeLinksView(discord.ui.View):
                 emoji="📘",
             )
         )
+
         self.add_item(
             discord.ui.Button(
                 label="Verify Account",
@@ -50,24 +73,16 @@ class DiffWelcomeJoinSystem(commands.Cog):
         self.bot = bot
 
     @commands.Cog.listener()
-    async def on_ready(self):
-        print("[DiffWelcomeJoinSystem] Cog ready.")
-
-    @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         if member.guild.id != GUILD_ID:
             return
 
-        unverified_role = member.guild.get_role(UNVERIFIED_ROLE_ID)
-        if unverified_role:
-            try:
-                await member.add_roles(unverified_role, reason="Auto-assigned Unverified role on join")
-            except Exception as e:
-                print(f"[DiffWelcomeJoinSystem] Could not assign Unverified role: {e}")
-
         channel = member.guild.get_channel(WELCOME_POST_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
-            print("[DiffWelcomeJoinSystem] WELCOME_POST_CHANNEL_ID not found or not a text channel.")
+        if channel is None:
+            print(
+                "[DIFF Welcome Join System] Could not find WELCOME_POST_CHANNEL_ID. "
+                "Please update the ID in the file."
+            )
             return
 
         welcome_channel = member.guild.get_channel(WELCOME_INFO_CHANNEL_ID)
@@ -90,7 +105,10 @@ class DiffWelcomeJoinSystem(commands.Cog):
             description=description,
             color=discord.Color.blurple(),
         )
-        embed.set_footer(text="Different Meets • Verify first, then enjoy the community")
+
+        embed.set_footer(
+            text="Different Meets • Verify first, then enjoy the community"
+        )
 
         file = None
         if EMBLEM_FILE_PATH.exists():
@@ -99,13 +117,10 @@ class DiffWelcomeJoinSystem(commands.Cog):
 
         view = WelcomeLinksView()
 
-        try:
-            if file:
-                await channel.send(content=member.mention, embed=embed, file=file, view=view)
-            else:
-                await channel.send(content=member.mention, embed=embed, view=view)
-        except Exception as e:
-            print(f"[DiffWelcomeJoinSystem] Failed to send welcome message: {e}")
+        if file:
+            await channel.send(content=member.mention, embed=embed, file=file, view=view)
+        else:
+            await channel.send(content=member.mention, embed=embed, view=view)
 
 
 # =========================================================
