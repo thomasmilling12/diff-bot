@@ -2687,9 +2687,22 @@ class AutoScheduleView(discord.ui.View):
         if not is_staff:
             await interaction.response.send_message("Only staff can rebuild the schedule.", ephemeral=True)
             return
-        _asched_build()
+        schedule = _asched_build()
         await _asched_update_panel(interaction.client)
         await _asched_post_finalized(interaction.client)
+        if interaction.guild:
+            rc_meets = []
+            for idx, day in enumerate(_HRSVP_DAYS, 1):
+                entry = schedule["days"].get(day, {})
+                rc_meets.append({
+                    "meet_number": idx,
+                    "class_name": entry.get("class", "TBD"),
+                    "start_time": entry.get("time", "TBD"),
+                    "host_id": entry.get("host_id"),
+                    "date_text": day,
+                    "is_finalized": entry.get("host_id") is not None,
+                })
+            await _rc_sync_from_schedule(interaction.guild, rc_meets)
         await interaction.response.send_message("Schedule rebuilt and posted to the announcement channel.", ephemeral=True)
 
 
@@ -6673,6 +6686,505 @@ async def cmd_hostperformance(ctx: commands.Context):
 
 
 # =========================
+# AUTO ROLL CALL SYSTEM
+# =========================
+_RC_DB_PATH = os.path.join("diff_data", "diff_rollcall.db")
+_RC_ADMIN_ROLE_IDS = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+
+
+class _RollCallDB:
+    def __init__(self):
+        os.makedirs("diff_data", exist_ok=True)
+        self.conn = sqlite3.connect(_RC_DB_PATH, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self._setup()
+
+    def _setup(self):
+        cur = self.conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS rollcall_panels (
+                guild_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                admin_message_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS rollcall_meets (
+                guild_id INTEGER NOT NULL,
+                meet_number INTEGER NOT NULL,
+                class_name TEXT NOT NULL DEFAULT 'TBD',
+                start_time TEXT NOT NULL DEFAULT 'TBD',
+                host_id INTEGER,
+                date_text TEXT NOT NULL DEFAULT 'TBD',
+                is_finalized INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, meet_number)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS rollcall_responses (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                meet_number INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id, meet_number)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS attendance_actual (
+                guild_id INTEGER NOT NULL,
+                meet_number INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, meet_number, user_id)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS attendance_stats (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                yes_count INTEGER NOT NULL DEFAULT 0,
+                maybe_count INTEGER NOT NULL DEFAULT 0,
+                no_count INTEGER NOT NULL DEFAULT 0,
+                attended_count INTEGER NOT NULL DEFAULT 0,
+                no_show_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS meet_state (
+                guild_id INTEGER NOT NULL,
+                meet_number INTEGER NOT NULL,
+                attendance_finalized INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, meet_number)
+            )
+        """)
+        self.conn.commit()
+
+    def upsert_panel(self, guild_id, channel_id, message_id, admin_message_id=None):
+        now = datetime.utcnow().isoformat()
+        cur = self.conn.cursor()
+        cur.execute("""
+            INSERT INTO rollcall_panels (guild_id, channel_id, message_id, admin_message_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                channel_id=excluded.channel_id,
+                message_id=excluded.message_id,
+                admin_message_id=COALESCE(excluded.admin_message_id, rollcall_panels.admin_message_id),
+                updated_at=excluded.updated_at
+        """, (guild_id, channel_id, message_id, admin_message_id, now, now))
+        self.conn.commit()
+
+    def get_panel(self, guild_id):
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM rollcall_panels WHERE guild_id=?", (guild_id,))
+        return cur.fetchone()
+
+    def upsert_meets(self, guild_id, meets: list):
+        cur = self.conn.cursor()
+        for m in meets:
+            cur.execute("""
+                INSERT INTO rollcall_meets (guild_id, meet_number, class_name, start_time, host_id, date_text, is_finalized)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, meet_number) DO UPDATE SET
+                    class_name=excluded.class_name,
+                    start_time=excluded.start_time,
+                    host_id=excluded.host_id,
+                    date_text=excluded.date_text,
+                    is_finalized=excluded.is_finalized
+            """, (guild_id, m["meet_number"], m.get("class_name", "TBD"), m.get("start_time", "TBD"),
+                  m.get("host_id"), m.get("date_text", "TBD"), 1 if m.get("is_finalized") else 0))
+            cur.execute("""
+                INSERT OR IGNORE INTO meet_state (guild_id, meet_number, attendance_finalized) VALUES (?, ?, 0)
+            """, (guild_id, m["meet_number"]))
+        self.conn.commit()
+
+    def get_meets(self, guild_id):
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM rollcall_meets WHERE guild_id=? ORDER BY meet_number ASC", (guild_id,))
+        return cur.fetchall()
+
+    def set_response(self, guild_id, user_id, meet_number, status):
+        now = datetime.utcnow().isoformat()
+        cur = self.conn.cursor()
+        cur.execute("SELECT status FROM rollcall_responses WHERE guild_id=? AND user_id=? AND meet_number=?",
+                    (guild_id, user_id, meet_number))
+        prev_row = cur.fetchone()
+        previous = prev_row[0] if prev_row else None
+        cur.execute("""
+            INSERT INTO rollcall_responses (guild_id, user_id, meet_number, status, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id, meet_number) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at
+        """, (guild_id, user_id, meet_number, status, now))
+        cur.execute("INSERT OR IGNORE INTO attendance_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+        if previous in ("yes", "maybe", "no"):
+            cur.execute(f"UPDATE attendance_stats SET {previous}_count = MAX({previous}_count - 1, 0) WHERE guild_id=? AND user_id=?",
+                        (guild_id, user_id))
+        if status in ("yes", "maybe", "no"):
+            cur.execute(f"UPDATE attendance_stats SET {status}_count = {status}_count + 1 WHERE guild_id=? AND user_id=?",
+                        (guild_id, user_id))
+        self.conn.commit()
+        return previous
+
+    def get_counts(self, guild_id, meet_number):
+        cur = self.conn.cursor()
+        cur.execute("SELECT status, COUNT(*) AS total FROM rollcall_responses WHERE guild_id=? AND meet_number=? GROUP BY status",
+                    (guild_id, meet_number))
+        counts = {"yes": 0, "maybe": 0, "no": 0}
+        for row in cur.fetchall():
+            counts[row[0]] = row[1]
+        return counts
+
+    def get_all_counts(self, guild_id):
+        return {n: self.get_counts(guild_id, n) for n in (1, 2, 3)}
+
+    def set_actual_attendees(self, guild_id, meet_number, user_ids):
+        now = datetime.utcnow().isoformat()
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM attendance_actual WHERE guild_id=? AND meet_number=?", (guild_id, meet_number))
+        for uid in user_ids:
+            cur.execute("INSERT INTO attendance_actual (guild_id, meet_number, user_id, recorded_at) VALUES (?, ?, ?, ?)",
+                        (guild_id, meet_number, uid, now))
+            cur.execute("INSERT OR IGNORE INTO attendance_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, uid))
+        self.conn.commit()
+
+    def finalize_no_shows(self, guild_id, meet_number):
+        cur = self.conn.cursor()
+        cur.execute("SELECT attendance_finalized FROM meet_state WHERE guild_id=? AND meet_number=?",
+                    (guild_id, meet_number))
+        row = cur.fetchone()
+        if row and row[0] == 1:
+            return [], []
+        cur.execute("SELECT user_id FROM attendance_actual WHERE guild_id=? AND meet_number=?", (guild_id, meet_number))
+        actual = {r[0] for r in cur.fetchall()}
+        cur.execute("SELECT user_id FROM rollcall_responses WHERE guild_id=? AND meet_number=? AND status='yes'",
+                    (guild_id, meet_number))
+        yes_users = {r[0] for r in cur.fetchall()}
+        attended = sorted(actual)
+        no_shows = sorted(yes_users - actual)
+        for uid in attended:
+            cur.execute("INSERT OR IGNORE INTO attendance_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, uid))
+            cur.execute("UPDATE attendance_stats SET attended_count=attended_count+1 WHERE guild_id=? AND user_id=?", (guild_id, uid))
+        for uid in no_shows:
+            cur.execute("INSERT OR IGNORE INTO attendance_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, uid))
+            cur.execute("UPDATE attendance_stats SET no_show_count=no_show_count+1 WHERE guild_id=? AND user_id=?", (guild_id, uid))
+        cur.execute("""
+            INSERT INTO meet_state (guild_id, meet_number, attendance_finalized) VALUES (?, ?, 1)
+            ON CONFLICT(guild_id, meet_number) DO UPDATE SET attendance_finalized=1
+        """, (guild_id, meet_number))
+        self.conn.commit()
+        return attended, no_shows
+
+    def get_top_attendance(self, guild_id, limit=10):
+        cur = self.conn.cursor()
+        cur.execute("""
+            SELECT * FROM attendance_stats WHERE guild_id=?
+            ORDER BY attended_count DESC, yes_count DESC, no_show_count ASC LIMIT ?
+        """, (guild_id, limit))
+        return cur.fetchall()
+
+
+_rc_db = _RollCallDB()
+
+
+def _rc_is_admin(member) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    if member.guild_permissions.administrator:
+        return True
+    return any(r.id in _RC_ADMIN_ROLE_IDS for r in member.roles)
+
+
+def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
+    meets = _rc_db.get_meets(guild.id)
+    meets_by_num = {row["meet_number"]: row for row in meets}
+    counts = _rc_db.get_all_counts(guild.id)
+    embed = discord.Embed(
+        title="📊 DIFF Auto Roll Call",
+        description="Use the buttons below to mark your attendance for each meet.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.set_author(name="Different Meets")
+    for n in (1, 2, 3):
+        meet = meets_by_num.get(n)
+        c = counts[n]
+        class_name = meet["class_name"] if meet else "TBD"
+        start_time = meet["start_time"] if meet else "TBD"
+        date_text = meet["date_text"] if meet else "TBD"
+        host_id = meet["host_id"] if meet else None
+        host_text = f"<@{host_id}>" if host_id else "*No host assigned*"
+        finalized = "✅ Finalized" if meet and meet["is_finalized"] else "⏳ Pending"
+        embed.add_field(
+            name=f"Meet {n}",
+            value=(
+                f"📅 **Date:** {date_text}\n"
+                f"🎮 **Class:** {class_name}\n"
+                f"🕒 **Time:** {start_time}\n"
+                f"👤 **Host:** {host_text}\n"
+                f"📌 **Status:** {finalized}\n\n"
+                f"✅ Attending: **{c['yes']}** | ❓ Maybe: **{c['maybe']}** | ❌ Not Attending: **{c['no']}**"
+            ),
+            inline=False,
+        )
+    embed.add_field(
+        name="Reminders",
+        value="🧥 Wear your crew jacket\n🎙️ Join voice chat if required\n⚠️ Repeated no-shows affect activity tracking",
+        inline=False,
+    )
+    embed.set_footer(text="DIFF • Auto Roll Call System")
+    return embed
+
+
+def _rc_build_admin_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🛠️ DIFF Roll Call — Staff Tools",
+        description="After each meet ends, click the button below to finalize attendance and detect no-shows.",
+        color=discord.Color.dark_teal(),
+    )
+    embed.add_field(
+        name="How it works",
+        value="Click **Finalize Meet #**, paste or mention the users who actually attended. The system will update stats and flag no-shows automatically.",
+        inline=False,
+    )
+    return embed
+
+
+class _RcFinalizeModal(discord.ui.Modal):
+    attendees = discord.ui.TextInput(
+        label="Users who actually attended",
+        style=discord.TextStyle.paragraph,
+        placeholder="Paste mentions or IDs: <@123> <@456>",
+        required=False,
+        max_length=4000,
+    )
+
+    def __init__(self, meet_number: int):
+        super().__init__(title=f"Finalize Meet {meet_number} Attendance")
+        self.meet_number = meet_number
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not _rc_is_admin(interaction.user):
+            await interaction.response.send_message("Staff only.", ephemeral=True)
+            return
+        raw = self.attendees.value or ""
+        user_ids = sorted({int(m) for m in re.findall(r"\d{15,25}", raw)})
+        _rc_db.set_actual_attendees(interaction.guild.id, self.meet_number, user_ids)
+        attended, no_shows = _rc_db.finalize_no_shows(interaction.guild.id, self.meet_number)
+        await _rc_refresh_panel(interaction.guild)
+        await _rc_log_attendance(interaction.guild, self.meet_number, attended, no_shows, interaction.user)
+        await interaction.response.send_message(
+            f"✅ Meet {self.meet_number} finalized. Present: **{len(attended)}** | No-shows: **{len(no_shows)}**",
+            ephemeral=True,
+        )
+
+
+class _RcRollCallView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _handle(self, interaction: discord.Interaction, meet_number: int, status: str):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return
+        previous = _rc_db.set_response(interaction.guild.id, interaction.user.id, meet_number, status)
+        await _rc_refresh_panel(interaction.guild)
+        await _rc_log_rsvp(interaction.guild, interaction.user, meet_number, previous, status)
+        labels = {"yes": "✅ marked as attending", "maybe": "❓ marked as maybe", "no": "❌ marked as not attending"}
+        await interaction.response.send_message(f"You are {labels[status]} for **Meet {meet_number}**.", ephemeral=True)
+
+    @discord.ui.button(label="Meet 1 ✅", style=discord.ButtonStyle.success, custom_id="diff_rollcall:1:yes", row=0)
+    async def m1_yes(self, i, b): await self._handle(i, 1, "yes")
+
+    @discord.ui.button(label="Meet 1 ❓", style=discord.ButtonStyle.secondary, custom_id="diff_rollcall:1:maybe", row=0)
+    async def m1_maybe(self, i, b): await self._handle(i, 1, "maybe")
+
+    @discord.ui.button(label="Meet 1 ❌", style=discord.ButtonStyle.danger, custom_id="diff_rollcall:1:no", row=0)
+    async def m1_no(self, i, b): await self._handle(i, 1, "no")
+
+    @discord.ui.button(label="Meet 2 ✅", style=discord.ButtonStyle.success, custom_id="diff_rollcall:2:yes", row=1)
+    async def m2_yes(self, i, b): await self._handle(i, 2, "yes")
+
+    @discord.ui.button(label="Meet 2 ❓", style=discord.ButtonStyle.secondary, custom_id="diff_rollcall:2:maybe", row=1)
+    async def m2_maybe(self, i, b): await self._handle(i, 2, "maybe")
+
+    @discord.ui.button(label="Meet 2 ❌", style=discord.ButtonStyle.danger, custom_id="diff_rollcall:2:no", row=1)
+    async def m2_no(self, i, b): await self._handle(i, 2, "no")
+
+    @discord.ui.button(label="Meet 3 ✅", style=discord.ButtonStyle.success, custom_id="diff_rollcall:3:yes", row=2)
+    async def m3_yes(self, i, b): await self._handle(i, 3, "yes")
+
+    @discord.ui.button(label="Meet 3 ❓", style=discord.ButtonStyle.secondary, custom_id="diff_rollcall:3:maybe", row=2)
+    async def m3_maybe(self, i, b): await self._handle(i, 3, "maybe")
+
+    @discord.ui.button(label="Meet 3 ❌", style=discord.ButtonStyle.danger, custom_id="diff_rollcall:3:no", row=2)
+    async def m3_no(self, i, b): await self._handle(i, 3, "no")
+
+
+class _RcAdminView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _finalize(self, interaction: discord.Interaction, meet_number: int):
+        if not _rc_is_admin(interaction.user):
+            await interaction.response.send_message("Staff only.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_RcFinalizeModal(meet_number))
+
+    @discord.ui.button(label="Finalize Meet 1", style=discord.ButtonStyle.primary, custom_id="diff_rollcall_finalize:1", row=0)
+    async def fin1(self, i, b): await self._finalize(i, 1)
+
+    @discord.ui.button(label="Finalize Meet 2", style=discord.ButtonStyle.primary, custom_id="diff_rollcall_finalize:2", row=0)
+    async def fin2(self, i, b): await self._finalize(i, 2)
+
+    @discord.ui.button(label="Finalize Meet 3", style=discord.ButtonStyle.primary, custom_id="diff_rollcall_finalize:3", row=0)
+    async def fin3(self, i, b): await self._finalize(i, 3)
+
+
+async def _rc_refresh_panel(guild: discord.Guild):
+    panel = _rc_db.get_panel(guild.id)
+    channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    if not panel:
+        await _rc_post_new_panel(guild, ping_roles=True)
+        return
+    try:
+        msg = await channel.fetch_message(panel["message_id"])
+        await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
+    except discord.NotFound:
+        await _rc_post_new_panel(guild, ping_roles=True)
+    except Exception:
+        pass
+
+
+async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
+    channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    ping_text = None
+    if ping_roles:
+        parts = []
+        cr = guild.get_role(CREW_MEMBER_ROLE_ID)
+        if cr:
+            parts.append(cr.mention)
+        ps5r = guild.get_role(PS5_ROLE_ID)
+        if ps5r:
+            parts.append(ps5r.mention)
+        if parts:
+            ping_text = " ".join(parts)
+    try:
+        rc_msg = await channel.send(
+            content=ping_text,
+            embed=_rc_build_rollcall_embed(guild),
+            view=_RcRollCallView(),
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+        admin_msg = await channel.send(embed=_rc_build_admin_embed(), view=_RcAdminView())
+        _rc_db.upsert_panel(guild.id, channel.id, rc_msg.id, admin_msg.id)
+    except Exception as e:
+        print(f"[RollCall] post failed: {e}")
+
+
+async def _rc_ensure_panel(guild: discord.Guild):
+    panel = _rc_db.get_panel(guild.id)
+    channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    if panel:
+        try:
+            await channel.fetch_message(panel["message_id"])
+            return
+        except discord.NotFound:
+            pass
+        except Exception:
+            return
+    await _rc_post_new_panel(guild, ping_roles=True)
+
+
+async def _rc_log_rsvp(guild, member, meet_number, previous, new_status):
+    ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return
+    embed = discord.Embed(title="📋 Roll Call Update", color=discord.Color.orange(), timestamp=datetime.utcnow())
+    embed.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=False)
+    embed.add_field(name="Meet", value=f"Meet {meet_number}", inline=True)
+    embed.add_field(name="Previous", value=previous or "none", inline=True)
+    embed.add_field(name="New", value=new_status, inline=True)
+    try:
+        await ch.send(embed=embed)
+    except Exception:
+        pass
+
+
+async def _rc_log_attendance(guild, meet_number, attended, no_shows, action_by):
+    ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return
+    embed = discord.Embed(title="📊 Meet Attendance Finalized", color=discord.Color.green(), timestamp=datetime.utcnow())
+    embed.add_field(name="Meet", value=f"Meet {meet_number}", inline=True)
+    embed.add_field(name="Finalized By", value=action_by.mention, inline=True)
+    embed.add_field(name="Present", value=str(len(attended)), inline=True)
+    attended_text = " ".join(f"<@{uid}>" for uid in attended[:30]) or "None recorded"
+    no_show_text = " ".join(f"<@{uid}>" for uid in no_shows[:30]) or "None"
+    embed.add_field(name="Present Users", value=attended_text[:1024], inline=False)
+    embed.add_field(name="No-Shows", value=no_show_text[:1024], inline=False)
+    try:
+        await ch.send(embed=embed)
+    except Exception:
+        pass
+
+
+async def _rc_sync_from_schedule(guild: discord.Guild, meets: list):
+    present = {m["meet_number"] for m in meets}
+    for n in (1, 2, 3):
+        if n not in present:
+            meets.append({"meet_number": n, "class_name": "TBD", "start_time": "TBD", "host_id": None, "date_text": "TBD", "is_finalized": False})
+    meets.sort(key=lambda x: x["meet_number"])
+    _rc_db.upsert_meets(guild.id, meets)
+    await _rc_refresh_panel(guild)
+
+
+@tasks.loop(minutes=10)
+async def _rc_ensure_loop():
+    for guild in bot.guilds:
+        try:
+            await _rc_ensure_panel(guild)
+        except Exception as e:
+            print(f"[RollCall] ensure loop error: {e}")
+
+
+@bot.command(name="postrollcall")
+async def _cmd_postrollcall(ctx: commands.Context):
+    if not _rc_is_admin(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _rc_post_new_panel(ctx.guild, ping_roles=True)
+
+
+@bot.command(name="rollleaderboard")
+async def _cmd_rollleaderboard(ctx: commands.Context):
+    rows = _rc_db.get_top_attendance(ctx.guild.id, 10)
+    if not rows:
+        await ctx.send("No attendance data yet.", delete_after=10)
+        return
+    embed = discord.Embed(title="🏆 DIFF Attendance Leaderboard", color=discord.Color.gold(), timestamp=datetime.utcnow())
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = []
+    for idx, row in enumerate(rows, 1):
+        prefix = medals.get(idx, f"**{idx}.**")
+        lines.append(f"{prefix} <@{row['user_id']}> — Attended: **{row['attended_count']}** | Yes RSVP: **{row['yes_count']}** | No-Shows: **{row['no_show_count']}**")
+    embed.description = "\n".join(lines)
+    await ctx.send(embed=embed)
+
+
+# =========================
 # EVENTS
 # =========================
 @bot.event
@@ -6772,6 +7284,10 @@ async def on_ready():
     bot.add_view(HostPerformanceHubView())
     bot.add_view(HostSessionView())
     await _hp_post_or_refresh()
+    bot.add_view(_RcRollCallView())
+    bot.add_view(_RcAdminView())
+    if not _rc_ensure_loop.is_running():
+        _rc_ensure_loop.start()
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
