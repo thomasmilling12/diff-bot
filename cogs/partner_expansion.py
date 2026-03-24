@@ -225,66 +225,139 @@ class PartnerExpansion(commands.Cog):
             self.save_partner_records(data)
         return message
 
-    async def sync_directory_panel(self):
-        channel = self.bot.get_channel(PARTNER_DIRECTORY_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
-            return
+    def _dir_state_path(self):
+        return os.path.join(DATA_DIR, "partner_directory_state.json")
 
-        data = self.get_partner_records()
-        partners = list(data.values())
+    def _load_dir_state(self):
+        path = self._dir_state_path()
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {"header_id": None, "content_ids": []}
 
-        try:
-            async for msg in channel.history(limit=100):
-                if msg.author == self.bot.user:
-                    is_request_panel = any(
-                        getattr(c, "custom_id", "") == "diff_partner_request_open"
-                        for row in msg.components for c in row.children
-                    )
-                    if not is_request_panel:
-                        await msg.delete()
-        except discord.HTTPException:
-            pass
+    def _save_dir_state(self, state):
+        with open(self._dir_state_path(), "w") as f:
+            json.dump(state, f)
 
-        header = discord.Embed(
-            title="🔗 DIFF Partner Directory",
-            description=(
-                "Welcome to the official DIFF Partner Showcase.\n"
-                "Below you can find our active partner communities."
-            ),
-            color=EMBED_COLOR
+    def _build_partner_embed(self, partner):
+        status_text = "🟢 Active" if partner.get("is_active", True) else "🟠 Inactive Flagged"
+        embed = discord.Embed(
+            title=f"🤝 {partner.get('guild_name', 'Unknown Partner')}",
+            description=partner.get("description", "No description provided."),
+            color=EMBED_COLOR,
         )
-        header.set_footer(text="Different Meets • Official Partner Network")
-        await channel.send(embed=header)
+        embed.add_field(name="Status", value=status_text, inline=True)
+        embed.add_field(name="Type", value=partner.get("collab_tag", "Official Partner"), inline=True)
+        embed.add_field(
+            name="Invite",
+            value=f"[Join Partner Server]({partner.get('invite_link', 'https://discord.gg/')})",
+            inline=False,
+        )
+        if partner.get("server_logo_url"):
+            embed.set_thumbnail(url=partner["server_logo_url"])
+        if partner.get("banner_url"):
+            embed.set_image(url=partner["banner_url"])
+        embed.set_footer(text="Different Meets • Partner Directory")
+        return embed
 
-        if not partners:
-            empty = discord.Embed(
-                title="No Partners Listed Yet",
-                description="Approved partners will appear here automatically.",
-                color=EMBED_COLOR
-            )
-            await channel.send(embed=empty)
+    async def sync_directory_panel(self):
+        if not hasattr(self, "_sync_lock"):
+            import asyncio
+            self._sync_lock = asyncio.Lock()
+
+        if self._sync_lock.locked():
             return
 
-        for partner in partners:
-            status_text = "🟢 Active" if partner.get("is_active", True) else "🟠 Inactive Flagged"
-            embed = discord.Embed(
-                title=f"🤝 {partner.get('guild_name', 'Unknown Partner')}",
-                description=partner.get("description", "No description provided."),
-                color=EMBED_COLOR
+        async with self._sync_lock:
+            channel = self.bot.get_channel(PARTNER_DIRECTORY_CHANNEL_ID)
+            if not isinstance(channel, discord.TextChannel):
+                return
+
+            partners = list(self.get_partner_records().values())
+            state = self._load_dir_state()
+
+            header_embed = discord.Embed(
+                title="🔗 DIFF Partner Directory",
+                description=(
+                    "Welcome to the official DIFF Partner Showcase.\n"
+                    "Below you can find our active partner communities."
+                ),
+                color=EMBED_COLOR,
             )
-            embed.add_field(name="Status", value=status_text, inline=True)
-            embed.add_field(name="Type", value=partner.get("collab_tag", "Official Partner"), inline=True)
-            embed.add_field(
-                name="Invite",
-                value=f"[Join Partner Server]({partner.get('invite_link', 'https://discord.gg/')})",
-                inline=False
-            )
-            if partner.get("server_logo_url"):
-                embed.set_thumbnail(url=partner["server_logo_url"])
-            if partner.get("banner_url"):
-                embed.set_image(url=partner["banner_url"])
-            embed.set_footer(text="Different Meets • Partner Directory")
-            await channel.send(embed=embed, view=PartnerInviteView(partner.get("invite_link", "")))
+            header_embed.set_footer(text="Different Meets • Official Partner Network")
+
+            content_embeds = []
+            content_views = []
+            if not partners:
+                content_embeds.append(discord.Embed(
+                    title="No Partners Listed Yet",
+                    description="Approved partners will appear here automatically.",
+                    color=EMBED_COLOR,
+                ))
+                content_views.append(None)
+            else:
+                for p in partners:
+                    content_embeds.append(self._build_partner_embed(p))
+                    content_views.append(PartnerInviteView(p.get("invite_link", "")))
+
+            header_id = state.get("header_id")
+            content_ids = state.get("content_ids", [])
+            needs_full_sync = False
+
+            if header_id and len(content_ids) == len(content_embeds):
+                try:
+                    header_msg = await channel.fetch_message(header_id)
+                    await header_msg.edit(embed=header_embed)
+                except Exception:
+                    needs_full_sync = True
+
+                if not needs_full_sync:
+                    for mid, emb, view in zip(content_ids, content_embeds, content_views):
+                        try:
+                            msg = await channel.fetch_message(mid)
+                            await msg.edit(embed=emb, view=view)
+                        except Exception:
+                            needs_full_sync = True
+                            break
+            else:
+                needs_full_sync = True
+
+            if needs_full_sync:
+                all_old_ids = ([header_id] if header_id else []) + content_ids
+                for mid in all_old_ids:
+                    if not mid:
+                        continue
+                    try:
+                        old = await channel.fetch_message(mid)
+                        await old.delete()
+                    except Exception:
+                        pass
+
+                try:
+                    async for msg in channel.history(limit=100):
+                        if msg.author == self.bot.user:
+                            is_request_panel = any(
+                                getattr(c, "custom_id", "") == "diff_partner_request_open"
+                                for row in msg.components for c in row.children
+                            )
+                            if not is_request_panel:
+                                await msg.delete()
+                except Exception:
+                    pass
+
+                header_msg = await channel.send(embed=header_embed)
+                new_content_ids = []
+                for emb, view in zip(content_embeds, content_views):
+                    if view:
+                        m = await channel.send(embed=emb, view=view)
+                    else:
+                        m = await channel.send(embed=emb)
+                    new_content_ids.append(m.id)
+
+                self._save_dir_state({"header_id": header_msg.id, "content_ids": new_content_ids})
 
     async def flag_inactive_partners(self):
         staff_channel = self.bot.get_channel(PARTNER_STAFF_ALERT_CHANNEL_ID)
