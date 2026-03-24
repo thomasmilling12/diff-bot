@@ -15325,6 +15325,13 @@ class WelcomeHubView(discord.ui.View):
             ]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
+    @discord.ui.button(label="Partnership", emoji="🤝", style=discord.ButtonStyle.primary,
+                       custom_id="diff_wh_partnership", row=2)
+    async def partnership_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            embed=_pship_build_panel_embed(), view=_PshipPanelView(), ephemeral=True
+        )
+
     @discord.ui.button(label="Before You Invite Anyone", emoji="🚪", style=discord.ButtonStyle.danger,
                        custom_id="diff_wh_invite", row=2)
     async def invite_btn(self, interaction: discord.Interaction, button: discord.ui.Button):

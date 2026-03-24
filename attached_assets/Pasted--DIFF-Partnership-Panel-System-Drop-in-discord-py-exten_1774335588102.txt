@@ -1,0 +1,664 @@
+
+"""
+DIFF Partnership Panel System
+---------------------------------
+Drop-in discord.py extension / addon for your current bot.
+
+What it does:
+- Posts a Partnership Panel in a specific channel
+- Uses a dropdown menu with one option per partner
+- Lets you add/remove partners in the future
+- Prevents duplicate panel posts by refreshing the existing message
+- Persists data in JSON
+- Optionally auto-generates a simple banner with your logo if Pillow is installed
+
+How to use:
+1) Put this file into your bot project
+2) Update GUILD_ID and channel/role/image settings below
+3) Make sure your bot uses message_content intent if you use prefix commands elsewhere
+4) Load this extension or copy the cog/setup into your current file
+5) Run one of:
+   - /partners_post
+   - /partner_add
+   - /partner_remove
+   - /partners_refresh
+
+Requires:
+- discord.py 2.x
+Optional:
+- Pillow (for auto banner generation)
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Optional, List
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+GUILD_ID = 850386896509337710
+PARTNERS_CHANNEL_ID = 1485892421593337926
+
+# Optional: ping a role when panel is first posted/refreshed
+PARTNER_PING_ROLE_ID = None  # example: 850392317751066705
+
+# Branding
+PANEL_TITLE = "🤝 DIFF Partnership Hub"
+PANEL_DESCRIPTION = (
+    "Explore our official partners below.\n\n"
+    "Use the dropdown menu to view each community, their info, and their invite link.\n"
+    "This panel is managed by staff and refreshes cleanly without duplicate posts."
+)
+
+FOOTER_TEXT = "Different Meets • Official Partnership System"
+
+# Add your real assets here if you have them
+LOGO_URL = ""  # e.g. "https://your-cdn/diff-logo.png"
+BANNER_URL = ""  # optional external banner image URL
+
+# Optional local logo path for auto-generated banner
+LOCAL_LOGO_PATH = "assets/diff_logo.png"
+
+# Files
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+PARTNERS_FILE = DATA_DIR / "partners_data.json"
+BANNER_OUTPUT = DATA_DIR / "partnership_banner.png"
+
+
+# =========================================================
+# DEFAULT PARTNERS
+# =========================================================
+
+DEFAULT_PARTNERS = [
+    {
+        "name": "MMI Meets",
+        "short_desc": "PC & Xbox Series S|X meet community.",
+        "description": "MMI Meets PC & Xbox Series S|X",
+        "invite": "https://discord.gg/mmi",
+        "platforms": "PC, Xbox Series S|X",
+        "banner": "",
+    },
+    {
+        "name": "San Andreas Roleplay",
+        "short_desc": "Professional and friendly roleplay community.",
+        "description": (
+            "Are you looking for a professional and friendly community? "
+            "San Andreas Roleplay is a new roleplay community recruiting members and staff.\n\n"
+            "**Platforms:**\n"
+            "• Xbox Old Gen\n"
+            "• Xbox New Gen\n"
+            "• PlayStation\n\n"
+            "**Departments:**\n"
+            "• Highway Patrol (SASP)\n"
+            "• Blaine County Sheriff’s Office (BCSO)\n"
+            "• Fire Department (SAFD)\n"
+            "• Emergency Medical Services\n"
+            "• Civilian Operations\n"
+            "• Communications\n\n"
+            "**What They Offer:**\n"
+            "• Daily roleplays\n"
+            "• Friendly staff team\n"
+            "• Fun and enjoyable environment\n"
+            "• Professional rules\n"
+            "• Department chats\n"
+            "• CAD\n"
+            "• Realistic uniforms\n"
+            "• Experienced training officers\n"
+            "• Realistic and professional rank structures\n\n"
+            "They host daily interviews and are building a strong server."
+        ),
+        "invite": "https://discord.gg/bwzCykt9ZS",
+        "platforms": "Xbox, PlayStation",
+        "banner": "",
+    },
+    {
+        "name": "Los Santos MotorSports",
+        "short_desc": "Active multi-platform meet community.",
+        "description": (
+            "**Los Santos MotorSports**\n\n"
+            "• Daily car meets on all platforms\n"
+            "• Active staff and chats\n"
+            "• Members from all over the world\n"
+            "• Weekly photo competitions\n"
+            "• 1500+ members\n"
+            "• Giveaways\n"
+            "• Forza, NFS, Snowrunner meets\n"
+            "• LSMS merch\n"
+            "• More planned for the future"
+        ),
+        "invite": "https://discord.gg/Jf42kGD",
+        "platforms": "All Platforms",
+        "banner": "",
+    },
+    {
+        "name": "LS Underground",
+        "short_desc": "Daily chill car meets and vibe lobbies on PlayStation.",
+        "description": (
+            "A very active and engaging community offering:\n\n"
+            "• Daily car meets\n"
+            "• In-house challenges\n"
+            "• Business lobbies\n"
+            "• Chill lobbies\n"
+            "• LFG channels for heists and more\n\n"
+            "**What They Offer:**\n"
+            "• Active staff\n"
+            "• Active chats\n"
+            "• Giveaways\n"
+            "• Challenges\n"
+            "• In-house game bot\n\n"
+            "**Platforms:**\n"
+            "• All PlayStation\n\n"
+            "Fully SFW with trained staff and a warn system."
+        ),
+        "invite": "https://discord.gg/T5eZpu329K",
+        "platforms": "PlayStation",
+        "banner": "",
+    },
+    {
+        "name": "Auto Minded",
+        "short_desc": "GTAO car enthusiast hub with events and trading.",
+        "description": (
+            "A server for GTAO car enthusiasts and car fans to unite.\n\n"
+            "**Events:**\n"
+            "• Car meets\n"
+            "• Racing\n"
+            "• Rally events\n"
+            "• Adversary modes\n"
+            "• Buy and sell\n"
+            "• Trading\n"
+            "• Car competitions\n"
+            "• Server economy\n\n"
+            "Fresh overhaul with a new team, layout, and more activities."
+        ),
+        "invite": "https://discord.gg/autominded",
+        "platforms": "Xbox (focus), open to all",
+        "banner": "",
+    },
+    {
+        "name": "Civil Network",
+        "short_desc": "Large roleplay network with multiple departments.",
+        "description": (
+            "**Platforms:** Xbox New Gen, PS Old Gen, PS New Gen, FiveM (developing)\n\n"
+            "**Departments:**\n"
+            "• Civilian Operations\n"
+            "• Fire/EMS\n"
+            "• Dispatch\n"
+            "• Military Police\n"
+            "• Criminal Justice\n"
+            "• FBI\n"
+            "• BCSO, LSPD, PBPD, Game Wardens, SASP\n\n"
+            "**Only at Civil:**\n"
+            "• Specialized giveaways\n"
+            "• Open door policy\n"
+            "• 24/7 sessions\n"
+            "• Always updating content\n"
+            "• Professional/friendly staff\n"
+            "• Professional role-players\n"
+            "• Weazel News, Gruppe Six, Organized Crime, Governors, civilian jobs"
+        ),
+        "invite": "https://discord.gg/civilrp",
+        "platforms": "Xbox, PlayStation, FiveM",
+        "banner": "https://share.creavite.co/DKn05AwFAYa5mCl9.gif",
+    },
+    {
+        "name": "RVO",
+        "short_desc": "PS5 GTA meet community with daily meets and events.",
+        "description": (
+            "A chill Discord server to show off your rides and level up your GTA car meet experience.\n\n"
+            "**What They Offer:**\n"
+            "• Chill community\n"
+            "• Daily car meets\n"
+            "• Epic events\n"
+            "• Media sharing\n"
+            "• Gaming hub"
+        ),
+        "invite": "https://discord.gg/rvo",
+        "platforms": "PS5",
+        "banner": "",
+    },
+    {
+        "name": "Chop Shop",
+        "short_desc": "Large GTAO-focused online gaming community.",
+        "description": (
+            "One of the larger active GCTF Discord servers around.\n\n"
+            "• Active members, traders, shops, and staff\n"
+            "• Helpful info channels\n"
+            "• Booster rewards\n"
+            "• Showcase events and meme events\n"
+            "• Focus on GTAO plus other games\n"
+            "• Server currency\n"
+            "• Clubs/cults that host car meets and lobby drops\n"
+            "• Always looking for new partners"
+        ),
+        "invite": "https://discord.gg/YZMbqER2bv",
+        "platforms": "Multi-game / GTAO",
+        "banner": "",
+    },
+    {
+        "name": "Automotive Union",
+        "short_desc": "Established events community with multiple racing titles.",
+        "description": (
+            "**Owner:** <@415736401251008515>\n\n"
+            "Established in 2018.\n\n"
+            "Hosts GTA events every Friday and Sunday between 8 PM UK and 9 PM UK.\n\n"
+            "**Also offers events on:**\n"
+            "• Wreckfest\n"
+            "• GT7\n"
+            "• Forza Horizon\n"
+            "• Crew Motorfest"
+        ),
+        "invite": "https://discord.gg/kaApne5w4x",
+        "platforms": "GTA + other racing titles",
+        "banner": "",
+    },
+    {
+        "name": "Car Meet Server",
+        "short_desc": "All-platform car meet and GTAO utility server.",
+        "description": (
+            "**Additional Stuff They Provide:**\n"
+            "• Modded heists (PC)\n"
+            "• Modded/stock cars\n"
+            "• Car and photo competitions\n"
+            "• GTAO inspired bot games\n\n"
+            "**Platforms:** All"
+        ),
+        "invite": "https://discord.gg/zNd2F3sz5U",
+        "platforms": "All Platforms",
+        "banner": "",
+    },
+    {
+        "name": "Fast Funds (GTA)",
+        "short_desc": "Private selling, sourcing, and heist group.",
+        "description": (
+            "**Fast Funds (GTA)**\n\n"
+            "Private selling, sourcing, and heist group.\n"
+            "Started recently and growing."
+        ),
+        "invite": "https://discord.gg/zxEdwZ9M6s",
+        "platforms": "GTA",
+        "banner": "",
+    },
+    {
+        "name": "Hurricane’s Cars & Chill",
+        "short_desc": "PS5-based GTA Online car meet server.",
+        "description": (
+            "A PlayStation 5 GTA Online car meet server with a strong community and clean builds.\n\n"
+            "• Daily GTA car meets\n"
+            "• Photo competitions\n"
+            "• Weekly giveaways\n"
+            "• Game nights\n"
+            "• Car advice/rating channels\n"
+            "• GTA vehicle trading\n"
+            "• New members daily\n"
+            "• Welcoming community"
+        ),
+        "invite": "https://discord.gg/CkEXt34waa",
+        "platforms": "PS5",
+        "banner": "",
+    },
+]
+
+
+# =========================================================
+# DATA HELPERS
+# =========================================================
+
+def sanitize_url(text: str) -> str:
+    text = text.strip()
+    if text and not re.match(r"^https?://", text, flags=re.I):
+        text = "https://" + text
+    return text
+
+def load_data() -> dict:
+    if not PARTNERS_FILE.exists():
+        data = {
+            "panel_channel_id": PARTNERS_CHANNEL_ID,
+            "panel_message_id": None,
+            "partners": DEFAULT_PARTNERS,
+        }
+        save_data(data)
+        return data
+
+    with PARTNERS_FILE.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_data(data: dict) -> None:
+    with PARTNERS_FILE.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+def get_partner_names(data: dict) -> List[str]:
+    return [p["name"] for p in data.get("partners", [])]
+
+
+# =========================================================
+# OPTIONAL BANNER GENERATION
+# =========================================================
+
+def maybe_generate_banner() -> Optional[Path]:
+    """
+    Creates a simple DIFF partnership banner if Pillow + local logo exist.
+    Falls back silently if unavailable.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        return None
+
+    logo_path = Path(LOCAL_LOGO_PATH)
+    if not logo_path.exists():
+        return None
+
+    width, height = 1600, 500
+    bg = Image.new("RGBA", (width, height), (17, 24, 39, 255))
+    draw = ImageDraw.Draw(bg)
+
+    # simple layered bars / accents
+    draw.rounded_rectangle((40, 40, width - 40, height - 40), 30, outline=(80, 140, 255, 255), width=4)
+    draw.rectangle((0, height - 90, width, height), fill=(25, 35, 55, 255))
+    draw.rectangle((0, 0, width, 80), fill=(12, 18, 30, 255))
+
+    # logo
+    logo = Image.open(logo_path).convert("RGBA")
+    logo.thumbnail((300, 300))
+    lx = 80
+    ly = (height - logo.height) // 2
+    bg.alpha_composite(logo, (lx, ly))
+
+    # fonts
+    try:
+        title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
+        sub_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 30)
+    except Exception:
+        title_font = ImageFont.load_default()
+        sub_font = ImageFont.load_default()
+
+    tx = 430
+    draw.text((tx, 145), "DIFF PARTNERSHIP HUB", font=title_font, fill=(255, 255, 255, 255))
+    draw.text((tx, 235), "Official Communities • Trusted Partners • Easy Access", font=sub_font, fill=(185, 205, 255, 255))
+
+    bg.save(BANNER_OUTPUT)
+    return BANNER_OUTPUT
+
+
+# =========================================================
+# UI
+# =========================================================
+
+class PartnerDropdown(discord.ui.Select):
+    def __init__(self, partners: list[dict]):
+        options = []
+        for partner in partners[:25]:  # Discord select max
+            options.append(
+                discord.SelectOption(
+                    label=partner["name"][:100],
+                    description=partner.get("short_desc", "View this partner.")[:100],
+                    value=partner["name"],
+                    emoji="🤝",
+                )
+            )
+
+        super().__init__(
+            placeholder="Select a partner to view more info...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="diff_partnership_select",
+        )
+        self.partners = partners
+
+    async def callback(self, interaction: discord.Interaction):
+        selected = self.values[0]
+        partner = next((p for p in self.partners if p["name"] == selected), None)
+
+        if not partner:
+            await interaction.response.send_message(
+                "That partner could not be found. Try refreshing the panel.",
+                ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"🤝 {partner['name']}",
+            description=partner.get("description", "No description provided."),
+            color=discord.Color.blue(),
+        )
+
+        platforms = partner.get("platforms")
+        if platforms:
+            embed.add_field(name="Platforms", value=platforms, inline=False)
+
+        invite = sanitize_url(partner.get("invite", ""))
+        if invite:
+            embed.add_field(name="Invite", value=f"[Join Partner]({invite})", inline=False)
+
+        embed.set_footer(text=FOOTER_TEXT)
+
+        banner = partner.get("banner", "").strip()
+        if banner:
+            embed.set_image(url=banner)
+        elif BANNER_URL:
+            embed.set_image(url=BANNER_URL)
+
+        if LOGO_URL:
+            embed.set_thumbnail(url=LOGO_URL)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class PartnerPanelView(discord.ui.View):
+    def __init__(self, partners: list[dict]):
+        super().__init__(timeout=None)
+        self.add_item(PartnerDropdown(partners))
+
+
+# =========================================================
+# COG
+# =========================================================
+
+class PartnershipSystem(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.data = load_data()
+        self.bot.add_view(PartnerPanelView(self.data.get("partners", [])))
+
+    def build_panel_embed(self) -> discord.Embed:
+        partner_count = len(self.data.get("partners", []))
+        embed = discord.Embed(
+            title=PANEL_TITLE,
+            description=PANEL_DESCRIPTION,
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Current Partners", value=str(partner_count), inline=True)
+        embed.add_field(name="System Status", value="Active", inline=True)
+        embed.add_field(
+            name="How It Works",
+            value="Select a partner from the dropdown below to view their information and invite.",
+            inline=False,
+        )
+        embed.set_footer(text=FOOTER_TEXT)
+
+        if LOGO_URL:
+            embed.set_thumbnail(url=LOGO_URL)
+
+        if BANNER_URL:
+            embed.set_image(url=BANNER_URL)
+
+        return embed
+
+    async def build_panel_payload(self) -> dict:
+        embed = self.build_panel_embed()
+        view = PartnerPanelView(self.data.get("partners", []))
+        file = None
+
+        # If no external banner exists, try local generated banner
+        if not BANNER_URL:
+            generated = maybe_generate_banner()
+            if generated and generated.exists():
+                file = discord.File(generated, filename="partnership_banner.png")
+                embed.set_image(url="attachment://partnership_banner.png")
+
+        payload = {
+            "content": f"<@&{PARTNER_PING_ROLE_ID}>" if PARTNER_PING_ROLE_ID else None,
+            "embed": embed,
+            "view": view,
+            "file": file,
+        }
+        return payload
+
+    async def refresh_panel(self, interaction: Optional[discord.Interaction] = None) -> tuple[bool, str]:
+        self.data = load_data()
+        channel_id = self.data.get("panel_channel_id", PARTNERS_CHANNEL_ID)
+        message_id = self.data.get("panel_message_id")
+        channel = self.bot.get_channel(channel_id)
+
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except Exception as e:
+                return False, f"Could not access the configured channel: {e}"
+
+        payload = await self.build_panel_payload()
+
+        # Try editing existing panel first
+        if message_id:
+            try:
+                msg = await channel.fetch_message(message_id)
+                kwargs = {"content": payload["content"], "embed": payload["embed"], "view": payload["view"]}
+                if payload["file"] is not None:
+                    kwargs["attachments"] = [payload["file"]]
+                await msg.edit(**kwargs)
+                return True, "Partnership panel refreshed successfully."
+            except Exception:
+                pass
+
+        # Otherwise send a new one and save it
+        try:
+            send_kwargs = {"content": payload["content"], "embed": payload["embed"], "view": payload["view"]}
+            if payload["file"] is not None:
+                send_kwargs["file"] = payload["file"]
+            msg = await channel.send(**send_kwargs)
+            self.data["panel_message_id"] = msg.id
+            self.data["panel_channel_id"] = channel.id
+            save_data(self.data)
+            return True, "Partnership panel posted successfully."
+        except Exception as e:
+            return False, f"Failed to post panel: {e}"
+
+    # -------------------------
+    # Slash Commands
+    # -------------------------
+
+    partners = app_commands.Group(name="partners", description="Manage the DIFF partnership system")
+
+    @partners.command(name="post", description="Post or refresh the partnership panel")
+    async def partners_post(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need Manage Server to use this.", ephemeral=True)
+            return
+
+        ok, msg = await self.refresh_panel(interaction)
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @partners.command(name="refresh", description="Refresh the existing partnership panel without duplicates")
+    async def partners_refresh(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need Manage Server to use this.", ephemeral=True)
+            return
+
+        ok, msg = await self.refresh_panel(interaction)
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @partners.command(name="add", description="Add a new partner to the dropdown")
+    @app_commands.describe(
+        name="Partner server name",
+        invite="Discord invite link",
+        short_desc="Short dropdown description",
+        description="Full partner description",
+        platforms="Platforms offered",
+        banner="Optional banner/image URL for this partner",
+    )
+    async def partner_add(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        invite: str,
+        short_desc: str,
+        description: str,
+        platforms: Optional[str] = None,
+        banner: Optional[str] = None,
+    ):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need Manage Server to use this.", ephemeral=True)
+            return
+
+        self.data = load_data()
+        existing = next((p for p in self.data["partners"] if p["name"].lower() == name.lower()), None)
+        if existing:
+            await interaction.response.send_message("That partner already exists.", ephemeral=True)
+            return
+
+        self.data["partners"].append({
+            "name": name.strip(),
+            "short_desc": short_desc.strip(),
+            "description": description.strip(),
+            "invite": sanitize_url(invite),
+            "platforms": platforms.strip() if platforms else "",
+            "banner": sanitize_url(banner) if banner else "",
+        })
+        save_data(self.data)
+
+        ok, msg = await self.refresh_panel(interaction)
+        await interaction.response.send_message(f"Added **{name}**.\n{msg}", ephemeral=True)
+
+    @partners.command(name="remove", description="Remove a partner from the dropdown")
+    @app_commands.describe(name="Exact partner name to remove")
+    async def partner_remove(self, interaction: discord.Interaction, name: str):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need Manage Server to use this.", ephemeral=True)
+            return
+
+        self.data = load_data()
+        before = len(self.data["partners"])
+        self.data["partners"] = [p for p in self.data["partners"] if p["name"].lower() != name.lower()]
+        after = len(self.data["partners"])
+
+        if before == after:
+            await interaction.response.send_message("Partner not found.", ephemeral=True)
+            return
+
+        save_data(self.data)
+        ok, msg = await self.refresh_panel(interaction)
+        await interaction.response.send_message(f"Removed **{name}**.\n{msg}", ephemeral=True)
+
+    @partners.command(name="list", description="List all current partners")
+    async def partner_list(self, interaction: discord.Interaction):
+        names = get_partner_names(load_data())
+        if not names:
+            await interaction.response.send_message("No partners are currently saved.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="Saved Partners",
+            description="\n".join(f"• {n}" for n in names[:50]),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text=f"Total: {len(names)}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# SETUP
+# =========================================================
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(PartnershipSystem(bot), guild=discord.Object(id=GUILD_ID))
