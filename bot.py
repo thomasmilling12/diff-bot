@@ -7703,6 +7703,10 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
         await interaction.followup.send(
             f"Official meet posted for <t:{meet_ts}:F>.", ephemeral=True
         )
+        try:
+            await _om_panel_post_or_refresh(guild, force_repost=True)
+        except Exception:
+            pass
 
 
 class _OfficialMeetPanelView(discord.ui.View):
@@ -7722,12 +7726,40 @@ class _OfficialMeetPanelView(discord.ui.View):
         await interaction.response.send_modal(_OfficialMeetScheduleModal())
 
 
-async def _om_panel_post_or_refresh(guild: discord.Guild):
+async def _om_panel_post_or_refresh(guild: discord.Guild, force_repost: bool = False):
+    """Post or refresh the Official Meet panel.
+
+    force_repost=False (startup): edit existing in place, or create if missing.
+    force_repost=True  (after new meet posted): delete old panel, send fresh one at
+                        the bottom of the channel so it's always visible.
+    """
     channel = guild.get_channel(_OFFICIAL_MEET_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await guild.fetch_channel(_OFFICIAL_MEET_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
         return
+
     data = _om_panel_load()
     msg_id = data.get(str(guild.id))
+
+    if force_repost:
+        if msg_id:
+            try:
+                old = await channel.fetch_message(int(msg_id))
+                await old.delete()
+            except Exception:
+                pass
+        msg = await channel.send(
+            embed=_om_panel_build_embed(),
+            view=_OfficialMeetPanelView(),
+        )
+        data[str(guild.id)] = msg.id
+        _om_panel_save(data)
+        return
+
     if msg_id:
         try:
             msg = await channel.fetch_message(int(msg_id))
@@ -7737,6 +7769,7 @@ async def _om_panel_post_or_refresh(guild: discord.Guild):
             pass
         except Exception:
             return
+
     msg = await channel.send(embed=_om_panel_build_embed(), view=_OfficialMeetPanelView())
     data[str(guild.id)] = msg.id
     _om_panel_save(data)
