@@ -9345,6 +9345,31 @@ async def on_message(message: discord.Message) -> None:
         return
     if not isinstance(message.channel, discord.TextChannel):
         return
+
+    # --- Join channel photo progress tracking ---
+    topic = message.channel.topic
+    join_user_id = _join_parse_user_id(topic)
+    if join_user_id and str(message.author.id) == join_user_id:
+        new_images = [a for a in message.attachments if a.content_type and a.content_type.startswith("image/")]
+        if new_images:
+            history = [m async for m in message.channel.history(limit=200)]
+            total_images = sum(
+                len([a for a in m.attachments if a.content_type and a.content_type.startswith("image/")])
+                for m in history
+                if m.author.id == message.author.id
+            )
+            prev_total = total_images - len(new_images)
+            capped = min(total_images, MIN_GARAGE_PHOTOS)
+            await message.channel.send(f"📸 Photo Progress: {capped}/{MIN_GARAGE_PHOTOS}")
+            if prev_total < MIN_GARAGE_PHOTOS <= total_images:
+                leader_role = message.guild.get_role(LEADER_ROLE_ID)
+                co_role = message.guild.get_role(CO_LEADER_ROLE_ID)
+                mgr_role = message.guild.get_role(MANAGER_ROLE_ID)
+                mentions = " ".join(r.mention for r in [leader_role, co_role, mgr_role] if r)
+                await message.channel.send(f"{mentions}\n✅ This applicant has uploaded all required photos — ready for review.")
+        return
+
+    # --- Staff ticket message tracking ---
     if not _auto_is_ticket_channel(message.channel):
         return
     if not is_staff_reviewer(message.author):

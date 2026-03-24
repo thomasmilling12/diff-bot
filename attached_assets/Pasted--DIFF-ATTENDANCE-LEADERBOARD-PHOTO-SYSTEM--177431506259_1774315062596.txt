@@ -1,0 +1,148 @@
+// ===============================
+// DIFF ATTENDANCE + LEADERBOARD + PHOTO SYSTEM
+// ===============================
+
+const {
+EmbedBuilder,
+SlashCommandBuilder,
+PermissionFlagsBits,
+} = require('discord.js');
+const fs = require('fs');
+const path = require('path');
+
+module.exports = (client) => {
+
+const CONFIG = {
+staffLogsChannelId: 'PUT_STAFF_LOGS_CHANNEL_ID_HERE',
+leaderRoleId: 'PUT_LEADER_ROLE_ID_HERE',
+coLeaderRoleId: 'PUT_COLEADER_ROLE_ID_HERE',
+managerRoleId: 'PUT_MANAGER_ROLE_ID_HERE',
+};
+
+const DATA_FILE = './data/diff_data.json';
+
+// ===============================
+// DATA SYSTEM
+// ===============================
+
+function loadData() {
+if (!fs.existsSync(DATA_FILE)) {
+fs.writeFileSync(DATA_FILE, JSON.stringify({ users: {} }, null, 2));
+}
+return JSON.parse(fs.readFileSync(DATA_FILE));
+}
+
+function saveData(data) {
+fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+// ===============================
+// PHOTO COUNTER
+// ===============================
+
+client.on('messageCreate', async (msg) => {
+if (msg.author.bot) return;
+if (!msg.channel.topic || !msg.channel.topic.includes("JOIN_USER")) return;
+
+const userId = msg.channel.topic.split("JOIN_USER:")[1];
+if (msg.author.id !== userId) return;
+
+const images = [...msg.attachments.values()].filter(a =>
+a.contentType?.startsWith("image/")
+);
+
+if (!images.length) return;
+
+const data = loadData();
+
+if (!data.users[userId]) {
+data.users[userId] = { photos: 0, attendance: 0 };
+}
+
+data.users[userId].photos += images.length;
+if (data.users[userId].photos > 10) data.users[userId].photos = 10;
+
+saveData(data);
+
+await msg.channel.send(`📸 Photo Progress: ${data.users[userId].photos}/10`);
+
+if (data.users[userId].photos === 10) {
+await msg.channel.send(
+`<@&${CONFIG.leaderRoleId}> <@&${CONFIG.coLeaderRoleId}> <@&${CONFIG.managerRoleId}>\n✅ Ready for review`
+);
+}
+});
+
+// ===============================
+// SLASH COMMANDS
+// ===============================
+
+client.once('ready', async () => {
+const commands = [
+new SlashCommandBuilder()
+.setName('attendance')
+.setDescription('Mark attendance')
+.addUserOption(o => o.setName('user').setRequired(true))
+.addStringOption(o => o.setName('meet').setRequired(true)),
+
+```
+new SlashCommandBuilder()
+  .setName('mystats')
+  .setDescription('Your stats'),
+
+new SlashCommandBuilder()
+  .setName('topmembers')
+  .setDescription('Leaderboard')
+```
+
+];
+
+await client.application.commands.set(commands);
+});
+
+// ===============================
+// COMMAND HANDLER
+// ===============================
+
+client.on('interactionCreate', async (i) => {
+
+if (!i.isChatInputCommand()) return;
+
+const data = loadData();
+
+if (i.commandName === "attendance") {
+const user = i.options.getUser("user");
+
+if (!data.users[user.id]) {
+data.users[user.id] = { photos: 0, attendance: 0 };
+}
+
+data.users[user.id].attendance += 1;
+saveData(data);
+
+return i.reply(`✅ ${user} attendance marked`);
+}
+
+if (i.commandName === "mystats") {
+const u = data.users[i.user.id] || { photos: 0, attendance: 0 };
+
+return i.reply(
+`📊 Stats\nPhotos: ${u.photos}/10\nAttendance: ${u.attendance}`
+);
+}
+
+if (i.commandName === "topmembers") {
+const sorted = Object.entries(data.users)
+.sort((a, b) => b[1].attendance - a[1].attendance)
+.slice(0, 10);
+
+const text = sorted.map((u, i) =>
+`${i+1}. <@${u[0]}> — ${u[1].attendance}`
+).join("\n");
+
+return i.reply(`🏆 Leaderboard\n${text}`);
+}
+
+});
+
+};
