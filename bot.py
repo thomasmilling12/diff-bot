@@ -7764,6 +7764,24 @@ def _popup_build_panel_embed() -> discord.Embed:
     return embed
 
 
+async def _popup_post_or_refresh(guild: discord.Guild):
+    channel = guild.get_channel(_POPUP_PANEL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    row = _popup_db.get_panel(guild.id)
+    if row:
+        try:
+            msg = await channel.fetch_message(row["message_id"])
+            await msg.edit(embed=_popup_build_panel_embed(), view=_PopupMeetPanelView())
+            return
+        except discord.NotFound:
+            pass
+        except Exception:
+            return
+    msg = await channel.send(embed=_popup_build_panel_embed(), view=_PopupMeetPanelView())
+    _popup_db.save_panel(guild.id, channel.id, msg.id)
+
+
 @bot.command(name="postpopuppanel")
 async def _cmd_postpopuppanel(ctx: commands.Context):
     is_owner = ctx.guild and ctx.guild.owner_id == ctx.author.id
@@ -7776,17 +7794,7 @@ async def _cmd_postpopuppanel(ctx: commands.Context):
         await ctx.message.delete()
     except Exception:
         pass
-    row = _popup_db.get_panel(ctx.guild.id)
-    if row:
-        old_ch = ctx.guild.get_channel(row["channel_id"])
-        if isinstance(old_ch, discord.TextChannel):
-            try:
-                old_msg = await old_ch.fetch_message(row["message_id"])
-                await old_msg.delete()
-            except Exception:
-                pass
-    msg = await ctx.channel.send(embed=_popup_build_panel_embed(), view=_PopupMeetPanelView())
-    _popup_db.save_panel(ctx.guild.id, ctx.channel.id, msg.id)
+    await _popup_post_or_refresh(ctx.guild)
 
 
 # =========================
@@ -7894,6 +7902,11 @@ async def on_ready():
     bot.add_view(_OfficialMeetRSVPView())
     asyncio.create_task(_om_restore_on_ready())
     bot.add_view(_PopupMeetPanelView())
+    for _g in bot.guilds:
+        try:
+            await _popup_post_or_refresh(_g)
+        except Exception as _e:
+            print(f"[PopupMeet] on_ready refresh error: {_e}")
     if not _rc_ensure_loop.is_running():
         _rc_ensure_loop.start()
 
