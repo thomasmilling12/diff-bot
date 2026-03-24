@@ -209,6 +209,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 async def _setup_hook():
     await bot.load_extension("cogs.partner_expansion")
+    await bot.load_extension("cogs.partner_request_system")
 
 bot.setup_hook = _setup_hook
 

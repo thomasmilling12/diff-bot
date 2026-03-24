@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import json
@@ -11,14 +12,14 @@ from discord.ext import commands, tasks
 
 GUILD_ID = 850386896509337710
 
-PARTNER_DIRECTORY_CHANNEL_ID = 1485892421593337926
+PARTNER_DIRECTORY_CHANNEL_ID = 0
 PARTNER_ANNOUNCEMENT_CHANNEL_ID = 1047166622235893911
-PARTNER_STAFF_ALERT_CHANNEL_ID = 1025842308752621719
+PARTNER_STAFF_ALERT_CHANNEL_ID = 0
 
 PARTNER_ANNOUNCEMENT_PING_ROLE_ID = 1141435226929762335
 COLLAB_PARTNER_ROLE_ID = 1333770908807991359
 
-DATA_DIR = "diff_data"
+DATA_DIR = "data"
 PARTNER_DATA_FILE = os.path.join(DATA_DIR, "partners_directory.json")
 PARTNERSHIP_APPLICATIONS_FILE = os.path.join(DATA_DIR, "partnership_applications.json")
 
@@ -101,7 +102,7 @@ class PartnerExpansion(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print("[PartnerExpansion] Cog ready.")
+        print("PartnerExpansion loaded.")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -114,6 +115,7 @@ class PartnerExpansion(commands.Cog):
 
     @tasks.loop(minutes=REFRESH_MINUTES)
     async def refresh_loop(self):
+        await self.bot.wait_until_ready()
         await self.sync_directory_panel()
         await self.flag_inactive_partners()
 
@@ -185,7 +187,7 @@ class PartnerExpansion(commands.Cog):
 
     async def post_partner_announcement(self, record: PartnerRecord):
         channel = self.bot.get_channel(PARTNER_ANNOUNCEMENT_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
+        if channel is None:
             return None
 
         ping_role = f"<@&{PARTNER_ANNOUNCEMENT_PING_ROLE_ID}>"
@@ -227,7 +229,7 @@ class PartnerExpansion(commands.Cog):
 
     async def sync_directory_panel(self):
         channel = self.bot.get_channel(PARTNER_DIRECTORY_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
+        if channel is None:
             return
 
         data = self.get_partner_records()
@@ -236,12 +238,7 @@ class PartnerExpansion(commands.Cog):
         try:
             async for msg in channel.history(limit=100):
                 if msg.author == self.bot.user:
-                    is_request_panel = any(
-                        getattr(c, "custom_id", "") == "diff_partner_request_open"
-                        for row in msg.components for c in row.children
-                    )
-                    if not is_request_panel:
-                        await msg.delete()
+                    await msg.delete()
         except discord.HTTPException:
             pass
 
@@ -306,7 +303,7 @@ class PartnerExpansion(commands.Cog):
             if is_inactive and record.get("is_active", True):
                 record["is_active"] = False
                 changed = True
-                if isinstance(staff_channel, discord.TextChannel):
+                if staff_channel:
                     embed = discord.Embed(
                         title="⚠️ Inactive Partner Flagged",
                         description=(
@@ -318,10 +315,7 @@ class PartnerExpansion(commands.Cog):
                         color=WARNING_COLOR,
                         timestamp=utcnow()
                     )
-                    try:
-                        await staff_channel.send(embed=embed)
-                    except Exception:
-                        pass
+                    await staff_channel.send(embed=embed)
             elif not is_inactive and not record.get("is_active", True):
                 record["is_active"] = True
                 changed = True
@@ -333,17 +327,16 @@ class PartnerExpansion(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def partneradmin(self, ctx: commands.Context):
         await ctx.send(
-            "**Partner Admin Commands:**\n"
-            "`!partneradmin refresh` — Refresh directory & check inactivity\n"
-            "`!partneradmin add @user <invite> Server Name | Description` — Register a new partner\n"
-            "`!partneradmin activity @user` — Manually mark a partner as active\n"
-            "`!partneradmin remove @user` — Remove a partner from the directory"
+            "Partner admin commands:\n"
+            "`partneradmin refresh`\n"
+            "`partneradmin add @user invite Server Name | Description`\n"
+            "`partneradmin activity @user`\n"
+            "`partneradmin remove @user`"
         )
 
     @partneradmin.command(name="refresh")
     @commands.has_permissions(manage_guild=True)
     async def partner_refresh(self, ctx: commands.Context):
-        await ctx.send("🔄 Refreshing partner directory...")
         await self.sync_directory_panel()
         await self.flag_inactive_partners()
         await ctx.send("✅ Partner directory and activity monitor refreshed.")
@@ -372,28 +365,27 @@ class PartnerExpansion(commands.Cog):
 
         self.save_partner_records(data)
         await self.sync_directory_panel()
-        await ctx.send(f"🗑️ Removed **{record.get('guild_name', 'Unknown Partner')}** from the partner system.")
+        await ctx.send(f"🗑️ Removed {record.get('guild_name', 'Unknown Partner')} from the partner system.")
 
     @partneradmin.command(name="add")
     @commands.has_permissions(manage_guild=True)
     async def partner_add(self, ctx: commands.Context, member: discord.Member, invite_link: str, *, guild_name_and_description: str):
         if "|" not in guild_name_and_description:
-            await ctx.send("❌ Format: `!partneradmin add @user <invite> Server Name | Description`")
+            await ctx.send("❌ Format: `Server Name | Description`")
             return
+
         guild_name, description = [x.strip() for x in guild_name_and_description.split("|", 1)]
-        await ctx.send(f"✅ Registering **{guild_name}**...")
         await self.register_accepted_partner(
             member=member,
             guild_name=guild_name,
             invite_link=invite_link,
             description=description
         )
-        await ctx.send(f"✅ Added **{guild_name}** to the partner system and posted the announcement.")
+        await ctx.send(f"✅ Added {guild_name} to the partner system and posted the announcement.")
 
     @commands.command(name="postpartnerdirectory")
     @commands.has_permissions(manage_guild=True)
     async def postpartnerdirectory(self, ctx: commands.Context):
-        await ctx.send("🔄 Syncing partner directory...")
         await self.sync_directory_panel()
         await ctx.send("✅ Partner directory panel refreshed.")
 
@@ -444,7 +436,7 @@ class PartnerExpansion(commands.Cog):
 
         self.save_partner_records(data)
         await self.sync_directory_panel()
-        await ctx.send(f"✅ Imported **{imported}** accepted partner(s).")
+        await ctx.send(f"✅ Imported {imported} accepted partner(s).")
 
 
 async def setup(bot: commands.Bot):
