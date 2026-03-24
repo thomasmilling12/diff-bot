@@ -103,7 +103,15 @@ GARAGE_TIMEOUT_HOURS = 24
 APPROVED_MEMBER_ROLE_ID = CREW_MEMBER_ROLE_ID
 APPLICATIONS_FILE = "diff_applications_full.json"
 STAFF_DASHBOARD_CHANNEL_ID = 1485273802391814224
-CREW_CANDIDATE_ROLE_ID = 0
+CREW_CANDIDATE_ROLE_ID = 1485826950646988821
+ACTIVE_ROLE_ID = 1485826613206847650
+ELITE_ROLE_ID = 1485826784132857958
+STRIKE_1_ROLE_ID = 990105742663106570
+STRIKE_2_ROLE_ID = 990105837223698443
+STRIKE_3_ROLE_ID = 990106011664793600
+WARNING_1_ROLE_ID = 1266950150123950091
+RECAP_CHANNEL_ID = 0
+FINAL_TIER_FILE = os.path.join("diff_data", "diff_final_tier.json")
 PHOTO_HASHES_FILE = os.path.join("diff_data", "diff_photo_hashes.json")
 CREW_PINGED_FILE = os.path.join("diff_data", "diff_crew_pinged.json")
 MEMBER_DATABASE_CHANNEL_ID = 1485274945473871903
@@ -1943,6 +1951,192 @@ def _crew_pinged_save(data: set) -> None:
 def _attachment_hash(attachment: discord.Attachment) -> str:
     raw = f"{attachment.filename}|{attachment.size}|{attachment.content_type or ''}|{attachment.url}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+# =========================
+# FINAL TIER — DATA HELPERS
+# =========================
+
+def _ft_load() -> dict:
+    try:
+        if os.path.exists(FINAL_TIER_FILE):
+            with open(FINAL_TIER_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"users": {}, "meets": [], "hosts": {}, "recaps": []}
+
+
+def _ft_save(data: dict) -> None:
+    os.makedirs(os.path.dirname(FINAL_TIER_FILE), exist_ok=True)
+    with open(FINAL_TIER_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def _ft_ensure_user(user_id: int) -> dict:
+    data = _ft_load()
+    key = str(user_id)
+    users = data.setdefault("users", {})
+    if key not in users:
+        users[key] = {
+            "behaviorScore": 10,
+            "notes": [],
+            "hostedMeets": 0,
+            "hostAttendanceTotal": 0,
+            "rank": "Member",
+            "leaderboardEligible": True,
+            "crewInviteEligible": False,
+        }
+        _ft_save(data)
+    return data
+
+
+def _ft_get_user(data: dict, user_id: int) -> dict:
+    return data["users"].setdefault(str(user_id), {
+        "behaviorScore": 10,
+        "notes": [],
+        "hostedMeets": 0,
+        "hostAttendanceTotal": 0,
+        "rank": "Member",
+        "leaderboardEligible": True,
+        "crewInviteEligible": False,
+    })
+
+
+def _ft_get_strike_count(member: discord.Member) -> int:
+    role_ids = {r.id for r in member.roles}
+    if STRIKE_3_ROLE_ID in role_ids:
+        return 3
+    if STRIKE_2_ROLE_ID in role_ids:
+        return 2
+    if STRIKE_1_ROLE_ID in role_ids:
+        return 1
+    return 0
+
+
+def _ft_get_warning_count(member: discord.Member) -> int:
+    return 1 if any(r.id == WARNING_1_ROLE_ID for r in member.roles) else 0
+
+
+def _ft_compute_rank(attendance: int, behavior: int, strikes: int) -> str:
+    if strikes >= 3:
+        return "Restricted"
+    if attendance >= 8 and behavior >= 8 and strikes == 0:
+        return "Crew Candidate"
+    if attendance >= 5 and behavior >= 7 and strikes <= 1:
+        return "Elite"
+    if attendance >= 2 and behavior >= 6 and strikes <= 2:
+        return "Active"
+    return "Member"
+
+
+async def _ft_refresh_progression(member: discord.Member) -> tuple[str, bool, bool]:
+    data = _ft_ensure_user(member.id)
+    ft_user = _ft_get_user(data, member.id)
+
+    attendance = int(_rsvp_leaderboard.get(str(member.id), {}).get("attendance_count", 0))
+    behavior = int(ft_user.get("behaviorScore", 10) or 10)
+    strikes = _ft_get_strike_count(member)
+
+    rank = _ft_compute_rank(attendance, behavior, strikes)
+    lb_eligible = strikes < 3
+    crew_eligible = (rank == "Crew Candidate" and strikes == 0)
+
+    ft_user["rank"] = rank
+    ft_user["leaderboardEligible"] = lb_eligible
+    ft_user["crewInviteEligible"] = crew_eligible
+    _ft_save(data)
+
+    guild_roles = {r.id: r for r in member.guild.roles}
+    controlled = [r for rid in [ACTIVE_ROLE_ID, ELITE_ROLE_ID, CREW_CANDIDATE_ROLE_ID] if rid for r in [guild_roles.get(rid)] if r and r in member.roles]
+    to_add_id = {
+        "Active": ACTIVE_ROLE_ID,
+        "Elite": ELITE_ROLE_ID,
+        "Crew Candidate": CREW_CANDIDATE_ROLE_ID,
+    }.get(rank, 0)
+    to_add = [guild_roles[to_add_id]] if to_add_id and to_add_id in guild_roles else []
+
+    try:
+        if controlled:
+            await member.remove_roles(*controlled, reason="DIFF tier progression")
+        if to_add:
+            await member.add_roles(*to_add, reason="DIFF tier progression")
+    except Exception:
+        pass
+
+    return rank, lb_eligible, crew_eligible
+
+
+async def _ft_auto_progression_loop() -> None:
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(43200)
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            for member in guild.members:
+                if not member.bot:
+                    try:
+                        await _ft_refresh_progression(member)
+                    except Exception:
+                        pass
+
+
+def _ft_build_suggestions_embed(guild: discord.Guild) -> discord.Embed:
+    data = _ft_load()
+    promotion_lines, inactive_lines, best_host_lines = [], [], []
+
+    for uid, ft_user in data.get("users", {}).items():
+        member = guild.get_member(int(uid))
+        if not member:
+            continue
+        attendance = int(_rsvp_leaderboard.get(uid, {}).get("attendance_count", 0))
+        behavior = int(ft_user.get("behaviorScore", 10) or 10)
+        strikes = _ft_get_strike_count(member)
+        rank = _ft_compute_rank(attendance, behavior, strikes)
+        if rank in ("Elite", "Crew Candidate") and strikes <= 1:
+            promotion_lines.append(f"• <@{uid}> — **{rank}** | Att: {attendance} | Behavior: {behavior}/10")
+
+    for uid, entry in _rsvp_leaderboard.items():
+        if int(entry.get("attendance_count", 0)) == 0:
+            inactive_lines.append(f"• <@{uid}>")
+
+    hosts = []
+    for uid, h in data.get("hosts", {}).items():
+        hosted = int(h.get("hostedMeets", 0) or 0)
+        total = int(h.get("hostAttendanceTotal", 0) or 0)
+        avg = round(total / hosted, 1) if hosted > 0 else 0
+        if hosted > 0:
+            hosts.append((uid, hosted, total, avg))
+    hosts.sort(key=lambda x: (x[2], x[1], x[3]), reverse=True)
+    for uid, hosted, total, avg in hosts[:5]:
+        best_host_lines.append(f"• <@{uid}> — Hosted: **{hosted}** | Total Att: **{total}** | Avg: **{avg}**")
+
+    rsvp_suggestions = []
+    for item in _rsvp_promotions[-10:][::-1]:
+        rsvp_suggestions.append(
+            f"• <@{item['user_id']}> — {item['current_role']} → **{item['suggested_role']}** | {item.get('attendance_count', 0)} attended"
+        )
+
+    embed = discord.Embed(
+        title="🧠 DIFF Suggestions",
+        description="\n".join([
+            "**🏆 Promotion Candidates**",
+            *(promotion_lines[:8] or ["• None right now"]),
+            "",
+            "**📈 RSVP-Based Promotions**",
+            *(rsvp_suggestions[:5] or ["• None right now"]),
+            "",
+            "**📉 Inactive Members**",
+            *(inactive_lines[:8] or ["• None right now"]),
+            "",
+            "**🎤 Best Hosts**",
+            *(best_host_lines or ["• None right now"]),
+        ]),
+        color=discord.Color.blurple(),
+        timestamp=utc_now(),
+    )
+    embed.set_footer(text="Different Meets • Suggestions Panel")
+    return embed
 
 
 class NotifyMeetView(discord.ui.View):
@@ -4133,6 +4327,7 @@ async def on_ready():
     bot.loop.create_task(_auto_weekly_loop())
     bot.loop.create_task(_auto_staff_dashboard_loop())
     bot.loop.create_task(_daily_crew_invite_check())
+    bot.loop.create_task(_ft_auto_progression_loop())
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
@@ -8275,31 +8470,149 @@ async def post_staff_dashboard(interaction: discord.Interaction):
     await interaction.followup.send("✅ Staff dashboard refreshed and crew invite check complete.", ephemeral=True)
 
 
-@bot.tree.command(name="attendance-promotions", description="Show promotion suggestions based on meet attendance")
-async def attendance_promotions(interaction: discord.Interaction):
+@bot.tree.command(name="suggestions", description="Show DIFF promotion and activity suggestions (staff only)")
+async def suggestions(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
-    if not _rsvp_promotions:
-        return await interaction.response.send_message("No promotion suggestions yet.", ephemeral=True)
-    lines = []
-    for item in _rsvp_promotions[-10:][::-1]:
-        lines.append(
-            f"📈 <@{item['user_id']}> — {item['current_role']} → **{item['suggested_role']}** "
-            f"| {item.get('attendance_count', 0)} attended | {item.get('hosted_count', 0)} hosted "
-            f"| {item.get('attendance_rate', '?')}% rate"
-        )
+    embed = _ft_build_suggestions_embed(interaction.guild)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="meetrecap", description="Post a DIFF meet recap and update host stats (staff only)")
+@app_commands.describe(
+    host="Meet host",
+    meet="Meet name or theme",
+    attendance="Total attendance number",
+    top1="Top member 1 (optional)",
+    top2="Top member 2 (optional)",
+    top3="Top member 3 (optional)",
+    screenshot="Optional screenshot attachment",
+)
+async def meetrecap(
+    interaction: discord.Interaction,
+    host: discord.Member,
+    meet: str,
+    attendance: int,
+    top1: Optional[discord.Member] = None,
+    top2: Optional[discord.Member] = None,
+    top3: Optional[discord.Member] = None,
+    screenshot: Optional[discord.Attachment] = None,
+):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+
+    data = _ft_ensure_user(host.id)
+    ft_user = _ft_get_user(data, host.id)
+    hosts_section = data.setdefault("hosts", {})
+    host_entry = hosts_section.setdefault(str(host.id), {"hostedMeets": 0, "hostAttendanceTotal": 0})
+    host_entry["hostedMeets"] = int(host_entry.get("hostedMeets", 0)) + 1
+    host_entry["hostAttendanceTotal"] = int(host_entry.get("hostAttendanceTotal", 0)) + attendance
+    ft_user["hostedMeets"] = int(ft_user.get("hostedMeets", 0)) + 1
+    ft_user["hostAttendanceTotal"] = int(ft_user.get("hostAttendanceTotal", 0)) + attendance
+    data.setdefault("recaps", []).append({
+        "hostId": host.id,
+        "meet": meet,
+        "attendance": attendance,
+        "timestamp": utc_now().isoformat(),
+    })
+    _ft_save(data)
+
+    top_members = [m.mention for m in [top1, top2, top3] if m is not None]
     embed = discord.Embed(
-        title="📈 Attendance Promotion Suggestions",
-        description="\n".join(lines),
-        color=discord.Color.purple(),
-        timestamp=datetime.now(timezone.utc),
+        title="🎬 DIFF Meet Recap",
+        description="\n".join([
+            f"**Meet:** {meet}",
+            f"**Host:** {host.mention}",
+            f"**Attendance:** {attendance}",
+            "",
+            "**Top Members**",
+            *(top_members or ["None provided"]),
+            "",
+            "Built through consistency, structure, and clean meets.",
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=utc_now(),
     )
-    embed.set_footer(text="Review manually before promoting. Auto-posted to staff logs when triggered.")
-    embed.add_field(
-        name="Thresholds",
-        value="Crew Member → Host: 5 | Host → Manager: 10 | Manager → Co-Leader: 18 | Co-Leader → Leader: 30\nRequires ≥60% attendance rate",
-        inline=False,
+    embed.set_footer(text="Different Meets • Meet Recap")
+
+    files = []
+    if screenshot:
+        try:
+            files.append(await screenshot.to_file())
+            embed.set_image(url=f"attachment://{screenshot.filename}")
+        except Exception:
+            pass
+
+    recap_channel = interaction.guild.get_channel(RECAP_CHANNEL_ID) if RECAP_CHANNEL_ID else None
+    if isinstance(recap_channel, discord.TextChannel):
+        await recap_channel.send(embed=embed, files=files)
+    else:
+        await interaction.channel.send(embed=embed, files=files)
+
+    log_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(log_ch, discord.TextChannel):
+        try:
+            await log_ch.send(embed=discord.Embed(
+                title="🎬 Meet Recap Logged",
+                description=f"**Host:** {host.mention} | **Meet:** {meet} | **Attendance:** {attendance}",
+                color=discord.Color.dark_gray(),
+                timestamp=utc_now(),
+            ))
+        except Exception:
+            pass
+
+    await _ft_refresh_progression(host)
+    await interaction.followup.send("✅ Meet recap posted and host stats updated.", ephemeral=True)
+
+
+@bot.tree.command(name="behavior", description="Set a member's behavior score and update their tier rank (staff only)")
+@app_commands.describe(
+    user="Target member",
+    score="Behavior score 1–10 (10 = perfect)",
+    note="Optional staff note",
+)
+async def behavior(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    score: app_commands.Range[int, 1, 10],
+    note: Optional[str] = None,
+):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+
+    data = _ft_ensure_user(user.id)
+    ft_user = _ft_get_user(data, user.id)
+    ft_user["behaviorScore"] = score
+    if note:
+        ft_user.setdefault("notes", []).append({
+            "note": note,
+            "by": interaction.user.id,
+            "at": utc_now().isoformat(),
+        })
+    _ft_save(data)
+
+    rank, lb_ok, crew_ok = await _ft_refresh_progression(user)
+
+    embed = discord.Embed(
+        title="🧾 Behavior Score Updated",
+        description="\n".join([
+            f"**User:** {user.mention}",
+            f"**Behavior Score:** {score}/10",
+            f"**Tier Rank:** {rank}",
+            f"**Leaderboard Eligible:** {'Yes' if lb_ok else 'No'}",
+            f"**Crew Invite Eligible:** {'Yes' if crew_ok else 'No'}",
+            f"**Note:** {note or 'None'}",
+        ]),
+        color=discord.Color.orange(),
+        timestamp=utc_now(),
     )
+    log_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        try:
+            await log_ch.send(embed=embed)
+        except Exception:
+            pass
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -8355,6 +8668,20 @@ async def my_stats(interaction: discord.Interaction, member: Optional[discord.Me
     embed.add_field(name="❓ RSVP Maybe", value=str(rsvp_maybe), inline=True)
     embed.add_field(name="❌ RSVP Can't Make It", value=str(rsvp_no), inline=True)
     embed.add_field(name="⚠️ No-Shows After RSVP", value=str(missed), inline=True)
+    ft_data = _ft_ensure_user(target.id)
+    ft_user = _ft_get_user(ft_data, target.id)
+    behavior_score = int(ft_user.get("behaviorScore", 10) or 10)
+    ft_rank = ft_user.get("rank", "Member")
+    hosted_meets = int(ft_user.get("hostedMeets", 0) or 0)
+    strikes = _ft_get_strike_count(target)
+    warnings = _ft_get_warning_count(target)
+
+    embed.add_field(name="🎯 Tier Rank", value=ft_rank, inline=True)
+    embed.add_field(name="🎤 Recapped Meets Hosted", value=str(hosted_meets), inline=True)
+    embed.add_field(name="🧾 Behavior Score", value=f"{behavior_score}/10", inline=True)
+    embed.add_field(name="⚠️ Strikes", value=str(strikes), inline=True)
+    embed.add_field(name="⚠️ Warnings", value=str(warnings), inline=True)
+
     last = entry.get("last_attended")
     embed.set_footer(text=f"Last attended: {last[:10] if last else 'No check-ins yet'}")
     await interaction.response.send_message(embed=embed, ephemeral=member is None)
@@ -8973,35 +9300,6 @@ async def post_support_panel(interaction: discord.Interaction) -> None:
     await interaction.followup.send(f"Support panel posted in {channel.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="refresh-support-panel", description="Delete and repost the DIFF Support Center panel with the latest branding (staff only)")
-async def refresh_support_panel(interaction: discord.Interaction) -> None:
-    if not interaction.guild:
-        return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Staff only.", ephemeral=True)
-    channel = interaction.guild.get_channel(SUPPORT_PANEL_CHANNEL_ID)
-    if not isinstance(channel, discord.TextChannel):
-        return await interaction.response.send_message("Support panel channel not found.", ephemeral=True)
-    try:
-        await interaction.response.defer(ephemeral=True)
-    except discord.NotFound:
-        return
-    deleted = 0
-    try:
-        async for msg in channel.history(limit=50):
-            if msg.author.id == bot.user.id and any(e.title == _SUPPORT_BRAND for e in msg.embeds):
-                try:
-                    await msg.delete()
-                    deleted += 1
-                except discord.HTTPException:
-                    pass
-    except discord.HTTPException:
-        pass
-    await channel.send(embed=_supp_build_panel_embed(), view=SupportDropdownView())
-    await interaction.followup.send(
-        f"Support panel refreshed in {channel.mention} (removed {deleted} old panel(s)).",
-        ephemeral=True,
-    )
 
 
 # =========================
@@ -9326,19 +9624,6 @@ async def staff_add_application(interaction: discord.Interaction, member: discor
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.add_stat(member.id, "applications_reviewed", amount)
     await interaction.response.send_message(f"Added **{amount}** reviewed application(s) to {member.mention}.", ephemeral=True)
-    await _staff_check_promotion(interaction.guild, member)
-
-
-@bot.tree.command(name="staff-add-meet", description="Add hosted meet stats to a staff member (leadership only)")
-@app_commands.describe(member="Staff member to update", amount="Number of meets to add (default 1)")
-async def staff_add_meet(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
-            and not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message("Leadership only.", ephemeral=True)
-    _staff_store.add_stat(member.id, "meets_hosted", amount)
-    await interaction.response.send_message(f"Added **{amount}** hosted meet(s) to {member.mention}.", ephemeral=True)
     await _staff_check_promotion(interaction.guild, member)
 
 

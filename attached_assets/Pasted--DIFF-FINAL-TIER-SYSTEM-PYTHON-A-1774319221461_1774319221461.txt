@@ -1,0 +1,637 @@
+# ============================================================
+# DIFF FINAL TIER SYSTEM (PYTHON)
+# Adds:
+# 1. Auto Meet Recap System
+# 2. Rank Progression System
+# 3. Strike + Reputation System
+# 4. AI-style Suggestions
+#
+# SAVE AS:
+# diff_final_tier_system.py
+#
+# REQUIRES:
+# - discord.py 2.x
+#
+# BEFORE USING, REPLACE THESE IDS:
+# RECAP_CHANNEL_ID
+# STAFF_LOGS_CHANNEL_ID
+# PROMOTION_SUGGESTIONS_CHANNEL_ID
+# ACTIVE_ROLE_ID
+# ELITE_ROLE_ID
+# CREW_CANDIDATE_ROLE_ID
+# HOST_ROLE_ID
+#
+# STRIKE / WARNING ROLE IDS INCLUDED FROM YOUR MESSAGE:
+# STRIKE_1_ROLE_ID = 990105742663106570
+# STRIKE_2_ROLE_ID = 990105837223698443
+# STRIKE_3_ROLE_ID = 990106011664793600
+# WARNING_1_ROLE_ID = 1266950150123950091
+#
+# DATA FILES USED:
+# ./data/diff_data.json
+# ./data/diff_final_tier.json
+#
+# HOW TO ENABLE IN bot.py:
+# from diff_final_tier_system import setup_diff_final_tier_system
+# setup_diff_final_tier_system(bot)
+#
+# WHAT YOU GET:
+# - /meetrecap host:@user meet:"Name" attendance:20 screenshot(optional)
+# - /behavior user:@user score:1-10 note(optional)
+# - /hostrecap host:@user meet:"Name" attendance:20 screenshot(optional)
+# - /finalstats user:@user
+# - /suggestions
+#
+# AUTO SYSTEMS:
+# - rank progression
+# - strike-aware leaderboard eligibility
+# - crew invite suggestions
+# - promotion / inactivity / best host suggestions
+# ============================================================
+
+import os
+import json
+from datetime import datetime, timedelta
+
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# ===============================
+# CONFIG
+# ===============================
+
+RECAP_CHANNEL_ID = 0  # PUT_RECAP_CHANNEL_ID_HERE
+STAFF_LOGS_CHANNEL_ID = 0  # PUT_STAFF_LOGS_CHANNEL_ID_HERE
+PROMOTION_SUGGESTIONS_CHANNEL_ID = 0  # PUT_PROMOTION_SUGGESTIONS_CHANNEL_ID_HERE
+
+ACTIVE_ROLE_ID = 0  # PUT_ACTIVE_ROLE_ID_HERE
+ELITE_ROLE_ID = 0  # PUT_ELITE_ROLE_ID_HERE
+CREW_CANDIDATE_ROLE_ID = 0  # PUT_CREW_CANDIDATE_ROLE_ID_HERE
+HOST_ROLE_ID = 0  # PUT_HOST_ROLE_ID_HERE
+
+STRIKE_1_ROLE_ID = 990105742663106570
+STRIKE_2_ROLE_ID = 990105837223698443
+STRIKE_3_ROLE_ID = 990106011664793600
+WARNING_1_ROLE_ID = 1266950150123950091
+
+DATA_DIR = "./data"
+MAIN_DATA_FILE = os.path.join(DATA_DIR, "diff_data.json")
+FINAL_TIER_FILE = os.path.join(DATA_DIR, "diff_final_tier.json")
+
+
+# ===============================
+# FILE HELPERS
+# ===============================
+
+def ensure_json_file(path, default):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, indent=2)
+
+def load_json(path, default):
+    ensure_json_file(path, default)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def save_json(path, data):
+    ensure_json_file(path, data if isinstance(data, dict) else {})
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+def load_main_data():
+    return load_json(MAIN_DATA_FILE, {"users": {}})
+
+def save_main_data(data):
+    save_json(MAIN_DATA_FILE, data)
+
+def load_final_data():
+    return load_json(FINAL_TIER_FILE, {
+        "users": {},
+        "meets": [],
+        "hosts": {},
+        "recaps": []
+    })
+
+def save_final_data(data):
+    save_json(FINAL_TIER_FILE, data)
+
+
+# ===============================
+# USER HELPERS
+# ===============================
+
+def ensure_user(user_id: int):
+    main = load_main_data()
+    final = load_final_data()
+
+    main_users = main.setdefault("users", {})
+    final_users = final.setdefault("users", {})
+
+    key = str(user_id)
+
+    if key not in main_users:
+        main_users[key] = {
+            "attendance": 0,
+            "lastAttendance": 0,
+            "photos": 0,
+            "psn": "Unknown",
+            "accepted": False,
+            "readyForReview": False,
+            "notifyEnabled": False,
+            "crewInviteSuggested": False,
+        }
+
+    if key not in final_users:
+        final_users[key] = {
+            "behaviorScore": 10,
+            "notes": [],
+            "hostedMeets": 0,
+            "hostAttendanceTotal": 0,
+            "rank": "Member",
+            "leaderboardEligible": True,
+            "crewInviteEligible": False,
+            "lastRecapAt": None,
+        }
+
+    save_main_data(main)
+    save_final_data(final)
+    return main, final, main_users[key], final_users[key]
+
+
+def get_strike_count(member: discord.Member) -> int:
+    role_ids = {r.id for r in member.roles}
+    if STRIKE_3_ROLE_ID in role_ids:
+        return 3
+    if STRIKE_2_ROLE_ID in role_ids:
+        return 2
+    if STRIKE_1_ROLE_ID in role_ids:
+        return 1
+    return 0
+
+
+def get_warning_count(member: discord.Member) -> int:
+    return 1 if any(r.id == WARNING_1_ROLE_ID for r in member.roles) else 0
+
+
+def is_leaderboard_eligible(member: discord.Member) -> bool:
+    strikes = get_strike_count(member)
+    return strikes < 3
+
+
+def compute_rank(attendance: int, behavior_score: int, strikes: int) -> str:
+    if strikes >= 3:
+        return "Restricted"
+    if attendance >= 8 and behavior_score >= 8 and strikes == 0:
+        return "Crew Candidate"
+    if attendance >= 5 and behavior_score >= 7 and strikes <= 1:
+        return "Elite"
+    if attendance >= 2 and behavior_score >= 6 and strikes <= 2:
+        return "Active"
+    return "Member"
+
+
+def apply_rank_roles(member: discord.Member, rank: str):
+    to_add = []
+    to_remove = []
+
+    guild_roles = {r.id: r for r in member.guild.roles}
+
+    # remove controlled roles first if rank changes
+    for rid in [ACTIVE_ROLE_ID, ELITE_ROLE_ID, CREW_CANDIDATE_ROLE_ID]:
+        if rid and any(r.id == rid for r in member.roles):
+            to_remove.append(guild_roles.get(rid))
+
+    if rank == "Active" and ACTIVE_ROLE_ID:
+        to_add.append(guild_roles.get(ACTIVE_ROLE_ID))
+    elif rank == "Elite" and ELITE_ROLE_ID:
+        to_add.append(guild_roles.get(ELITE_ROLE_ID))
+    elif rank == "Crew Candidate" and CREW_CANDIDATE_ROLE_ID:
+        to_add.append(guild_roles.get(CREW_CANDIDATE_ROLE_ID))
+
+    return [r for r in to_add if r], [r for r in to_remove if r]
+
+
+async def refresh_user_progression(member: discord.Member):
+    main, final, main_user, final_user = ensure_user(member.id)
+
+    attendance = int(main_user.get("attendance", 0) or 0)
+    behavior_score = int(final_user.get("behaviorScore", 10) or 10)
+    strikes = get_strike_count(member)
+
+    rank = compute_rank(attendance, behavior_score, strikes)
+    final_user["rank"] = rank
+    final_user["leaderboardEligible"] = is_leaderboard_eligible(member)
+    final_user["crewInviteEligible"] = (rank == "Crew Candidate" and strikes == 0)
+
+    save_final_data(final)
+
+    add_roles, remove_roles = apply_rank_roles(member, rank)
+
+    try:
+        if remove_roles:
+            await member.remove_roles(*remove_roles, reason="DIFF final tier progression update")
+        if add_roles:
+            await member.add_roles(*add_roles, reason="DIFF final tier progression update")
+    except Exception:
+        pass
+
+    return rank, final_user["leaderboardEligible"], final_user["crewInviteEligible"]
+
+
+# ===============================
+# SUGGESTIONS
+# ===============================
+
+def build_ai_suggestions_embed(guild: discord.Guild):
+    main = load_main_data()
+    final = load_final_data()
+
+    promotion_lines = []
+    inactive_lines = []
+    best_host_lines = []
+
+    # promotions
+    for uid, mstats in main.get("users", {}).items():
+        member = guild.get_member(int(uid))
+        if not member:
+            continue
+
+        fstats = final.get("users", {}).get(uid, {})
+        attendance = int(mstats.get("attendance", 0) or 0)
+        behavior = int(fstats.get("behaviorScore", 10) or 10)
+        strikes = get_strike_count(member)
+        rank = compute_rank(attendance, behavior, strikes)
+
+        if rank in ("Elite", "Crew Candidate") and strikes <= 1:
+            promotion_lines.append(
+                f"• <@{uid}> — Rank: **{rank}**, Attendance: **{attendance}**, Behavior: **{behavior}/10**"
+            )
+
+    # inactive
+    for uid, mstats in main.get("users", {}).items():
+        attendance = int(mstats.get("attendance", 0) or 0)
+        if attendance == 0:
+            inactive_lines.append(f"• <@{uid}>")
+
+    # best hosts
+    hosts = []
+    for uid, hstats in final.get("hosts", {}).items():
+        hosted = int(hstats.get("hostedMeets", 0) or 0)
+        total_att = int(hstats.get("hostAttendanceTotal", 0) or 0)
+        avg = round(total_att / hosted, 1) if hosted > 0 else 0
+        if hosted > 0:
+            hosts.append((int(uid), hosted, total_att, avg))
+
+    hosts.sort(key=lambda x: (x[2], x[1], x[3]), reverse=True)
+
+    for uid, hosted, total_att, avg in hosts[:5]:
+        best_host_lines.append(
+            f"• <@{uid}> — Hosted: **{hosted}**, Total Attendance: **{total_att}**, Avg: **{avg}**"
+        )
+
+    embed = discord.Embed(
+        title="🧠 DIFF AI-Style Suggestions",
+        description="\n".join([
+            "**Promotion Suggestions**",
+            *(promotion_lines[:10] or ["• None right now"]),
+            "",
+            "**Inactive Members**",
+            *(inactive_lines[:10] or ["• None right now"]),
+            "",
+            "**Best Hosts**",
+            *(best_host_lines or ["• None right now"]),
+        ]),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(),
+    )
+    embed.set_footer(text="Different Meets • Final Tier Suggestions")
+    return embed
+
+
+# ===============================
+# RECAP EMBEDS
+# ===============================
+
+def build_meet_recap_embed(host: discord.Member, meet_name: str, attendance: int, top_members: list[str]):
+    return discord.Embed(
+        title="🎬 DIFF Meet Recap",
+        description="\n".join([
+            f"**Meet:** {meet_name}",
+            f"**Host:** {host.mention}",
+            f"**Attendance:** {attendance}",
+            "",
+            "**Top Members Mentioned**",
+            *(top_members or ["None provided"]),
+            "",
+            "Built through consistency, structure, and clean meets.",
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=datetime.now(),
+    )
+
+def build_host_recap_embed(host: discord.Member, meet_name: str, attendance: int):
+    return discord.Embed(
+        title="🎯 Host Performance Recap",
+        description="\n".join([
+            f"**Host:** {host.mention}",
+            f"**Meet:** {meet_name}",
+            f"**Attendance:** {attendance}",
+            "",
+            "This recap updates DIFF host stats and suggestion systems.",
+        ]),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(),
+    )
+
+
+# ===============================
+# COG
+# ===============================
+
+class DiffFinalTierCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    @app_commands.command(name="meetrecap", description="Post a DIFF meet recap")
+    @app_commands.describe(
+        host="Meet host",
+        meet="Meet name",
+        attendance="Total meet attendance",
+        top1="Top member 1 (optional)",
+        top2="Top member 2 (optional)",
+        top3="Top member 3 (optional)",
+        screenshot="Optional screenshot attachment"
+    )
+    async def meetrecap(
+        self,
+        interaction: discord.Interaction,
+        host: discord.Member,
+        meet: str,
+        attendance: int,
+        top1: discord.Member | None = None,
+        top2: discord.Member | None = None,
+        top3: discord.Member | None = None,
+        screenshot: discord.Attachment | None = None,
+    ):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("Only staff can use this command.", ephemeral=True)
+            return
+
+        recap_channel = interaction.guild.get_channel(RECAP_CHANNEL_ID) if RECAP_CHANNEL_ID else None
+        if not isinstance(recap_channel, discord.TextChannel):
+            await interaction.response.send_message("Recap channel is not configured.", ephemeral=True)
+            return
+
+        _, final, _, _ = ensure_user(host.id)
+
+        # host stats
+        host_stats = final.setdefault("hosts", {}).setdefault(str(host.id), {
+            "hostedMeets": 0,
+            "hostAttendanceTotal": 0,
+        })
+        host_stats["hostedMeets"] += 1
+        host_stats["hostAttendanceTotal"] += attendance
+
+        # recap list
+        final.setdefault("recaps", []).append({
+            "hostId": host.id,
+            "meet": meet,
+            "attendance": attendance,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+        # host user stats mirror
+        host_user = final.setdefault("users", {}).setdefault(str(host.id), {
+            "behaviorScore": 10,
+            "notes": [],
+            "hostedMeets": 0,
+            "hostAttendanceTotal": 0,
+            "rank": "Member",
+            "leaderboardEligible": True,
+            "crewInviteEligible": False,
+            "lastRecapAt": None,
+        })
+        host_user["hostedMeets"] = int(host_user.get("hostedMeets", 0) or 0) + 1
+        host_user["hostAttendanceTotal"] = int(host_user.get("hostAttendanceTotal", 0) or 0) + attendance
+        host_user["lastRecapAt"] = datetime.now().isoformat()
+
+        save_final_data(final)
+
+        top_members = [m.mention for m in [top1, top2, top3] if m is not None]
+        embed = build_meet_recap_embed(host, meet, attendance, top_members)
+
+        files = []
+        if screenshot:
+            try:
+                files.append(await screenshot.to_file())
+                embed.set_image(url=f"attachment://{screenshot.filename}")
+            except Exception:
+                pass
+
+        await recap_channel.send(embed=embed, files=files)
+
+        if STAFF_LOGS_CHANNEL_ID:
+            logs = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(logs, discord.TextChannel):
+                await logs.send(embed=embed)
+
+        await interaction.response.send_message("Meet recap posted.", ephemeral=True)
+
+    @app_commands.command(name="hostrecap", description="Post a host recap and update host stats")
+    @app_commands.describe(
+        host="Host member",
+        meet="Meet name",
+        attendance="Attendance total",
+        screenshot="Optional screenshot attachment"
+    )
+    async def hostrecap(
+        self,
+        interaction: discord.Interaction,
+        host: discord.Member,
+        meet: str,
+        attendance: int,
+        screenshot: discord.Attachment | None = None,
+    ):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("Only staff can use this command.", ephemeral=True)
+            return
+
+        _, final, _, _ = ensure_user(host.id)
+
+        host_stats = final.setdefault("hosts", {}).setdefault(str(host.id), {
+            "hostedMeets": 0,
+            "hostAttendanceTotal": 0,
+        })
+        host_stats["hostedMeets"] += 1
+        host_stats["hostAttendanceTotal"] += attendance
+
+        host_user = final.setdefault("users", {}).setdefault(str(host.id), {
+            "behaviorScore": 10,
+            "notes": [],
+            "hostedMeets": 0,
+            "hostAttendanceTotal": 0,
+            "rank": "Member",
+            "leaderboardEligible": True,
+            "crewInviteEligible": False,
+            "lastRecapAt": None,
+        })
+        host_user["hostedMeets"] = int(host_user.get("hostedMeets", 0) or 0) + 1
+        host_user["hostAttendanceTotal"] = int(host_user.get("hostAttendanceTotal", 0) or 0) + attendance
+
+        save_final_data(final)
+
+        embed = build_host_recap_embed(host, meet, attendance)
+        files = []
+        if screenshot:
+            try:
+                files.append(await screenshot.to_file())
+                embed.set_image(url=f"attachment://{screenshot.filename}")
+            except Exception:
+                pass
+
+        recap_channel = interaction.guild.get_channel(RECAP_CHANNEL_ID) if RECAP_CHANNEL_ID else None
+        if isinstance(recap_channel, discord.TextChannel):
+            await recap_channel.send(embed=embed, files=files)
+
+        await interaction.response.send_message("Host recap posted.", ephemeral=True)
+
+    @app_commands.command(name="behavior", description="Set or update a member behavior score")
+    @app_commands.describe(
+        user="Target member",
+        score="Behavior score from 1 to 10",
+        note="Optional staff note"
+    )
+    async def behavior(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        score: app_commands.Range[int, 1, 10],
+        note: str | None = None,
+    ):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("Only staff can use this command.", ephemeral=True)
+            return
+
+        _, final, _, final_user = ensure_user(user.id)
+        final_user["behaviorScore"] = score
+        if note:
+            final_user.setdefault("notes", []).append({
+                "note": note,
+                "by": interaction.user.id,
+                "at": datetime.now().isoformat(),
+            })
+        save_final_data(final)
+
+        rank, leaderboard_ok, crew_ok = await refresh_user_progression(user)
+
+        embed = discord.Embed(
+            title="🧾 Behavior Updated",
+            description="\n".join([
+                f"**User:** {user.mention}",
+                f"**Behavior Score:** {score}/10",
+                f"**Rank Now:** {rank}",
+                f"**Leaderboard Eligible:** {'Yes' if leaderboard_ok else 'No'}",
+                f"**Crew Invite Eligible:** {'Yes' if crew_ok else 'No'}",
+                f"**Note:** {note or 'None'}",
+            ]),
+            color=discord.Color.orange(),
+            timestamp=datetime.now(),
+        )
+
+        if STAFF_LOGS_CHANNEL_ID:
+            logs = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(logs, discord.TextChannel):
+                await logs.send(embed=embed)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="finalstats", description="View final-tier stats for a member")
+    @app_commands.describe(user="Member to view")
+    async def finalstats(self, interaction: discord.Interaction, user: discord.Member):
+        main, final, main_user, final_user = ensure_user(user.id)
+
+        rank, leaderboard_ok, crew_ok = await refresh_user_progression(user)
+
+        embed = discord.Embed(
+            title="📈 DIFF Final Stats",
+            description="\n".join([
+                f"**User:** {user.mention}",
+                f"**Attendance:** {int(main_user.get('attendance', 0) or 0)}",
+                f"**Photos:** {int(main_user.get('photos', 0) or 0)}/10",
+                f"**Behavior Score:** {int(final_user.get('behaviorScore', 10) or 10)}/10",
+                f"**Hosted Meets:** {int(final_user.get('hostedMeets', 0) or 0)}",
+                f"**Host Attendance Total:** {int(final_user.get('hostAttendanceTotal', 0) or 0)}",
+                f"**Rank:** {rank}",
+                f"**Leaderboard Eligible:** {'Yes' if leaderboard_ok else 'No'}",
+                f"**Crew Invite Eligible:** {'Yes' if crew_ok else 'No'}",
+                f"**Strikes:** {get_strike_count(user)}",
+                f"**Warnings:** {get_warning_count(user)}",
+            ]),
+            color=discord.Color.green(),
+            timestamp=datetime.now(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="suggestions", description="Show DIFF AI-style suggestions")
+    async def suggestions(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("Only staff can use this command.", ephemeral=True)
+            return
+
+        embed = build_ai_suggestions_embed(interaction.guild)
+
+        if PROMOTION_SUGGESTIONS_CHANNEL_ID:
+            channel = interaction.guild.get_channel(PROMOTION_SUGGESTIONS_CHANNEL_ID)
+            if isinstance(channel, discord.TextChannel):
+                await channel.send(embed=embed)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ===============================
+# AUTOMATION
+# ===============================
+
+async def auto_refresh_progression(bot: commands.Bot):
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            for guild in bot.guilds:
+                for member in guild.members:
+                    if member.bot:
+                        continue
+                    await refresh_user_progression(member)
+        except Exception as e:
+            print(f"[DIFF FINAL TIER] progression refresh error: {e}")
+        await discord.utils.sleep_until(datetime.now() + timedelta(hours=12))
+
+
+# ===============================
+# SETUP
+# ===============================
+
+def setup_diff_final_tier_system(bot: commands.Bot):
+    ensure_json_file(MAIN_DATA_FILE, {"users": {}})
+    ensure_json_file(FINAL_TIER_FILE, {"users": {}, "meets": [], "hosts": {}, "recaps": []})
+
+    @bot.event
+    async def on_ready():
+        if getattr(bot, "_diff_final_tier_ready_once", False):
+            return
+        bot._diff_final_tier_ready_once = True
+
+        await bot.add_cog(DiffFinalTierCog(bot))
+        bot.loop.create_task(auto_refresh_progression(bot))
+
+        try:
+            synced = await bot.tree.sync()
+            print(f"[DIFF FINAL TIER] synced {len(synced)} app commands.")
+        except Exception as e:
+            print(f"[DIFF FINAL TIER] command sync error: {e}")
+
+        print("[DIFF FINAL TIER] system ready.")
