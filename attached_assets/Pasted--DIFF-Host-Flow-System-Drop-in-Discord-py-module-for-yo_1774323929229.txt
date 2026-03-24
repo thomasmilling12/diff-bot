@@ -1,0 +1,331 @@
+"""
+DIFF Host Flow System
+Drop-in Discord.py module for your current bot.
+
+What this adds:
+- Host Hub panel with buttons
+- Start Meet button -> posts Welcome Speech in the configured meet channel
+- End Meet button -> posts Ending Speech in the configured meet channel + logs host activity
+- Voice Script button -> shows short host scripts hosts can memorize
+- Uses the host's Discord mention instead of PSN text
+
+Tested structure for discord.py 2.x
+
+HOW TO USE:
+1) Put this file next to your current bot file.
+2) Import and load it with:
+       await setup(bot)
+   OR if you use extensions:
+       await bot.load_extension("diff_host_flow")
+3) Run the send panel command:
+       !send_host_hub
+   or change to slash /send_host_hub if you wire it that way.
+4) Update LOG_CHANNEL_ID below if you want private logging.
+
+If your current bot already has a persistent view loader in on_ready(),
+make sure you call:
+    bot.add_view(HostHubView(bot))
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime
+from typing import Optional
+
+import discord
+from discord.ext import commands
+
+# =========================
+# CONFIG
+# =========================
+
+# Public channel where Start Meet / End Meet messages should be posted
+MEET_FLOW_CHANNEL_ID = 1485684577073758378
+
+# Private staff log channel for host activity logs
+# Replace this with your private logs channel if you want.
+# If left as None, it will log in the same meet flow channel.
+LOG_CHANNEL_ID: Optional[int] = None
+
+# Optional role IDs allowed to use the host buttons / send panel.
+# Leave empty [] if you do not want role restrictions.
+ALLOWED_ROLE_IDS: list[int] = []
+
+# Optional: prevent rapid spam button usage
+BUTTON_COOLDOWN_SECONDS = 5
+
+
+# =========================
+# HELPERS
+# =========================
+
+def has_allowed_role(member: discord.Member) -> bool:
+    if not ALLOWED_ROLE_IDS:
+        return True
+    member_role_ids = {role.id for role in member.roles}
+    return any(role_id in member_role_ids for role_id in ALLOWED_ROLE_IDS)
+
+
+def get_timestamp_strings() -> tuple[str, str]:
+    now = datetime.now()
+    return now.strftime("%b %d, %Y"), now.strftime("%I:%M %p")
+
+
+def build_start_meet_message(host_mention: str) -> str:
+    return (
+        "🔱 __**DIFF Meet Welcome**__ 🔱\n\n"
+        "*Hello everyone, welcome to another DIFF Meet.*\n\n"
+        f"*Tonight’s host is {host_mention}.*\n\n"
+        "*If you have any questions or need help during the meet, please contact the host.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚗 **Meet Status**\n"
+        "*We will be heading out shortly, so please get your vehicles ready and positioned properly.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⚠️ **Important Notice**\n"
+        "*If you have any problems with another player during the meet, please create a ticket in the DIFF Discord so DIFF Management can handle it properly.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚫 __**Meet Rules**__ 🚫\n\n"
+        "**☞ No weapons out at any time**\n"
+        "**☞ During cruises: single file only — no passing or overtaking**\n"
+        "**☞ No harassment, bullying, or unnecessary negativity**\n"
+        "**☞ No revving or excessive honking during the meet**\n"
+        "**☞ Stance vehicles away from the meet location so police are not attracted**\n"
+        "**☞ Stay in Discord voice chat so you know what is going on**\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "*Please follow all rules so we can keep the meet clean, realistic, and enjoyable for everyone.*\n\n"
+        "— **Different Meets**"
+    )
+
+
+def build_end_meet_message() -> str:
+    return (
+        "📌 __**DIFF Meet Ending**__ 📌\n\n"
+        "*Alright everyone, tonight’s DIFF Meet has now come to an end.*\n\n"
+        "*Thank you all for attending and being a part of tonight’s meet.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💬 **Feedback**\n"
+        "*If you enjoyed the meet, please leave feedback in our Discord server.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📲 **Stay Connected**\n"
+        "*Follow us on all platforms:*\n"
+        "**@diff_meets** — Instagram, YouTube, TikTok\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚗 **Interested in Joining DIFF?**\n"
+        "*If you want to join DIFF, please complete the Crew Application and message a DIFF Crew Manager for more information.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🎮 **Lobby Status**\n"
+        "*The lobby is now turning into a chill lobby.*\n\n"
+        "🚫 *No killing — anyone killing will be blocked.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🌙 *Have a great night, and we hope to see you at the next DIFF Meet.*\n\n"
+        "— **Different Meets**"
+    )
+
+
+def build_voice_script_message(host_mention: str) -> str:
+    return (
+        "🎤 __**Host Voice Script Mode**__ 🎤\n\n"
+        "**Start Meet Script**\n"
+        f"Welcome everyone to tonight’s DIFF Meet.\n\n"
+        f"I’m {host_mention}, and I’ll be hosting tonight.\n\n"
+        "We’ll be heading out shortly, so please get your cars ready.\n\n"
+        "Quick reminder: no weapons, no revving, no honking, no disrespect, and during cruises stay single file with no passing.\n\n"
+        "Also make sure you stay in Discord voice chat so you know what’s going on.\n\n"
+        "If you have any issues during the meet, please open a ticket in the Discord.\n\n"
+        "Let’s have a clean and smooth meet.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "**End Meet Script**\n"
+        "Alright everyone, tonight’s meet is now over.\n\n"
+        "Thank you all for coming out and being part of DIFF tonight.\n\n"
+        "If you enjoyed the meet, please leave us feedback in the Discord and check out our socials at @diff_meets.\n\n"
+        "If you’re interested in joining DIFF, fill out the crew application and message a DIFF Crew Manager.\n\n"
+        "The lobby is now a chill lobby, so no killing.\n\n"
+        "Have a great night, everyone."
+    )
+
+
+def build_host_log_message(host_mention: str) -> str:
+    date_str, time_str = get_timestamp_strings()
+    return (
+        "📊 __**DIFF Host Log**__ 📊\n\n"
+        f"**Host:** {host_mention}\n"
+        "**Flow Completed:** Meet Ended\n"
+        f"**Logged At:** {time_str} | {date_str}\n\n"
+        "— **Different Meets**"
+    )
+
+
+# =========================
+# VIEW
+# =========================
+
+class HostHubView(discord.ui.View):
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self._cooldowns: dict[int, float] = {}
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "This panel can only be used inside the server.",
+                ephemeral=True,
+            )
+            return False
+
+        if not has_allowed_role(interaction.user):
+            await interaction.response.send_message(
+                "You do not have permission to use this host panel.",
+                ephemeral=True,
+            )
+            return False
+
+        now = asyncio.get_event_loop().time()
+        last_used = self._cooldowns.get(interaction.user.id, 0)
+        if now - last_used < BUTTON_COOLDOWN_SECONDS:
+            remaining = round(BUTTON_COOLDOWN_SECONDS - (now - last_used), 1)
+            await interaction.response.send_message(
+                f"Please wait {remaining} seconds before pressing another host button.",
+                ephemeral=True,
+            )
+            return False
+
+        self._cooldowns[interaction.user.id] = now
+        return True
+
+    async def _get_target_channel(self, guild: discord.Guild, channel_id: int) -> Optional[discord.TextChannel]:
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            fetched = self.bot.get_channel(channel_id)
+            if isinstance(fetched, discord.TextChannel):
+                channel = fetched
+        return channel if isinstance(channel, discord.TextChannel) else None
+
+    @discord.ui.button(
+        label="Start Meet",
+        emoji="🔱",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_hosthub_start_meet",
+    )
+    async def start_meet_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        assert interaction.guild is not None
+        assert isinstance(interaction.user, discord.Member)
+
+        target_channel = await self._get_target_channel(interaction.guild, MEET_FLOW_CHANNEL_ID)
+        if target_channel is None:
+            await interaction.response.send_message(
+                "I could not find the meet flow channel. Check MEET_FLOW_CHANNEL_ID in the file.",
+                ephemeral=True,
+            )
+            return
+
+        message = build_start_meet_message(interaction.user.mention)
+        await target_channel.send(message)
+
+        await interaction.response.send_message(
+            f"Start Meet flow sent in {target_channel.mention}.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="End Meet",
+        emoji="📌",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_hosthub_end_meet",
+    )
+    async def end_meet_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        assert interaction.guild is not None
+        assert isinstance(interaction.user, discord.Member)
+
+        target_channel = await self._get_target_channel(interaction.guild, MEET_FLOW_CHANNEL_ID)
+        if target_channel is None:
+            await interaction.response.send_message(
+                "I could not find the meet flow channel. Check MEET_FLOW_CHANNEL_ID in the file.",
+                ephemeral=True,
+            )
+            return
+
+        await target_channel.send(build_end_meet_message())
+
+        log_channel_id = LOG_CHANNEL_ID or MEET_FLOW_CHANNEL_ID
+        log_channel = await self._get_target_channel(interaction.guild, log_channel_id)
+        if log_channel is not None:
+            await log_channel.send(build_host_log_message(interaction.user.mention))
+
+        await interaction.response.send_message(
+            f"End Meet flow sent in {target_channel.mention} and host activity was logged.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Voice Script",
+        emoji="🎤",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_hosthub_voice_script",
+    )
+    async def voice_script_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        assert isinstance(interaction.user, discord.Member)
+        await interaction.response.send_message(
+            build_voice_script_message(interaction.user.mention),
+            ephemeral=True,
+        )
+
+
+# =========================
+# COG
+# =========================
+
+class HostHubCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.bot.add_view(HostHubView(bot))
+
+    @commands.command(name="send_host_hub")
+    @commands.guild_only()
+    async def send_host_hub(self, ctx: commands.Context):
+        """Posts the DIFF Host Hub panel."""
+        if not isinstance(ctx.author, discord.Member):
+            return
+
+        if not has_allowed_role(ctx.author):
+            await ctx.reply("You do not have permission to send the Host Hub panel.")
+            return
+
+        embed = discord.Embed(
+            title="📌 DIFF Host Flow System",
+            description=(
+                "*Use the buttons below to manage your meet flow professionally.*\n\n"
+                "🔱 **Start Meet** — Sends the official DIFF welcome speech\n"
+                "📌 **End Meet** — Sends the official ending speech and logs your host activity\n"
+                "🎤 **Voice Script** — Displays the short host script for easier speaking during meets\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "*Keep hosting clean, organized, and professional.*\n\n"
+                "— **Different Meets**"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="DIFF Host Hub")
+
+        await ctx.send(embed=embed, view=HostHubView(self.bot))
+
+    @commands.command(name="host_voice_script")
+    @commands.guild_only()
+    async def host_voice_script(self, ctx: commands.Context):
+        """Posts the short voice script in chat for testing."""
+        if not isinstance(ctx.author, discord.Member):
+            return
+
+        if not has_allowed_role(ctx.author):
+            await ctx.reply("You do not have permission to use this command.")
+            return
+
+        await ctx.send(build_voice_script_message(ctx.author.mention))
+
+
+# =========================
+# SETUP
+# =========================
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(HostHubCog(bot))

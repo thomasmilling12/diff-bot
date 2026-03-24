@@ -115,6 +115,7 @@ RECAP_CHANNEL_ID = 1485829235258953928
 SEASON_CHANNEL_ID = 0
 HOST_RSVP_CHANNEL_ID = 1485830232270307410
 HOST_HUB_CHANNEL_ID = 1485840926612918383
+MEET_FLOW_CHANNEL_ID = 1485684577073758378
 BLACKLIST_CHANNEL_ID = 1057016810261712938
 IG_CONTENT_CHANNEL_ID = 1485830678980333568
 TOP1_ROLE_ID = 1485828728683757669
@@ -2980,6 +2981,233 @@ async def _hosthub_cmd(ctx: commands.Context):
 
 
 # =========================
+# HOST FLOW SYSTEM
+# =========================
+
+_HOSTFLOW_STATE_FILE = os.path.join("diff_data", "diff_host_flow_state.json")
+_HOSTFLOW_COOLDOWNS: dict[int, float] = {}
+_HOSTFLOW_COOLDOWN_SECS = 5
+_HOSTFLOW_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+
+
+def _hostflow_get_saved_msg_id() -> int | None:
+    try:
+        with open(_HOSTFLOW_STATE_FILE, "r") as f:
+            v = json.load(f).get("message_id")
+            return int(v) if v else None
+    except Exception:
+        return None
+
+
+def _hostflow_save_msg_id(msg_id: int) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    try:
+        with open(_HOSTFLOW_STATE_FILE, "w") as f:
+            json.dump({"message_id": msg_id}, f)
+    except Exception:
+        pass
+
+
+def _hostflow_start_msg(host_mention: str) -> str:
+    return (
+        "🔱 __**DIFF Meet Welcome**__ 🔱\n\n"
+        "*Hello everyone, welcome to another DIFF Meet.*\n\n"
+        f"*Tonight's host is {host_mention}.*\n\n"
+        "*If you have any questions or need help during the meet, please contact the host.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚗 **Meet Status**\n"
+        "*We will be heading out shortly — please get your vehicles ready and positioned properly.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⚠️ **Important Notice**\n"
+        "*If you have any problems with another player during the meet, please create a ticket in the DIFF Discord so DIFF Management can handle it properly.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚫 __**Meet Rules**__ 🚫\n\n"
+        "**☞ No weapons out at any time**\n"
+        "**☞ During cruises: single file only — no passing or overtaking**\n"
+        "**☞ No harassment, bullying, or unnecessary negativity**\n"
+        "**☞ No revving or excessive honking during the meet**\n"
+        "**☞ Stance vehicles away from the meet location so police are not attracted**\n"
+        "**☞ Stay in Discord voice chat so you know what is going on**\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "*Please follow all rules so we can keep the meet clean, realistic, and enjoyable for everyone.*\n\n"
+        "— **Different Meets**"
+    )
+
+
+def _hostflow_end_msg() -> str:
+    return (
+        "📌 __**DIFF Meet Ending**__ 📌\n\n"
+        "*Alright everyone, tonight's DIFF Meet has now come to an end.*\n\n"
+        "*Thank you all for attending and being a part of tonight's meet.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💬 **Feedback**\n"
+        "*If you enjoyed the meet, please leave feedback in our Discord server.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📲 **Stay Connected**\n"
+        "*Follow us on all platforms:*\n"
+        "**@diff_meets** — Instagram, YouTube, TikTok\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🚗 **Interested in Joining DIFF?**\n"
+        "*Complete the Crew Application and message a DIFF Crew Manager for more information.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🎮 **Lobby Status**\n"
+        "*The lobby is now turning into a chill lobby.*\n"
+        "🚫 *No killing — anyone killing will be blocked.*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🌙 *Have a great night, and we hope to see you at the next DIFF Meet.*\n\n"
+        "— **Different Meets**"
+    )
+
+
+def _hostflow_voice_script(host_mention: str) -> str:
+    return (
+        "🎤 __**Host Voice Script**__ 🎤\n\n"
+        "**— Start Meet —**\n"
+        f"Welcome everyone to tonight's DIFF Meet. I'm {host_mention}, and I'll be hosting tonight.\n\n"
+        "We'll be heading out shortly, so please get your cars ready.\n\n"
+        "Quick reminder: no weapons, no revving, no honking, no disrespect, and during cruises stay single file with no passing.\n\n"
+        "Stay in Discord voice chat so you know what's going on. "
+        "If you have any issues during the meet, please open a ticket in the Discord.\n\n"
+        "Let's have a clean and smooth meet.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "**— End Meet —**\n"
+        "Alright everyone, tonight's meet is now over.\n\n"
+        "Thank you all for coming out and being part of DIFF tonight.\n\n"
+        "If you enjoyed the meet, please leave us feedback in the Discord and check out our socials at @diff_meets.\n\n"
+        "If you're interested in joining DIFF, fill out the crew application and message a DIFF Crew Manager.\n\n"
+        "The lobby is now a chill lobby — no killing. Have a great night, everyone."
+    )
+
+
+def _hostflow_log_msg(host_mention: str) -> str:
+    now = utc_now()
+    return (
+        "📊 __**DIFF Host Log**__ 📊\n\n"
+        f"**Host:** {host_mention}\n"
+        f"**Action:** Meet Ended\n"
+        f"**Logged At:** {now.strftime('%I:%M %p')} UTC | {now.strftime('%b %d, %Y')}\n\n"
+        "— **Different Meets**"
+    )
+
+
+def _hostflow_panel_embed() -> discord.Embed:
+    e = discord.Embed(
+        title="📌 DIFF Host Flow System",
+        description=(
+            "*Use the buttons below to manage your meet flow professionally.*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔱 **Start Meet** — Posts the official DIFF welcome speech\n"
+            "📌 **End Meet** — Posts the ending speech and logs your host activity\n"
+            "🎤 **Voice Script** — Shows the host scripts to use during meets\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "*Keep hosting clean, organized, and professional.*\n\n"
+            "— **Different Meets**"
+        ),
+        color=discord.Color.blurple(),
+    )
+    e.set_footer(text="DIFF Host Flow • Stay prepared • Lead properly")
+    return e
+
+
+class HostFlowView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _check_host(self, interaction: discord.Interaction) -> bool:
+        roles = getattr(interaction.user, "roles", [])
+        if not any(r.id in _HOSTFLOW_ALLOWED_ROLES for r in roles):
+            await interaction.response.send_message("Only hosts can use this panel.", ephemeral=True)
+            return False
+        now = __import__("asyncio").get_event_loop().time()
+        last = _HOSTFLOW_COOLDOWNS.get(interaction.user.id, 0)
+        if now - last < _HOSTFLOW_COOLDOWN_SECS:
+            remaining = round(_HOSTFLOW_COOLDOWN_SECS - (now - last), 1)
+            await interaction.response.send_message(f"Please wait {remaining}s before pressing again.", ephemeral=True)
+            return False
+        _HOSTFLOW_COOLDOWNS[interaction.user.id] = now
+        return True
+
+    @discord.ui.button(label="Start Meet", emoji="🔱", style=discord.ButtonStyle.success, custom_id="diff_hostflow:start_meet")
+    async def start_meet_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_host(interaction):
+            return
+        ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            await interaction.response.send_message("Meet channel not found.", ephemeral=True)
+            return
+        await ch.send(_hostflow_start_msg(interaction.user.mention))
+        await interaction.response.send_message(f"✅ Welcome speech posted in {ch.mention}.", ephemeral=True)
+
+    @discord.ui.button(label="End Meet", emoji="📌", style=discord.ButtonStyle.danger, custom_id="diff_hostflow:end_meet")
+    async def end_meet_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_host(interaction):
+            return
+        ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            await interaction.response.send_message("Meet channel not found.", ephemeral=True)
+            return
+        await ch.send(_hostflow_end_msg())
+        log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(log_ch, discord.TextChannel):
+            await log_ch.send(_hostflow_log_msg(interaction.user.mention))
+        await interaction.response.send_message(f"✅ Ending speech posted in {ch.mention} and activity logged.", ephemeral=True)
+
+    @discord.ui.button(label="Voice Script", emoji="🎤", style=discord.ButtonStyle.primary, custom_id="diff_hostflow:voice_script")
+    async def voice_script_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_host(interaction):
+            return
+        await interaction.response.send_message(_hostflow_voice_script(interaction.user.mention), ephemeral=True)
+
+
+async def _hostflow_post_or_refresh() -> None:
+    channel = bot.get_channel(HOST_HUB_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await bot.fetch_channel(HOST_HUB_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+    embed = _hostflow_panel_embed()
+    view = HostFlowView()
+    saved_id = _hostflow_get_saved_msg_id()
+    if saved_id:
+        try:
+            old = await channel.fetch_message(saved_id)
+            await old.edit(embed=embed, view=view)
+            return
+        except Exception:
+            pass
+    async for msg in channel.history(limit=25):
+        if msg.author.id == bot.user.id:
+            for row in msg.components:
+                for child in row.children:
+                    if getattr(child, "custom_id", "").startswith("diff_hostflow:"):
+                        try:
+                            await msg.edit(embed=embed, view=view)
+                            _hostflow_save_msg_id(msg.id)
+                        except Exception:
+                            pass
+                        return
+    try:
+        new_msg = await channel.send(embed=embed, view=view)
+        _hostflow_save_msg_id(new_msg.id)
+    except Exception as e:
+        print(f"[HostFlow] Post failed: {e}")
+
+
+@bot.command(name="hostflow")
+async def _hostflow_cmd(ctx: commands.Context):
+    if not any(r.id in _HOSTFLOW_ALLOWED_ROLES for r in ctx.author.roles):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _hostflow_post_or_refresh()
+
+
+# =========================
 # MOBILE UI PANEL PACK
 # =========================
 
@@ -5481,6 +5709,8 @@ async def on_ready():
     await _asched_update_panel(bot)
     bot.add_view(HostHubView())
     await _hosthub_post_or_refresh()
+    bot.add_view(HostFlowView())
+    await _hostflow_post_or_refresh()
     bot.add_view(_MobileRefreshView())
 
     if not hierarchy_attendance_loop.is_running():
