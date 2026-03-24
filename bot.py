@@ -111,6 +111,11 @@ STRIKE_2_ROLE_ID = 990105837223698443
 STRIKE_3_ROLE_ID = 990106011664793600
 WARNING_1_ROLE_ID = 1266950150123950091
 RECAP_CHANNEL_ID = 1485829235258953928
+SEASON_CHANNEL_ID = 0
+TOP1_ROLE_ID = 1485828728683757669
+TOP2_ROLE_ID = 1485828776838303955
+TOP3_ROLE_ID = 1485828874943074434
+SEASON_FILE = os.path.join("diff_data", "diff_seasons.json")
 FINAL_TIER_FILE = os.path.join("diff_data", "diff_final_tier.json")
 PHOTO_HASHES_FILE = os.path.join("diff_data", "diff_photo_hashes.json")
 CREW_PINGED_FILE = os.path.join("diff_data", "diff_crew_pinged.json")
@@ -2079,6 +2084,141 @@ async def _ft_auto_progression_loop() -> None:
                         await _ft_refresh_progression(member)
                     except Exception:
                         pass
+
+
+# =========================
+# SEASON SYSTEM
+# =========================
+
+def _season_load() -> dict:
+    try:
+        if os.path.exists(SEASON_FILE):
+            with open(SEASON_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"history": [], "last_ran_month": None}
+
+
+def _season_save(data: dict) -> None:
+    os.makedirs(os.path.dirname(SEASON_FILE), exist_ok=True)
+    with open(SEASON_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def _season_get_top3() -> list[tuple[int, int]]:
+    ranked = sorted(
+        _rsvp_leaderboard.values(),
+        key=lambda x: int(x.get("attendance_count", 0)),
+        reverse=True,
+    )[:3]
+    return [(int(e["user_id"]), int(e.get("attendance_count", 0))) for e in ranked]
+
+
+def _season_build_embed(winners: list[tuple[int, int]], month_label: str) -> discord.Embed:
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [f"{medals[i]} <@{uid}> — **{score}** meet(s)" for i, (uid, score) in enumerate(winners)]
+    embed = discord.Embed(
+        title=f"🏁 DIFF Season Results — {month_label}",
+        description="\n".join(lines) + "\n\nTop performers of the month. Stay active. Stay consistent.",
+        color=discord.Color.gold(),
+        timestamp=utc_now(),
+    )
+    embed.set_footer(text="Different Meets • Monthly Season Results")
+    return embed
+
+
+def _season_build_ig_caption(winners: list[tuple[int, int]], month_label: str) -> str:
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [f"🏁 DIFF SEASON RESULTS — {month_label}"]
+    for i, (uid, score) in enumerate(winners):
+        lines.append(f"{medals[i]} Member #{uid} — {score} meets")
+    lines.append("\nStay active. Stay consistent. #DIFFMeets #GTACarMeet")
+    return "\n".join(lines)
+
+
+async def _season_give_rewards(guild: discord.Guild, winners: list[tuple[int, int]]) -> None:
+    top_role_ids = [TOP1_ROLE_ID, TOP2_ROLE_ID, TOP3_ROLE_ID]
+    all_reward_roles = [guild.get_role(rid) for rid in top_role_ids if rid]
+
+    for i, (uid, _) in enumerate(winners):
+        member = guild.get_member(uid)
+        if not member:
+            continue
+        try:
+            existing = [r for r in all_reward_roles if r and r in member.roles]
+            if existing:
+                await member.remove_roles(*existing, reason="DIFF season reset")
+        except Exception:
+            pass
+        role = guild.get_role(top_role_ids[i]) if i < len(top_role_ids) else None
+        if role:
+            try:
+                await member.add_roles(role, reason="DIFF season winner")
+            except Exception:
+                pass
+
+
+def _season_reset_attendance() -> None:
+    for entry in _rsvp_leaderboard.values():
+        entry["last_attendance_count"] = int(entry.get("attendance_count", 0))
+        entry["attendance_count"] = 0
+    _rsvp_save_all()
+
+
+async def _season_run(guild: discord.Guild) -> None:
+    winners = _season_get_top3()
+    if not winners:
+        return
+
+    now = datetime.now(timezone.utc)
+    month_label = now.strftime("%B %Y")
+
+    post_ch_id = SEASON_CHANNEL_ID or LEADERBOARD_CHANNEL_ID
+    post_ch = guild.get_channel(post_ch_id)
+    if isinstance(post_ch, discord.TextChannel):
+        try:
+            await post_ch.send(embed=_season_build_embed(winners, month_label))
+        except Exception:
+            pass
+
+    await _season_give_rewards(guild, winners)
+
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(log_ch, discord.TextChannel):
+        caption = _season_build_ig_caption(winners, month_label)
+        try:
+            await log_ch.send(f"📸 **IG Caption for this season:**\n```\n{caption}\n```")
+        except Exception:
+            pass
+
+    season_data = _season_load()
+    season_data.setdefault("history", []).append({
+        "month": month_label,
+        "date": now.isoformat(),
+        "winners": [{"user_id": uid, "score": score} for uid, score in winners],
+    })
+    season_data["last_ran_month"] = now.strftime("%Y-%m")
+    _season_save(season_data)
+
+    _season_reset_attendance()
+
+
+async def _season_loop() -> None:
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(3600)
+        try:
+            now = datetime.now(timezone.utc)
+            if now.day == 1 and now.hour == 12:
+                season_data = _season_load()
+                current_month = now.strftime("%Y-%m")
+                if season_data.get("last_ran_month") != current_month:
+                    guild = bot.get_guild(GUILD_ID)
+                    if guild:
+                        await _season_run(guild)
+        except Exception as e:
+            print(f"[Season] Loop error: {e}")
 
 
 def _ft_build_suggestions_embed(guild: discord.Guild) -> discord.Embed:
@@ -4328,6 +4468,7 @@ async def on_ready():
     bot.loop.create_task(_auto_staff_dashboard_loop())
     bot.loop.create_task(_daily_crew_invite_check())
     bot.loop.create_task(_ft_auto_progression_loop())
+    bot.loop.create_task(_season_loop())
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()

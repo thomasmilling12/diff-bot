@@ -1,0 +1,197 @@
+# ============================================================
+# DIFF SEASON SYSTEM (FINAL UPGRADE)
+# Monthly leaderboard reset + rewards system
+#
+# SAVE AS:
+# diff_season_system.py
+#
+# FEATURES:
+# - Monthly reset (auto)
+# - Top 3 winners (🥇🥈🥉)
+# - Reward roles
+# - IG shoutout message generator
+# - Season history tracking
+#
+# REQUIREMENTS:
+# discord.py 2.x
+#
+# ADD TO bot.py:
+# from diff_season_system import setup_diff_season_system
+# setup_diff_season_system(bot)
+# ============================================================
+
+import os
+import json
+from datetime import datetime, timedelta
+
+import discord
+from discord.ext import commands
+
+# ===============================
+# CONFIG
+# ===============================
+
+SEASON_CHANNEL_ID = 0  # WHERE RESULTS POST
+SEASON_LOGS_CHANNEL_ID = 0
+
+TOP1_ROLE_ID = 0  # 🥇 role
+TOP2_ROLE_ID = 0  # 🥈 role
+TOP3_ROLE_ID = 0  # 🥉 role
+
+DATA_FILE = "./data/diff_data.json"
+SEASON_FILE = "./data/diff_seasons.json"
+
+# ===============================
+# FILES
+# ===============================
+
+def ensure(path, default):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path):
+        with open(path, "w") as f:
+            json.dump(default, f, indent=2)
+
+def load(path, default):
+    ensure(path, default)
+    with open(path) as f:
+        return json.load(f)
+
+def save(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+# ===============================
+# DATA
+# ===============================
+
+def get_top3():
+    data = load(DATA_FILE, {"users": {}})
+    users = []
+
+    for uid, stats in data["users"].items():
+        users.append((int(uid), stats.get("attendance", 0)))
+
+    users.sort(key=lambda x: x[1], reverse=True)
+    return users[:3]
+
+# ===============================
+# REWARD SYSTEM
+# ===============================
+
+async def give_rewards(guild, winners):
+    roles = [
+        guild.get_role(TOP1_ROLE_ID),
+        guild.get_role(TOP2_ROLE_ID),
+        guild.get_role(TOP3_ROLE_ID),
+    ]
+
+    for i, (uid, _) in enumerate(winners):
+        member = guild.get_member(uid)
+        if member and roles[i]:
+            try:
+                await member.add_roles(roles[i])
+            except:
+                pass
+
+# ===============================
+# EMBED
+# ===============================
+
+def build_embed(winners):
+    lines = []
+
+    medals = ["🥇", "🥈", "🥉"]
+
+    for i, (uid, score) in enumerate(winners):
+        lines.append(f"{medals[i]} <@{uid}> — {score} meets")
+
+    return discord.Embed(
+        title="🏁 DIFF Season Results",
+        description="\n".join(lines) + "\n\nTop performers of the month.",
+        color=discord.Color.gold(),
+        timestamp=datetime.now()
+    )
+
+# ===============================
+# IG MESSAGE
+# ===============================
+
+def build_ig_caption(winners):
+    medals = ["🥇", "🥈", "🥉"]
+    text = ["🏁 DIFF SEASON RESULTS"]
+
+    for i, (uid, score) in enumerate(winners):
+        text.append(f"{medals[i]} Member {uid} — {score} meets")
+
+    text.append("\nStay active. Stay consistent. #DIFF")
+    return "\n".join(text)
+
+# ===============================
+# RESET
+# ===============================
+
+def reset_data():
+    data = load(DATA_FILE, {"users": {}})
+    for u in data["users"].values():
+        u["lastAttendance"] = u.get("attendance", 0)
+        u["attendance"] = 0
+    save(DATA_FILE, data)
+
+# ===============================
+# MAIN LOOP
+# ===============================
+
+async def season_check(bot):
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        now = datetime.now()
+
+        # Run on 1st of month at 12PM
+        if now.day == 1 and now.hour == 12:
+            for guild in bot.guilds:
+                winners = get_top3()
+
+                # Post results
+                ch = guild.get_channel(SEASON_CHANNEL_ID)
+                if ch:
+                    await ch.send(embed=build_embed(winners))
+
+                # Rewards
+                await give_rewards(guild, winners)
+
+                # IG caption log
+                logs = guild.get_channel(SEASON_LOGS_CHANNEL_ID)
+                if logs:
+                    await logs.send(f"```{build_ig_caption(winners)}```")
+
+                # Save history
+                seasons = load(SEASON_FILE, {"history": []})
+                seasons["history"].append({
+                    "date": now.isoformat(),
+                    "winners": winners
+                })
+                save(SEASON_FILE, seasons)
+
+                # Reset
+                reset_data()
+
+            await discord.utils.sleep_until(now + timedelta(days=1))
+
+        await discord.utils.sleep_until(now + timedelta(hours=1))
+
+# ===============================
+# SETUP
+# ===============================
+
+def setup_diff_season_system(bot: commands.Bot):
+    ensure(SEASON_FILE, {"history": []})
+
+    @bot.event
+    async def on_ready():
+        if getattr(bot, "_season_started", False):
+            return
+        bot._season_started = True
+
+        bot.loop.create_task(season_check(bot))
+        print("[DIFF SEASON] system running")
