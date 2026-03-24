@@ -7,40 +7,72 @@ from typing import Optional
 import discord
 from discord.ext import commands
 
-GUILD_ID = 850386896509337710
-MANAGER_HUB_CHANNEL_ID = 1485273802391814224
-LOGO_STORAGE_CHANNEL_ID = 1485265848099799163  # staff-logs — messages kept alive for CDN
+# =========================================================
+# CONFIG
+# =========================================================
 
-HUB_TITLE = "🧠 DIFF Manager Hub"
+GUILD_ID                = 850386896509337710
+MANAGER_HUB_CHANNEL_ID  = 1485273802391814224
+LOGO_STORAGE_CHANNEL_ID = 1485265848099799163  # staff-logs — kept alive for CDN
+
+HUB_TITLE = "🧠 DIFF Interactive Manager Hub"
 HUB_DESCRIPTION = (
     "The all-in-one management hub for **Different Meets**.\n\n"
-    "Use the dropdowns below to review manager duties and browse official DIFF crew logos.\n\n"
-    "This panel refreshes cleanly without duplicates."
+    "Use the dropdowns below to read leadership information, view live performance data, "
+    "log your manager activity, and browse official DIFF crew logos.\n\n"
+    "This panel refreshes cleanly without creating duplicate posts."
 )
-FOOTER_TEXT = "Different Meets • Manager Hub System"
-LOGO_URL = ""
-BANNER_URL = ""
+FOOTER_TEXT = "Different Meets • Interactive Manager Hub"
 
-STATE_FILE     = Path("diff_data/manager_hub_state.json")
+RECRUITMENT_POINTS    = 3
+MEET_SUPPORT_POINTS   = 2
+MANAGER_ACTION_POINTS = 2
+ISSUE_REPORT_POINTS   = 1
+WARNING_FILED_POINTS  = 1
+
+VALID_STATS = {
+    "recruitment": "recruitment", "recruit": "recruitment", "r": "recruitment",
+    "meet_support": "meet_support", "meetsupport": "meet_support", "ms": "meet_support",
+    "manager_actions": "manager_actions", "manageractions": "manager_actions",
+    "actions": "manager_actions", "a": "manager_actions",
+    "issues_reported": "issues_reported", "issues": "issues_reported",
+    "issue": "issues_reported", "i": "issues_reported",
+    "warnings_filed": "warnings_filed", "warnings": "warnings_filed",
+    "warning": "warnings_filed", "w": "warnings_filed",
+}
+STAT_LABELS = {
+    "recruitment":     ("Recruitment",     RECRUITMENT_POINTS),
+    "meet_support":    ("Meet Support",    MEET_SUPPORT_POINTS),
+    "manager_actions": ("Manager Actions", MANAGER_ACTION_POINTS),
+    "issues_reported": ("Issues Reported", ISSUE_REPORT_POINTS),
+    "warnings_filed":  ("Warnings Filed",  WARNING_FILED_POINTS),
+}
+
+STATE_FILE      = Path("diff_data/manager_hub_state.json")
+STATS_FILE      = Path("diff_data/manager_performance_stats.json")
 CREW_LOGOS_FILE = Path("diff_data/crew_logos.json")
 
 # =========================================================
-# PREDEFINED LOGOS (filename → display info)
-# URLs are populated by !initcrewlogos or !addcrewlogo
+# PRESET LOGOS
 # =========================================================
+
 PRESET_LOGOS: list[dict] = [
-    {"key": "diff_classic",       "name": "Different Meets Classic",   "description": "Blue Porsche edition logo — Est. 2020"},
-    {"key": "diff_crew_gold",     "name": "DIFF Crew — Gold",          "description": "Gold metallic Different Meets Crew wordmark"},
-    {"key": "diff_crew_silver",   "name": "DIFF Crew — Silver",        "description": "Silver metallic Different Meets Crew wordmark"},
-    {"key": "diff_5th_anniversary","name": "5th Anniversary",          "description": "Official DIFF Meets 5th Anniversary logo"},
-    {"key": "diff_420",           "name": "420 Edition",               "description": "DIFF Meets Crew 420 slime edition"},
-    {"key": "dmc_classic",        "name": "DMC Classic",               "description": "Different Meets Crew — black & white DMC logo"},
-    {"key": "diff_graffiti",      "name": "Graffiti Style",            "description": "Different Meets Crew graffiti text logo"},
-    {"key": "diff_red_black",     "name": "Red & Black — Est. 2020",   "description": "Different Meets Crew bold red/black edition"},
-    {"key": "diff_4th_anniversary","name": "4th Anniversary",          "description": "Official DIFF Meets 4th Anniversary logo"},
-    {"key": "diff_loyalty_club",  "name": "DIFF Loyalty Club",         "description": "DIFF Meets Loyalty Club official logo"},
-    {"key": "diff_chrome_crew",   "name": "Chrome Crew — Est. 2020",   "description": "Different Meets Crew chrome metallic — Est. 2020"},
+    {"key": "diff_classic",        "name": "Different Meets Classic",    "description": "Blue Porsche edition logo — Est. 2020"},
+    {"key": "diff_crew_gold",      "name": "DIFF Crew — Gold",           "description": "Gold metallic Different Meets Crew wordmark"},
+    {"key": "diff_crew_silver",    "name": "DIFF Crew — Silver",         "description": "Silver metallic Different Meets Crew wordmark"},
+    {"key": "diff_5th_anniversary","name": "5th Anniversary",            "description": "Official DIFF Meets 5th Anniversary logo"},
+    {"key": "diff_420",            "name": "420 Edition",                "description": "DIFF Meets Crew 420 slime edition"},
+    {"key": "dmc_classic",         "name": "DMC Classic",                "description": "Different Meets Crew — black & white DMC logo"},
+    {"key": "diff_graffiti",       "name": "Graffiti Style",             "description": "Different Meets Crew graffiti text logo"},
+    {"key": "diff_red_black",      "name": "Red & Black — Est. 2020",    "description": "Different Meets Crew bold red/black edition"},
+    {"key": "diff_4th_anniversary","name": "4th Anniversary",            "description": "Official DIFF Meets 4th Anniversary logo"},
+    {"key": "diff_loyalty_club",   "name": "DIFF Loyalty Club",          "description": "DIFF Meets Loyalty Club official logo"},
+    {"key": "diff_chrome_crew",    "name": "Chrome Crew — Est. 2020",    "description": "Different Meets Crew chrome metallic — Est. 2020"},
 ]
+
+# =========================================================
+# SECTION CONTENT
+# =========================================================
 
 SECTION_CONTENT = {
     "crew_manager_roles": {
@@ -153,9 +185,8 @@ SECTION_CONTENT = {
     },
 }
 
-
 # =========================================================
-# HELPERS
+# HELPERS — STATE
 # =========================================================
 
 def _load_state() -> dict:
@@ -167,12 +198,14 @@ def _load_state() -> dict:
             pass
     return {"channel_id": MANAGER_HUB_CHANNEL_ID, "message_id": None}
 
-
 def _save_state(data: dict) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     with STATE_FILE.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
+# =========================================================
+# HELPERS — LOGOS
+# =========================================================
 
 def _load_logos() -> list[dict]:
     if CREW_LOGOS_FILE.exists():
@@ -183,53 +216,128 @@ def _load_logos() -> list[dict]:
             pass
     return []
 
-
 def _save_logos(logos: list[dict]) -> None:
     CREW_LOGOS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with CREW_LOGOS_FILE.open("w", encoding="utf-8") as f:
         json.dump(logos, f, indent=4)
 
-
 def _logo_by_key(logos: list[dict], key: str) -> Optional[dict]:
     return next((l for l in logos if l["key"] == key), None)
 
+# =========================================================
+# HELPERS — STATS
+# =========================================================
+
+def _load_stats() -> dict:
+    if STATS_FILE.exists():
+        try:
+            with STATS_FILE.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"managers": {}}
+
+def _save_stats(data: dict) -> None:
+    STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with STATS_FILE.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+def _blank_stats(member_id: int, name: str) -> dict:
+    return {
+        "member_id": member_id,
+        "name": name,
+        "recruitment": 0,
+        "meet_support": 0,
+        "manager_actions": 0,
+        "issues_reported": 0,
+        "warnings_filed": 0,
+    }
+
+def _compute_score(stats: dict) -> int:
+    return (
+        stats.get("recruitment",     0) * RECRUITMENT_POINTS
+        + stats.get("meet_support",    0) * MEET_SUPPORT_POINTS
+        + stats.get("manager_actions", 0) * MANAGER_ACTION_POINTS
+        + stats.get("issues_reported", 0) * ISSUE_REPORT_POINTS
+        + stats.get("warnings_filed",  0) * WARNING_FILED_POINTS
+    )
+
+def _sorted_managers(managers: dict) -> list:
+    rows = list(managers.values())
+    for r in rows:
+        r["score"] = _compute_score(r)
+    rows.sort(
+        key=lambda x: (x["score"], x.get("recruitment", 0), x.get("meet_support", 0)),
+        reverse=True,
+    )
+    return rows
 
 # =========================================================
-# UI — MANAGER SECTIONS DROPDOWN
+# UI — INTERACTIVE MANAGER HUB SELECT
 # =========================================================
 
 class ManagerHubSelect(discord.ui.Select):
-    def __init__(self):
+    def __init__(self, cog: "ManagerHubSystem"):
+        self.cog = cog
         options = [
-            discord.SelectOption(
-                label=v["label"][:100],
-                description="Open this manager hub section.",
-                value=k,
-                emoji=v["emoji"],
-            )
+            discord.SelectOption(label=v["label"][:100], value=k, emoji=v["emoji"],
+                                 description="Open this manager hub section.")
             for k, v in SECTION_CONTENT.items()
+        ] + [
+            discord.SelectOption(label="Live Manager Leaderboard", value="live_leaderboard",
+                                 emoji="📈", description="See the current top-performing managers."),
+            discord.SelectOption(label="My Performance", value="my_performance",
+                                 emoji="👤", description="View your own manager stats and score."),
+            discord.SelectOption(label="Manager Actions", value="manager_actions",
+                                 emoji="⚙️", description="Log your manager activity with one click."),
         ]
         super().__init__(
             placeholder="📋  Select a manager section...",
             min_values=1,
             max_values=1,
             options=options,
-            custom_id="diff_manager_hub_select",
+            custom_id="diff_interactive_manager_hub_select",
         )
 
     async def callback(self, interaction: discord.Interaction):
-        section = SECTION_CONTENT.get(self.values[0])
-        if not section:
-            await interaction.response.send_message("Section not found.", ephemeral=True)
-            return
-        embed = discord.Embed(
-            title=f"{section['emoji']} {section['label']}",
-            description=section["description"],
-            color=discord.Color.blurple(),
-        )
-        embed.set_footer(text=FOOTER_TEXT)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        value = self.values[0]
 
+        if value in SECTION_CONTENT:
+            section = SECTION_CONTENT[value]
+            embed = discord.Embed(
+                title=f"{section['emoji']} {section['label']}",
+                description=section["description"],
+                color=discord.Color.blurple(),
+            )
+            embed.set_footer(text=FOOTER_TEXT)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        if value == "live_leaderboard":
+            await interaction.response.send_message(
+                embed=self.cog.build_leaderboard_embed(), ephemeral=True
+            )
+            return
+
+        if value == "my_performance":
+            if not isinstance(interaction.user, discord.Member):
+                await interaction.response.send_message("Could not load your profile.", ephemeral=True)
+                return
+            await interaction.response.send_message(
+                embed=self.cog.build_profile_embed(interaction.user), ephemeral=True
+            )
+            return
+
+        if value == "manager_actions":
+            if not isinstance(interaction.user, discord.Member):
+                await interaction.response.send_message("Could not open actions.", ephemeral=True)
+                return
+            await interaction.response.send_message(
+                embed=self.cog.build_actions_embed(interaction.user),
+                view=ManagerActionsView(self.cog),
+                ephemeral=True,
+            )
+            return
 
 # =========================================================
 # UI — CREW LOGOS DROPDOWN
@@ -237,7 +345,7 @@ class ManagerHubSelect(discord.ui.Select):
 
 class CrewLogosSelect(discord.ui.Select):
     def __init__(self, logos: list[dict]):
-        ready = [l for l in logos if l.get("url")]
+        ready   = [l for l in logos if l.get("url")]
         pending = [l for l in logos if not l.get("url")]
 
         options = []
@@ -259,7 +367,7 @@ class CrewLogosSelect(discord.ui.Select):
         if not options:
             options = [discord.SelectOption(
                 label="No logos added yet",
-                description="Run !initcrewlogos to upload the preset logos",
+                description="Use !addcrewlogo to upload the preset logos",
                 value="__none__",
                 emoji="📭",
             )]
@@ -275,13 +383,12 @@ class CrewLogosSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "__none__":
             await interaction.response.send_message(
-                "No logos have been uploaded yet. Run `!initcrewlogos` to set them up.",
-                ephemeral=True,
+                "No logos have been uploaded yet.", ephemeral=True
             )
             return
 
         logos = _load_logos()
-        logo = _logo_by_key(logos, self.values[0])
+        logo  = _logo_by_key(logos, self.values[0])
         if not logo:
             await interaction.response.send_message("Logo not found.", ephemeral=True)
             return
@@ -303,26 +410,89 @@ class CrewLogosSelect(discord.ui.Select):
         embed.set_footer(text="Different Meets • Crew Logo Gallery")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# =========================================================
+# UI — MANAGER ACTIONS BUTTONS
+# =========================================================
+
+class ManagerActionsView(discord.ui.View):
+    def __init__(self, cog: "ManagerHubSystem"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def _check_perm(self, interaction: discord.Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Could not verify permissions.", ephemeral=True)
+            return False
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "You need **Manage Server** permission to log manager actions.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _update(self, interaction: discord.Interaction):
+        embed = self.cog.build_actions_embed(interaction.user)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="+1 Recruitment", style=discord.ButtonStyle.green,
+                       emoji="📣", custom_id="mgr_btn_recruitment")
+    async def add_recruitment(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_perm(interaction):
+            return
+        await self.cog.adjust_stats(interaction.user, recruitment=1)
+        await self._update(interaction)
+
+    @discord.ui.button(label="+1 Meet Support", style=discord.ButtonStyle.blurple,
+                       emoji="🤝", custom_id="mgr_btn_meet_support")
+    async def add_meet_support(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_perm(interaction):
+            return
+        await self.cog.adjust_stats(interaction.user, meet_support=1)
+        await self._update(interaction)
+
+    @discord.ui.button(label="+1 Manager Action", style=discord.ButtonStyle.secondary,
+                       emoji="⚙️", custom_id="mgr_btn_action")
+    async def add_action(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_perm(interaction):
+            return
+        await self.cog.adjust_stats(interaction.user, manager_actions=1)
+        await self._update(interaction)
+
+    @discord.ui.button(label="+1 Issue Reported", style=discord.ButtonStyle.red,
+                       emoji="🚨", custom_id="mgr_btn_issue")
+    async def add_issue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_perm(interaction):
+            return
+        await self.cog.adjust_stats(interaction.user, issues_reported=1)
+        await self._update(interaction)
+
+    @discord.ui.button(label="+1 Warning Filed", style=discord.ButtonStyle.red,
+                       emoji="📄", custom_id="mgr_btn_warning")
+    async def add_warning(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_perm(interaction):
+            return
+        await self.cog.adjust_stats(interaction.user, warnings_filed=1)
+        await self._update(interaction)
 
 # =========================================================
-# VIEW
+# UI — COMBINED VIEW (hub select + logos select)
 # =========================================================
 
 class ManagerHubView(discord.ui.View):
-    def __init__(self, logos: Optional[list[dict]] = None):
+    def __init__(self, cog: "ManagerHubSystem", logos: Optional[list[dict]] = None):
         super().__init__(timeout=None)
-        self.add_item(ManagerHubSelect())
+        self.add_item(ManagerHubSelect(cog))
         self.add_item(CrewLogosSelect(logos or _load_logos()))
-
 
 # =========================================================
 # COG
 # =========================================================
 
-class ManagerHubSystem(commands.Cog):
+class ManagerHubSystem(commands.Cog, name="ManagerHubSystem"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.bot.add_view(ManagerHubView())
+        self.bot.add_view(ManagerHubView(self))
+        self.bot.add_view(ManagerActionsView(self))
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -330,8 +500,10 @@ class ManagerHubSystem(commands.Cog):
         await self._auto_upload_logos()
         await self.post_or_refresh_panel()
 
+    # ── logo CDN management ───────────────────────────────────
+
     async def _auto_upload_logos(self):
-        logos = _load_logos()
+        logos        = _load_logos()
         existing_keys = {l["key"] for l in logos}
 
         for preset in PRESET_LOGOS:
@@ -345,14 +517,13 @@ class ManagerHubSystem(commands.Cog):
                     "storage_channel_id": None,
                 })
 
-        # Refresh URLs for logos that already have a stored message_id
         refreshed = 0
         for logo in logos:
             mid = logo.get("message_id")
             cid = logo.get("storage_channel_id")
             if mid and cid:
                 try:
-                    ch = self.bot.get_channel(cid) or await self.bot.fetch_channel(cid)
+                    ch  = self.bot.get_channel(cid) or await self.bot.fetch_channel(cid)
                     msg = await ch.fetch_message(mid)
                     if msg.attachments:
                         logo["url"] = msg.attachments[0].proxy_url or msg.attachments[0].url
@@ -360,7 +531,6 @@ class ManagerHubSystem(commands.Cog):
                 except Exception as e:
                     print(f"[ManagerHubSystem] URL refresh failed for {logo['key']}: {e}")
 
-        # Upload any still-missing logos — keep messages so URLs stay alive
         missing = [l for l in logos if not l.get("url")]
         if missing:
             storage_ch = self.bot.get_channel(LOGO_STORAGE_CHANNEL_ID)
@@ -384,23 +554,23 @@ class ManagerHubSystem(commands.Cog):
                             content=f"[LOGO STORAGE — do not delete] {logo['name']}",
                             file=discord.File(img_path),
                         )
-                        logo["url"] = msg.attachments[0].proxy_url or msg.attachments[0].url
-                        logo["message_id"] = msg.id
+                        logo["url"]                = msg.attachments[0].proxy_url or msg.attachments[0].url
+                        logo["message_id"]         = msg.id
                         logo["storage_channel_id"] = storage_ch.id
                         uploaded += 1
                     except Exception as e:
                         print(f"[ManagerHubSystem] Logo upload failed for {logo['key']}: {e}")
-
                 if uploaded:
                     print(f"[ManagerHubSystem] Uploaded {uploaded} new crew logo(s).")
 
         if refreshed:
             print(f"[ManagerHubSystem] Refreshed {refreshed} logo URL(s) from stored messages.")
-
         _save_logos(logos)
 
+    # ── embed builders ───────────────────────────────────────
+
     def build_main_embed(self) -> discord.Embed:
-        logos = _load_logos()
+        logos       = _load_logos()
         ready_count = sum(1 for l in logos if l.get("url"))
         total_count = len(logos)
 
@@ -410,39 +580,118 @@ class ManagerHubSystem(commands.Cog):
             color=discord.Color.blurple(),
         )
         embed.add_field(
-            name="📋 Manager Sections",
+            name="📋 Hub Sections",
             value=(
                 "• Crew Managers Roles & Responsibility\n"
                 "• Crew Recruitment Roles\n"
                 "• Discord Manager Roles\n"
                 "• PlayStation Group Chat Manager Roles\n"
-                "• Problem To Look Out For"
+                "• Problem To Look Out For\n"
+                "• 📈 Live Manager Leaderboard\n"
+                "• 👤 My Performance\n"
+                "• ⚙️ Manager Actions"
             ),
-            inline=True,
+            inline=False,
         )
         embed.add_field(
             name="🎨 Crew Logo Gallery",
-            value=(
-                f"{ready_count}/{total_count} logos uploaded\n"
-                "Browse all official DIFF crew logos\n"
-                "from the dropdown below"
-            ),
-            inline=True,
+            value=f"{ready_count}/{total_count} logos available — browse using the dropdown below.",
+            inline=False,
         )
         embed.add_field(
-            name="How To Use",
-            value="Use the dropdowns below — each section opens privately just for you.",
+            name="ℹ️ How To Use",
+            value="Select from the first dropdown to open a section or log activity. Select from the second dropdown to view crew logos.",
             inline=False,
         )
         embed.set_footer(text=FOOTER_TEXT)
-        if LOGO_URL:
-            embed.set_thumbnail(url=LOGO_URL)
-        if BANNER_URL:
-            embed.set_image(url=BANNER_URL)
         return embed
 
-    async def post_or_refresh_panel(self) -> tuple[bool, str]:
-        state = _load_state()
+    def build_leaderboard_embed(self) -> discord.Embed:
+        data  = _load_stats()
+        rows  = _sorted_managers(data.get("managers", {}))
+        embed = discord.Embed(
+            title="📈 DIFF Manager Leaderboard",
+            description="Live manager rankings based on tracked activity.",
+            color=discord.Color.green(),
+        )
+        if rows:
+            medals = ["🥇", "🥈", "🥉"]
+            lines  = []
+            for idx, item in enumerate(rows[:10], start=1):
+                prefix = medals[idx - 1] if idx <= 3 else f"**#{idx}**"
+                lines.append(
+                    f"{prefix} <@{item['member_id']}> — **{item['score']} pts**"
+                    f"  `R:{item['recruitment']} MS:{item['meet_support']}"
+                    f" A:{item['manager_actions']} I:{item['issues_reported']}"
+                    f" W:{item['warnings_filed']}`"
+                )
+            embed.add_field(name="🏆 Top Managers", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(name="🏆 Top Managers", value="No manager stats recorded yet.", inline=False)
+
+        embed.add_field(
+            name="📊 Scoring",
+            value=(
+                f"Recruitment = **{RECRUITMENT_POINTS} pts** | "
+                f"Meet Support = **{MEET_SUPPORT_POINTS} pts** | "
+                f"Manager Actions = **{MANAGER_ACTION_POINTS} pts** | "
+                f"Issues = **{ISSUE_REPORT_POINTS} pt** | "
+                f"Warnings = **{WARNING_FILED_POINTS} pt**"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=FOOTER_TEXT)
+        return embed
+
+    def build_profile_embed(self, member: discord.Member) -> discord.Embed:
+        data  = _load_stats()
+        key   = str(member.id)
+        stats = data["managers"].get(key, _blank_stats(member.id, str(member)))
+        score = _compute_score(stats)
+        rows  = _sorted_managers(data.get("managers", {}))
+        rank  = next((i + 1 for i, r in enumerate(rows) if str(r["member_id"]) == key), None)
+
+        embed = discord.Embed(
+            title=f"📊 My Performance  •  {member.display_name}",
+            description="Your current manager activity snapshot.",
+            color=discord.Color.gold(),
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="🏅 Rank",            value=f"#{rank}" if rank else "Unranked", inline=True)
+        embed.add_field(name="⭐ Total Score",      value=str(score),                          inline=True)
+        embed.add_field(name="\u200b",              value="\u200b",                            inline=True)
+        embed.add_field(name="📣 Recruitment",      value=str(stats.get("recruitment",    0)), inline=True)
+        embed.add_field(name="🤝 Meet Support",     value=str(stats.get("meet_support",   0)), inline=True)
+        embed.add_field(name="⚙️ Manager Actions",  value=str(stats.get("manager_actions",0)), inline=True)
+        embed.add_field(name="🔎 Issues Reported",  value=str(stats.get("issues_reported",0)), inline=True)
+        embed.add_field(name="⚠️ Warnings Filed",   value=str(stats.get("warnings_filed", 0)), inline=True)
+        embed.set_footer(text=FOOTER_TEXT)
+        return embed
+
+    def build_actions_embed(self, member: discord.Member) -> discord.Embed:
+        data  = _load_stats()
+        stats = data["managers"].get(str(member.id), _blank_stats(member.id, str(member)))
+        embed = discord.Embed(
+            title="⚙️ Manager Actions",
+            description=(
+                "Use the buttons below to log your manager activity.\n"
+                "Each press updates your score and refreshes the live leaderboard."
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="📣 Recruitment",     value=str(stats.get("recruitment",    0)), inline=True)
+        embed.add_field(name="🤝 Meet Support",    value=str(stats.get("meet_support",   0)), inline=True)
+        embed.add_field(name="⚙️ Manager Actions", value=str(stats.get("manager_actions",0)), inline=True)
+        embed.add_field(name="🔎 Issues Reported", value=str(stats.get("issues_reported",0)), inline=True)
+        embed.add_field(name="⚠️ Warnings Filed",  value=str(stats.get("warnings_filed", 0)), inline=True)
+        embed.add_field(name="⭐ Total Score",      value=str(_compute_score(stats)),          inline=True)
+        embed.set_footer(text=FOOTER_TEXT)
+        return embed
+
+    # ── panel post/refresh ───────────────────────────────────
+
+    async def post_or_refresh_panel(self):
+        state      = _load_state()
         channel_id = state.get("channel_id", MANAGER_HUB_CHANNEL_ID)
         message_id = state.get("message_id")
 
@@ -451,16 +700,18 @@ class ManagerHubSystem(commands.Cog):
             try:
                 channel = await self.bot.fetch_channel(channel_id)
             except Exception as e:
-                return False, f"Could not access channel: {e}"
+                print(f"[ManagerHubSystem] Could not access channel: {e}")
+                return False
 
+        logos = _load_logos()
         embed = self.build_main_embed()
-        view = ManagerHubView()
+        view  = ManagerHubView(self, logos)
 
         if message_id:
             try:
                 msg = await channel.fetch_message(message_id)
                 await msg.edit(embed=embed, view=view)
-                return True, "Manager hub panel refreshed."
+                return True
             except Exception:
                 pass
 
@@ -469,98 +720,61 @@ class ManagerHubSystem(commands.Cog):
             state["message_id"] = msg.id
             state["channel_id"] = channel.id
             _save_state(state)
-            return True, "Manager hub panel posted."
+            return True
         except Exception as e:
-            return False, f"Failed to post panel: {e}"
+            print(f"[ManagerHubSystem] Failed to post panel: {e}")
+            return False
 
-    # ----------------------------------------------------------
-    # PANEL COMMANDS
-    # ----------------------------------------------------------
+    # ── stats adjustment ─────────────────────────────────────
 
-    @commands.command(name="postmanagerhub")
-    @commands.has_permissions(manage_guild=True)
-    async def post_manager_hub(self, ctx: commands.Context):
-        ok, msg = await self.post_or_refresh_panel()
-        await ctx.send(f"{'✅' if ok else '❌'} {msg}", delete_after=8)
-        try:
-            await ctx.message.delete()
-        except Exception:
-            pass
+    async def adjust_stats(self, member: discord.Member, **deltas) -> dict:
+        data = _load_stats()
+        key  = str(member.id)
+        if key not in data["managers"]:
+            data["managers"][key] = _blank_stats(member.id, str(member))
+        stats = data["managers"][key]
+        stats["name"] = str(member)
+        for field, delta in deltas.items():
+            stats[field] = max(0, stats.get(field, 0) + delta)
+        _save_stats(data)
+        await self.post_or_refresh_panel()
+        return stats
+
+    # =========================================================
+    # PREFIX COMMANDS — PANEL
+    # =========================================================
 
     @commands.command(name="refreshmanagerhub")
     @commands.has_permissions(manage_guild=True)
-    async def refresh_manager_hub(self, ctx: commands.Context):
-        ok, msg = await self.post_or_refresh_panel()
-        await ctx.send(f"{'✅' if ok else '❌'} {msg}", delete_after=8)
+    async def refresh_hub(self, ctx: commands.Context):
+        """Force-refresh the manager hub panel."""
+        ok = await self.post_or_refresh_panel()
+        await ctx.send("✅ Manager hub refreshed." if ok else "❌ Failed to refresh.", delete_after=8)
         try:
             await ctx.message.delete()
         except Exception:
             pass
 
-    # ----------------------------------------------------------
-    # LOGO COMMANDS
-    # ----------------------------------------------------------
-
-    @commands.command(name="initcrewlogos")
-    @commands.has_permissions(manage_guild=True)
-    async def init_crew_logos(self, ctx: commands.Context):
-        """Upload all preset logos from local files and save their Discord CDN URLs."""
-        logos = _load_logos()
-        existing_keys = {l["key"] for l in logos}
-
-        for preset in PRESET_LOGOS:
-            if preset["key"] not in existing_keys:
-                logos.append({
-                    "key": preset["key"],
-                    "name": preset["name"],
-                    "description": preset["description"],
-                    "url": "",
-                })
-
-        logo_dir = Path("diff_data/crew_logos")
-        status_msg = await ctx.send("⏳ Uploading crew logos...")
-        uploaded = 0
-        skipped = 0
-
-        for logo in logos:
-            if logo.get("url"):
-                skipped += 1
-                continue
-            img_path = logo_dir / f"{logo['key']}.png"
-            if not img_path.exists():
-                continue
-            try:
-                upload_msg = await ctx.channel.send(file=discord.File(img_path))
-                cdn_url = upload_msg.attachments[0].url
-                logo["url"] = cdn_url
-                await upload_msg.delete()
-                uploaded += 1
-            except Exception as e:
-                print(f"[ManagerHubSystem] Logo upload failed for {logo['key']}: {e}")
-
-        _save_logos(logos)
-        await self.post_or_refresh_panel()
-        await status_msg.edit(
-            content=f"✅ Done — **{uploaded}** logos uploaded, **{skipped}** already set. Panel updated."
-        )
+    # =========================================================
+    # PREFIX COMMANDS — LOGOS
+    # =========================================================
 
     @commands.command(name="addcrewlogo")
     @commands.has_permissions(manage_guild=True)
     async def add_crew_logo(self, ctx: commands.Context, *, name: str):
-        """Add or update a crew logo. Attach an image OR provide a URL as the last word.
-        Usage: !addcrewlogo Logo Name [optional_url]
-               !addcrewlogo Logo Name    (with image attached)
+        """Add or update a crew logo. Attach an image or include a URL at the end.
+        Usage: !addcrewlogo Logo Name          (with image attached)
+               !addcrewlogo Logo Name https://...
         """
         logos = _load_logos()
-        url = ""
+        url   = ""
+        message_id        = None
+        storage_channel_id = None
 
         parts = name.rsplit(None, 1)
         if len(parts) == 2 and parts[1].startswith("http"):
             name = parts[0].strip()
-            url = parts[1].strip()
-
-        message_id = None
-        storage_channel_id = None
+            url  = parts[1].strip()
 
         if not url and ctx.message.attachments:
             try:
@@ -571,8 +785,8 @@ class ManagerHubSystem(commands.Cog):
                     content=f"[LOGO STORAGE — do not delete] {name}",
                     file=await ctx.message.attachments[0].to_file(),
                 )
-                url = upload_msg.attachments[0].proxy_url or upload_msg.attachments[0].url
-                message_id = upload_msg.id
+                url                = upload_msg.attachments[0].proxy_url or upload_msg.attachments[0].url
+                message_id         = upload_msg.id
                 storage_channel_id = storage_ch.id
             except Exception as e:
                 await ctx.send(f"❌ Failed to upload image: {e}", delete_after=10)
@@ -580,25 +794,23 @@ class ManagerHubSystem(commands.Cog):
 
         if not url:
             await ctx.send(
-                "❌ Please attach an image or include a URL at the end of the command.", delete_after=10
+                "❌ Please attach an image or include a URL at the end of the command.",
+                delete_after=10,
             )
             return
 
-        key = name.lower().replace(" ", "_").replace("-", "_")[:40]
+        key      = name.lower().replace(" ", "_").replace("-", "_")[:40]
         existing = _logo_by_key(logos, key)
         if existing:
-            existing["url"] = url
+            existing["url"]  = url
             existing["name"] = name
             if message_id:
-                existing["message_id"] = message_id
+                existing["message_id"]         = message_id
                 existing["storage_channel_id"] = storage_channel_id
         else:
             logos.append({
-                "key": key,
-                "name": name,
-                "description": "",
-                "url": url,
-                "message_id": message_id,
+                "key": key, "name": name, "description": "",
+                "url": url, "message_id": message_id,
                 "storage_channel_id": storage_channel_id,
             })
 
@@ -613,21 +825,17 @@ class ManagerHubSystem(commands.Cog):
     @commands.command(name="removecrewlogo")
     @commands.has_permissions(manage_guild=True)
     async def remove_crew_logo(self, ctx: commands.Context, *, name: str):
-        """Remove a crew logo by name."""
-        logos = _load_logos()
-        key = name.lower().replace(" ", "_").replace("-", "_")[:40]
+        """Remove a crew logo by name.  Usage: !removecrewlogo Logo Name"""
+        logos  = _load_logos()
+        key    = name.lower().replace(" ", "_").replace("-", "_")[:40]
         before = len(logos)
-        logos = [l for l in logos if l["key"] != key and l["name"].lower() != name.lower()]
+        logos  = [l for l in logos if l["key"] != key and l["name"].lower() != name.lower()]
         if len(logos) == before:
             await ctx.send(f"❌ No logo found matching `{name}`.", delete_after=8)
             return
         _save_logos(logos)
         await self.post_or_refresh_panel()
         await ctx.send(f"✅ Logo **{name}** removed and panel updated.", delete_after=8)
-        try:
-            await ctx.message.delete()
-        except Exception:
-            pass
 
     @commands.command(name="listcrewlogos")
     @commands.has_permissions(manage_guild=True)
@@ -635,20 +843,176 @@ class ManagerHubSystem(commands.Cog):
         """List all crew logos and their upload status."""
         logos = _load_logos()
         if not logos:
-            await ctx.send("No logos found. Run `!initcrewlogos` to set up the preset logos.")
+            await ctx.send("No logos configured yet.", delete_after=10)
             return
-        lines = []
-        for logo in logos:
-            status = "✅" if logo.get("url") else "⏳"
-            lines.append(f"{status} **{logo['name']}** (`{logo['key']}`)")
+        lines = [
+            f"{'✅' if l.get('url') else '⏳'} **{l['name']}**  (`{l['key']}`)"
+            for l in logos
+        ]
         embed = discord.Embed(
-            title="🎨 Crew Logo List",
+            title=f"🎨 Crew Logos ({len(logos)} total)",
             description="\n".join(lines),
             color=discord.Color.blurple(),
         )
-        embed.set_footer(text=f"{sum(1 for l in logos if l.get('url'))}/{len(logos)} logos uploaded")
+        embed.set_footer(text=FOOTER_TEXT)
         await ctx.send(embed=embed)
 
+    # =========================================================
+    # PREFIX COMMANDS — MANAGER STATS
+    # =========================================================
+
+    @commands.command(name="managerboard")
+    @commands.has_permissions(manage_guild=True)
+    async def manager_board(self, ctx: commands.Context):
+        """Force-refresh the manager hub panel (also updates the leaderboard)."""
+        ok = await self.post_or_refresh_panel()
+        await ctx.send("✅ Manager hub refreshed." if ok else "❌ Failed.", delete_after=8)
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+
+    @commands.command(name="managerprofile")
+    @commands.has_permissions(manage_guild=True)
+    async def manager_profile(self, ctx: commands.Context, member: discord.Member):
+        """View a manager's performance profile.  Usage: !managerprofile @member"""
+        await ctx.send(embed=self.build_profile_embed(member))
+
+    @commands.command(name="manageradd")
+    @commands.has_permissions(manage_guild=True)
+    async def manager_add(self, ctx: commands.Context, member: discord.Member, stat: str, amount: int = 1):
+        """Add to a manager's stat.
+        Usage: !manageradd @member <stat> [amount]
+        Stats: r  ms  a  i  w  (recruitment, meet_support, manager_actions, issues, warnings)
+        """
+        field = VALID_STATS.get(stat.lower())
+        if not field:
+            await ctx.send(
+                "❌ Unknown stat. Use: `r` `ms` `a` `i` `w`\n"
+                "(recruitment, meet_support, manager_actions, issues_reported, warnings_filed)",
+                delete_after=12,
+            )
+            return
+        if amount <= 0:
+            await ctx.send("❌ Amount must be positive.", delete_after=8)
+            return
+        stats  = await self.adjust_stats(member, **{field: amount})
+        label, pts = STAT_LABELS[field]
+        score  = _compute_score(stats)
+        await ctx.send(
+            f"✅ Added **{amount}** {label} (+{amount * pts} pts) to {member.mention}. "
+            f"Total score: **{score} pts**.",
+            delete_after=10,
+        )
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+
+    @commands.command(name="managerremove")
+    @commands.has_permissions(manage_guild=True)
+    async def manager_remove(self, ctx: commands.Context, member: discord.Member, stat: str, amount: int = 1):
+        """Remove from a manager's stat.
+        Usage: !managerremove @member <stat> [amount]
+        """
+        field = VALID_STATS.get(stat.lower())
+        if not field:
+            await ctx.send(
+                "❌ Unknown stat. Use: `r` `ms` `a` `i` `w`",
+                delete_after=12,
+            )
+            return
+        if amount <= 0:
+            await ctx.send("❌ Amount must be positive.", delete_after=8)
+            return
+        stats  = await self.adjust_stats(member, **{field: -amount})
+        label, _ = STAT_LABELS[field]
+        score  = _compute_score(stats)
+        await ctx.send(
+            f"✅ Removed **{amount}** {label} from {member.mention}. "
+            f"Total score: **{score} pts**.",
+            delete_after=10,
+        )
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+
+    @commands.command(name="managerreset")
+    @commands.has_permissions(manage_guild=True)
+    async def manager_reset_one(self, ctx: commands.Context, member: discord.Member):
+        """Reset one manager's stats.  Usage: !managerreset @member"""
+        data = _load_stats()
+        key  = str(member.id)
+        if key in data["managers"]:
+            data["managers"].pop(key)
+            _save_stats(data)
+            await self.post_or_refresh_panel()
+            await ctx.send(f"✅ Stats for {member.mention} have been reset.", delete_after=8)
+        else:
+            await ctx.send(f"ℹ️ {member.mention} has no recorded stats.", delete_after=8)
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+
+    @commands.command(name="managerresetall")
+    @commands.has_permissions(administrator=True)
+    async def manager_reset_all(self, ctx: commands.Context):
+        """Reset ALL manager stats. Requires Administrator."""
+        _save_stats({"managers": {}})
+        await self.post_or_refresh_panel()
+        await ctx.send("✅ All manager stats have been reset.", delete_after=10)
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+
+    @commands.command(name="managerhelp")
+    @commands.has_permissions(manage_guild=True)
+    async def manager_help(self, ctx: commands.Context):
+        """Show all manager hub commands."""
+        embed = discord.Embed(
+            title="📋 Manager Hub Commands",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="Panel",
+            value="`!refreshmanagerhub` — Refresh the manager hub panel",
+            inline=False,
+        )
+        embed.add_field(
+            name="Logos",
+            value=(
+                "`!addcrewlogo Name` *(+ attachment or URL)* — Add/update a logo\n"
+                "`!removecrewlogo Name` — Remove a logo\n"
+                "`!listcrewlogos` — List all logos\n"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Stats",
+            value=(
+                "`!managerprofile @m` — View a manager's profile\n"
+                "`!manageradd @m <stat> [n]` — Add to a stat\n"
+                "`!managerremove @m <stat> [n]` — Remove from a stat\n"
+                "`!managerreset @m` — Reset one manager\n"
+                "`!managerresetall` — Reset everyone *(Admin only)*\n"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Stat Aliases",
+            value="`r` recruitment  |  `ms` meet support  |  `a` actions  |  `i` issues  |  `w` warnings",
+            inline=False,
+        )
+        embed.set_footer(text=FOOTER_TEXT)
+        await ctx.send(embed=embed)
+
+
+# =========================================================
+# SETUP
+# =========================================================
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ManagerHubSystem(bot))
