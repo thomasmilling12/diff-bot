@@ -1,0 +1,319 @@
+# ============================================================
+# DIFF AUTO SCHEDULE BUILDER (PYTHON)
+#
+# WHAT THIS ADDS
+# - Reads host RSVP data from: ./data/diff_host_rsvp.json
+# - Automatically picks hosts for each day
+# - Fills the weekly schedule panel for you
+# - Uses host Discord mentions instead of plain names
+# - Includes Hammertime link for timezone conversion
+# - Syncs with your host schedule channel
+#
+# SAVE AS:
+# diff_auto_schedule_builder.py
+#
+# ADD TO bot.py:
+# from diff_auto_schedule_builder import setup_diff_auto_schedule_builder
+# setup_diff_auto_schedule_builder(bot)
+#
+# OPTIONAL:
+# If you already use the host RSVP file, this plugs into it directly.
+#
+# ============================================================
+
+import os
+import json
+from datetime import datetime
+
+import discord
+from discord.ext import commands
+
+# ================= CONFIG =================
+
+SCHEDULE_CHANNEL_ID = 1485830232270307410
+HOST_ROLE_ID = 1055823929358430248
+
+RSVP_FILE = "./data/diff_host_rsvp.json"
+SCHEDULE_FILE = "./data/diff_auto_schedule.json"
+
+DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+# put your default meet times / classes here
+DEFAULT_TEMPLATE = {
+    "Monday": {"class": "TBD", "time": "TBD"},
+    "Tuesday": {"class": "TBD", "time": "TBD"},
+    "Wednesday": {"class": "TBD", "time": "TBD"},
+    "Thursday": {"class": "TBD", "time": "TBD"},
+    "Friday": {"class": "TBD", "time": "TBD"},
+    "Saturday": {"class": "TBD", "time": "TBD"},
+    "Sunday": {"class": "TBD", "time": "TBD"},
+}
+
+REFRESH_BUTTON_ID = "diff_auto_schedule_refresh"
+REBUILD_BUTTON_ID = "diff_auto_schedule_rebuild"
+
+# ================= FILE HELPERS =================
+
+def ensure_file(path, default):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, indent=2)
+
+def load_json(path, default):
+    ensure_file(path, default)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def save_json(path, data):
+    ensure_file(path, data if isinstance(data, dict) else {})
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+# ================= DATA =================
+
+def load_rsvp():
+    return load_json(RSVP_FILE, {day: {"yes": [], "no": [], "maybe": []} for day in DAYS})
+
+def load_schedule():
+    default = {
+        "days": {
+            day: {
+                "class": DEFAULT_TEMPLATE[day]["class"],
+                "time": DEFAULT_TEMPLATE[day]["time"],
+                "host_id": None,
+                "host_status": "unassigned",
+            }
+            for day in DAYS
+        },
+        "updated_at": None,
+    }
+    return load_json(SCHEDULE_FILE, default)
+
+def save_schedule(data):
+    save_json(SCHEDULE_FILE, data)
+
+# ================= AUTO PICK LOGIC =================
+
+def build_host_counts_from_rsvp(rsvp_data):
+    counts = {}
+    for day in DAYS:
+        for uid in rsvp_data.get(day, {}).get("yes", []):
+            counts[uid] = counts.get(uid, 0) + 1
+    return counts
+
+def choose_host_for_day(day, rsvp_data, assigned_counts):
+    day_data = rsvp_data.get(day, {"yes": [], "no": [], "maybe": []})
+    yes_hosts = list(day_data.get("yes", []))
+    maybe_hosts = list(day_data.get("maybe", []))
+
+    # prefer hosts who said yes
+    if yes_hosts:
+        yes_hosts.sort(key=lambda uid: assigned_counts.get(uid, 0))
+        chosen = yes_hosts[0]
+        assigned_counts[chosen] = assigned_counts.get(chosen, 0) + 1
+        return chosen, "yes"
+
+    # fallback to maybe
+    if maybe_hosts:
+        maybe_hosts.sort(key=lambda uid: assigned_counts.get(uid, 0))
+        chosen = maybe_hosts[0]
+        assigned_counts[chosen] = assigned_counts.get(chosen, 0) + 1
+        return chosen, "maybe"
+
+    return None, "none"
+
+def auto_build_schedule():
+    rsvp = load_rsvp()
+    schedule = load_schedule()
+
+    assigned_counts = {}
+    for day in DAYS:
+        host_id, host_status = choose_host_for_day(day, rsvp, assigned_counts)
+        schedule["days"][day]["host_id"] = int(host_id) if host_id is not None else None
+        schedule["days"][day]["host_status"] = host_status
+
+    schedule["updated_at"] = datetime.now().isoformat()
+    save_schedule(schedule)
+    return schedule
+
+# ================= EMBED =================
+
+def format_host_line(host_id, host_status):
+    if host_id:
+        if host_status == "maybe":
+            return f"<@{host_id}> *(maybe)*"
+        return f"<@{host_id}>"
+    return "No host assigned"
+
+def build_schedule_embed():
+    schedule = load_schedule()
+
+    lines = [
+        "📅 **DIFF Auto Weekly Host Schedule**",
+        "*Built automatically from host responses.*",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    for day in DAYS:
+        entry = schedule["days"][day]
+        lines.extend([
+            f"**{day}**",
+            f"🎮 Starting Class: {entry.get('class', 'TBD')}",
+            f"🕒 Time: {entry.get('time', 'TBD')}",
+            f"👤 Host: {format_host_line(entry.get('host_id'), entry.get('host_status'))}",
+            "",
+        ])
+
+    lines.extend([
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "🌐 Time conversion: https://hammertime.cyou/en",
+        "⚠ Schedule is built from host availability and may be adjusted by leadership.",
+    ])
+
+    embed = discord.Embed(
+        description="\n".join(lines),
+        color=discord.Color.dark_gray(),
+        timestamp=datetime.now(),
+    )
+    embed.set_author(name="Different Meets")
+    embed.set_footer(text="DIFF • Auto Host Schedule Builder")
+    return embed
+
+# ================= VIEW =================
+
+class AutoScheduleView(discord.ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(
+        label="Refresh Panel",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔄",
+        custom_id=REFRESH_BUTTON_ID
+    )
+    async def refresh_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_schedule_panel(self.bot, rebuild=False)
+        await interaction.response.send_message("Schedule panel refreshed.", ephemeral=True)
+
+    @discord.ui.button(
+        label="Rebuild Schedule",
+        style=discord.ButtonStyle.primary,
+        emoji="🧠",
+        custom_id=REBUILD_BUTTON_ID
+    )
+    async def rebuild_schedule(self, interaction: discord.Interaction, button: discord.ui.Button):
+        auto_build_schedule()
+        await update_schedule_panel(self.bot, rebuild=False)
+        await interaction.response.send_message("Schedule rebuilt from host responses.", ephemeral=True)
+
+# ================= PANEL =================
+
+async def find_existing_panel(channel: discord.TextChannel):
+    async for msg in channel.history(limit=20):
+        if msg.author.bot and msg.components:
+            for row in msg.components:
+                for child in row.children:
+                    if getattr(child, "custom_id", None) in {REFRESH_BUTTON_ID, REBUILD_BUTTON_ID}:
+                        return msg
+    return None
+
+async def update_schedule_panel(bot: commands.Bot, rebuild: bool = False):
+    if rebuild:
+        auto_build_schedule()
+
+    channel = bot.get_channel(SCHEDULE_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(SCHEDULE_CHANNEL_ID)
+        except Exception:
+            return
+
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    payload = {
+        "content": f"<@&{HOST_ROLE_ID}>",
+        "embed": build_schedule_embed(),
+        "view": AutoScheduleView(bot),
+        "allowed_mentions": discord.AllowedMentions(roles=True),
+    }
+
+    existing = await find_existing_panel(channel)
+    if existing:
+        await existing.edit(**payload)
+    else:
+        await channel.send(**payload)
+
+# ================= OPTIONAL COMMANDS =================
+
+class DiffAutoScheduleCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.command(name="rebuildschedule")
+    @commands.has_permissions(manage_guild=True)
+    async def rebuildschedule(self, ctx):
+        auto_build_schedule()
+        await update_schedule_panel(self.bot, rebuild=False)
+        await ctx.send("✅ Auto schedule rebuilt from host responses.")
+
+    @commands.command(name="setscheduleday")
+    @commands.has_permissions(manage_guild=True)
+    async def setscheduleday(self, ctx, day: str, *, rest: str):
+        """
+        Example:
+        !setscheduleday Monday Sports Classics | <t:1733173200:F>
+        """
+        day = day.capitalize()
+        if day not in DAYS:
+            await ctx.send("Invalid day. Use Monday-Sunday.")
+            return
+
+        if "|" not in rest:
+            await ctx.send("Format: !setscheduleday Monday Class Name | Time")
+            return
+
+        class_name, time_text = [part.strip() for part in rest.split("|", 1)]
+        schedule = load_schedule()
+        schedule["days"][day]["class"] = class_name
+        schedule["days"][day]["time"] = time_text
+        schedule["updated_at"] = datetime.now().isoformat()
+        save_schedule(schedule)
+
+        await update_schedule_panel(self.bot, rebuild=False)
+        await ctx.send(f"✅ {day} updated.")
+
+# ================= SETUP =================
+
+def setup_diff_auto_schedule_builder(bot: commands.Bot):
+    ensure_file(RSVP_FILE, {day: {"yes": [], "no": [], "maybe": []} for day in DAYS})
+    ensure_file(SCHEDULE_FILE, {
+        "days": {
+            day: {
+                "class": DEFAULT_TEMPLATE[day]["class"],
+                "time": DEFAULT_TEMPLATE[day]["time"],
+                "host_id": None,
+                "host_status": "unassigned",
+            } for day in DAYS
+        },
+        "updated_at": None,
+    })
+
+    bot.add_view(AutoScheduleView(bot))
+
+    @bot.event
+    async def on_ready():
+        if getattr(bot, "_diff_auto_schedule_ready_once", False):
+            return
+        bot._diff_auto_schedule_ready_once = True
+
+        await bot.add_cog(DiffAutoScheduleCog(bot))
+        auto_build_schedule()
+        await update_schedule_panel(bot, rebuild=False)
+        print("DIFF Auto Schedule Builder Ready")

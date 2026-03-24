@@ -2444,6 +2444,17 @@ class _HostRSVPBtn(discord.ui.Button):
         )
 
 
+def _hrsvp_is_rsvp_msg(msg: discord.Message, bot_id: int) -> bool:
+    if msg.author.id != bot_id:
+        return False
+    for row in msg.components:
+        for child in row.children:
+            cid = getattr(child, "custom_id", "") or ""
+            if cid.startswith("hrsvp_"):
+                return True
+    return False
+
+
 async def _hrsvp_update_panel(bot_client) -> None:
     channel = bot_client.get_channel(HOST_RSVP_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
@@ -2455,8 +2466,8 @@ async def _hrsvp_update_panel(bot_client) -> None:
         return
     embed = _hrsvp_build_embed()
     view = HostRSVPView()
-    async for msg in channel.history(limit=15):
-        if msg.author.id == bot_client.user.id and msg.embeds:
+    async for msg in channel.history(limit=25):
+        if _hrsvp_is_rsvp_msg(msg, bot_client.user.id):
             try:
                 await msg.edit(embed=embed, view=view)
             except Exception:
@@ -2470,6 +2481,174 @@ async def _hrsvp_update_panel(bot_client) -> None:
         )
     except Exception as e:
         print(f"[HostRSVP] Panel send failed: {e}")
+
+
+# =========================
+# AUTO SCHEDULE BUILDER
+# =========================
+
+_ASCHED_FILE = os.path.join("diff_data", "diff_auto_schedule.json")
+_ASCHED_REFRESH_ID = "diff_auto_sched_refresh"
+_ASCHED_REBUILD_ID = "diff_auto_sched_rebuild"
+_ASCHED_DEFAULT_TEMPLATE = {day: {"class": "TBD", "time": "TBD"} for day in _HRSVP_DAYS}
+
+
+def _asched_default() -> dict:
+    return {
+        "days": {
+            day: {
+                "class": _ASCHED_DEFAULT_TEMPLATE[day]["class"],
+                "time": _ASCHED_DEFAULT_TEMPLATE[day]["time"],
+                "host_id": None,
+                "host_status": "unassigned",
+            }
+            for day in _HRSVP_DAYS
+        },
+        "updated_at": None,
+    }
+
+
+def _asched_load() -> dict:
+    if os.path.exists(_ASCHED_FILE):
+        try:
+            with open(_ASCHED_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return _asched_default()
+
+
+def _asched_save(data: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    with open(_ASCHED_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple[str | None, str]:
+    day_data = rsvp.get(day, {})
+    yes_hosts = list(day_data.get("yes", []))
+    maybe_hosts = list(day_data.get("maybe", []))
+    if yes_hosts:
+        yes_hosts.sort(key=lambda uid: assigned_counts.get(uid, 0))
+        chosen = yes_hosts[0]
+        assigned_counts[chosen] = assigned_counts.get(chosen, 0) + 1
+        return chosen, "yes"
+    if maybe_hosts:
+        maybe_hosts.sort(key=lambda uid: assigned_counts.get(uid, 0))
+        chosen = maybe_hosts[0]
+        assigned_counts[chosen] = assigned_counts.get(chosen, 0) + 1
+        return chosen, "maybe"
+    return None, "none"
+
+
+def _asched_build() -> dict:
+    rsvp = _hrsvp_load()
+    schedule = _asched_load()
+    assigned_counts: dict = {}
+    for day in _HRSVP_DAYS:
+        host_id, host_status = _asched_pick_host(day, rsvp, assigned_counts)
+        schedule["days"].setdefault(day, {})["host_id"] = int(host_id) if host_id else None
+        schedule["days"][day]["host_status"] = host_status
+    schedule["updated_at"] = utc_now().isoformat()
+    _asched_save(schedule)
+    return schedule
+
+
+def _asched_build_embed() -> discord.Embed:
+    schedule = _asched_load()
+    lines = [
+        "📋 **DIFF Auto Weekly Host Schedule**",
+        "*Built automatically from host availability responses.*",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for day in _HRSVP_DAYS:
+        entry = schedule["days"].get(day, {})
+        host_id = entry.get("host_id")
+        host_status = entry.get("host_status", "none")
+        if host_id:
+            host_str = f"<@{host_id}>" + (" *(maybe)*" if host_status == "maybe" else "")
+        else:
+            host_str = "*No host assigned*"
+        lines += [
+            f"**{day}**",
+            f"🎮 Class: {entry.get('class', 'TBD')}",
+            f"🕒 Time: {entry.get('time', 'TBD')}",
+            f"👤 Host: {host_str}",
+            "",
+        ]
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "🌐 Time conversion: https://hammertime.cyou/en",
+        "⚠ Schedule may be adjusted by leadership.",
+    ]
+    embed = discord.Embed(
+        description="\n".join(lines),
+        color=discord.Color.blurple(),
+        timestamp=utc_now(),
+    )
+    embed.set_author(name="Different Meets")
+    embed.set_footer(text="DIFF • Auto Host Schedule Builder")
+    return embed
+
+
+class AutoScheduleView(discord.ui.View):
+    def __init__(self, bot_ref=None):
+        super().__init__(timeout=None)
+        self._bot_ref = bot_ref
+
+    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id=_ASCHED_REFRESH_ID)
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _asched_update_panel(interaction.client)
+        await interaction.response.send_message("Schedule panel refreshed.", ephemeral=True)
+
+    @discord.ui.button(label="Rebuild Schedule", emoji="🧠", style=discord.ButtonStyle.primary, custom_id=_ASCHED_REBUILD_ID)
+    async def rebuild_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_staff = any(
+            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+            for r in getattr(interaction.user, "roles", [])
+        )
+        if not is_staff:
+            await interaction.response.send_message("Only staff can rebuild the schedule.", ephemeral=True)
+            return
+        _asched_build()
+        await _asched_update_panel(interaction.client)
+        await interaction.response.send_message("Schedule rebuilt from host responses.", ephemeral=True)
+
+
+def _asched_is_sched_msg(msg: discord.Message, bot_id: int) -> bool:
+    if msg.author.id != bot_id:
+        return False
+    for row in msg.components:
+        for child in row.children:
+            cid = getattr(child, "custom_id", "") or ""
+            if cid in {_ASCHED_REFRESH_ID, _ASCHED_REBUILD_ID}:
+                return True
+    return False
+
+
+async def _asched_update_panel(bot_client) -> None:
+    channel = bot_client.get_channel(HOST_RSVP_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await bot_client.fetch_channel(HOST_RSVP_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+    embed = _asched_build_embed()
+    view = AutoScheduleView(bot_client)
+    async for msg in channel.history(limit=25):
+        if _asched_is_sched_msg(msg, bot_client.user.id):
+            try:
+                await msg.edit(embed=embed, view=view)
+            except Exception:
+                pass
+            return
+    try:
+        await channel.send(embed=embed, view=view)
+    except Exception as e:
+        print(f"[AutoSched] Panel send failed: {e}")
 
 
 def _ft_build_suggestions_embed(guild: discord.Guild) -> discord.Embed:
@@ -4722,6 +4901,9 @@ async def on_ready():
     bot.loop.create_task(_season_loop())
     bot.add_view(HostRSVPView())
     await _hrsvp_update_panel(bot)
+    bot.add_view(AutoScheduleView(bot))
+    _asched_build()
+    await _asched_update_panel(bot)
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()

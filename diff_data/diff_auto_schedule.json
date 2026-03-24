@@ -1,0 +1,47 @@
+{
+  "days": {
+    "Monday": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none"
+    },
+    "Tuesday": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none"
+    },
+    "Wednesday": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none"
+    },
+    "Thursday": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none"
+    },
+    "Friday": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none"
+    },
+    "Saturday": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none"
+    },
+    "Sunday": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none"
+    }
+  },
+  "updated_at": "2026-03-24T03:01:20.747394"
+}
