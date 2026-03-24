@@ -4013,8 +4013,9 @@ async def listhosts(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="refreshpanel", description="Refresh the saved live panel")
-@app_commands.checks.has_permissions(administrator=True)
 async def refreshpanel(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
     global status_message_id
 
     if interaction.guild is None:
@@ -4051,7 +4052,6 @@ async def refreshpanel(interaction: discord.Interaction):
     await interaction.response.send_message(f"Panel refreshed in {channel.mention}.", ephemeral=True)
 
 
-@refreshpanel.error
 @postpanel.error
 async def panel_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.errors.MissingPermissions):
@@ -4079,8 +4079,9 @@ async def addhost(interaction: discord.Interaction, member: discord.Member, prof
 
 
 @bot.tree.command(name="removehost", description="Remove a DIFF host")
-@app_commands.checks.has_permissions(administrator=True)
 async def removehost(interaction: discord.Interaction, member: discord.Member):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
     before = len(data["hosts"])
     data["hosts"] = [host for host in data["hosts"] if host["discord_id"] != member.id]
     save_data(data)
@@ -4092,8 +4093,9 @@ async def removehost(interaction: discord.Interaction, member: discord.Member):
 
 
 @bot.tree.command(name="sendmeetinfo", description="Post or update the DIFF meet info panel")
-@app_commands.checks.has_permissions(administrator=True)
 async def sendmeetinfo(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
     if interaction.guild is None:
         await interaction.response.send_message("Use this in the server.", ephemeral=True)
         return
@@ -4124,19 +4126,6 @@ async def sendmeetinfo(interaction: discord.Interaction):
         await interaction.response.send_message(f"Meet info panel posted in {channel.mention}.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"Error posting meet info panel: {e}", ephemeral=True)
-
-
-@sendmeetinfo.error
-async def sendmeetinfo_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.errors.MissingPermissions):
-        msg = "You need administrator permissions to use that command."
-    else:
-        msg = f"Command error: {error}"
-
-    if interaction.response.is_done():
-        await interaction.followup.send(msg, ephemeral=True)
-    else:
-        await interaction.response.send_message(msg, ephemeral=True)
 
 
 @bot.tree.command(name="refreshrules", description="Post or refresh all rules panels in the rules channel")
@@ -4211,8 +4200,9 @@ async def refreshrules_error(interaction: discord.Interaction, error: app_comman
 
 
 @bot.tree.command(name="refreshcrewpanel", description="Post or refresh the crew recruitment panel")
-@app_commands.checks.has_permissions(administrator=True)
 async def refreshcrewpanel(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
     if interaction.guild is None:
         await interaction.response.send_message("Use this in the server.", ephemeral=True)
         return
@@ -4230,40 +4220,15 @@ async def refreshcrewpanel(interaction: discord.Interaction):
         pass
 
 
-@refreshcrewpanel.error
-async def refreshcrewpanel_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.errors.MissingPermissions):
-        msg = "You need administrator permissions to use that command."
-    else:
-        msg = f"Command error: {error}"
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
-    except discord.NotFound:
-        pass
 
 
 @bot.tree.command(name="sethostrole", description="Set the DIFF host role")
-@app_commands.checks.has_permissions(administrator=True)
 async def sethostrole(interaction: discord.Interaction, role: discord.Role):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
     data["host_role_id"] = role.id
     save_data(data)
     await interaction.response.send_message(f"Host role set to {role.mention}", ephemeral=True)
-
-
-@sethostrole.error
-async def sethostrole_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.errors.MissingPermissions):
-        msg = "You need administrator permissions to use that command."
-    else:
-        msg = f"Command error: {error}"
-
-    if interaction.response.is_done():
-        await interaction.followup.send(msg, ephemeral=True)
-    else:
-        await interaction.response.send_message(msg, ephemeral=True)
 
 
 @bot.tree.command(name="setmeetpingrole", description="Set the role to ping for meet announcements")
@@ -4315,6 +4280,8 @@ async def endmeet(
 
 @bot.tree.command(name="hostpanel", description="Show current bot host role setup")
 async def hostpanel(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
     host_role_id = data.get("host_role_id")
     role_text = f"<@&{host_role_id}>" if host_role_id else "Not set"
 
@@ -4479,8 +4446,9 @@ async def moderation_command_error(interaction: discord.Interaction, error: app_
 
 
 @bot.tree.command(name="posthierarchy", description="Post or refresh the DIFF hierarchy panel")
-@app_commands.checks.has_permissions(administrator=True)
 async def posthierarchy(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
     if interaction.guild is None:
         try:
             await interaction.response.send_message("Use this in the server.", ephemeral=True)
@@ -4504,8 +4472,9 @@ async def posthierarchy(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="refreshhierarchy", description="Refresh the DIFF hierarchy panel")
-@app_commands.checks.has_permissions(administrator=True)
 async def refreshhierarchy(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
     if interaction.guild is None:
         try:
             await interaction.response.send_message("Use this in the server.", ephemeral=True)
@@ -4527,22 +4496,6 @@ async def refreshhierarchy(interaction: discord.Interaction):
     except discord.NotFound:
         pass
 
-
-@posthierarchy.error
-@refreshhierarchy.error
-async def hierarchy_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.errors.MissingPermissions):
-        msg = "You need administrator permissions to use that command."
-    else:
-        msg = f"Command error: {error}"
-
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
-    except discord.NotFound:
-        pass
 
 @bot.tree.command(name="refresh-live-attendance", description="Post or refresh the live crew attendance status panel")
 @app_commands.checks.has_permissions(administrator=True)
