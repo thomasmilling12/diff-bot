@@ -15239,6 +15239,7 @@ def _wh_build_embed() -> discord.Embed:
             f"• 📋 **Rules & Requirements** — Know the standards in <#{RULES_CHANNEL_ID}>\n"
             f"• 🚗 **How Meets Work** — Learn how to join & participate\n"
             f"• 📅 **Upcoming Meets** — View the schedule in <#{UPCOMING_MEET_CHANNEL_ID}>\n"
+            f"• 🏎️ **Join Crew** — Browse & apply to a crew in <#{CREW_PANEL_CHANNEL_ID}>\n"
             f"• 🎫 **Support** — Get help in <#{SUPPORT_CHANNEL_ID}>\n"
             f"• 📊 **My Stats** — View your personal meet activity\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -15269,6 +15270,10 @@ class WelcomeHubView(discord.ui.View):
         self.add_item(discord.ui.Button(
             label="Support", emoji="🎫", style=discord.ButtonStyle.link, row=0,
             url=f"https://discord.com/channels/{GUILD_ID}/{SUPPORT_CHANNEL_ID}",
+        ))
+        self.add_item(discord.ui.Button(
+            label="Join Crew", emoji="🏎️", style=discord.ButtonStyle.link, row=0,
+            url=f"https://discord.com/channels/{GUILD_ID}/{CREW_PANEL_CHANNEL_ID}",
         ))
 
     @discord.ui.button(label="Social Media", emoji="📲", style=discord.ButtonStyle.secondary,
