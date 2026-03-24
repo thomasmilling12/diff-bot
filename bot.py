@@ -6113,10 +6113,10 @@ class HostPerformanceHubView(discord.ui.View):
 
 async def _hp_post_or_refresh() -> None:
     await bot.wait_until_ready()
-    channel = bot.get_channel(HOST_PERFORMANCE_CHANNEL_ID)
+    channel = bot.get_channel(HOST_HUB_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         try:
-            channel = await bot.fetch_channel(HOST_PERFORMANCE_CHANNEL_ID)
+            channel = await bot.fetch_channel(HOST_HUB_CHANNEL_ID)
         except Exception:
             return
     if not isinstance(channel, discord.TextChannel):
