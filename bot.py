@@ -14469,6 +14469,37 @@ async def force_weekly_staff_report(interaction: discord.Interaction) -> None:
     await interaction.followup.send(f"Weekly report posted in {report_channel.mention} and stats reset.", ephemeral=True)
 
 
+@bot.command(name="clearweeklyreport")
+async def clearweeklyreport(ctx: commands.Context):
+    """Delete the most recent Weekly DIFF Staff Report from the leaderboard channel (leadership only)."""
+    is_leader = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in getattr(ctx.author, "roles", [])) \
+        or getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.manage_guild
+    if not is_leader:
+        return await ctx.send("Leadership only.", delete_after=5)
+    channel = ctx.guild.get_channel(LEADERBOARD_CHANNEL_ID) if ctx.guild else None
+    if not isinstance(channel, discord.TextChannel):
+        return await ctx.send("Leaderboard channel not found.", delete_after=5)
+    deleted = False
+    async for msg in channel.history(limit=50):
+        if msg.author == bot.user and msg.embeds:
+            title = msg.embeds[0].title or ""
+            if "Weekly DIFF Staff Report" in title:
+                try:
+                    await msg.delete()
+                    deleted = True
+                except Exception:
+                    pass
+                break
+    if deleted:
+        await ctx.send("Weekly report message deleted.", delete_after=5)
+    else:
+        await ctx.send("No recent weekly report message found in the leaderboard channel.", delete_after=5)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
 @bot.tree.command(name="auto-add-meet-host", description="Add hosted meet stats to a staff member (leadership only)")
 @app_commands.describe(member="Staff member to update", amount="Number of meets to add (default 1)")
 async def auto_add_meet_host(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 20] = 1) -> None:
