@@ -7046,24 +7046,35 @@ class _RcAdminView(discord.ui.View):
 
 async def _rc_refresh_panel(guild: discord.Guild):
     panel = _rc_db.get_panel(guild.id)
-    channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
-    if not isinstance(channel, discord.TextChannel):
+    rc_channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    if not isinstance(rc_channel, discord.TextChannel):
         return
     if not panel:
         await _rc_post_new_panel(guild, ping_roles=True)
         return
     try:
-        msg = await channel.fetch_message(panel["message_id"])
+        msg = await rc_channel.fetch_message(panel["message_id"])
         await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
     except discord.NotFound:
         await _rc_post_new_panel(guild, ping_roles=True)
+        return
     except Exception:
         pass
+    admin_msg_id = panel["admin_message_id"]
+    if admin_msg_id:
+        staff_ch = guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        if isinstance(staff_ch, discord.TextChannel):
+            try:
+                admin_msg = await staff_ch.fetch_message(admin_msg_id)
+                await admin_msg.edit(embed=_rc_build_admin_embed(), view=_RcAdminView())
+            except Exception:
+                pass
 
 
 async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
-    channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
-    if not isinstance(channel, discord.TextChannel):
+    rc_channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    staff_channel = guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+    if not isinstance(rc_channel, discord.TextChannel):
         return
     ping_text = None
     if ping_roles:
@@ -7077,14 +7088,17 @@ async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
         if parts:
             ping_text = " ".join(parts)
     try:
-        rc_msg = await channel.send(
+        rc_msg = await rc_channel.send(
             content=ping_text,
             embed=_rc_build_rollcall_embed(guild),
             view=_RcRollCallView(),
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
-        admin_msg = await channel.send(embed=_rc_build_admin_embed(), view=_RcAdminView())
-        _rc_db.upsert_panel(guild.id, channel.id, rc_msg.id, admin_msg.id)
+        admin_msg_id = None
+        if isinstance(staff_channel, discord.TextChannel):
+            admin_msg = await staff_channel.send(embed=_rc_build_admin_embed(), view=_RcAdminView())
+            admin_msg_id = admin_msg.id
+        _rc_db.upsert_panel(guild.id, rc_channel.id, rc_msg.id, admin_msg_id)
     except Exception as e:
         print(f"[RollCall] post failed: {e}")
 
