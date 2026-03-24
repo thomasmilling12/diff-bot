@@ -3008,8 +3008,19 @@ def _hostflow_save_msg_id(msg_id: int) -> None:
         pass
 
 
-def _hostflow_start_msg(host_mention: str) -> str:
+def _hostflow_role_ping(guild: discord.Guild) -> str:
+    parts = []
+    for rid in (PS5_ROLE_ID, NOTIFY_ROLE_ID):
+        role = guild.get_role(rid)
+        if role:
+            parts.append(role.mention)
+    return " ".join(parts)
+
+
+def _hostflow_start_msg(host_mention: str, guild: discord.Guild) -> str:
+    ping = _hostflow_role_ping(guild)
     return (
+        f"{ping}\n\n"
         "🔱 __**DIFF Meet Welcome**__ 🔱\n\n"
         "*Hello everyone, welcome to another DIFF Meet.*\n\n"
         f"*Tonight's host is {host_mention}.*\n\n"
@@ -3034,8 +3045,10 @@ def _hostflow_start_msg(host_mention: str) -> str:
     )
 
 
-def _hostflow_end_msg() -> str:
+def _hostflow_end_msg(guild: discord.Guild) -> str:
+    ping = _hostflow_role_ping(guild)
     return (
+        f"{ping}\n\n"
         "📌 __**DIFF Meet Ending**__ 📌\n\n"
         "*Alright everyone, tonight's DIFF Meet has now come to an end.*\n\n"
         "*Thank you all for attending and being a part of tonight's meet.*\n\n"
@@ -3135,7 +3148,10 @@ class HostFlowView(discord.ui.View):
         if not isinstance(ch, discord.TextChannel):
             await interaction.response.send_message("Meet channel not found.", ephemeral=True)
             return
-        await ch.send(_hostflow_start_msg(interaction.user.mention))
+        await ch.send(
+            _hostflow_start_msg(interaction.user.mention, interaction.guild),
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
         await interaction.response.send_message(f"✅ Welcome speech posted in {ch.mention}.", ephemeral=True)
 
     @discord.ui.button(label="End Meet", emoji="📌", style=discord.ButtonStyle.danger, custom_id="diff_hostflow:end_meet")
@@ -3146,7 +3162,10 @@ class HostFlowView(discord.ui.View):
         if not isinstance(ch, discord.TextChannel):
             await interaction.response.send_message("Meet channel not found.", ephemeral=True)
             return
-        await ch.send(_hostflow_end_msg())
+        await ch.send(
+            _hostflow_end_msg(interaction.guild),
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
         log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(log_ch, discord.TextChannel):
             await log_ch.send(_hostflow_log_msg(interaction.user.mention))

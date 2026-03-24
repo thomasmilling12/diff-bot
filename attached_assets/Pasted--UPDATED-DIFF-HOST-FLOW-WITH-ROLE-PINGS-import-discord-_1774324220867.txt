@@ -1,0 +1,97 @@
+# UPDATED DIFF HOST FLOW WITH ROLE PINGS
+
+import discord
+from discord.ext import commands
+from datetime import datetime
+
+MEET_CHANNEL_ID = 1485684577073758378
+
+# ADD YOUR ROLE IDS HERE
+PS5_ROLE_ID = 000000000000000000  # replace
+CAR_MEET_ROLE_ID = 000000000000000000  # replace
+
+def role_mentions(guild):
+    ps5 = guild.get_role(PS5_ROLE_ID)
+    car = guild.get_role(CAR_MEET_ROLE_ID)
+    mentions = []
+    if ps5:
+        mentions.append(ps5.mention)
+    if car:
+        mentions.append(car.mention)
+    return " ".join(mentions)
+
+def welcome_msg(host, guild):
+    return f"""{role_mentions(guild)}
+
+🔱 __**DIFF Meet Welcome**__ 🔱
+
+Hello everyone, welcome to another DIFF Meet.
+
+Tonight’s host is {host}.
+
+Please get your vehicles ready. We’ll be heading out shortly.
+
+🚫 Rules:
+• No weapons  
+• Single file cruising — no passing  
+• No revving or honking  
+• No disrespect  
+• Stay in voice chat  
+
+— Different Meets
+"""
+
+def ending_msg(guild):
+    return f"""{role_mentions(guild)}
+
+📌 __**DIFF Meet Ending**__ 📌
+
+Tonight’s meet has now come to an end.
+
+Thank you all for attending.
+
+Follow @diff_meets and leave feedback in Discord.
+
+Lobby is now chill.
+
+🚫 No killing — or you will be blocked.
+
+— Different Meets
+"""
+
+class View(discord.ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(label="Start Meet", style=discord.ButtonStyle.success)
+    async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ch = self.bot.get_channel(MEET_CHANNEL_ID)
+        await ch.send(welcome_msg(interaction.user.mention, interaction.guild))
+        await interaction.response.send_message("Started meet", ephemeral=True)
+
+    @discord.ui.button(label="End Meet", style=discord.ButtonStyle.danger)
+    async def end(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ch = self.bot.get_channel(MEET_CHANNEL_ID)
+        await ch.send(ending_msg(interaction.guild))
+
+        now = datetime.now().strftime("%I:%M %p | %b %d")
+        await ch.send(f"📊 Host Log\nHost: {interaction.user.mention}\nEnded Meet\n{now}")
+
+        await interaction.response.send_message("Ended meet", ephemeral=True)
+
+class Cog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        bot.add_view(View(bot))
+
+    @commands.command()
+    async def send_host_hub(self, ctx):
+        embed = discord.Embed(
+            title="DIFF Host Hub",
+            description="Start or end your meet using the buttons below."
+        )
+        await ctx.send(embed=embed, view=View(self.bot))
+
+async def setup(bot):
+    await bot.add_cog(Cog(bot))
