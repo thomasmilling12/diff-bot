@@ -6895,7 +6895,6 @@ class _RollCallDB:
 
 
 _rc_db = _RollCallDB()
-_official_meet_tasks: list[asyncio.Task] = []
 
 
 def _rc_is_admin(member) -> bool:
@@ -7208,7 +7207,55 @@ async def _cmd_rollleaderboard(ctx: commands.Context):
 # OFFICIAL MEET ANNOUNCEMENT
 # =========================
 
+_OM_DATA_FILE = os.path.join(DATA_FOLDER, "diff_official_meets.json")
 _om_rsvps: dict[int, dict[str, set]] = {}
+_om_lock = asyncio.Lock()
+
+
+@dataclass
+class _OmRecord:
+    message_id: int
+    channel_id: int
+    host_id: int
+    theme: str
+    timestamp: int
+    started: bool = False
+    ended: bool = False
+    one_hour_sent: bool = False
+    fifteen_sent: bool = False
+
+
+def _om_load_records() -> dict:
+    try:
+        with open(_OM_DATA_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _om_save_records(data: dict) -> None:
+    try:
+        with open(_OM_DATA_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[OfficialMeet] save error: {e}")
+
+
+def _om_get_record(msg_id: int) -> _OmRecord | None:
+    data = _om_load_records()
+    raw = data.get(str(msg_id))
+    if not raw:
+        return None
+    try:
+        return _OmRecord(**{k: v for k, v in raw.items() if k in _OmRecord.__dataclass_fields__})
+    except Exception:
+        return None
+
+
+def _om_upsert_record(record: _OmRecord) -> None:
+    data = _om_load_records()
+    data[str(record.message_id)] = asdict(record)
+    _om_save_records(data)
 
 
 def _om_get_counts(msg_id: int) -> dict:
@@ -7224,7 +7271,7 @@ class _OfficialMeetRSVPView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    async def _handle(self, interaction: discord.Interaction, status: str):
+    async def _handle_rsvp(self, interaction: discord.Interaction, status: str):
         msg_id = interaction.message.id
         uid = interaction.user.id
         if msg_id not in _om_rsvps:
@@ -7247,17 +7294,180 @@ class _OfficialMeetRSVPView(discord.ui.View):
             f"You're marked as **{label_map[status]}** for this meet.", ephemeral=True
         )
 
+    async def _handle_ctrl(self, interaction: discord.Interaction, action: str):
+        msg_id = interaction.message.id
+        record = _om_get_record(msg_id)
+        member = interaction.user
+        is_staff = (
+            isinstance(member, discord.Member)
+            and (member.guild_permissions.manage_guild or any(r.id in _JOIN_STAFF_ROLE_IDS for r in member.roles))
+        )
+        is_host = record and isinstance(member, discord.Member) and member.id == record.host_id
+        if not (is_staff or is_host):
+            await interaction.response.send_message("Only the assigned host or staff can use this.", ephemeral=True)
+            return
+        if not record:
+            await interaction.response.send_message("Meet record not found.", ephemeral=True)
+            return
+
+        if action == "start":
+            if record.started:
+                await interaction.response.send_message("This meet has already been started.", ephemeral=True)
+                return
+            if record.ended:
+                await interaction.response.send_message("This meet has already ended.", ephemeral=True)
+                return
+            record.started = True
+            _om_upsert_record(record)
+            ch = bot.get_channel(record.channel_id)
+            if isinstance(ch, discord.TextChannel):
+                await ch.send(
+                    f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>\n\n"
+                    f"🚨 **DIFF Session Is Now Live**\n\n"
+                    f"⏳ Started: <t:{record.timestamp}:R>\n\n"
+                    f"🎮 Join through the host: <@{record.host_id}>\n"
+                    f"💬 Head to #chat for instructions\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"Stay clean, stay organized, and follow host direction.",
+                    allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+                )
+            await _om_staff_log("Meet Started", record, interaction.user)
+            for child in self.children:
+                if isinstance(child, discord.ui.Button) and child.custom_id == "diff_om_ctrl:start":
+                    child.disabled = True
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("Meet marked as **live**.", ephemeral=True)
+
+        elif action == "end":
+            if record.ended:
+                await interaction.response.send_message("This meet has already ended.", ephemeral=True)
+                return
+            record.ended = True
+            _om_upsert_record(record)
+            ch = bot.get_channel(record.channel_id)
+            if isinstance(ch, discord.TextChannel):
+                await ch.send(
+                    f"📌 **DIFF Meet Closed**\n\n"
+                    f"Host: <@{record.host_id}>\n"
+                    f"Theme: {record.theme}\n"
+                    f"Scheduled Time: <t:{record.timestamp}:F>\n\n"
+                    f"Thank you to everyone who attended and helped keep the meet clean."
+                )
+            await _om_staff_log("Meet Ended", record, interaction.user)
+            for child in self.children:
+                if isinstance(child, discord.ui.Button) and child.custom_id in ("diff_om_ctrl:start", "diff_om_ctrl:end"):
+                    child.disabled = True
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("Meet marked as **ended**.", ephemeral=True)
+
     @discord.ui.button(label="Attending (0)", style=discord.ButtonStyle.success, custom_id="diff_om_rsvp:yes", row=0)
     async def btn_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._handle(interaction, "yes")
+        await self._handle_rsvp(interaction, "yes")
 
     @discord.ui.button(label="Maybe (0)", style=discord.ButtonStyle.secondary, custom_id="diff_om_rsvp:maybe", row=0)
     async def btn_maybe(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._handle(interaction, "maybe")
+        await self._handle_rsvp(interaction, "maybe")
 
     @discord.ui.button(label="Not Attending (0)", style=discord.ButtonStyle.danger, custom_id="diff_om_rsvp:no", row=0)
     async def btn_no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._handle(interaction, "no")
+        await self._handle_rsvp(interaction, "no")
+
+    @discord.ui.button(label="▶ Start Meet", style=discord.ButtonStyle.success, custom_id="diff_om_ctrl:start", row=1)
+    async def btn_start(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_ctrl(interaction, "start")
+
+    @discord.ui.button(label="⏹ End Meet", style=discord.ButtonStyle.danger, custom_id="diff_om_ctrl:end", row=1)
+    async def btn_end(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle_ctrl(interaction, "end")
+
+
+async def _om_staff_log(title: str, record: _OmRecord, acted_by: discord.Member) -> None:
+    ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return
+    embed = discord.Embed(title=f"🏁 {title}", color=discord.Color.blurple(), timestamp=datetime.now(timezone.utc))
+    embed.add_field(name="Host", value=f"<@{record.host_id}>", inline=True)
+    embed.add_field(name="Theme", value=record.theme, inline=True)
+    embed.add_field(name="Scheduled", value=f"<t:{record.timestamp}:F>", inline=False)
+    embed.add_field(name="Action By", value=acted_by.mention, inline=True)
+    try:
+        await ch.send(embed=embed)
+    except Exception:
+        pass
+
+
+async def _om_reminder_task(msg_id: int, delay_secs: int, reminder_type: str) -> None:
+    try:
+        if delay_secs > 0:
+            await asyncio.sleep(delay_secs)
+        record = _om_get_record(msg_id)
+        if not record or record.ended:
+            return
+        if reminder_type == "1h" and record.one_hour_sent:
+            return
+        if reminder_type == "15m" and record.fifteen_sent:
+            return
+        ch = bot.get_channel(record.channel_id)
+        if isinstance(ch, discord.TextChannel):
+            if reminder_type == "1h":
+                await ch.send(
+                    "⏳ **DIFF Meet Reminder**\n\n"
+                    "This meet begins in:\n"
+                    f"<t:{record.timestamp}:R>\n\n"
+                    "Be ready with your build and check in with the host."
+                )
+                record.one_hour_sent = True
+            else:
+                await ch.send(
+                    "🚨 **DIFF Meet Starting Soon**\n\n"
+                    f"⏳ <t:{record.timestamp}:R>\n\n"
+                    "Make sure you're ready to join and have your cars prepared."
+                )
+                record.fifteen_sent = True
+            _om_upsert_record(record)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        print(f"[OfficialMeet] reminder error: {e}")
+
+
+def _om_schedule_reminders(record: _OmRecord) -> None:
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    if not record.one_hour_sent:
+        delay = record.timestamp - now_ts - 3600
+        asyncio.create_task(_om_reminder_task(record.message_id, max(delay, 0), "1h"))
+    if not record.fifteen_sent:
+        delay = record.timestamp - now_ts - 900
+        asyncio.create_task(_om_reminder_task(record.message_id, max(delay, 0), "15m"))
+
+
+async def _om_restore_on_ready() -> None:
+    await bot.wait_until_ready()
+    data = _om_load_records()
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    for raw in data.values():
+        try:
+            record = _OmRecord(**{k: v for k, v in raw.items() if k in _OmRecord.__dataclass_fields__})
+        except Exception:
+            continue
+        if record.ended and record.timestamp < now_ts - 86400:
+            continue
+        _om_schedule_reminders(record)
+        if record.started or record.ended:
+            ch = bot.get_channel(record.channel_id)
+            if isinstance(ch, discord.TextChannel):
+                try:
+                    msg = await ch.fetch_message(record.message_id)
+                    view = _OfficialMeetRSVPView()
+                    for child in view.children:
+                        if isinstance(child, discord.ui.Button):
+                            if child.custom_id == "diff_om_ctrl:start" and (record.started or record.ended):
+                                child.disabled = True
+                            if child.custom_id == "diff_om_ctrl:end" and record.ended:
+                                child.disabled = True
+                    await msg.edit(view=view)
+                except Exception:
+                    pass
 
 
 def _om_build_message(theme: str, host: discord.Member, timestamp: int) -> str:
@@ -7283,43 +7493,6 @@ def _om_build_message(theme: str, host: discord.Member, timestamp: int) -> str:
         f"**Style Direction**\n\n"
         f"Choose vehicles that match tonight's theme and represent DIFF properly."
     )
-
-
-async def _om_one_hour_reminder(channel_id: int, timestamp: int) -> None:
-    try:
-        delay = timestamp - int(datetime.now(timezone.utc).timestamp()) - 3600
-        if delay > 0:
-            await asyncio.sleep(delay)
-        channel = bot.get_channel(channel_id)
-        if isinstance(channel, discord.TextChannel):
-            await channel.send(
-                "⏳ **DIFF Meet Reminder**\n\n"
-                "This meet begins in:\n"
-                f"<t:{timestamp}:R>\n\n"
-                "Be ready with your build and check in with the host."
-            )
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        print(f"[OfficialMeet] 1-hour reminder error: {e}")
-
-
-async def _om_fifteen_min_reminder(channel_id: int, timestamp: int) -> None:
-    try:
-        delay = timestamp - int(datetime.now(timezone.utc).timestamp()) - 900
-        if delay > 0:
-            await asyncio.sleep(delay)
-        channel = bot.get_channel(channel_id)
-        if isinstance(channel, discord.TextChannel):
-            await channel.send(
-                "🚨 **DIFF Meet Starting Soon**\n\n"
-                f"⏳ <t:{timestamp}:R>\n\n"
-                "Make sure you're ready to join and have your cars prepared."
-            )
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        print(f"[OfficialMeet] 15-min reminder error: {e}")
 
 
 @bot.command(name="officialmeet")
@@ -7348,7 +7521,7 @@ async def _cmd_officialmeet(ctx: commands.Context, theme: str, date: str, time_s
         await ctx.send("That meet time is already in the past.", delete_after=10)
         return
     try:
-        await channel.send(
+        sent = await channel.send(
             _om_build_message(theme=theme, host=host, timestamp=meet_ts),
             view=_OfficialMeetRSVPView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True),
@@ -7356,8 +7529,15 @@ async def _cmd_officialmeet(ctx: commands.Context, theme: str, date: str, time_s
     except discord.Forbidden:
         await ctx.send("Missing permissions to post in the meet channel.", delete_after=10)
         return
-    _official_meet_tasks.append(asyncio.create_task(_om_one_hour_reminder(channel.id, meet_ts)))
-    _official_meet_tasks.append(asyncio.create_task(_om_fifteen_min_reminder(channel.id, meet_ts)))
+    record = _OmRecord(
+        message_id=sent.id,
+        channel_id=channel.id,
+        host_id=host.id,
+        theme=theme,
+        timestamp=meet_ts,
+    )
+    _om_upsert_record(record)
+    _om_schedule_reminders(record)
     await ctx.send(f"Official meet posted in {channel.mention} for <t:{meet_ts}:F>.", delete_after=15)
 
 
@@ -7464,6 +7644,7 @@ async def on_ready():
     bot.add_view(_RcRollCallView())
     bot.add_view(_RcAdminView())
     bot.add_view(_OfficialMeetRSVPView())
+    asyncio.create_task(_om_restore_on_ready())
     if not _rc_ensure_loop.is_running():
         _rc_ensure_loop.start()
 
