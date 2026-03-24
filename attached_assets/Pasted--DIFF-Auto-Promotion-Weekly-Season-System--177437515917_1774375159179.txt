@@ -1,0 +1,522 @@
+
+"""
+DIFF Auto Promotion + Weekly Season System
+========================================================
+discord.py 2.x addon / cog
+
+What it does:
+- Tracks manager stats in JSON
+- Runs a weekly season leaderboard
+- Posts/refreshes a season panel without duplicates
+- Suggests promotions automatically when score threshold is reached
+- Can optionally award a winner role at season end
+- Can reset weekly season stats manually or on schedule
+- Works well with your manager hub/performance systems
+
+Posted in:
+1485273802391814224
+
+Main commands:
+- /managerseason setup
+- /managerseason refresh
+- /managerseason add
+- /managerseason profile
+- /managerseason leaderboard
+- /managerseason endweek
+- /managerseason resetweek
+
+Optional:
+- enable the background weekly reset task in the code
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Optional
+from datetime import datetime, timezone
+
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+GUILD_ID = 850386896509337710
+SEASON_PANEL_CHANNEL_ID = 1485273802391814224
+
+# Optional staff log / promotions channel
+PROMOTION_LOG_CHANNEL_ID = None
+
+# Optional role IDs
+MANAGER_ROLE_PING_ID = None
+SEASON_WINNER_ROLE_ID = None
+PROMOTION_TARGET_ROLE_ID = None
+
+# Branding
+PANEL_TITLE = "🏆 DIFF Manager Season Hub"
+PANEL_DESCRIPTION = (
+    "Track weekly manager performance, promotion suggestions, and season leaders across **Different Meets**.\n\n"
+    "This system refreshes cleanly without creating duplicate posts."
+)
+FOOTER_TEXT = "Different Meets • Manager Season System"
+LOGO_URL = ""
+BANNER_URL = ""
+
+# Scoring
+RECRUITMENT_POINTS = 3
+MEET_SUPPORT_POINTS = 2
+MANAGER_ACTION_POINTS = 2
+ISSUE_REPORT_POINTS = 1
+WARNING_FILED_POINTS = 1
+
+# Promotion threshold
+PROMOTION_SUGGESTION_SCORE = 25
+
+# Weekly reset schedule
+# 0 = Monday ... 6 = Sunday
+RESET_WEEKDAY = 0
+RESET_HOUR_UTC = 16   # 12 PM Eastern during EDT is 16 UTC
+ENABLE_AUTO_WEEKLY_RESET = False
+
+# Files
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+
+STATE_FILE = DATA_DIR / "manager_season_panel_state.json"
+STATS_FILE = DATA_DIR / "manager_season_stats.json"
+SEASON_FILE = DATA_DIR / "manager_season_meta.json"
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def load_json(path: Path, default):
+    if not path.exists():
+        save_json(path, default)
+        return default
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_json(path: Path, data):
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+def ensure_files():
+    load_json(STATE_FILE, {"channel_id": SEASON_PANEL_CHANNEL_ID, "message_id": None})
+    load_json(STATS_FILE, {"managers": {}})
+    load_json(SEASON_FILE, {
+        "season_number": 1,
+        "last_reset_utc": None,
+        "last_winner_id": None,
+        "last_winner_name": None,
+        "promotion_announced": []
+    })
+
+def blank_stats(member_id: int, name: str) -> dict:
+    return {
+        "member_id": member_id,
+        "name": name,
+        "recruitment": 0,
+        "meet_support": 0,
+        "manager_actions": 0,
+        "issues_reported": 0,
+        "warnings_filed": 0,
+    }
+
+def compute_score(stats: dict) -> int:
+    return (
+        stats.get("recruitment", 0) * RECRUITMENT_POINTS
+        + stats.get("meet_support", 0) * MEET_SUPPORT_POINTS
+        + stats.get("manager_actions", 0) * MANAGER_ACTION_POINTS
+        + stats.get("issues_reported", 0) * ISSUE_REPORT_POINTS
+        + stats.get("warnings_filed", 0) * WARNING_FILED_POINTS
+    )
+
+def sort_managers(managers: dict) -> list:
+    values = list(managers.values())
+    for item in values:
+        item["score"] = compute_score(item)
+    values.sort(key=lambda x: (x["score"], x.get("recruitment", 0), x.get("meet_support", 0)), reverse=True)
+    return values
+
+
+# =========================================================
+# COG
+# =========================================================
+
+class ManagerSeasonSystem(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        ensure_files()
+        if ENABLE_AUTO_WEEKLY_RESET:
+            self.weekly_reset_loop.start()
+
+    def cog_unload(self):
+        if ENABLE_AUTO_WEEKLY_RESET:
+            self.weekly_reset_loop.cancel()
+
+    def get_stats(self) -> dict:
+        return load_json(STATS_FILE, {"managers": {}})
+
+    def save_stats(self, data: dict):
+        save_json(STATS_FILE, data)
+
+    def get_meta(self) -> dict:
+        return load_json(SEASON_FILE, {
+            "season_number": 1,
+            "last_reset_utc": None,
+            "last_winner_id": None,
+            "last_winner_name": None,
+            "promotion_announced": []
+        })
+
+    def save_meta(self, data: dict):
+        save_json(SEASON_FILE, data)
+
+    async def adjust_stats(
+        self,
+        member: discord.Member,
+        recruitment: int = 0,
+        meet_support: int = 0,
+        manager_actions: int = 0,
+        issues_reported: int = 0,
+        warnings_filed: int = 0,
+    ) -> dict:
+        data = self.get_stats()
+        key = str(member.id)
+
+        if key not in data["managers"]:
+            data["managers"][key] = blank_stats(member.id, str(member))
+
+        stats = data["managers"][key]
+        stats["name"] = str(member)
+        stats["recruitment"] = max(0, stats.get("recruitment", 0) + recruitment)
+        stats["meet_support"] = max(0, stats.get("meet_support", 0) + meet_support)
+        stats["manager_actions"] = max(0, stats.get("manager_actions", 0) + manager_actions)
+        stats["issues_reported"] = max(0, stats.get("issues_reported", 0) + issues_reported)
+        stats["warnings_filed"] = max(0, stats.get("warnings_filed", 0) + warnings_filed)
+
+        self.save_stats(data)
+        await self.check_promotion_suggestion(member, stats)
+        await self.post_or_refresh_panel()
+        return stats
+
+    async def check_promotion_suggestion(self, member: discord.Member, stats: dict):
+        score = compute_score(stats)
+        meta = self.get_meta()
+        announced = set(meta.get("promotion_announced", []))
+
+        if score < PROMOTION_SUGGESTION_SCORE or str(member.id) in announced:
+            return
+
+        if PROMOTION_LOG_CHANNEL_ID:
+            channel = self.bot.get_channel(PROMOTION_LOG_CHANNEL_ID)
+            if channel:
+                embed = discord.Embed(
+                    title="📈 Promotion Suggestion",
+                    description=(
+                        f"{member.mention} has reached the promotion suggestion threshold.\n\n"
+                        f"**Current Score:** {score}\n"
+                        f"**Threshold:** {PROMOTION_SUGGESTION_SCORE}"
+                    ),
+                    color=discord.Color.gold(),
+                )
+                embed.add_field(name="Recruitment", value=str(stats.get("recruitment", 0)), inline=True)
+                embed.add_field(name="Meet Support", value=str(stats.get("meet_support", 0)), inline=True)
+                embed.add_field(name="Manager Actions", value=str(stats.get("manager_actions", 0)), inline=True)
+                embed.add_field(name="Issues Reported", value=str(stats.get("issues_reported", 0)), inline=True)
+                embed.add_field(name="Warnings Filed", value=str(stats.get("warnings_filed", 0)), inline=True)
+                embed.set_footer(text=FOOTER_TEXT)
+                await channel.send(content=f"<@{member.id}>", embed=embed)
+
+        announced.add(str(member.id))
+        meta["promotion_announced"] = list(announced)
+        self.save_meta(meta)
+
+    def build_main_embed(self) -> discord.Embed:
+        stats_data = self.get_stats()
+        meta = self.get_meta()
+        ranked = sort_managers(stats_data.get("managers", {}))
+
+        embed = discord.Embed(
+            title=PANEL_TITLE,
+            description=PANEL_DESCRIPTION,
+            color=discord.Color.blurple(),
+        )
+
+        embed.add_field(name="Current Season", value=f"Week {meta.get('season_number', 1)}", inline=True)
+        embed.add_field(name="Promotion Threshold", value=str(PROMOTION_SUGGESTION_SCORE), inline=True)
+
+        if meta.get("last_winner_name"):
+            embed.add_field(name="Last Winner", value=meta["last_winner_name"], inline=True)
+        else:
+            embed.add_field(name="Last Winner", value="None yet", inline=True)
+
+        if ranked:
+            lines = []
+            medals = ["🥇", "🥈", "🥉"]
+            for idx, item in enumerate(ranked[:10], start=1):
+                prefix = medals[idx - 1] if idx <= 3 else f"**#{idx}**"
+                lines.append(
+                    f"{prefix} <@{item['member_id']}> — **{item['score']} pts**"
+                    f" | R:{item['recruitment']} MS:{item['meet_support']} A:{item['manager_actions']}"
+                )
+            embed.add_field(name="Season Leaderboard", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(name="Season Leaderboard", value="No manager stats recorded yet.", inline=False)
+
+        embed.add_field(
+            name="Scoring",
+            value=(
+                f"• Recruitment = {RECRUITMENT_POINTS} pts\n"
+                f"• Meet Support = {MEET_SUPPORT_POINTS} pts\n"
+                f"• Manager Actions = {MANAGER_ACTION_POINTS} pts\n"
+                f"• Issues Reported = {ISSUE_REPORT_POINTS} pt\n"
+                f"• Warnings Filed = {WARNING_FILED_POINTS} pt"
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text=FOOTER_TEXT)
+        if LOGO_URL:
+            embed.set_thumbnail(url=LOGO_URL)
+        if BANNER_URL:
+            embed.set_image(url=BANNER_URL)
+
+        return embed
+
+    def build_profile_embed(self, member: discord.Member) -> discord.Embed:
+        data = self.get_stats()
+        stats = data["managers"].get(str(member.id), blank_stats(member.id, str(member)))
+        score = compute_score(stats)
+
+        embed = discord.Embed(
+            title=f"📊 Manager Season Profile • {member.display_name}",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Recruitment", value=str(stats.get("recruitment", 0)), inline=True)
+        embed.add_field(name="Meet Support", value=str(stats.get("meet_support", 0)), inline=True)
+        embed.add_field(name="Manager Actions", value=str(stats.get("manager_actions", 0)), inline=True)
+        embed.add_field(name="Issues Reported", value=str(stats.get("issues_reported", 0)), inline=True)
+        embed.add_field(name="Warnings Filed", value=str(stats.get("warnings_filed", 0)), inline=True)
+        embed.add_field(name="Total Score", value=str(score), inline=True)
+        embed.set_footer(text=FOOTER_TEXT)
+        if LOGO_URL:
+            embed.set_thumbnail(url=LOGO_URL)
+        return embed
+
+    async def post_or_refresh_panel(self):
+        state = load_json(STATE_FILE, {"channel_id": SEASON_PANEL_CHANNEL_ID, "message_id": None})
+        channel_id = state.get("channel_id", SEASON_PANEL_CHANNEL_ID)
+        message_id = state.get("message_id")
+
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except Exception as e:
+                return False, f"Could not access season panel channel: {e}"
+
+        embed = self.build_main_embed()
+        content = f"<@&{MANAGER_ROLE_PING_ID}>" if MANAGER_ROLE_PING_ID else None
+
+        if message_id:
+            try:
+                msg = await channel.fetch_message(message_id)
+                await msg.edit(content=content, embed=embed)
+                return True, "Manager season panel refreshed successfully."
+            except Exception:
+                pass
+
+        try:
+            msg = await channel.send(content=content, embed=embed)
+            state["message_id"] = msg.id
+            state["channel_id"] = channel.id
+            save_json(STATE_FILE, state)
+            return True, "Manager season panel posted successfully."
+        except Exception as e:
+            return False, f"Failed to post manager season panel: {e}"
+
+    async def end_week_and_reset(self, guild: discord.Guild) -> str:
+        data = self.get_stats()
+        ranked = sort_managers(data.get("managers", {}))
+        meta = self.get_meta()
+
+        winner_text = "No winner this week."
+        winner_member = None
+
+        if ranked:
+            winner = ranked[0]
+            winner_text = f"<@{winner['member_id']}> won **Week {meta.get('season_number', 1)}** with **{winner['score']} pts**."
+            winner_member = guild.get_member(winner["member_id"])
+            meta["last_winner_id"] = winner["member_id"]
+            meta["last_winner_name"] = winner["name"]
+
+        if PROMOTION_LOG_CHANNEL_ID:
+            channel = self.bot.get_channel(PROMOTION_LOG_CHANNEL_ID)
+            if channel:
+                embed = discord.Embed(
+                    title="🏆 Weekly Manager Season Results",
+                    description=winner_text,
+                    color=discord.Color.gold(),
+                )
+                if ranked:
+                    lines = []
+                    medals = ["🥇", "🥈", "🥉"]
+                    for idx, item in enumerate(ranked[:3], start=1):
+                        prefix = medals[idx - 1] if idx <= 3 else f"#{idx}"
+                        lines.append(f"{prefix} <@{item['member_id']}> — **{item['score']} pts**")
+                    embed.add_field(name="Top 3", value="\n".join(lines), inline=False)
+                embed.set_footer(text=FOOTER_TEXT)
+                await channel.send(embed=embed)
+
+        if SEASON_WINNER_ROLE_ID and winner_member:
+            role = guild.get_role(SEASON_WINNER_ROLE_ID)
+            if role:
+                try:
+                    for member in role.members:
+                        await member.remove_roles(role, reason="Weekly season winner role reset")
+                    await winner_member.add_roles(role, reason="Awarded weekly manager season winner role")
+                except Exception:
+                    pass
+
+        if PROMOTION_TARGET_ROLE_ID and winner_member:
+            role = guild.get_role(PROMOTION_TARGET_ROLE_ID)
+            if role and role not in winner_member.roles:
+                try:
+                    await winner_member.add_roles(role, reason="Auto promotion target role awarded by season system")
+                except Exception:
+                    pass
+
+        meta["season_number"] = meta.get("season_number", 1) + 1
+        meta["last_reset_utc"] = datetime.now(timezone.utc).isoformat()
+        meta["promotion_announced"] = []
+        self.save_meta(meta)
+
+        self.save_stats({"managers": {}})
+        await self.post_or_refresh_panel()
+        return winner_text
+
+    @tasks.loop(minutes=30)
+    async def weekly_reset_loop(self):
+        now = datetime.now(timezone.utc)
+        if now.weekday() != RESET_WEEKDAY or now.hour != RESET_HOUR_UTC:
+            return
+
+        meta = self.get_meta()
+        last_reset = meta.get("last_reset_utc")
+        if last_reset:
+            try:
+                parsed = datetime.fromisoformat(last_reset)
+                if parsed.date() == now.date():
+                    return
+            except Exception:
+                pass
+
+        guild = self.bot.get_guild(GUILD_ID)
+        if guild:
+            await self.end_week_and_reset(guild)
+
+    @weekly_reset_loop.before_loop
+    async def before_weekly_loop(self):
+        await self.bot.wait_until_ready()
+
+
+# =========================================================
+# COMMANDS
+# =========================================================
+
+class ManagerSeasonGroup(app_commands.Group):
+    def __init__(self, cog: ManagerSeasonSystem):
+        super().__init__(name="managerseason", description="Manage DIFF manager promotions and weekly season")
+        self.cog = cog
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need Manage Server to use this.", ephemeral=True)
+            return False
+        return True
+
+    @app_commands.command(name="setup", description="Post or refresh the manager season panel")
+    async def setup_cmd(self, interaction: discord.Interaction):
+        ok, msg = await self.cog.post_or_refresh_panel()
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @app_commands.command(name="refresh", description="Refresh the manager season panel")
+    async def refresh_cmd(self, interaction: discord.Interaction):
+        ok, msg = await self.cog.post_or_refresh_panel()
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @app_commands.command(name="leaderboard", description="View the current manager season leaderboard")
+    async def leaderboard_cmd(self, interaction: discord.Interaction):
+        await interaction.response.send_message(embed=self.cog.build_main_embed(), ephemeral=True)
+
+    @app_commands.command(name="profile", description="View a manager season profile")
+    @app_commands.describe(member="Manager to view")
+    async def profile_cmd(self, interaction: discord.Interaction, member: discord.Member):
+        await interaction.response.send_message(embed=self.cog.build_profile_embed(member), ephemeral=True)
+
+    @app_commands.command(name="add", description="Add manager season stats")
+    @app_commands.describe(
+        member="Manager to update",
+        recruitment="Recruitment count to add",
+        meet_support="Meet support count to add",
+        manager_actions="Manager action count to add",
+        issues_reported="Issues reported count to add",
+        warnings_filed="Warnings filed count to add",
+    )
+    async def add_cmd(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        recruitment: Optional[int] = 0,
+        meet_support: Optional[int] = 0,
+        manager_actions: Optional[int] = 0,
+        issues_reported: Optional[int] = 0,
+        warnings_filed: Optional[int] = 0,
+    ):
+        stats = await self.cog.adjust_stats(
+            member=member,
+            recruitment=recruitment or 0,
+            meet_support=meet_support or 0,
+            manager_actions=manager_actions or 0,
+            issues_reported=issues_reported or 0,
+            warnings_filed=warnings_filed or 0,
+        )
+        await interaction.response.send_message(
+            f"Updated season stats for {member.mention}. New score: **{compute_score(stats)}**.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="endweek", description="End the current week, announce winner, and reset")
+    async def endweek_cmd(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
+            return
+        winner_text = await self.cog.end_week_and_reset(interaction.guild)
+        await interaction.response.send_message(f"Week ended. {winner_text}", ephemeral=True)
+
+    @app_commands.command(name="resetweek", description="Reset weekly season stats without announcing a winner")
+    async def resetweek_cmd(self, interaction: discord.Interaction):
+        meta = self.cog.get_meta()
+        meta["season_number"] = meta.get("season_number", 1) + 1
+        meta["last_reset_utc"] = datetime.now(timezone.utc).isoformat()
+        meta["promotion_announced"] = []
+        self.cog.save_meta(meta)
+        self.cog.save_stats({"managers": {}})
+        await self.cog.post_or_refresh_panel()
+        await interaction.response.send_message("Weekly season stats reset.", ephemeral=True)
+
+
+# =========================================================
+# SETUP
+# =========================================================
+
+async def setup(bot: commands.Bot):
+    cog = ManagerSeasonSystem(bot)
+    await bot.add_cog(cog, guild=discord.Object(id=GUILD_ID))
+    bot.tree.add_command(ManagerSeasonGroup(cog), guild=discord.Object(id=GUILD_ID))
