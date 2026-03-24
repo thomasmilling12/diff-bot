@@ -211,6 +211,7 @@ async def _setup_hook():
     await bot.load_extension("cogs.partner_expansion")
     await bot.load_extension("cogs.partner_request_system")
     await bot.load_extension("cogs.diff_welcome_join")
+    await bot.load_extension("cogs.diff_feedback_system")
 
 bot.setup_hook = _setup_hook
 
@@ -5036,14 +5037,36 @@ def build_meet_info_embed() -> discord.Embed:
     return embed
 
 
-def build_meet_info_view(guild_id: int) -> discord.ui.View:
-    view = discord.ui.View(timeout=None)
-    view.add_item(discord.ui.Button(label="General Rules", style=discord.ButtonStyle.link, emoji="📜", url=build_channel_link(guild_id, MEET_RULES_CHANNEL_ID)))
-    view.add_item(discord.ui.Button(label="Join Meets", style=discord.ButtonStyle.link, emoji="📥", url=build_channel_link(guild_id, JOIN_MEETS_CHANNEL_ID)))
-    view.add_item(discord.ui.Button(label="Upcoming Meet", style=discord.ButtonStyle.link, emoji="📅", url=build_channel_link(guild_id, UPCOMING_MEET_CHANNEL_ID)))
-    view.add_item(discord.ui.Button(label="Support Tickets", style=discord.ButtonStyle.link, emoji="🎟️", url=build_channel_link(guild_id, SUPPORT_TICKETS_CHANNEL_ID)))
-    view.add_item(discord.ui.Button(label="Hosts", style=discord.ButtonStyle.link, emoji="👥", url=build_channel_link(guild_id, DIFF_HOSTS_CHANNEL_ID)))
-    return view
+class MeetInfoView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        guild_id = GUILD_ID
+        self.add_item(discord.ui.Button(label="General Rules", style=discord.ButtonStyle.link, emoji="📜", url=build_channel_link(guild_id, MEET_RULES_CHANNEL_ID)))
+        self.add_item(discord.ui.Button(label="Join Meets", style=discord.ButtonStyle.link, emoji="📥", url=build_channel_link(guild_id, JOIN_MEETS_CHANNEL_ID)))
+        self.add_item(discord.ui.Button(label="Upcoming Meet", style=discord.ButtonStyle.link, emoji="📅", url=build_channel_link(guild_id, UPCOMING_MEET_CHANNEL_ID)))
+        self.add_item(discord.ui.Button(label="Support Tickets", style=discord.ButtonStyle.link, emoji="🎟️", url=build_channel_link(guild_id, SUPPORT_TICKETS_CHANNEL_ID)))
+        self.add_item(discord.ui.Button(label="Hosts", style=discord.ButtonStyle.link, emoji="👥", url=build_channel_link(guild_id, DIFF_HOSTS_CHANNEL_ID)))
+
+    @discord.ui.button(
+        label="Submit Feedback",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_meetinfo_feedback_submit",
+        emoji="📝",
+        row=1,
+    )
+    async def submit_feedback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from cogs.diff_feedback_system import FeedbackModal
+        cog = interaction.client.cogs.get("FeedbackSystem")
+        if cog is None:
+            await interaction.response.send_message(
+                "Feedback system is temporarily unavailable.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(FeedbackModal(cog))
+
+
+def build_meet_info_view(guild_id: int = GUILD_ID) -> MeetInfoView:
+    return MeetInfoView()
 
 
 def get_rules_embed():
@@ -8382,6 +8405,7 @@ async def on_ready():
         bot.add_view(JoinTicketView())
         bot.add_view(NotifyMeetView())
         bot.add_view(StaffDashboardView())
+        bot.add_view(MeetInfoView())
         _tab_state = _tab_load()
         _seen_member_ids: set[int] = set()
         for _link in _tab_state.get("ticket_links", {}).values():
