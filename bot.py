@@ -7542,6 +7542,224 @@ async def _cmd_officialmeet(ctx: commands.Context, theme: str, date: str, time_s
 
 
 # =========================
+# OFFICIAL MEET PANEL
+# =========================
+
+_OM_PANEL_FILE = os.path.join(DATA_FOLDER, "diff_om_panel.json")
+
+
+def _om_panel_load() -> dict:
+    try:
+        with open(_OM_PANEL_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _om_panel_save(data: dict):
+    try:
+        with open(_OM_PANEL_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def _om_parse_datetime(date_str: str, time_str: str) -> int | None:
+    """Parse 'YYYY-MM-DD' + '8pm EST' into a Unix timestamp. Returns None on failure."""
+    from datetime import timedelta
+    tz_abbr = "EST"
+    clean_time = time_str.strip()
+    m = re.search(r'([A-Za-z]{2,4})$', clean_time)
+    if m:
+        tz_abbr = m.group(1).upper()
+        clean_time = clean_time[:m.start()].strip()
+    tz_name = _POPUP_TZ_MAP.get(tz_abbr, "America/New_York")
+    try:
+        tz = ZoneInfo(tz_name)
+        date_part = datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+        tm = re.match(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', clean_time, re.IGNORECASE)
+        if not tm:
+            return None
+        hour = int(tm.group(1))
+        minute = int(tm.group(2)) if tm.group(2) else 0
+        meridiem = tm.group(3).lower() if tm.group(3) else None
+        if meridiem == "pm" and hour != 12:
+            hour += 12
+        elif meridiem == "am" and hour == 12:
+            hour = 0
+        local_dt = datetime(date_part.year, date_part.month, date_part.day, hour, minute, tzinfo=tz)
+        return int(local_dt.timestamp())
+    except Exception:
+        return None
+
+
+def _om_panel_build_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🏁 DIFF Official Meet Hub",
+        color=discord.Color.dark_gold(),
+        description=(
+            "Use the button below to schedule and post an official DIFF meet announcement.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**What gets posted**\n"
+            "• Full meet announcement with role pings\n"
+            "• Auto-converting Discord timestamp (every member sees their own timezone)\n"
+            "• Entry info, meet notes, and style direction\n"
+            "• RSVP buttons for members\n"
+            "• Start / End meet controls for the host\n"
+            "• Automatic 1-hour and 15-minute reminders\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**Restricted to staff and assigned hosts.**"
+        ),
+    )
+    embed.set_footer(text="DIFF Official Meet System")
+    return embed
+
+
+class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official Meet"):
+    theme_field = discord.ui.TextInput(
+        label="Theme",
+        placeholder="e.g. Tire Lettering / JDM Night / Stanced Only",
+        required=True,
+        max_length=100,
+    )
+    date_field = discord.ui.TextInput(
+        label="Date (YYYY-MM-DD)",
+        placeholder="e.g. 2026-04-05",
+        required=True,
+        max_length=20,
+    )
+    time_field = discord.ui.TextInput(
+        label="Time",
+        placeholder="e.g. 8pm EST  or  8:30pm CST  or  20:00 ET",
+        required=True,
+        max_length=50,
+    )
+    host_field = discord.ui.TextInput(
+        label="Host (user ID or @mention)",
+        placeholder="e.g. 123456789012345678  or paste their @mention",
+        required=True,
+        max_length=100,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return
+
+        raw_host = self.host_field.value.strip()
+        host_id_match = re.search(r'\d{15,20}', raw_host)
+        if not host_id_match:
+            await interaction.response.send_message(
+                "Couldn't find a valid user ID. Paste their user ID or @mention.", ephemeral=True
+            )
+            return
+        host_id = int(host_id_match.group())
+        host_member = guild.get_member(host_id)
+        if not host_member:
+            try:
+                host_member = await guild.fetch_member(host_id)
+            except Exception:
+                await interaction.response.send_message(
+                    "That user wasn't found in the server.", ephemeral=True
+                )
+                return
+
+        meet_ts = _om_parse_datetime(self.date_field.value, self.time_field.value)
+        if meet_ts is None:
+            await interaction.response.send_message(
+                "Couldn't parse the date/time. Use format: `YYYY-MM-DD` and `8pm EST`.", ephemeral=True
+            )
+            return
+        if meet_ts <= int(datetime.now(timezone.utc).timestamp()):
+            await interaction.response.send_message("That date/time is already in the past.", ephemeral=True)
+            return
+
+        channel = bot.get_channel(_OFFICIAL_MEET_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("Meet channel not found.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            sent = await channel.send(
+                _om_build_message(theme=self.theme_field.value.strip(), host=host_member, timestamp=meet_ts),
+                view=_OfficialMeetRSVPView(),
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("Missing permissions to post in the meet channel.", ephemeral=True)
+            return
+
+        record = _OmRecord(
+            message_id=sent.id,
+            channel_id=channel.id,
+            host_id=host_member.id,
+            theme=self.theme_field.value.strip(),
+            timestamp=meet_ts,
+        )
+        _om_upsert_record(record)
+        _om_schedule_reminders(record)
+        await interaction.followup.send(
+            f"Official meet posted for <t:{meet_ts}:F>.", ephemeral=True
+        )
+
+
+class _OfficialMeetPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📋 Schedule Official Meet", style=discord.ButtonStyle.primary, custom_id="diff_om_panel:schedule")
+    async def schedule_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return
+        is_staff = member.guild_permissions.manage_guild or any(r.id in _JOIN_STAFF_ROLE_IDS for r in member.roles)
+        if not is_staff:
+            await interaction.response.send_message("Only staff can schedule official meets.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_OfficialMeetScheduleModal())
+
+
+async def _om_panel_post_or_refresh(guild: discord.Guild):
+    channel = guild.get_channel(_OFFICIAL_MEET_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    data = _om_panel_load()
+    msg_id = data.get(str(guild.id))
+    if msg_id:
+        try:
+            msg = await channel.fetch_message(int(msg_id))
+            await msg.edit(embed=_om_panel_build_embed(), view=_OfficialMeetPanelView())
+            return
+        except discord.NotFound:
+            pass
+        except Exception:
+            return
+    msg = await channel.send(embed=_om_panel_build_embed(), view=_OfficialMeetPanelView())
+    data[str(guild.id)] = msg.id
+    _om_panel_save(data)
+
+
+@bot.command(name="postofficialmeetpanel")
+async def _cmd_postofficialmeetpanel(ctx: commands.Context):
+    is_auth = (
+        ctx.author.guild_permissions.administrator
+        or (ctx.guild and ctx.guild.owner_id == ctx.author.id)
+        or any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", []))
+    )
+    if not is_auth:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _om_panel_post_or_refresh(ctx.guild)
+
+
+# =========================
 # POP-UP MEET SYSTEM
 # =========================
 
@@ -7942,8 +8160,14 @@ async def on_ready():
     bot.add_view(_RcRollCallView())
     bot.add_view(_RcAdminView())
     bot.add_view(_OfficialMeetRSVPView())
+    bot.add_view(_OfficialMeetPanelView())
     asyncio.create_task(_om_restore_on_ready())
     bot.add_view(_PopupMeetPanelView())
+    for _g in bot.guilds:
+        try:
+            await _om_panel_post_or_refresh(_g)
+        except Exception as _e:
+            print(f"[OfficialMeetPanel] on_ready error: {_e}")
     for _g in bot.guilds:
         try:
             await _popup_post_or_refresh(_g)
