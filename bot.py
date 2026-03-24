@@ -8423,6 +8423,7 @@ async def on_ready():
             print(f"[PopupMeet] on_ready refresh error: {_e}")
     bot.add_view(WelcomeHubView())
     bot.add_view(SocialMediaLinksView())
+    bot.add_view(_PartnerPanelView(_pp_get_partners()))
     bot.add_view(_PshipPanelView())
     bot.add_view(_PshipStaffView())
     bot.add_view(_RsvpView())
@@ -8432,6 +8433,11 @@ async def on_ready():
             await _wh_post_or_refresh(_g)
         except Exception as _e:
             print(f"[WelcomeHub] on_ready error: {_e}")
+    for _g in bot.guilds:
+        try:
+            await _pp_post_or_refresh(_g)
+        except Exception as _e:
+            print(f"[PartnerPanel] on_ready error: {_e}")
     for _g in bot.guilds:
         try:
             await _ig_panel_post_or_refresh(_g)
@@ -15328,8 +15334,9 @@ class WelcomeHubView(discord.ui.View):
     @discord.ui.button(label="Partnership", emoji="🤝", style=discord.ButtonStyle.primary,
                        custom_id="diff_wh_partnership", row=2)
     async def partnership_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        partners = _pp_get_partners()
         await interaction.response.send_message(
-            embed=_pship_build_panel_embed(), view=_PshipPanelView(), ephemeral=True
+            embed=_pp_build_embed(partners), view=_PartnerHubView(partners), ephemeral=True
         )
 
     @discord.ui.button(label="Before You Invite Anyone", emoji="🚪", style=discord.ButtonStyle.danger,
@@ -15443,6 +15450,266 @@ async def _cmd_postsocialhub(ctx: commands.Context, channel: discord.TextChannel
     except Exception:
         pass
     await target.send(embed=_social_build_embed(), view=SocialMediaLinksView())
+
+
+# =========================
+# PARTNER PANEL (DIRECTORY)
+# =========================
+
+_PP_CHANNEL_ID = 1485892421593337926
+_PP_FILE       = os.path.join(DATA_FOLDER, "diff_partner_panel.json")
+_PP_FOOTER     = "Different Meets • Official Partnership System"
+
+_PP_DEFAULT_PARTNERS: list[dict] = [
+    {"name": "MMI Meets",            "short_desc": "PC & Xbox Series S|X meet community.",            "description": "MMI Meets PC & Xbox Series S|X",                                    "invite": "https://discord.gg/mmi",               "platforms": "PC, Xbox Series S|X",          "banner": ""},
+    {"name": "San Andreas Roleplay", "short_desc": "Professional and friendly roleplay community.",    "description": "A professional and friendly roleplay community on Xbox and PlayStation.\n\n**Departments:** Highway Patrol, Sheriff, Fire, EMS, Civilian Ops, Comms\n\n**What They Offer:**\n• Daily roleplays\n• Friendly staff\n• CAD system\n• Realistic uniforms & ranks", "invite": "https://discord.gg/bwzCykt9ZS",        "platforms": "Xbox, PlayStation",             "banner": ""},
+    {"name": "Los Santos MotorSports","short_desc": "Active multi-platform meet community.",            "description": "**Los Santos MotorSports**\n\n• Daily car meets on all platforms\n• Active staff and chats\n• 1500+ members\n• Weekly photo competitions\n• Giveaways\n• Forza, NFS, Snowrunner meets\n• LSMS merch", "invite": "https://discord.gg/Jf42kGD",           "platforms": "All Platforms",                 "banner": ""},
+    {"name": "LS Underground",       "short_desc": "Daily chill car meets and vibes on PlayStation.",  "description": "A very active and engaging community.\n\n• Daily car meets\n• Business lobbies\n• Chill lobbies\n• LFG channels\n• Active staff & giveaways\n• In-house game bot\n• Fully SFW with trained staff", "invite": "https://discord.gg/T5eZpu329K",        "platforms": "PlayStation",                   "banner": ""},
+    {"name": "Auto Minded",          "short_desc": "GTAO car enthusiast hub with events and trading.", "description": "A server for GTAO car enthusiasts and car fans.\n\n**Events:**\n• Car meets\n• Racing\n• Rally events\n• Buy/sell & trading\n• Car competitions\n• Server economy",  "invite": "https://discord.gg/autominded",        "platforms": "Xbox (focus), open to all",     "banner": ""},
+    {"name": "Civil Network",        "short_desc": "Large roleplay network with multiple departments.","description": "**Platforms:** Xbox New Gen, PS Old Gen, PS New Gen, FiveM\n\n**Departments:** Civilian Ops, Fire/EMS, Dispatch, Military Police, FBI, BCSO, LSPD, PBPD, SASP\n\n• Specialized giveaways\n• 24/7 sessions\n• Professional/friendly staff", "invite": "https://discord.gg/civilrp",           "platforms": "Xbox, PlayStation, FiveM",      "banner": "https://share.creavite.co/DKn05AwFAYa5mCl9.gif"},
+    {"name": "RVO",                  "short_desc": "PS5 GTA meet community with daily meets.",         "description": "A chill server to show off your rides and level up your GTA car meet experience.\n\n• Chill community\n• Daily car meets\n• Epic events\n• Media sharing\n• Gaming hub", "invite": "https://discord.gg/rvo",               "platforms": "PS5",                           "banner": ""},
+    {"name": "Chop Shop",            "short_desc": "Large GTAO-focused online gaming community.",      "description": "One of the larger active GCTF Discord servers.\n\n• Active members, traders & staff\n• Booster rewards\n• Server currency\n• Clubs that host car meets and lobby drops\n• Always looking for new partners", "invite": "https://discord.gg/YZMbqER2bv",        "platforms": "Multi-game / GTAO",             "banner": ""},
+    {"name": "Automotive Union",     "short_desc": "Established events community with multiple titles.","description": "Established in 2018.\n\nHosts GTA events every Friday and Sunday (8–9 PM UK).\n\n**Also on:**\n• Wreckfest\n• GT7\n• Forza Horizon\n• Crew Motorfest",               "invite": "https://discord.gg/kaApne5w4x",        "platforms": "GTA + racing titles",           "banner": ""},
+    {"name": "Car Meet Server",      "short_desc": "All-platform car meet and GTAO utility server.",   "description": "• Modded heists (PC)\n• Modded/stock cars\n• Car and photo competitions\n• GTAO inspired bot games",                                                              "invite": "https://discord.gg/zNd2F3sz5U",        "platforms": "All Platforms",                 "banner": ""},
+    {"name": "Fast Funds (GTA)",     "short_desc": "Private selling, sourcing, and heist group.",      "description": "**Fast Funds (GTA)**\n\nPrivate selling, sourcing, and heist group. Started recently and growing.",                                                                   "invite": "https://discord.gg/zxEdwZ9M6s",        "platforms": "GTA",                           "banner": ""},
+    {"name": "Hurricane's Cars & Chill","short_desc": "PS5-based GTA Online car meet server.",         "description": "A PlayStation 5 GTA Online car meet server.\n\n• Daily car meets\n• Photo competitions\n• Weekly giveaways\n• Game nights\n• Car advice/rating channels\n• New members daily\n• Welcoming community", "invite": "https://discord.gg/CkEXt34waa",        "platforms": "PS5",                           "banner": ""},
+]
+
+
+def _pp_load() -> dict:
+    data = _load_diff_json(_PP_FILE) or {}
+    if "partners" not in data:
+        data["partners"] = _PP_DEFAULT_PARTNERS
+        _pp_save(data)
+    return data
+
+
+def _pp_save(data: dict) -> None:
+    _save_diff_json(_PP_FILE, data)
+
+
+def _pp_get_partners() -> list:
+    return _pp_load().get("partners", [])
+
+
+def _pp_build_embed(partners: list) -> discord.Embed:
+    embed = discord.Embed(
+        title="🤝 DIFF Partnership Hub",
+        description=(
+            "Explore our official partners below.\n\n"
+            "Use the dropdown menu to view each community, their info, and their invite link.\n"
+            "This panel is managed by staff and refreshes cleanly without duplicate posts."
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Current Partners", value=str(len(partners)), inline=True)
+    embed.add_field(name="System Status",    value="Active",            inline=True)
+    embed.add_field(
+        name="How It Works",
+        value="Select a partner from the dropdown below to view their information and invite.",
+        inline=False,
+    )
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+async def _pp_dropdown_callback(interaction: discord.Interaction, selected: str) -> None:
+    partners = _pp_get_partners()
+    partner = next((p for p in partners if p["name"] == selected), None)
+    if not partner:
+        await interaction.response.send_message("Partner not found. Try refreshing the panel.", ephemeral=True)
+        return
+    embed = discord.Embed(
+        title=f"🤝 {partner['name']}",
+        description=partner.get("description", "No description provided."),
+        color=discord.Color.blue(),
+    )
+    if partner.get("platforms"):
+        embed.add_field(name="Platforms", value=partner["platforms"], inline=False)
+    invite = partner.get("invite", "").strip()
+    if invite:
+        embed.add_field(name="Invite", value=f"[Join Partner]({invite})", inline=False)
+    if partner.get("banner"):
+        embed.set_image(url=partner["banner"])
+    embed.set_footer(text=_PP_FOOTER)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class _PartnerDropdown(discord.ui.Select):
+    """Persistent dropdown for the public channel panel."""
+    def __init__(self, partners: list) -> None:
+        options = [
+            discord.SelectOption(label=p["name"][:100], description=p.get("short_desc", "")[:100], value=p["name"], emoji="🤝")
+            for p in partners[:25]
+        ]
+        super().__init__(placeholder="Select a partner to view more info...", min_values=1, max_values=1, options=options, custom_id="diff_partner_select")
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _pp_dropdown_callback(interaction, self.values[0])
+
+
+class _PartnerHubDropdown(discord.ui.Select):
+    """Non-persistent dropdown for the Welcome Hub ephemeral popup."""
+    def __init__(self, partners: list) -> None:
+        options = [
+            discord.SelectOption(label=p["name"][:100], description=p.get("short_desc", "")[:100], value=p["name"], emoji="🤝")
+            for p in partners[:25]
+        ]
+        super().__init__(placeholder="Select a partner to view more info...", min_values=1, max_values=1, options=options, custom_id="diff_pp_hub_sel")
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _pp_dropdown_callback(interaction, self.values[0])
+
+
+class _PartnerPanelView(discord.ui.View):
+    """Persistent view for the public channel panel."""
+    def __init__(self, partners: list) -> None:
+        super().__init__(timeout=None)
+        if partners:
+            self.add_item(_PartnerDropdown(partners))
+
+
+class _PartnerHubView(discord.ui.View):
+    """Non-persistent view sent ephemerally from the Welcome Hub button."""
+    def __init__(self, partners: list) -> None:
+        super().__init__(timeout=120)
+        if partners:
+            self.add_item(_PartnerHubDropdown(partners))
+
+    @discord.ui.button(label="Apply for Partnership", emoji="📩", style=discord.ButtonStyle.primary, row=1)
+    async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(_PshipApplicationModal())
+
+
+class _PartnerAddModal(discord.ui.Modal, title="Add New Partner"):
+    p_name    = discord.ui.TextInput(label="Partner Name",                                                   required=True,  max_length=100)
+    p_invite  = discord.ui.TextInput(label="Invite / Link",                                                  required=True,  max_length=200)
+    p_short   = discord.ui.TextInput(label="Short Description (shown in dropdown)",                          required=True,  max_length=100)
+    p_plat    = discord.ui.TextInput(label="Platforms",  placeholder="e.g. PS5, Xbox, All",                 required=False, max_length=100)
+    p_desc    = discord.ui.TextInput(label="Full Description", style=discord.TextStyle.paragraph,            required=False, max_length=1000)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        data = _pp_load()
+        name = str(self.p_name).strip()
+        if any(p["name"].lower() == name.lower() for p in data["partners"]):
+            await interaction.response.send_message(f"**{name}** already exists in the partner list.", ephemeral=True)
+            return
+        data["partners"].append({
+            "name":       name,
+            "short_desc": str(self.p_short).strip(),
+            "description": str(self.p_desc).strip() if self.p_desc.value else str(self.p_short).strip(),
+            "invite":     str(self.p_invite).strip(),
+            "platforms":  str(self.p_plat).strip() if self.p_plat.value else "",
+            "banner":     "",
+        })
+        _pp_save(data)
+        if interaction.guild:
+            await _pp_post_or_refresh(interaction.guild)
+        await interaction.response.send_message(f"✅ **{name}** added and panel refreshed.", ephemeral=True)
+
+
+class _PartnerAddTriggerView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="Add Partner", emoji="➕", style=discord.ButtonStyle.primary)
+    async def add_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(_PartnerAddModal())
+
+
+async def _pp_post_or_refresh(guild: discord.Guild) -> None:
+    channel = guild.get_channel(_PP_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await guild.fetch_channel(_PP_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+    partners = _pp_get_partners()
+    embed    = _pp_build_embed(partners)
+    view     = _PartnerPanelView(partners)
+    data     = _pp_load()
+    msg_id   = data.get("panel_message_id")
+    if msg_id:
+        try:
+            msg = await channel.fetch_message(int(msg_id))
+            await msg.edit(embed=embed, view=view)
+            return
+        except discord.NotFound:
+            pass
+        except Exception:
+            return
+    msg = await channel.send(embed=embed, view=view)
+    data["panel_message_id"] = msg.id
+    _pp_save(data)
+
+
+@bot.command(name="postpartnerpanel")
+async def _cmd_postpartnerpanel(ctx: commands.Context):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _pp_post_or_refresh(ctx.guild)
+
+
+@bot.command(name="partneradd")
+async def _cmd_partneradd(ctx: commands.Context):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    msg = await ctx.send("Click below to fill in the new partner details:", view=_PartnerAddTriggerView())
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await asyncio.sleep(62)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+
+@bot.command(name="partnerremove")
+async def _cmd_partnerremove(ctx: commands.Context, *, name: str):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    data = _pp_load()
+    before = len(data["partners"])
+    data["partners"] = [p for p in data["partners"] if p["name"].lower() != name.strip().lower()]
+    if len(data["partners"]) == before:
+        await ctx.send(f"❌ Partner **{name}** not found.", delete_after=8)
+        return
+    _pp_save(data)
+    await _pp_post_or_refresh(ctx.guild)
+    await ctx.send(f"✅ Removed **{name}** and refreshed the panel.", delete_after=8)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
+@bot.command(name="partnerslist")
+async def _cmd_partnerslist(ctx: commands.Context):
+    if not any(r.id in _JOIN_STAFF_ROLE_IDS for r in ctx.author.roles):
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    partners = _pp_get_partners()
+    if not partners:
+        await ctx.send("No partners on file.", delete_after=8)
+        return
+    embed = discord.Embed(
+        title="🤝 Partner List",
+        description="\n".join(f"• **{p['name']}** — {p.get('short_desc', '')}" for p in partners[:25]),
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text=f"Total: {len(partners)}")
+    await ctx.send(embed=embed)
 
 
 # =========================
