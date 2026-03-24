@@ -1,0 +1,372 @@
+# ============================================================
+# DIFF MOBILE-STYLE UI PANEL PACK (PYTHON)
+#
+# SAVE AS:
+# diff_mobile_ui_panel_pack.py
+#
+# WHAT THIS ADDS
+# - Clean mobile-style panel builders for:
+#   1. Join Panel
+#   2. Host Schedule Panel
+#   3. Crew Hub Panel
+#   4. Leaderboard Panel
+#   5. Support Panel
+# - Compact embeds for phone screens
+# - Button-based refresh/update system
+# - One-message panel editing (no spam)
+#
+# HOW TO USE IN bot.py:
+# from diff_mobile_ui_panel_pack import setup_diff_mobile_ui_panel_pack
+# setup_diff_mobile_ui_panel_pack(bot)
+#
+# OPTIONAL COMMANDS:
+# !postmobilejoin
+# !postmobilehost
+# !postmobilehub
+# !postmobileleaderboard
+# !postmobilesupport
+#
+# REPLACE THESE IDS:
+# JOIN_PANEL_CHANNEL_ID
+# HOST_PANEL_CHANNEL_ID
+# CREW_HUB_CHANNEL_ID
+# LEADERBOARD_CHANNEL_ID
+# SUPPORT_PANEL_CHANNEL_ID
+#
+# DATA FILE USED:
+# ./data/diff_data.json
+# ============================================================
+
+import os
+import json
+from datetime import datetime
+
+import discord
+from discord.ext import commands
+
+# ===============================
+# CONFIG
+# ===============================
+
+JOIN_PANEL_CHANNEL_ID = 0
+HOST_PANEL_CHANNEL_ID = 0
+CREW_HUB_CHANNEL_ID = 0
+LEADERBOARD_CHANNEL_ID = 0
+SUPPORT_PANEL_CHANNEL_ID = 0
+
+DATA_FILE = "./data/diff_data.json"
+
+JOIN_REFRESH_ID = "diff_mobile_join_refresh"
+HOST_REFRESH_ID = "diff_mobile_host_refresh"
+HUB_REFRESH_ID = "diff_mobile_hub_refresh"
+LB_REFRESH_ID = "diff_mobile_lb_refresh"
+SUPPORT_REFRESH_ID = "diff_mobile_support_refresh"
+
+# ===============================
+# DATA HELPERS
+# ===============================
+
+def ensure_data_file():
+    os.makedirs("./data", exist_ok=True)
+    if not os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"users": {}}, f, indent=2)
+
+def load_data():
+    ensure_data_file()
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"users": {}}
+
+def get_top_members(limit=5):
+    data = load_data()
+    users = []
+    for uid, stats in data.get("users", {}).items():
+        users.append({
+            "user_id": int(uid),
+            "attendance": int(stats.get("attendance", 0) or 0),
+            "photos": int(stats.get("photos", 0) or 0),
+        })
+    users.sort(key=lambda x: x["attendance"], reverse=True)
+    return users[:limit]
+
+def get_overview():
+    data = load_data()
+    users = list(data.get("users", {}).values())
+    return {
+        "tracked": len(users),
+        "active": len([u for u in users if int(u.get("attendance", 0) or 0) > 0]),
+        "attendance_total": sum(int(u.get("attendance", 0) or 0) for u in users),
+        "photo_complete": len([u for u in users if int(u.get("photos", 0) or 0) >= 10]),
+    }
+
+# ===============================
+# MOBILE EMBEDS
+# ===============================
+
+def mobile_join_embed():
+    embed = discord.Embed(
+        title="🏁 DIFF Join Hub",
+        description="\n".join([
+            "Tap below to get started.",
+            "",
+            "🎮 **PlayStation**",
+            "Open your join flow",
+            "",
+            "🟢 **Xbox / PC**",
+            "Partnered meet info",
+            "",
+            "📸 Clean builds only",
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=datetime.now(),
+    )
+    embed.set_footer(text="Mobile UI • Quick Join")
+    return embed
+
+def mobile_host_embed():
+    embed = discord.Embed(
+        title="📅 Host Schedule",
+        description="\n".join([
+            "Tap to check host planning.",
+            "",
+            "✅ Yes = available",
+            "❌ No = unavailable",
+            "❓ Maybe = possible",
+            "",
+            "🌐 Use Hammertime",
+            "for timezone conversion",
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=datetime.now(),
+    )
+    embed.set_footer(text="Mobile UI • Host Planning")
+    return embed
+
+def mobile_hub_embed():
+    stats = get_overview()
+    embed = discord.Embed(
+        title="📊 Crew Hub",
+        description="\n".join([
+            f"👥 **Tracked**: {stats['tracked']}",
+            f"🔥 **Active**: {stats['active']}",
+            f"📈 **Attendance**: {stats['attendance_total']}",
+            f"📸 **10/10 Photos**: {stats['photo_complete']}",
+            "",
+            "Stay active.",
+            "Get noticed.",
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=datetime.now(),
+    )
+    embed.set_footer(text="Mobile UI • Live Stats")
+    return embed
+
+def mobile_leaderboard_embed():
+    top = get_top_members(5)
+    lines = []
+    medals = ["🥇", "🥈", "🥉", "📌", "📌"]
+
+    if top:
+      for i, user in enumerate(top):
+          lines.append(f"{medals[i]} <@{user['user_id']}>")
+          lines.append(f"   {user['attendance']} meet(s)")
+    else:
+      lines.append("No leaderboard data yet.")
+
+    embed = discord.Embed(
+        title="🏆 Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.dark_gray(),
+        timestamp=datetime.now(),
+    )
+    embed.set_footer(text="Mobile UI • Top Members")
+    return embed
+
+def mobile_support_embed():
+    embed = discord.Embed(
+        title="🛡️ Support Center",
+        description="\n".join([
+            "Need help with something?",
+            "",
+            "🚨 Report",
+            "⚠ Appeal",
+            "🚗 Support",
+            "📩 Apply",
+            "",
+            "Tap the right option below.",
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=datetime.now(),
+    )
+    embed.set_footer(text="Mobile UI • Help Panel")
+    return embed
+
+# ===============================
+# VIEWS
+# ===============================
+
+class OneButtonRefreshView(discord.ui.View):
+    def __init__(self, bot, custom_id, label, emoji, updater):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.custom_id_value = custom_id
+        self.label_value = label
+        self.emoji_value = emoji
+        self.updater = updater
+
+        self.add_item(
+            discord.ui.Button(
+                label=self.label_value,
+                emoji=self.emoji_value,
+                style=discord.ButtonStyle.secondary,
+                custom_id=self.custom_id_value,
+            )
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return True
+
+    async def on_timeout(self):
+        return
+
+# ===============================
+# PANEL UPSERT
+# ===============================
+
+async def find_existing_panel(channel: discord.TextChannel, custom_id: str):
+    async for msg in channel.history(limit=20):
+        if msg.author.bot and msg.components:
+            for row in msg.components:
+                for child in row.children:
+                    if getattr(child, "custom_id", None) == custom_id:
+                        return msg
+    return None
+
+async def upsert_panel(bot, channel_id: int, embed: discord.Embed, custom_id: str, label: str, emoji: str):
+    if channel_id == 0:
+        return False
+
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception:
+            return False
+
+    if not isinstance(channel, discord.TextChannel):
+        return False
+
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(
+        label=label,
+        emoji=emoji,
+        style=discord.ButtonStyle.secondary,
+        custom_id=custom_id
+    ))
+
+    existing = await find_existing_panel(channel, custom_id)
+    if existing:
+        await existing.edit(embed=embed, view=view)
+    else:
+        await channel.send(embed=embed, view=view)
+    return True
+
+async def post_mobile_join(bot):
+    return await upsert_panel(bot, JOIN_PANEL_CHANNEL_ID, mobile_join_embed(), JOIN_REFRESH_ID, "Refresh Join", "🏁")
+
+async def post_mobile_host(bot):
+    return await upsert_panel(bot, HOST_PANEL_CHANNEL_ID, mobile_host_embed(), HOST_REFRESH_ID, "Refresh Host", "📅")
+
+async def post_mobile_hub(bot):
+    return await upsert_panel(bot, CREW_HUB_CHANNEL_ID, mobile_hub_embed(), HUB_REFRESH_ID, "Refresh Hub", "📊")
+
+async def post_mobile_leaderboard(bot):
+    return await upsert_panel(bot, LEADERBOARD_CHANNEL_ID, mobile_leaderboard_embed(), LB_REFRESH_ID, "Refresh Top", "🏆")
+
+async def post_mobile_support(bot):
+    return await upsert_panel(bot, SUPPORT_PANEL_CHANNEL_ID, mobile_support_embed(), SUPPORT_REFRESH_ID, "Refresh Help", "🛡️")
+
+# ===============================
+# COG
+# ===============================
+
+class DiffMobileUIPanelPack(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.command(name="postmobilejoin")
+    @commands.has_permissions(manage_guild=True)
+    async def postmobilejoin(self, ctx):
+        await post_mobile_join(self.bot)
+        await ctx.send("✅ Mobile join panel posted/updated.")
+
+    @commands.command(name="postmobilehost")
+    @commands.has_permissions(manage_guild=True)
+    async def postmobilehost(self, ctx):
+        await post_mobile_host(self.bot)
+        await ctx.send("✅ Mobile host panel posted/updated.")
+
+    @commands.command(name="postmobilehub")
+    @commands.has_permissions(manage_guild=True)
+    async def postmobilehub(self, ctx):
+        await post_mobile_hub(self.bot)
+        await ctx.send("✅ Mobile crew hub panel posted/updated.")
+
+    @commands.command(name="postmobileleaderboard")
+    @commands.has_permissions(manage_guild=True)
+    async def postmobileleaderboard(self, ctx):
+        await post_mobile_leaderboard(self.bot)
+        await ctx.send("✅ Mobile leaderboard panel posted/updated.")
+
+    @commands.command(name="postmobilesupport")
+    @commands.has_permissions(manage_guild=True)
+    async def postmobilesupport(self, ctx):
+        await post_mobile_support(self.bot)
+        await ctx.send("✅ Mobile support panel posted/updated.")
+
+# ===============================
+# SETUP
+# ===============================
+
+def setup_diff_mobile_ui_panel_pack(bot: commands.Bot):
+    ensure_data_file()
+
+    @bot.event
+    async def on_ready():
+        if getattr(bot, "_diff_mobile_ui_ready_once", False):
+            return
+        bot._diff_mobile_ui_ready_once = True
+
+        await bot.add_cog(DiffMobileUIPanelPack(bot))
+        await post_mobile_join(bot)
+        await post_mobile_host(bot)
+        await post_mobile_hub(bot)
+        await post_mobile_leaderboard(bot)
+        await post_mobile_support(bot)
+
+        print("[DIFF MOBILE UI] panel pack ready.")
+
+    @bot.event
+    async def on_interaction(interaction: discord.Interaction):
+        if not interaction.type == discord.InteractionType.component:
+            return
+
+        cid = interaction.data.get("custom_id")
+        if cid == JOIN_REFRESH_ID:
+            await post_mobile_join(bot)
+            await interaction.response.send_message("Join panel refreshed.", ephemeral=True)
+        elif cid == HOST_REFRESH_ID:
+            await post_mobile_host(bot)
+            await interaction.response.send_message("Host panel refreshed.", ephemeral=True)
+        elif cid == HUB_REFRESH_ID:
+            await post_mobile_hub(bot)
+            await interaction.response.send_message("Crew hub refreshed.", ephemeral=True)
+        elif cid == LB_REFRESH_ID:
+            await post_mobile_leaderboard(bot)
+            await interaction.response.send_message("Leaderboard refreshed.", ephemeral=True)
+        elif cid == SUPPORT_REFRESH_ID:
+            await post_mobile_support(bot)
+            await interaction.response.send_message("Support panel refreshed.", ephemeral=True)

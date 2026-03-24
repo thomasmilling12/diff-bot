@@ -2800,6 +2800,253 @@ async def _hosthub_cmd(ctx: commands.Context):
     await ctx.send(embed=_hosthub_build_embed(), view=HostHubView())
 
 
+# =========================
+# MOBILE UI PANEL PACK
+# =========================
+
+_MOBILE_JOIN_ID    = "diff_mobile_join_refresh"
+_MOBILE_HOST_ID    = "diff_mobile_host_refresh"
+_MOBILE_HUB_ID     = "diff_mobile_hub_refresh"
+_MOBILE_LB_ID      = "diff_mobile_lb_refresh"
+_MOBILE_SUPPORT_ID = "diff_mobile_support_refresh"
+
+
+def _mobile_overview() -> dict:
+    data = _rsvp_load_all()
+    users = list(data.get("users", {}).values())
+    return {
+        "tracked": len(users),
+        "active": len([u for u in users if int(u.get("attendance_count", 0) or 0) > 0]),
+        "attendance_total": sum(int(u.get("attendance_count", 0) or 0) for u in users),
+    }
+
+
+def _mobile_lb_top(limit: int = 5) -> list[tuple[int, int]]:
+    data = _rsvp_load_all()
+    rows = []
+    for uid, stats in data.get("users", {}).items():
+        rows.append((int(uid), int(stats.get("attendance_count", 0) or 0)))
+    rows.sort(key=lambda x: x[1], reverse=True)
+    return rows[:limit]
+
+
+def _mobile_join_embed() -> discord.Embed:
+    e = discord.Embed(
+        title="🏁 DIFF Join Hub",
+        description="\n".join([
+            "Tap below to get started.",
+            "",
+            "🎮 **PlayStation**",
+            "Open your join flow",
+            "",
+            "📸 Clean builds only",
+            "📋 Follow all DIFF rules",
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=utc_now(),
+    )
+    e.set_footer(text="Different Meets • Quick Join")
+    return e
+
+
+def _mobile_host_embed() -> discord.Embed:
+    e = discord.Embed(
+        title="📅 Host Schedule",
+        description="\n".join([
+            "Check host planning below.",
+            "",
+            "✅ Yes = available",
+            "❌ No = unavailable",
+            "❓ Maybe = possible",
+            "",
+            "🌐 Hammertime for timezones",
+            "https://hammertime.cyou/en",
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=utc_now(),
+    )
+    e.set_footer(text="Different Meets • Host Planning")
+    return e
+
+
+def _mobile_hub_embed() -> discord.Embed:
+    stats = _mobile_overview()
+    e = discord.Embed(
+        title="📊 Crew Hub",
+        description="\n".join([
+            f"👥 **Tracked**: {stats['tracked']}",
+            f"🔥 **Active**: {stats['active']}",
+            f"📈 **Total Meets**: {stats['attendance_total']}",
+            "",
+            "Stay active.",
+            "Get noticed.",
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=utc_now(),
+    )
+    e.set_footer(text="Different Meets • Live Stats")
+    return e
+
+
+def _mobile_lb_embed() -> discord.Embed:
+    top = _mobile_lb_top(5)
+    medals = ["🥇", "🥈", "🥉", "📌", "📌"]
+    lines = []
+    if top:
+        for i, (uid, att) in enumerate(top):
+            lines.append(f"{medals[i]} <@{uid}>")
+            lines.append(f"   {att} meet(s)")
+    else:
+        lines.append("No leaderboard data yet.")
+    e = discord.Embed(
+        title="🏆 Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.dark_gray(),
+        timestamp=utc_now(),
+    )
+    e.set_footer(text="Different Meets • Top Members")
+    return e
+
+
+def _mobile_support_embed() -> discord.Embed:
+    e = discord.Embed(
+        title="🛡️ Support Center",
+        description="\n".join([
+            "Need help with something?",
+            "",
+            "🚨 Report an issue",
+            "⚠ Submit an appeal",
+            "🚗 Get car meet support",
+            "📩 Apply to DIFF",
+            "",
+            "Open a ticket in the right channel.",
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=utc_now(),
+    )
+    e.set_footer(text="Different Meets • Help Panel")
+    return e
+
+
+async def _mobile_upsert(bot_client, channel_id: int, embed: discord.Embed, custom_id: str, label: str, emoji: str) -> None:
+    if not channel_id:
+        return
+    channel = bot_client.get_channel(channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await bot_client.fetch_channel(channel_id)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, custom_id=custom_id))
+    async for msg in channel.history(limit=20):
+        if msg.author.id == bot_client.user.id:
+            for row in msg.components:
+                for child in row.children:
+                    if getattr(child, "custom_id", None) == custom_id:
+                        try:
+                            await msg.edit(embed=embed, view=view)
+                        except Exception:
+                            pass
+                        return
+    try:
+        await channel.send(embed=embed, view=view)
+    except Exception as e:
+        print(f"[MobileUI] send failed ({custom_id}): {e}")
+
+
+class _MobileRefreshView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Refresh Join", emoji="🏁", style=discord.ButtonStyle.secondary, custom_id=_MOBILE_JOIN_ID)
+    async def refresh_join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _mobile_upsert(interaction.client, JOIN_MEETS_CHANNEL_ID, _mobile_join_embed(), _MOBILE_JOIN_ID, "Refresh Join", "🏁")
+        await interaction.response.send_message("Join panel refreshed.", ephemeral=True)
+
+    @discord.ui.button(label="Refresh Host", emoji="📅", style=discord.ButtonStyle.secondary, custom_id=_MOBILE_HOST_ID)
+    async def refresh_host(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _mobile_upsert(interaction.client, HOST_RSVP_CHANNEL_ID, _mobile_host_embed(), _MOBILE_HOST_ID, "Refresh Host", "📅")
+        await interaction.response.send_message("Host panel refreshed.", ephemeral=True)
+
+    @discord.ui.button(label="Refresh Hub", emoji="📊", style=discord.ButtonStyle.secondary, custom_id=_MOBILE_HUB_ID)
+    async def refresh_hub(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _mobile_upsert(interaction.client, LEADERBOARD_CHANNEL_ID, _mobile_hub_embed(), _MOBILE_HUB_ID, "Refresh Hub", "📊")
+        await interaction.response.send_message("Crew hub refreshed.", ephemeral=True)
+
+    @discord.ui.button(label="Refresh LB", emoji="🏆", style=discord.ButtonStyle.secondary, custom_id=_MOBILE_LB_ID)
+    async def refresh_lb(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _mobile_upsert(interaction.client, LEADERBOARD_CHANNEL_ID, _mobile_lb_embed(), _MOBILE_LB_ID, "Refresh Top", "🏆")
+        await interaction.response.send_message("Leaderboard refreshed.", ephemeral=True)
+
+    @discord.ui.button(label="Refresh Support", emoji="🛡️", style=discord.ButtonStyle.secondary, custom_id=_MOBILE_SUPPORT_ID)
+    async def refresh_support(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _mobile_upsert(interaction.client, SUPPORT_TICKETS_CHANNEL_ID, _mobile_support_embed(), _MOBILE_SUPPORT_ID, "Refresh Help", "🛡️")
+        await interaction.response.send_message("Support panel refreshed.", ephemeral=True)
+
+
+@bot.command(name="postmobilejoin")
+async def _pmobile_join(ctx: commands.Context):
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _mobile_upsert(ctx.bot, JOIN_MEETS_CHANNEL_ID, _mobile_join_embed(), _MOBILE_JOIN_ID, "Refresh Join", "🏁")
+    await ctx.send("✅ Mobile join panel posted.", delete_after=5)
+
+
+@bot.command(name="postmobilehost")
+async def _pmobile_host(ctx: commands.Context):
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _mobile_upsert(ctx.bot, HOST_RSVP_CHANNEL_ID, _mobile_host_embed(), _MOBILE_HOST_ID, "Refresh Host", "📅")
+    await ctx.send("✅ Mobile host panel posted.", delete_after=5)
+
+
+@bot.command(name="postmobilehub")
+async def _pmobile_hub(ctx: commands.Context):
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _mobile_upsert(ctx.bot, LEADERBOARD_CHANNEL_ID, _mobile_hub_embed(), _MOBILE_HUB_ID, "Refresh Hub", "📊")
+    await ctx.send("✅ Mobile crew hub panel posted.", delete_after=5)
+
+
+@bot.command(name="postmobileleaderboard")
+async def _pmobile_lb(ctx: commands.Context):
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _mobile_upsert(ctx.bot, LEADERBOARD_CHANNEL_ID, _mobile_lb_embed(), _MOBILE_LB_ID, "Refresh Top", "🏆")
+    await ctx.send("✅ Mobile leaderboard panel posted.", delete_after=5)
+
+
+@bot.command(name="postmobilesupport")
+async def _pmobile_support(ctx: commands.Context):
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _mobile_upsert(ctx.bot, SUPPORT_TICKETS_CHANNEL_ID, _mobile_support_embed(), _MOBILE_SUPPORT_ID, "Refresh Help", "🛡️")
+    await ctx.send("✅ Mobile support panel posted.", delete_after=5)
+
+
 def _ft_build_suggestions_embed(guild: discord.Guild) -> discord.Embed:
     data = _ft_load()
     promotion_lines, inactive_lines, best_host_lines = [], [], []
@@ -5054,6 +5301,7 @@ async def on_ready():
     _asched_build()
     await _asched_update_panel(bot)
     bot.add_view(HostHubView())
+    bot.add_view(_MobileRefreshView())
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
