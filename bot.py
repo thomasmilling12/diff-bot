@@ -2726,63 +2726,183 @@ class _AppealModal(discord.ui.Modal, title="📩 Blacklist Appeal"):
                 pass
 
 
-class HostHubView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+_HOSTHUB_STATE_FILE = os.path.join("diff_data", "diff_host_hub_state.json")
 
-    @discord.ui.button(label="Submit Blacklist", style=discord.ButtonStyle.danger, emoji="🚫", custom_id="hosthub_blacklist")
-    async def blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
-            for r in getattr(interaction.user, "roles", [])
-        )
-        if not is_staff:
-            await interaction.response.send_message("Only staff can submit blacklist entries.", ephemeral=True)
-            return
-        await interaction.response.send_modal(_BlacklistModal())
 
-    @discord.ui.button(label="View Blacklist", style=discord.ButtonStyle.secondary, emoji="📊", custom_id="hosthub_view")
-    async def view_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            f"🔗 **Blacklist Records:**\nhttps://discord.com/channels/850386896509337710/{BLACKLIST_CHANNEL_ID}",
-            ephemeral=True,
-        )
+def _hosthub_get_saved_msg_id() -> int | None:
+    try:
+        with open(_HOSTHUB_STATE_FILE, "r") as f:
+            v = json.load(f).get("message_id")
+            return int(v) if v else None
+    except Exception:
+        return None
 
-    @discord.ui.button(label="Appeal Blacklist", style=discord.ButtonStyle.primary, emoji="📩", custom_id="hosthub_appeal")
-    async def appeal_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(_AppealModal())
 
-    @discord.ui.button(label="Host Guidelines", style=discord.ButtonStyle.success, emoji="📋", custom_id="hosthub_guidelines")
-    async def guidelines_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            "**DIFF Host Guidelines**\n\n"
-            "• Maintain clean meets at all times\n"
-            "• No crashing, griefing, or trolling\n"
-            "• Control the lobby — kick rule-breakers\n"
-            "• Respect all members regardless of rank\n"
-            "• Follow all DIFF standards and procedures\n"
-            "• Communicate with leadership if issues arise",
-            ephemeral=True,
-        )
+def _hosthub_save_msg_id(msg_id: int) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    try:
+        with open(_HOSTHUB_STATE_FILE, "w") as f:
+            json.dump({"message_id": msg_id}, f)
+    except Exception:
+        pass
+
+
+def _hosthub_guide_embed() -> discord.Embed:
+    e = discord.Embed(title="📘 DIFF Host Guide", description="*Everything a DIFF host needs to run a clean and organized meet.*", color=discord.Color.blurple())
+    e.add_field(name="🚗 Before The Meet", value=(
+        "• Prepare at least **4 meet locations**\n"
+        "• Plan your meet the day before *(route, theme, ideas)*\n"
+        "• Promote in advance *(Instagram, PS chats, Discord)*\n"
+        "• Check the **blacklist** before starting\n"
+        "• Be mindful of who you invite"
+    ), inline=False)
+    e.add_field(name="⏰ Meet Timeline", value=(
+        "**7:30 PM EST** — Crew joins party\n"
+        "**7:45 PM EST** — Latest crew join time / Start lobby\n"
+        "**7:55 PM EST** — Send early invites\n"
+        "**8:00 PM EST** — Open lobby"
+    ), inline=False)
+    e.add_field(name="👥 Crew Preparation", value=(
+        "• Assign roles before the meet\n"
+        "• Discuss plans for special moments\n"
+        "• Ensure all crew wear DIFF jackets"
+    ), inline=False)
+    e.add_field(name="📸 During The Meet", value=(
+        "• Post lobby picture when full *(names visible)*\n"
+        "• Post in **Today's Meet**\n"
+        "• Post second poster once live"
+    ), inline=False)
+    e.add_field(name="✅ Host Standard", value="Stay organized, communicate clearly, and lead properly.", inline=False)
+    e.set_footer(text="DIFF Systems • Built for structure • Powered by consistency")
+    return e
+
+
+def _hosthub_roles_embed() -> discord.Embed:
+    e = discord.Embed(title="🎯 DIFF Role Assignments", description="*Assign responsibilities to crew members before the meet starts.*", color=discord.Color.blurple())
+    e.add_field(name="💬 Message Control", value=(
+        "• Sends in-game reminders\n"
+        "• Keeps players informed\n"
+        "• Examples: *Please join Discord voice.* / *Leave CEO if you're in one.*"
+    ), inline=False)
+    e.add_field(name="👋 Welcome Team", value=(
+        "• Greets players joining\n"
+        "• Explains the meet theme\n"
+        "• Helps create a clean first impression"
+    ), inline=False)
+    e.add_field(name="🎨 Theme Check", value=(
+        "• Ensures cars match the theme\n"
+        "• Keeps the meet clean and consistent\n"
+        "• Reminds attendees if adjustments are needed"
+    ), inline=False)
+    e.add_field(name="🛡️ Support Team", value=(
+        "• Manages lobby flow\n"
+        "• Assists host with movement between spots\n"
+        "• Steps in when the host needs support"
+    ), inline=False)
+    e.set_footer(text="Use your crew — don't run the meet alone")
+    return e
+
+
+def _hosthub_reminders_embed() -> discord.Embed:
+    e = discord.Embed(title="⚠️ DIFF Meet Reminders", description="*Important things every host must remember.*", color=discord.Color.orange())
+    e.add_field(name="Reminder List", value=(
+        "• Prepare your meet in advance\n"
+        "• Always check the blacklist\n"
+        "• Be careful who you invite\n"
+        "• Use your crew properly\n"
+        "• Communicate with your team\n"
+        "• Keep promotion consistent\n"
+        "• Ensure crew jackets are worn\n"
+        "• Stay in control of your meet"
+    ), inline=False)
+    e.set_footer(text="A clean meet starts with a prepared host")
+    return e
+
+
+def _hosthub_checklist_embed() -> discord.Embed:
+    e = discord.Embed(title="📝 DIFF Host Checklist", description="*Quick checklist before and during your meet.*", color=discord.Color.green())
+    e.add_field(name="✅ Before The Meet", value=(
+        "✔ 4 spots prepared\n✔ Theme decided\n✔ Roles assigned\n"
+        "✔ Blacklist checked\n✔ Meet promoted\n✔ Crew in party by 7:30\n"
+        "✔ Lobby started by 7:45\n✔ Invites sent by 7:55\n"
+        "✔ Lobby open by 8:00\n✔ Crew jackets confirmed"
+    ), inline=False)
+    e.add_field(name="✅ During The Meet", value=(
+        "✔ Welcome players\n✔ Remind theme\n✔ Keep chat active\n"
+        "✔ Enforce theme\n✔ Post lobby photo\n"
+        "✔ Post in Today's Meet\n✔ Post second poster"
+    ), inline=False)
+    e.set_footer(text="Stay sharp. Stay organized.")
+    return e
+
+
+def _hosthub_blacklist_embed() -> discord.Embed:
+    e = discord.Embed(title="🚫 DIFF Blacklist Reminder", description="*Always review the blacklist before hosting.*", color=discord.Color.red())
+    e.add_field(name="Blacklist Rules", value=(
+        "• Do **NOT** invite blacklisted players\n"
+        "• Check the blacklist before opening lobby\n"
+        "• If unsure, ask staff before inviting\n"
+        "• Keep the meet safe and controlled"
+    ), inline=False)
+    e.add_field(name="Host Accountability", value="Failure to follow blacklist rules may result in host penalties.", inline=False)
+    e.set_footer(text="Review restrictions before inviting")
+    return e
 
 
 def _hosthub_build_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="📌 DIFF Host Control Hub",
+        title="📍 DIFF Host Control Hub",
         description=(
-            "*All-in-one control panel for DIFF Hosts.*\n\n"
+            "*The all-in-one host hub for DIFF meet leaders.*\n\n"
+            "Use the buttons below to review hosting rules, responsibilities, "
+            "crew assignments, reminders, and your checklist before starting a meet.\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🚫 **Submit Blacklist** — Report a host violation (staff only)\n"
-            "📊 **View Blacklist** — Browse all blacklist records\n"
-            "📩 **Appeal Blacklist** — Submit an appeal for review\n"
-            "📋 **Host Guidelines** — Review DIFF hosting standards\n\n"
+            "### 📘 **Available Host Tools**\n"
+            "**📘 Host Guide** — Full host rules and expectations\n"
+            "**🎯 Role Assignments** — Crew job breakdown\n"
+            "**⚠️ Meet Reminders** — Important host reminders\n"
+            "**📝 Host Checklist** — Quick prep checklist\n"
+            "**🚫 Blacklist Check** — Review restrictions before inviting\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Stay professional. Stay consistent. Represent DIFF."
+            "Stay organized. Lead properly. Represent DIFF the right way.\n\n"
+            "— **Different Meets**"
         ),
-        color=discord.Color.blue(),
+        color=discord.Color.blurple(),
     )
-    embed.set_footer(text="Different Meets • Host Control Hub")
+    embed.set_footer(text="DIFF Host System • Stay prepared • Lead properly • Keep meets clean")
     return embed
+
+
+class HostHubView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Host Guide", emoji="📘", style=discord.ButtonStyle.primary, custom_id="diff_host_hub:host_guide", row=0)
+    async def host_guide_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=_hosthub_guide_embed(), ephemeral=True)
+
+    @discord.ui.button(label="Role Assignments", emoji="🎯", style=discord.ButtonStyle.primary, custom_id="diff_host_hub:role_assignments", row=0)
+    async def role_assignments_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=_hosthub_roles_embed(), ephemeral=True)
+
+    @discord.ui.button(label="Meet Reminders", emoji="⚠️", style=discord.ButtonStyle.secondary, custom_id="diff_host_hub:meet_reminders", row=0)
+    async def meet_reminders_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=_hosthub_reminders_embed(), ephemeral=True)
+
+    @discord.ui.button(label="Host Checklist", emoji="📝", style=discord.ButtonStyle.success, custom_id="diff_host_hub:host_checklist", row=1)
+    async def host_checklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=_hosthub_checklist_embed(), ephemeral=True)
+
+    @discord.ui.button(label="Blacklist Check", emoji="🚫", style=discord.ButtonStyle.danger, custom_id="diff_host_hub:blacklist_check", row=1)
+    async def blacklist_check_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        bl_view = discord.ui.View()
+        bl_view.add_item(discord.ui.Button(
+            label="Open Blacklist",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/850386896509337710/{BLACKLIST_CHANNEL_ID}",
+            emoji="🔗",
+        ))
+        await interaction.response.send_message(embed=_hosthub_blacklist_embed(), view=bl_view, ephemeral=True)
 
 
 async def _hosthub_post_or_refresh() -> None:
@@ -2796,18 +2916,28 @@ async def _hosthub_post_or_refresh() -> None:
         return
     embed = _hosthub_build_embed()
     view = HostHubView()
+    saved_id = _hosthub_get_saved_msg_id()
+    if saved_id:
+        try:
+            old = await channel.fetch_message(saved_id)
+            await old.edit(embed=embed, view=view)
+            return
+        except Exception:
+            pass
     async for msg in channel.history(limit=20):
         if msg.author.id == bot.user.id:
             for row in msg.components:
                 for child in row.children:
-                    if getattr(child, "custom_id", "").startswith("hosthub_"):
+                    if getattr(child, "custom_id", "").startswith("diff_host_hub:"):
                         try:
                             await msg.edit(embed=embed, view=view)
+                            _hosthub_save_msg_id(msg.id)
                         except Exception:
                             pass
                         return
     try:
-        await channel.send(embed=embed, view=view)
+        new_msg = await channel.send(embed=embed, view=view)
+        _hosthub_save_msg_id(new_msg.id)
     except Exception as e:
         print(f"[HostHub] Post failed: {e}")
 
@@ -2824,7 +2954,7 @@ async def _hosthub_cmd(ctx: commands.Context):
         await ctx.message.delete()
     except Exception:
         pass
-    await ctx.send(embed=_hosthub_build_embed(), view=HostHubView())
+    await _hosthub_post_or_refresh()
 
 
 # =========================
