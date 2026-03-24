@@ -7984,6 +7984,46 @@ async def my_stats(interaction: discord.Interaction, member: Optional[discord.Me
     await interaction.response.send_message(embed=embed, ephemeral=member is None)
 
 
+@bot.tree.command(name="clear-history", description="Clear message history in this channel (Leadership only)")
+@app_commands.describe(amount="Number of messages to delete (1–1000, default 100). Use 0 to delete ALL messages.")
+async def clear_history(interaction: discord.Interaction, amount: int = 100):
+    _leadership_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID}
+    if not isinstance(interaction.user, discord.Member) or not any(r.id in _leadership_ids for r in interaction.user.roles):
+        return await interaction.response.send_message("Only Leader or Co-Leader can use this command.", ephemeral=True)
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("This command can only be used in a text channel.", ephemeral=True)
+    if amount < 0 or amount > 1000:
+        return await interaction.response.send_message("Amount must be between 0 and 1000.", ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True)
+
+    limit = amount if amount > 0 else None
+    try:
+        deleted = await interaction.channel.purge(limit=limit, reason=f"Channel history cleared by {interaction.user}")
+    except discord.Forbidden:
+        return await interaction.followup.send("I don't have permission to delete messages in this channel.", ephemeral=True)
+    except discord.HTTPException as e:
+        return await interaction.followup.send(f"Failed to clear messages: {e}", ephemeral=True)
+
+    logs_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(logs_ch, discord.TextChannel):
+        log_embed = discord.Embed(
+            title="🗑️ Channel History Cleared",
+            color=discord.Color.orange(),
+            timestamp=utc_now(),
+        )
+        log_embed.add_field(name="Channel", value=interaction.channel.mention, inline=True)
+        log_embed.add_field(name="Cleared By", value=interaction.user.mention, inline=True)
+        log_embed.add_field(name="Messages Deleted", value=str(len(deleted)), inline=True)
+        log_embed.set_footer(text="Different Meets • Leadership Action")
+        try:
+            await logs_ch.send(embed=log_embed)
+        except discord.HTTPException:
+            pass
+
+    await interaction.followup.send(f"✅ Deleted **{len(deleted)}** message(s).", ephemeral=True)
+
+
 @bot.tree.command(name="control-hub-post", description="Post or refresh the DIFF Crew Control Hub panel (staff only)")
 async def control_hub_post(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
