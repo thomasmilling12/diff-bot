@@ -14332,6 +14332,8 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
+    await bot.process_commands(message)
+
     if not message.guild or message.author.bot:
         return
     if not isinstance(message.author, discord.Member):
