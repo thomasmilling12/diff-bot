@@ -15266,6 +15266,54 @@ class WelcomeHubView(discord.ui.View):
             ]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
+    @discord.ui.button(label="Before You Invite Anyone", emoji="🚪", style=discord.ButtonStyle.danger,
+                       custom_id="diff_wh_invite", row=2)
+    async def invite_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        policy = (
+            "**🚪 Before You Invite Anyone**\n\n"
+            "This is a required step before sharing DIFF invites.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "⚠️ **Zero-Tolerance Policy**\n\n"
+            "Everyone you invite represents you.\n"
+            "If they break rules, it reflects directly on you.\n\n"
+            "There are no exceptions.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📌 **What You MUST Do Before Inviting:**\n\n"
+            "✔️ Make sure your friend understands DIFF standards\n"
+            "✔️ Ensure they bring clean, realistic builds\n"
+            "✔️ Confirm they are respectful and active\n"
+            "✔️ Have them read the rules FIRST\n\n"
+            f"👉 **Required:** <#{RULES_CHANNEL_ID}>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🚫 **Do NOT Invite:**\n\n"
+            "• Random players\n"
+            "• Trollers / griefers\n"
+            "• People who don't follow instructions\n"
+            "• Anyone who hasn't read the rules\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔗 **Invite Links (Use Responsibly)**\n\n"
+            "• https://discord.gg/vYcqNEtksS\n"
+            "• https://discord.gg/NTeqDCg74Y\n"
+            "• https://discord.gg/diffmeets\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📊 Invite quality > quantity. Keep DIFF clean.\n\n"
+            "— Different Meets Crew 🏁"
+        )
+        await interaction.response.send_message(policy, ephemeral=True)
+        log_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
+        if isinstance(log_ch, discord.TextChannel):
+            embed = discord.Embed(
+                title="🚪 Invite Policy Accessed",
+                color=discord.Color.orange(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="Member", value=f"{interaction.user.mention} (`{interaction.user}`)", inline=False)
+            embed.set_footer(text="Welcome Hub — Invite Button")
+            try:
+                await log_ch.send(embed=embed)
+            except Exception:
+                pass
+
 
 async def _wh_post_or_refresh(guild: discord.Guild) -> None:
     channel = guild.get_channel(_WH_CHANNEL_ID)
