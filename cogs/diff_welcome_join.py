@@ -52,6 +52,13 @@ class DiffWelcomeJoinSystem(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         print("[DiffWelcomeJoinSystem] Cog ready.")
+        flag = Path("diff_data/send_welcome_preview.flag")
+        if flag.exists():
+            flag.unlink()
+            guild = self.bot.get_guild(GUILD_ID)
+            if guild and guild.me:
+                await self._send_welcome(guild.me)
+                print("[DiffWelcomeJoinSystem] Preview sent.")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
