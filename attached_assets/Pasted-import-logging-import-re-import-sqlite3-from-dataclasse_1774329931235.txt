@@ -1,0 +1,972 @@
+import logging
+import re
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple
+
+import discord
+from discord.ext import commands, tasks
+
+# ============================================================
+# DIFF AUTO ROLL CALL SYSTEM + CHECK-IN + REMINDERS
+# ============================================================
+
+ROLLCALL_CHANNEL_ID = 1047338695352664165
+STAFF_LOG_CHANNEL_ID = 0  # replace
+CREW_MEMBER_ROLE_ID = 0   # replace
+EXTRA_PING_ROLE_IDS: List[int] = []
+ADMIN_ROLE_IDS: List[int] = []  # leader / co-leader / manager
+
+REMIND_YES_MINUTES_BEFORE = 60
+REMIND_MAYBE_MINUTES_BEFORE = 30
+CHECKIN_OPEN_MINUTES_BEFORE = 20
+CHECKIN_CLOSE_MINUTES_AFTER = 90
+
+DB_PATH = "diff_rollcall.sqlite3"
+logger = logging.getLogger("diff.rollcall")
+
+
+@dataclass
+class MeetInfo:
+    meet_number: int
+    class_name: str = "TBD"
+    start_time: str = "TBD"
+    host_id: Optional[int] = None
+    date_text: str = "TBD"
+    is_finalized: bool = False
+    scheduled_for: Optional[str] = None  # ISO datetime string strongly recommended
+
+
+class RollCallDB:
+    def __init__(self, path: str):
+        self.path = path
+        self._init_db()
+
+    def _connect(self):
+        con = sqlite3.connect(self.path)
+        con.row_factory = sqlite3.Row
+        return con
+
+    def _init_db(self):
+        con = self._connect()
+        cur = con.cursor()
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rollcall_panels (
+                guild_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rollcall_meets (
+                guild_id INTEGER NOT NULL,
+                meet_number INTEGER NOT NULL,
+                class_name TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                host_id INTEGER,
+                date_text TEXT NOT NULL,
+                is_finalized INTEGER NOT NULL DEFAULT 0,
+                scheduled_for TEXT,
+                PRIMARY KEY (guild_id, meet_number)
+            )
+            """
+        )
+        try:
+            cur.execute("ALTER TABLE rollcall_meets ADD COLUMN scheduled_for TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rollcall_responses (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                meet_number INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id, meet_number)
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_actual (
+                guild_id INTEGER NOT NULL,
+                meet_number INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'staff_finalize',
+                PRIMARY KEY (guild_id, meet_number, user_id)
+            )
+            """
+        )
+        try:
+            cur.execute("ALTER TABLE attendance_actual ADD COLUMN source TEXT NOT NULL DEFAULT 'staff_finalize'")
+        except sqlite3.OperationalError:
+            pass
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attendance_stats (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                yes_count INTEGER NOT NULL DEFAULT 0,
+                maybe_count INTEGER NOT NULL DEFAULT 0,
+                no_count INTEGER NOT NULL DEFAULT 0,
+                attended_count INTEGER NOT NULL DEFAULT 0,
+                no_show_count INTEGER NOT NULL DEFAULT 0,
+                checkin_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
+            )
+            """
+        )
+        try:
+            cur.execute("ALTER TABLE attendance_stats ADD COLUMN checkin_count INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS meet_state (
+                guild_id INTEGER NOT NULL,
+                meet_number INTEGER NOT NULL,
+                attendance_finalized INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, meet_number)
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reminder_log (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                meet_number INTEGER NOT NULL,
+                reminder_type TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id, meet_number, reminder_type)
+            )
+            """
+        )
+
+        con.commit()
+        con.close()
+
+    def upsert_panel(self, guild_id: int, channel_id: int, message_id: int):
+        now = datetime.utcnow().isoformat()
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute(
+            """
+            INSERT INTO rollcall_panels (guild_id, channel_id, message_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id)
+            DO UPDATE SET channel_id=excluded.channel_id,
+                          message_id=excluded.message_id,
+                          updated_at=excluded.updated_at
+            """,
+            (guild_id, channel_id, message_id, now, now),
+        )
+        con.commit()
+        con.close()
+
+    def get_panel(self, guild_id: int):
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute("SELECT * FROM rollcall_panels WHERE guild_id=?", (guild_id,))
+        row = cur.fetchone()
+        con.close()
+        return row
+
+    def upsert_meets(self, guild_id: int, meets: List[MeetInfo]):
+        con = self._connect()
+        cur = con.cursor()
+        for meet in meets:
+            cur.execute(
+                """
+                INSERT INTO rollcall_meets (guild_id, meet_number, class_name, start_time, host_id, date_text, is_finalized, scheduled_for)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, meet_number)
+                DO UPDATE SET class_name=excluded.class_name,
+                              start_time=excluded.start_time,
+                              host_id=excluded.host_id,
+                              date_text=excluded.date_text,
+                              is_finalized=excluded.is_finalized,
+                              scheduled_for=excluded.scheduled_for
+                """,
+                (
+                    guild_id,
+                    meet.meet_number,
+                    meet.class_name,
+                    meet.start_time,
+                    meet.host_id,
+                    meet.date_text,
+                    1 if meet.is_finalized else 0,
+                    meet.scheduled_for,
+                ),
+            )
+            cur.execute(
+                "INSERT OR IGNORE INTO meet_state (guild_id, meet_number, attendance_finalized) VALUES (?, ?, 0)",
+                (guild_id, meet.meet_number),
+            )
+        con.commit()
+        con.close()
+
+    def get_meets(self, guild_id: int) -> List[sqlite3.Row]:
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute("SELECT * FROM rollcall_meets WHERE guild_id=? ORDER BY meet_number ASC", (guild_id,))
+        rows = cur.fetchall()
+        con.close()
+        return rows
+
+    def set_response(self, guild_id: int, user_id: int, meet_number: int, status: str):
+        now = datetime.utcnow().isoformat()
+        con = self._connect()
+        cur = con.cursor()
+
+        cur.execute(
+            "SELECT status FROM rollcall_responses WHERE guild_id=? AND user_id=? AND meet_number=?",
+            (guild_id, user_id, meet_number),
+        )
+        previous = cur.fetchone()
+        previous_status = previous[0] if previous else None
+
+        cur.execute(
+            """
+            INSERT INTO rollcall_responses (guild_id, user_id, meet_number, status, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id, meet_number)
+            DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at
+            """,
+            (guild_id, user_id, meet_number, status, now),
+        )
+
+        cur.execute("INSERT OR IGNORE INTO attendance_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+
+        if previous_status in ("yes", "maybe", "no"):
+            cur.execute(
+                f"UPDATE attendance_stats SET {previous_status}_count = MAX({previous_status}_count - 1, 0) WHERE guild_id=? AND user_id=?",
+                (guild_id, user_id),
+            )
+        if status in ("yes", "maybe", "no"):
+            cur.execute(
+                f"UPDATE attendance_stats SET {status}_count = {status}_count + 1 WHERE guild_id=? AND user_id=?",
+                (guild_id, user_id),
+            )
+
+        con.commit()
+        con.close()
+        return previous_status
+
+    def get_status_counts(self, guild_id: int, meet_number: int) -> Dict[str, int]:
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute(
+            "SELECT status, COUNT(*) AS total FROM rollcall_responses WHERE guild_id=? AND meet_number=? GROUP BY status",
+            (guild_id, meet_number),
+        )
+        rows = cur.fetchall()
+        con.close()
+        counts = {"yes": 0, "maybe": 0, "no": 0}
+        for row in rows:
+            counts[row[0]] = row[1]
+        return counts
+
+    def get_actual_count(self, guild_id: int, meet_number: int) -> int:
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute("SELECT COUNT(*) FROM attendance_actual WHERE guild_id=? AND meet_number=?", (guild_id, meet_number))
+        count = cur.fetchone()[0]
+        con.close()
+        return count
+
+    def get_all_counts(self, guild_id: int) -> Dict[int, Dict[str, int]]:
+        data = {}
+        for meet in (1, 2, 3):
+            counts = self.get_status_counts(guild_id, meet)
+            counts["checked_in"] = self.get_actual_count(guild_id, meet)
+            data[meet] = counts
+        return data
+
+    def get_user_status(self, guild_id: int, user_id: int, meet_number: int) -> Optional[str]:
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute(
+            "SELECT status FROM rollcall_responses WHERE guild_id=? AND user_id=? AND meet_number=?",
+            (guild_id, user_id, meet_number),
+        )
+        row = cur.fetchone()
+        con.close()
+        return row[0] if row else None
+
+    def get_response_user_ids(self, guild_id: int, meet_number: int, status: str) -> List[int]:
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute(
+            "SELECT user_id FROM rollcall_responses WHERE guild_id=? AND meet_number=? AND status=?",
+            (guild_id, meet_number, status),
+        )
+        rows = [r[0] for r in cur.fetchall()]
+        con.close()
+        return rows
+
+    def set_actual_attendees(self, guild_id: int, meet_number: int, user_ids: List[int], source: str = "staff_finalize"):
+        now = datetime.utcnow().isoformat()
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute("DELETE FROM attendance_actual WHERE guild_id=? AND meet_number=?", (guild_id, meet_number))
+        for user_id in user_ids:
+            cur.execute(
+                "INSERT INTO attendance_actual (guild_id, meet_number, user_id, recorded_at, source) VALUES (?, ?, ?, ?, ?)",
+                (guild_id, meet_number, user_id, now, source),
+            )
+            cur.execute("INSERT OR IGNORE INTO attendance_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+        con.commit()
+        con.close()
+
+    def add_self_checkin(self, guild_id: int, meet_number: int, user_id: int) -> bool:
+        now = datetime.utcnow().isoformat()
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute(
+            "SELECT 1 FROM attendance_actual WHERE guild_id=? AND meet_number=? AND user_id=?",
+            (guild_id, meet_number, user_id),
+        )
+        exists = cur.fetchone() is not None
+        if not exists:
+            cur.execute(
+                "INSERT INTO attendance_actual (guild_id, meet_number, user_id, recorded_at, source) VALUES (?, ?, ?, ?, ?)",
+                (guild_id, meet_number, user_id, now, "self_checkin"),
+            )
+            cur.execute("INSERT OR IGNORE INTO attendance_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+            cur.execute(
+                "UPDATE attendance_stats SET checkin_count = checkin_count + 1 WHERE guild_id=? AND user_id=?",
+                (guild_id, user_id),
+            )
+            con.commit()
+        con.close()
+        return not exists
+
+    def finalize_no_shows(self, guild_id: int, meet_number: int) -> Tuple[List[int], List[int]]:
+        con = self._connect()
+        cur = con.cursor()
+
+        cur.execute("SELECT attendance_finalized FROM meet_state WHERE guild_id=? AND meet_number=?", (guild_id, meet_number))
+        row = cur.fetchone()
+        if row and row[0] == 1:
+            con.close()
+            return [], []
+
+        cur.execute("SELECT user_id FROM attendance_actual WHERE guild_id=? AND meet_number=?", (guild_id, meet_number))
+        actual_present = {r[0] for r in cur.fetchall()}
+
+        cur.execute(
+            "SELECT user_id FROM rollcall_responses WHERE guild_id=? AND meet_number=? AND status='yes'",
+            (guild_id, meet_number),
+        )
+        yes_users = {r[0] for r in cur.fetchall()}
+
+        attended = sorted(actual_present)
+        no_shows = sorted(list(yes_users - actual_present))
+
+        for user_id in attended:
+            cur.execute("INSERT OR IGNORE INTO attendance_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+            cur.execute(
+                "UPDATE attendance_stats SET attended_count = attended_count + 1 WHERE guild_id=? AND user_id=?",
+                (guild_id, user_id),
+            )
+
+        for user_id in no_shows:
+            cur.execute("INSERT OR IGNORE INTO attendance_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+            cur.execute(
+                "UPDATE attendance_stats SET no_show_count = no_show_count + 1 WHERE guild_id=? AND user_id=?",
+                (guild_id, user_id),
+            )
+
+        cur.execute(
+            """
+            INSERT INTO meet_state (guild_id, meet_number, attendance_finalized)
+            VALUES (?, ?, 1)
+            ON CONFLICT(guild_id, meet_number)
+            DO UPDATE SET attendance_finalized=1
+            """,
+            (guild_id, meet_number),
+        )
+
+        con.commit()
+        con.close()
+        return attended, no_shows
+
+    def get_top_attendance(self, guild_id: int, limit: int = 10) -> List[sqlite3.Row]:
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT *
+            FROM attendance_stats
+            WHERE guild_id=?
+            ORDER BY attended_count DESC, checkin_count DESC, yes_count DESC, maybe_count DESC, no_show_count ASC
+            LIMIT ?
+            """,
+            (guild_id, limit),
+        )
+        rows = cur.fetchall()
+        con.close()
+        return rows
+
+    def reminder_sent(self, guild_id: int, user_id: int, meet_number: int, reminder_type: str) -> bool:
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute(
+            "SELECT 1 FROM reminder_log WHERE guild_id=? AND user_id=? AND meet_number=? AND reminder_type=?",
+            (guild_id, user_id, meet_number, reminder_type),
+        )
+        exists = cur.fetchone() is not None
+        con.close()
+        return exists
+
+    def log_reminder(self, guild_id: int, user_id: int, meet_number: int, reminder_type: str):
+        con = self._connect()
+        cur = con.cursor()
+        cur.execute(
+            "INSERT OR IGNORE INTO reminder_log (guild_id, user_id, meet_number, reminder_type, sent_at) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, user_id, meet_number, reminder_type, datetime.utcnow().isoformat()),
+        )
+        con.commit()
+        con.close()
+
+
+class MeetStatusButton(discord.ui.Button):
+    STATUS_STYLE = {
+        "yes": discord.ButtonStyle.success,
+        "maybe": discord.ButtonStyle.secondary,
+        "no": discord.ButtonStyle.danger,
+    }
+    STATUS_LABEL = {
+        "yes": "✅ Attending",
+        "maybe": "❓ Maybe",
+        "no": "❌ Not Attending",
+    }
+
+    def __init__(self, cog: "DiffAutoRollCall", meet_number: int, status: str, row: int):
+        self.cog = cog
+        self.meet_number = meet_number
+        self.status = status
+        super().__init__(
+            label=f"Meet {meet_number} {self.STATUS_LABEL[status]}",
+            style=self.STATUS_STYLE[status],
+            custom_id=f"diff_rollcall:{meet_number}:{status}",
+            row=row,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.handle_rollcall_response(interaction, self.meet_number, self.status)
+
+
+class CheckInButton(discord.ui.Button):
+    def __init__(self, cog: "DiffAutoRollCall", meet_number: int, row: int):
+        self.cog = cog
+        self.meet_number = meet_number
+        super().__init__(
+            label=f"📍 Check In Meet {meet_number}",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"diff_checkin:{meet_number}",
+            row=row,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.handle_checkin(interaction, self.meet_number)
+
+
+class RollCallView(discord.ui.View):
+    def __init__(self, cog: "DiffAutoRollCall"):
+        super().__init__(timeout=None)
+        self.cog = cog
+        for meet_number, row in zip((1, 2, 3), (0, 1, 2)):
+            self.add_item(MeetStatusButton(cog, meet_number, "yes", row=row))
+            self.add_item(MeetStatusButton(cog, meet_number, "maybe", row=row))
+            self.add_item(MeetStatusButton(cog, meet_number, "no", row=row))
+        for meet_number in (1, 2, 3):
+            self.add_item(CheckInButton(cog, meet_number, row=3))
+
+
+class FinalizeAttendanceModal(discord.ui.Modal, title="Finalize Attendance"):
+    attendees = discord.ui.TextInput(
+        label="Mention or paste the users who actually attended",
+        style=discord.TextStyle.paragraph,
+        placeholder="Example: <@123> <@456> <@789>",
+        required=False,
+        max_length=4000,
+    )
+
+    def __init__(self, cog: "DiffAutoRollCall", meet_number: int):
+        super().__init__()
+        self.cog = cog
+        self.meet_number = meet_number
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not self.cog.member_is_admin(interaction.user):
+            await interaction.response.send_message("You do not have permission to finalize attendance.", ephemeral=True)
+            return
+
+        raw = self.attendees.value or ""
+        user_ids = sorted({int(match) for match in re.findall(r"\d{15,25}", raw)})
+
+        self.cog.db.set_actual_attendees(interaction.guild.id, self.meet_number, user_ids, source="staff_finalize")
+        attended, no_shows = self.cog.db.finalize_no_shows(interaction.guild.id, self.meet_number)
+        await self.cog.refresh_panel(interaction.guild)
+        await self.cog.log_attendance_finalize(interaction.guild, self.meet_number, attended, no_shows, interaction.user)
+
+        summary = (
+            f"Attendance finalized for Meet {self.meet_number}.\n"
+            f"Present recorded: {len(attended)}\n"
+            f"No-shows detected: {len(no_shows)}"
+        )
+        await interaction.response.send_message(summary, ephemeral=True)
+
+
+class FinalizeMeetButton(discord.ui.Button):
+    def __init__(self, cog: "DiffAutoRollCall", meet_number: int, row: int):
+        self.cog = cog
+        self.meet_number = meet_number
+        super().__init__(
+            label=f"Finalize Meet {meet_number}",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"diff_rollcall_finalize:{meet_number}",
+            row=row,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.cog.member_is_admin(interaction.user):
+            await interaction.response.send_message("You do not have permission to use this.", ephemeral=True)
+            return
+        await interaction.response.send_modal(FinalizeAttendanceModal(self.cog, self.meet_number))
+
+
+class AdminRollCallView(discord.ui.View):
+    def __init__(self, cog: "DiffAutoRollCall"):
+        super().__init__(timeout=None)
+        self.add_item(FinalizeMeetButton(cog, 1, row=0))
+        self.add_item(FinalizeMeetButton(cog, 2, row=0))
+        self.add_item(FinalizeMeetButton(cog, 3, row=0))
+
+
+class DiffAutoRollCall(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = RollCallDB(DB_PATH)
+        self.rollcall_view = RollCallView(self)
+        self.admin_view = AdminRollCallView(self)
+        self.bot.add_view(self.rollcall_view)
+        self.bot.add_view(self.admin_view)
+        self.panel_ensure_loop.start()
+        self.reminder_loop.start()
+
+    def cog_unload(self):
+        self.panel_ensure_loop.cancel()
+        self.reminder_loop.cancel()
+
+    def member_is_admin(self, member: discord.abc.User) -> bool:
+        if not isinstance(member, discord.Member):
+            return False
+        if member.guild_permissions.administrator:
+            return True
+        return any(role.id in ADMIN_ROLE_IDS for role in member.roles)
+
+    @tasks.loop(minutes=10)
+    async def panel_ensure_loop(self):
+        await self.bot.wait_until_ready()
+        for guild in self.bot.guilds:
+            try:
+                await self.ensure_panel(guild)
+            except Exception as exc:
+                logger.exception("Failed to ensure roll call panel for guild %s: %s", guild.id, exc)
+
+    @tasks.loop(minutes=1)
+    async def reminder_loop(self):
+        await self.bot.wait_until_ready()
+        now = discord.utils.utcnow()
+        for guild in self.bot.guilds:
+            try:
+                await self.process_reminders_for_guild(guild, now)
+            except Exception as exc:
+                logger.exception("Reminder loop failed for guild %s: %s", guild.id, exc)
+
+    @panel_ensure_loop.before_loop
+    @reminder_loop.before_loop
+    async def before_loops(self):
+        await self.bot.wait_until_ready()
+
+    async def ensure_panel(self, guild: discord.Guild):
+        channel = guild.get_channel(ROLLCALL_CHANNEL_ID)
+        if channel is None:
+            return
+        existing = self.db.get_panel(guild.id)
+        if existing:
+            try:
+                await channel.fetch_message(existing["message_id"])
+                return
+            except discord.NotFound:
+                pass
+            except discord.HTTPException:
+                return
+        await self.post_new_panel(guild, ping_roles=True)
+
+    def build_ping_text(self) -> str:
+        role_mentions = []
+        if CREW_MEMBER_ROLE_ID:
+            role_mentions.append(f"<@&{CREW_MEMBER_ROLE_ID}>")
+        role_mentions.extend(f"<@&{role_id}>" for role_id in EXTRA_PING_ROLE_IDS)
+        return " ".join(role_mentions)
+
+    def parse_meet_datetime(self, row: sqlite3.Row) -> Optional[datetime]:
+        scheduled_for = row["scheduled_for"]
+        if not scheduled_for:
+            return None
+        try:
+            dt = datetime.fromisoformat(scheduled_for)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except ValueError:
+            return None
+
+    def is_checkin_open(self, row: sqlite3.Row, now: Optional[datetime] = None) -> bool:
+        now = now or discord.utils.utcnow()
+        meet_dt = self.parse_meet_datetime(row)
+        if meet_dt is None:
+            return False
+        return (meet_dt - timedelta(minutes=CHECKIN_OPEN_MINUTES_BEFORE)) <= now <= (meet_dt + timedelta(minutes=CHECKIN_CLOSE_MINUTES_AFTER))
+
+    def build_rollcall_embed(self, guild: discord.Guild) -> discord.Embed:
+        meets = self.db.get_meets(guild.id)
+        meets_by_num = {row["meet_number"]: row for row in meets}
+        counts = self.db.get_all_counts(guild.id)
+        now = discord.utils.utcnow()
+
+        embed = discord.Embed(
+            title="📊 DIFF Auto Roll Call",
+            description="Built automatically from the finalized meet schedule.",
+            color=discord.Color.blurple(),
+        )
+        embed.set_author(name="Different Meets")
+
+        for meet_number in (1, 2, 3):
+            meet = meets_by_num.get(meet_number)
+            class_name = meet["class_name"] if meet else "TBD"
+            start_time = meet["start_time"] if meet else "TBD"
+            date_text = meet["date_text"] if meet else "TBD"
+            host_id = meet["host_id"] if meet else None
+            host_text = f"<@{host_id}>" if host_id else "*No host assigned*"
+            finalized_text = "✅ Finalized" if meet and meet["is_finalized"] else "⏳ Pending"
+            checkin_text = "🟢 Open" if meet and self.is_checkin_open(meet, now) else "🔒 Closed"
+            c = counts[meet_number]
+
+            value = (
+                f"📅 **Date:** {date_text}\n"
+                f"🎮 **Class:** {class_name}\n"
+                f"🕒 **Time:** {start_time}\n"
+                f"👤 **Host:** {host_text}\n"
+                f"📌 **Status:** {finalized_text}\n"
+                f"📍 **Check-In:** {checkin_text}\n\n"
+                f"✅ **Attending:** {c['yes']}\n"
+                f"❓ **Maybe:** {c['maybe']}\n"
+                f"❌ **Not Attending:** {c['no']}\n"
+                f"📍 **Checked In:** {c['checked_in']}"
+            )
+            embed.add_field(name=f"Meet {meet_number}", value=value, inline=False)
+
+        embed.add_field(
+            name="Important",
+            value=(
+                "⏳ Lobby opens early before start time\n"
+                "🧥 Wear your crew jacket\n"
+                "🎙️ Join voice chat if required\n"
+                "📍 Use the check-in buttons once the meet opens\n"
+                "⚠️ Repeated no-shows may affect activity tracking"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="DIFF • Auto Roll Call System")
+        embed.timestamp = discord.utils.utcnow()
+        return embed
+
+    def build_admin_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="🛠️ DIFF Roll Call Admin Tools",
+            description="Staff can finalize actual attendance for each meet here.",
+            color=discord.Color.dark_teal(),
+        )
+        embed.add_field(
+            name="How it works",
+            value=(
+                "Use the buttons below after each meet ends.\n"
+                "Paste or mention the users who actually attended.\n"
+                "The system will sync attendance, update leaderboard stats, and flag no-shows.\n"
+                "Self check-ins are also counted automatically."
+            ),
+            inline=False,
+        )
+        return embed
+
+    async def post_new_panel(self, guild: discord.Guild, ping_roles: bool = False):
+        channel = guild.get_channel(ROLLCALL_CHANNEL_ID)
+        if channel is None:
+            return None
+        ping_text = self.build_ping_text() if ping_roles else ""
+        rollcall_message = await channel.send(
+            content=ping_text or None,
+            embed=self.build_rollcall_embed(guild),
+            view=self.rollcall_view,
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+        await channel.send(embed=self.build_admin_embed(), view=self.admin_view)
+        self.db.upsert_panel(guild.id, channel.id, rollcall_message.id)
+        return rollcall_message
+
+    async def refresh_panel(self, guild: discord.Guild):
+        panel = self.db.get_panel(guild.id)
+        channel = guild.get_channel(ROLLCALL_CHANNEL_ID)
+        if channel is None:
+            return
+        if not panel:
+            await self.post_new_panel(guild, ping_roles=True)
+            return
+        try:
+            message = await channel.fetch_message(panel["message_id"])
+            await message.edit(embed=self.build_rollcall_embed(guild), view=self.rollcall_view)
+        except discord.NotFound:
+            await self.post_new_panel(guild, ping_roles=True)
+
+    async def handle_rollcall_response(self, interaction: discord.Interaction, meet_number: int, status: str):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+            return
+        previous = self.db.set_response(interaction.guild.id, interaction.user.id, meet_number, status)
+        await self.refresh_panel(interaction.guild)
+        await self.log_rsvp_change(interaction.guild, interaction.user, meet_number, previous, status)
+        status_map = {
+            "yes": "✅ You are marked as attending",
+            "maybe": "❓ You are marked as maybe",
+            "no": "❌ You are marked as not attending",
+        }
+        await interaction.response.send_message(f"{status_map[status]} for Meet {meet_number}.", ephemeral=True)
+
+    async def handle_checkin(self, interaction: discord.Interaction, meet_number: int):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+            return
+
+        meet_rows = {row["meet_number"]: row for row in self.db.get_meets(interaction.guild.id)}
+        row = meet_rows.get(meet_number)
+        if not row or not row["is_finalized"]:
+            await interaction.response.send_message("That meet is not finalized yet.", ephemeral=True)
+            return
+        if not self.is_checkin_open(row):
+            await interaction.response.send_message(f"Check-in for Meet {meet_number} is not open right now.", ephemeral=True)
+            return
+
+        current_status = self.db.get_user_status(interaction.guild.id, interaction.user.id, meet_number)
+        if current_status != "yes":
+            self.db.set_response(interaction.guild.id, interaction.user.id, meet_number, "yes")
+
+        created = self.db.add_self_checkin(interaction.guild.id, meet_number, interaction.user.id)
+        await self.refresh_panel(interaction.guild)
+        await self.log_checkin(interaction.guild, interaction.user, meet_number, created)
+
+        message = f"📍 You are checked in for Meet {meet_number}." if created else f"You already checked in for Meet {meet_number}."
+        await interaction.response.send_message(message, ephemeral=True)
+
+    async def log_rsvp_change(self, guild: discord.Guild, member: discord.Member, meet_number: int, previous: Optional[str], new_status: str):
+        if not STAFF_LOG_CHANNEL_ID:
+            return
+        channel = guild.get_channel(STAFF_LOG_CHANNEL_ID)
+        if channel is None:
+            return
+        embed = discord.Embed(title="📋 Roll Call Update", color=discord.Color.orange(), timestamp=discord.utils.utcnow())
+        embed.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=False)
+        embed.add_field(name="Meet", value=f"Meet {meet_number}", inline=True)
+        embed.add_field(name="Previous", value=previous or "none", inline=True)
+        embed.add_field(name="New", value=new_status, inline=True)
+        await channel.send(embed=embed)
+
+    async def log_checkin(self, guild: discord.Guild, member: discord.Member, meet_number: int, created: bool):
+        if not STAFF_LOG_CHANNEL_ID:
+            return
+        channel = guild.get_channel(STAFF_LOG_CHANNEL_ID)
+        if channel is None:
+            return
+        embed = discord.Embed(title="📍 Meet Check-In", color=discord.Color.blue(), timestamp=discord.utils.utcnow())
+        embed.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=False)
+        embed.add_field(name="Meet", value=f"Meet {meet_number}", inline=True)
+        embed.add_field(name="Result", value="New check-in" if created else "Already checked in", inline=True)
+        await channel.send(embed=embed)
+
+    async def log_attendance_finalize(self, guild: discord.Guild, meet_number: int, attended: List[int], no_shows: List[int], action_by: discord.Member):
+        if not STAFF_LOG_CHANNEL_ID:
+            return
+        channel = guild.get_channel(STAFF_LOG_CHANNEL_ID)
+        if channel is None:
+            return
+        embed = discord.Embed(title="📊 Meet Attendance Finalized", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+        embed.add_field(name="Meet", value=f"Meet {meet_number}", inline=True)
+        embed.add_field(name="Finalized By", value=action_by.mention, inline=True)
+        embed.add_field(name="Present Count", value=str(len(attended)), inline=True)
+        embed.add_field(name="Present Users", value=(" ".join(f"<@{uid}>" for uid in attended[:30]) or "None recorded")[:1024], inline=False)
+        embed.add_field(name="No-Shows", value=(" ".join(f"<@{uid}>" for uid in no_shows[:30]) or "None")[:1024], inline=False)
+        await channel.send(embed=embed)
+
+    async def log_reminder_event(self, guild: discord.Guild, member: discord.Member, meet_number: int, reminder_type: str):
+        if not STAFF_LOG_CHANNEL_ID:
+            return
+        channel = guild.get_channel(STAFF_LOG_CHANNEL_ID)
+        if channel is None:
+            return
+        embed = discord.Embed(title="⏰ Reminder Sent", color=discord.Color.purple(), timestamp=discord.utils.utcnow())
+        embed.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=False)
+        embed.add_field(name="Meet", value=f"Meet {meet_number}", inline=True)
+        embed.add_field(name="Type", value=reminder_type, inline=True)
+        await channel.send(embed=embed)
+
+    async def safe_dm(self, member: discord.Member, content: str) -> bool:
+        try:
+            await member.send(content)
+            return True
+        except discord.HTTPException:
+            return False
+
+    async def process_reminders_for_guild(self, guild: discord.Guild, now: datetime):
+        for row in self.db.get_meets(guild.id):
+            if not row["is_finalized"]:
+                continue
+            meet_dt = self.parse_meet_datetime(row)
+            if meet_dt is None:
+                continue
+            meet_number = row["meet_number"]
+            minutes_until = (meet_dt - now).total_seconds() / 60.0
+
+            if 0 <= minutes_until <= REMIND_YES_MINUTES_BEFORE:
+                for user_id in self.db.get_response_user_ids(guild.id, meet_number, "yes"):
+                    if self.db.reminder_sent(guild.id, user_id, meet_number, "yes_reminder"):
+                        continue
+                    member = guild.get_member(user_id)
+                    if not member:
+                        continue
+                    sent = await self.safe_dm(
+                        member,
+                        f"✅ DIFF Reminder: Meet {meet_number} starts at {row['start_time']} on {row['date_text']}.\nMake sure you're ready and join early if you can.",
+                    )
+                    if sent:
+                        self.db.log_reminder(guild.id, user_id, meet_number, "yes_reminder")
+                        await self.log_reminder_event(guild, member, meet_number, "yes_reminder")
+
+            if 0 <= minutes_until <= REMIND_MAYBE_MINUTES_BEFORE:
+                for user_id in self.db.get_response_user_ids(guild.id, meet_number, "maybe"):
+                    if self.db.reminder_sent(guild.id, user_id, meet_number, "maybe_reminder"):
+                        continue
+                    member = guild.get_member(user_id)
+                    if not member:
+                        continue
+                    sent = await self.safe_dm(
+                        member,
+                        f"❓ DIFF Reminder: Meet {meet_number} starts at {row['start_time']} on {row['date_text']}.\nYou marked maybe. Update your roll call if you know whether you're joining.",
+                    )
+                    if sent:
+                        self.db.log_reminder(guild.id, user_id, meet_number, "maybe_reminder")
+                        await self.log_reminder_event(guild, member, meet_number, "maybe_reminder")
+
+            checkin_open_at = meet_dt - timedelta(minutes=CHECKIN_OPEN_MINUTES_BEFORE)
+            if checkin_open_at <= now <= meet_dt:
+                for user_id in self.db.get_response_user_ids(guild.id, meet_number, "yes"):
+                    if self.db.reminder_sent(guild.id, user_id, meet_number, "checkin_open"):
+                        continue
+                    member = guild.get_member(user_id)
+                    if not member:
+                        continue
+                    sent = await self.safe_dm(
+                        member,
+                        f"📍 DIFF Check-In Open: Meet {meet_number} is opening soon.\nGo to the roll call panel and press the check-in button when you're in.",
+                    )
+                    if sent:
+                        self.db.log_reminder(guild.id, user_id, meet_number, "checkin_open")
+                        await self.log_reminder_event(guild, member, meet_number, "checkin_open")
+
+    async def sync_from_schedule(self, guild: discord.Guild, finalized_meets: List[Dict]):
+        """
+        Example payload item:
+        {
+            "meet_number": 1,
+            "class_name": "JDM",
+            "start_time": "8:00 PM EST",
+            "host_id": 123,
+            "date_text": "Mar 28, 2026",
+            "is_finalized": True,
+            "scheduled_for": "2026-03-28T20:00:00-04:00"
+        }
+        """
+        meets: List[MeetInfo] = []
+        for item in finalized_meets[:3]:
+            meets.append(
+                MeetInfo(
+                    meet_number=int(item.get("meet_number", 0)),
+                    class_name=str(item.get("class_name", "TBD")),
+                    start_time=str(item.get("start_time", "TBD")),
+                    host_id=item.get("host_id"),
+                    date_text=str(item.get("date_text", "TBD")),
+                    is_finalized=bool(item.get("is_finalized", True)),
+                    scheduled_for=item.get("scheduled_for"),
+                )
+            )
+        present = {m.meet_number for m in meets}
+        for n in (1, 2, 3):
+            if n not in present:
+                meets.append(MeetInfo(meet_number=n))
+        meets.sort(key=lambda x: x.meet_number)
+        self.db.upsert_meets(guild.id, meets)
+        await self.refresh_panel(guild)
+
+    @commands.command(name="postrollcall")
+    @commands.has_permissions(administrator=True)
+    async def post_rollcall_command(self, ctx: commands.Context):
+        await self.post_new_panel(ctx.guild, ping_roles=True)
+        await ctx.send("Roll call panel posted.", delete_after=8)
+
+    @commands.command(name="syncrollcall")
+    @commands.has_permissions(administrator=True)
+    async def sync_rollcall_demo(self, ctx: commands.Context):
+        demo_payload = [
+            {"meet_number": 1, "class_name": "TBD", "start_time": "TBD", "host_id": None, "date_text": "TBD", "is_finalized": False, "scheduled_for": None},
+            {"meet_number": 2, "class_name": "TBD", "start_time": "TBD", "host_id": None, "date_text": "TBD", "is_finalized": False, "scheduled_for": None},
+            {"meet_number": 3, "class_name": "TBD", "start_time": "TBD", "host_id": None, "date_text": "TBD", "is_finalized": False, "scheduled_for": None},
+        ]
+        await self.sync_from_schedule(ctx.guild, demo_payload)
+        await ctx.send("Roll call panel synced from schedule data.", delete_after=8)
+
+    @commands.command(name="rollleaderboard")
+    async def roll_leaderboard(self, ctx: commands.Context):
+        rows = self.db.get_top_attendance(ctx.guild.id, limit=10)
+        if not rows:
+            await ctx.send("No leaderboard data yet.")
+            return
+        embed = discord.Embed(title="🏆 DIFF Attendance Leaderboard", color=discord.Color.gold())
+        lines = []
+        for idx, row in enumerate(rows, start=1):
+            lines.append(
+                f"**{idx}.** <@{row['user_id']}> — Attended: **{row['attended_count']}** | Check-Ins: **{row['checkin_count']}** | Yes: **{row['yes_count']}** | No-Shows: **{row['no_show_count']}**"
+            )
+        embed.description = "\n".join(lines)
+        await ctx.send(embed=embed)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffAutoRollCall(bot))

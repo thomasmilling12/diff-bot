@@ -1,0 +1,218 @@
+"""
+DIFF Official Meet Announcement Add-On
+-------------------------------------
+Add this file to your current discord.py bot and load it as an extension.
+
+What it does:
+- Posts the DIFF Official Meet announcement in the configured channel
+- Pings the PlayStation role and Car Meet role
+- Uses Discord timestamps so times auto-convert for each user's timezone
+- Auto-sends reminder messages 1 hour before and 15 minutes before the meet
+- Stores reminder tasks in memory while the bot is running
+
+Requirements:
+- discord.py 2.x
+- Message Content intent only needed if your bot uses prefix commands elsewhere
+- The bot must have permission to send messages in the target channel
+
+Setup:
+1) Put this file in your bot project
+2) Replace PLAYSTATION_ROLE_ID and CARMEET_ROLE_ID with your real role IDs
+3) Load the extension in your main bot file:
+       await bot.load_extension("diff_official_meet_addon")
+   or for sync setup:
+       bot.load_extension("diff_official_meet_addon")
+
+Command:
+- !officialmeet "Theme Name" 2026-03-28 20:00 @HostUser
+  Example:
+  !officialmeet "Tire Lettering" 2026-03-28 20:00 @Wayy2Frostyy-
+
+Time format:
+- YYYY-MM-DD HH:MM
+- This file assumes America/New_York for input time and converts it to a Unix timestamp
+
+Optional:
+- Change COMMAND_NAME if you want a different command name
+"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+import discord
+from discord.ext import commands
+
+# =========================
+# CONFIG
+# =========================
+
+MEET_CHANNEL_ID = 1485870611069796374
+
+# Replace these with your real role IDs
+PLAYSTATION_ROLE_ID = 0
+CARMEET_ROLE_ID = 0
+
+# Input timezone for the scheduled meet time
+SCHEDULE_TIMEZONE = "America/New_York"
+
+# Prefix command name
+COMMAND_NAME = "officialmeet"
+
+
+@dataclass
+class ScheduledMeet:
+    theme: str
+    host_id: int
+    timestamp: int
+    posted_channel_id: int
+
+
+class DiffOfficialMeetAddon(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self.meet_tasks: list[asyncio.Task] = []
+
+    def cog_unload(self) -> None:
+        for task in self.meet_tasks:
+            if not task.done():
+                task.cancel()
+
+    @commands.command(name=COMMAND_NAME)
+    @commands.has_permissions(manage_guild=True)
+    async def official_meet(
+        self,
+        ctx: commands.Context,
+        theme: str,
+        date: str,
+        time_str: str,
+        host: discord.Member,
+    ) -> None:
+        """
+        Post the DIFF Official Meet announcement and schedule reminders.
+
+        Usage:
+        !officialmeet "Theme Name" 2026-03-28 20:00 @HostUser
+        """
+        channel = self.bot.get_channel(MEET_CHANNEL_ID)
+        if channel is None:
+            await ctx.send("I couldn't find the configured meet channel.")
+            return
+
+        if not isinstance(channel, discord.TextChannel):
+            await ctx.send("The configured meet channel is not a text channel.")
+            return
+
+        if PLAYSTATION_ROLE_ID == 0 or CARMEET_ROLE_ID == 0:
+            await ctx.send(
+                "Set PLAYSTATION_ROLE_ID and CARMEET_ROLE_ID in the file before using this command."
+            )
+            return
+
+        try:
+            local_dt = datetime.strptime(f"{date} {time_str}", "%Y-%m-%d %H:%M").replace(
+                tzinfo=ZoneInfo(SCHEDULE_TIMEZONE)
+            )
+        except ValueError:
+            await ctx.send("Invalid date/time format. Use: YYYY-MM-DD HH:MM")
+            return
+
+        meet_ts = int(local_dt.timestamp())
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+
+        if meet_ts <= now_ts:
+            await ctx.send("That meet time is in the past. Use a future date/time.")
+            return
+
+        post_content = self.build_meet_message(theme=theme, host=host, timestamp=meet_ts)
+
+        try:
+            sent = await channel.send(post_content, allowed_mentions=discord.AllowedMentions(
+                roles=True, users=True
+            ))
+        except discord.Forbidden:
+            await ctx.send("I do not have permission to send messages in the meet channel.")
+            return
+
+        meet = ScheduledMeet(
+            theme=theme,
+            host_id=host.id,
+            timestamp=meet_ts,
+            posted_channel_id=channel.id,
+        )
+
+        self.meet_tasks.append(asyncio.create_task(self.send_one_hour_reminder(meet)))
+        self.meet_tasks.append(asyncio.create_task(self.send_fifteen_min_reminder(meet)))
+
+        await ctx.send(
+            f"Official meet posted in {channel.mention} for <t:{meet_ts}:F>."
+        )
+
+    def build_meet_message(self, theme: str, host: discord.Member, timestamp: int) -> str:
+        playstation_ping = f"<@&{PLAYSTATION_ROLE_ID}>"
+        carmeet_ping = f"<@&{CARMEET_ROLE_ID}>"
+
+        return (
+            f"{playstation_ping} {carmeet_ping}\n\n"
+            f"🏁 **DIFF Official Meet**\n\n"
+            f"Date: <t:{timestamp}:F>\n"
+            f"Begins: <t:{timestamp}:R>\n"
+            f"Host: {host.mention}\n"
+            f"Theme: {theme}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"**Entry Info**\n\n"
+            f"Send your vehicle photos to the host before joining, unless told otherwise.\n\n"
+            f"All vehicles must match the meet theme and follow the standards listed in #meet-info and #rules.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"**Meet Notes**\n\n"
+            f"• Follow all host instructions at all times\n"
+            f"• Use #chat for meet communication and updates\n"
+            f"• Bring clean, realistic, theme-fitting vehicles only\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"**Style Direction**\n\n"
+            f"Choose vehicles that match tonight’s theme and represent DIFF properly."
+        )
+
+    async def send_one_hour_reminder(self, meet: ScheduledMeet) -> None:
+        try:
+            seconds_until = meet.timestamp - int(datetime.now(timezone.utc).timestamp()) - 3600
+            if seconds_until > 0:
+                await asyncio.sleep(seconds_until)
+
+            channel = self.bot.get_channel(meet.posted_channel_id)
+            if isinstance(channel, discord.TextChannel):
+                await channel.send(
+                    "⏳ **DIFF Meet Reminder**\n\n"
+                    "This meet begins in:\n"
+                    f"<t:{meet.timestamp}:R>\n\n"
+                    "Be ready with your build and check in with the host."
+                )
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            print(f"[DIFF Official Meet] 1-hour reminder error: {exc}")
+
+    async def send_fifteen_min_reminder(self, meet: ScheduledMeet) -> None:
+        try:
+            seconds_until = meet.timestamp - int(datetime.now(timezone.utc).timestamp()) - 900
+            if seconds_until > 0:
+                await asyncio.sleep(seconds_until)
+
+            channel = self.bot.get_channel(meet.posted_channel_id)
+            if isinstance(channel, discord.TextChannel):
+                await channel.send(
+                    "🚨 **DIFF Meet Starting Soon**\n\n"
+                    f"⏳ <t:{meet.timestamp}:R>\n\n"
+                    "Make sure you're ready to join and have your cars prepared."
+                )
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            print(f"[DIFF Official Meet] 15-minute reminder error: {exc}")
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(DiffOfficialMeetAddon(bot))

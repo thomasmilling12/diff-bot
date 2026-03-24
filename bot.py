@@ -150,6 +150,8 @@ LEADER_PROMOTION_REPUTATION = 65
 MEET_ATTENDER_ROLE_ID = 850392317751066705
 MEET_ATTENDANCE_REP = 2
 ROLL_CALL_CHANNEL_ID = 1047338695352664165
+_OFFICIAL_MEET_CHANNEL_ID = 1485870611069796374
+_OFFICIAL_MEET_TZ = "America/New_York"
 SUPPORT_CHANNEL_ID = 1156363575150002226
 ACTIVITY_MEETS_FILE = os.path.join(DATA_FOLDER, "diff_activity_meets.json")
 DIFF_PANEL_CHANNEL_ID = 1103086800458760262
@@ -6893,6 +6895,7 @@ class _RollCallDB:
 
 
 _rc_db = _RollCallDB()
+_official_meet_tasks: list[asyncio.Task] = []
 
 
 def _rc_is_admin(member) -> bool:
@@ -7199,6 +7202,110 @@ async def _cmd_rollleaderboard(ctx: commands.Context):
         lines.append(f"{prefix} <@{row['user_id']}> — Attended: **{row['attended_count']}** | Yes RSVP: **{row['yes_count']}** | No-Shows: **{row['no_show_count']}**")
     embed.description = "\n".join(lines)
     await ctx.send(embed=embed)
+
+
+# =========================
+# OFFICIAL MEET ANNOUNCEMENT
+# =========================
+
+def _om_build_message(theme: str, host: discord.Member, timestamp: int) -> str:
+    ps_ping = f"<@&{PS5_ROLE_ID}>"
+    cm_ping = f"<@&{NOTIFY_ROLE_ID}>"
+    return (
+        f"{ps_ping} {cm_ping}\n\n"
+        f"🏁 **DIFF Official Meet**\n\n"
+        f"Date: <t:{timestamp}:F>\n"
+        f"Begins: <t:{timestamp}:R>\n"
+        f"Host: {host.mention}\n"
+        f"Theme: {theme}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"**Entry Info**\n\n"
+        f"Send your vehicle photos to the host before joining, unless told otherwise.\n\n"
+        f"All vehicles must match the meet theme and follow the standards listed in #meet-info and #rules.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"**Meet Notes**\n\n"
+        f"• Follow all host instructions at all times\n"
+        f"• Use #chat for meet communication and updates\n"
+        f"• Bring clean, realistic, theme-fitting vehicles only\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"**Style Direction**\n\n"
+        f"Choose vehicles that match tonight's theme and represent DIFF properly."
+    )
+
+
+async def _om_one_hour_reminder(channel_id: int, timestamp: int) -> None:
+    try:
+        delay = timestamp - int(datetime.now(timezone.utc).timestamp()) - 3600
+        if delay > 0:
+            await asyncio.sleep(delay)
+        channel = bot.get_channel(channel_id)
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(
+                "⏳ **DIFF Meet Reminder**\n\n"
+                "This meet begins in:\n"
+                f"<t:{timestamp}:R>\n\n"
+                "Be ready with your build and check in with the host."
+            )
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        print(f"[OfficialMeet] 1-hour reminder error: {e}")
+
+
+async def _om_fifteen_min_reminder(channel_id: int, timestamp: int) -> None:
+    try:
+        delay = timestamp - int(datetime.now(timezone.utc).timestamp()) - 900
+        if delay > 0:
+            await asyncio.sleep(delay)
+        channel = bot.get_channel(channel_id)
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(
+                "🚨 **DIFF Meet Starting Soon**\n\n"
+                f"⏳ <t:{timestamp}:R>\n\n"
+                "Make sure you're ready to join and have your cars prepared."
+            )
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        print(f"[OfficialMeet] 15-min reminder error: {e}")
+
+
+@bot.command(name="officialmeet")
+async def _cmd_officialmeet(ctx: commands.Context, theme: str, date: str, time_str: str, host: discord.Member):
+    if not ctx.author.guild_permissions.manage_guild and not any(
+        r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", [])
+    ):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    channel = bot.get_channel(_OFFICIAL_MEET_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        await ctx.send("Meet announcement channel not found.", delete_after=10)
+        return
+    try:
+        local_dt = datetime.strptime(f"{date} {time_str}", "%Y-%m-%d %H:%M").replace(
+            tzinfo=ZoneInfo(_OFFICIAL_MEET_TZ)
+        )
+    except ValueError:
+        await ctx.send("Invalid date/time. Use: `!officialmeet \"Theme\" YYYY-MM-DD HH:MM @Host`", delete_after=15)
+        return
+    meet_ts = int(local_dt.timestamp())
+    if meet_ts <= int(datetime.now(timezone.utc).timestamp()):
+        await ctx.send("That meet time is already in the past.", delete_after=10)
+        return
+    try:
+        await channel.send(
+            _om_build_message(theme=theme, host=host, timestamp=meet_ts),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+        )
+    except discord.Forbidden:
+        await ctx.send("Missing permissions to post in the meet channel.", delete_after=10)
+        return
+    _official_meet_tasks.append(asyncio.create_task(_om_one_hour_reminder(channel.id, meet_ts)))
+    _official_meet_tasks.append(asyncio.create_task(_om_fifteen_min_reminder(channel.id, meet_ts)))
+    await ctx.send(f"Official meet posted in {channel.mention} for <t:{meet_ts}:F>.", delete_after=15)
 
 
 # =========================
