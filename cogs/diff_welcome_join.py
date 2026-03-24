@@ -1,53 +1,280 @@
 from __future__ import annotations
 
-import discord
-from discord.ext import commands
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
-# =========================================================
-# CONFIG
-# =========================================================
-GUILD_ID = 850386896509337710
+import discord
+from discord.ext import commands, tasks
 
-WELCOME_INFO_CHANNEL_ID = 1047161846257438743
-VERIFY_CHANNEL_ID = 1277084633858576406
+GUILD_ID               = 850386896509337710
 WELCOME_POST_CHANNEL_ID = 1486006000808103986
-UNVERIFIED_ROLE_ID = 1486011550916411512
+RULES_CHANNEL_ID       = 1047161846257438743
+JOIN_MEETS_HUB_CHANNEL_ID = 1277084633858576406
+VERIFICATION_LOG_CHANNEL_ID = 1485265848099799163
+VERIFIED_ROLE_ID       = 1141424243616256032
+UNVERIFIED_ROLE_ID     = 1486011550916411512
 
-SERVER_NAME = "Different Meets"
+REMINDER_AFTER_HOURS        = 2
+REMINDER_CHECK_EVERY_MINUTES = 10
+SEND_VERIFIED_DM            = True
+
 EMBLEM_FILE_PATH = Path("diff_welcome_emblem.png")
+FOOTER_TEXT      = "DIFF • Complete the steps to unlock the meet area"
+DB_FILE          = "diff_data/diff_checkin.sqlite3"
 
 
-# =========================================================
-# VIEW
-# =========================================================
-class WelcomeLinksView(discord.ui.View):
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def fmt_ts(dt: datetime) -> str:
+    return f"<t:{int(dt.timestamp())}:F>"
+
+
+def weekly_color() -> discord.Color:
+    palette = {
+        0: discord.Color.from_rgb(88, 101, 242),
+        1: discord.Color.from_rgb(235, 69, 90),
+        2: discord.Color.from_rgb(46, 204, 113),
+        3: discord.Color.from_rgb(241, 196, 15),
+        4: discord.Color.from_rgb(155, 89, 182),
+        5: discord.Color.from_rgb(26, 188, 156),
+        6: discord.Color.from_rgb(230, 126, 34),
+    }
+    return palette.get(datetime.now().weekday(), discord.Color.blurple())
+
+
+@dataclass
+class ProgressState:
+    has_verified_role: bool
+    posted_in_join_hub: bool
+    cleared_to_enter: bool
+
+    @property
+    def complete_count(self) -> int:
+        return sum([self.has_verified_role, self.posted_in_join_hub, self.cleared_to_enter])
+
+    def progress_bar(self) -> str:
+        done = "█" * self.complete_count
+        left = "░" * (3 - self.complete_count)
+        return f"{done}{left}  ({self.complete_count}/3)"
+
+
+class CheckInDB:
+    def __init__(self, path: str):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(path)
+        self.conn.row_factory = sqlite3.Row
+        self._setup()
+
+    def _setup(self) -> None:
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS member_checkin (
+                user_id INTEGER PRIMARY KEY,
+                joined_at TEXT,
+                posted_in_join_hub INTEGER DEFAULT 0,
+                posted_in_join_hub_at TEXT,
+                verified_at TEXT,
+                reminder_sent INTEGER DEFAULT 0,
+                reminder_sent_at TEXT
+            )
+        """)
+        self.conn.commit()
+
+    def upsert_join(self, user_id: int) -> None:
+        self.conn.execute("""
+            INSERT INTO member_checkin (user_id, joined_at, posted_in_join_hub, reminder_sent)
+            VALUES (?, ?, 0, 0)
+            ON CONFLICT(user_id) DO UPDATE SET
+                joined_at=excluded.joined_at,
+                posted_in_join_hub=0,
+                posted_in_join_hub_at=NULL,
+                verified_at=NULL,
+                reminder_sent=0,
+                reminder_sent_at=NULL
+        """, (user_id, utcnow().isoformat()))
+        self.conn.commit()
+
+    def mark_join_hub_post(self, user_id: int) -> None:
+        self.conn.execute("""
+            INSERT INTO member_checkin (user_id, joined_at, posted_in_join_hub, posted_in_join_hub_at)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                posted_in_join_hub=1,
+                posted_in_join_hub_at=excluded.posted_in_join_hub_at
+        """, (user_id, utcnow().isoformat(), utcnow().isoformat()))
+        self.conn.commit()
+
+    def mark_verified(self, user_id: int) -> None:
+        self.conn.execute("""
+            INSERT INTO member_checkin (user_id, joined_at, verified_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET verified_at=excluded.verified_at
+        """, (user_id, utcnow().isoformat(), utcnow().isoformat()))
+        self.conn.commit()
+
+    def clear_verified(self, user_id: int) -> None:
+        self.conn.execute("UPDATE member_checkin SET verified_at=NULL WHERE user_id=?", (user_id,))
+        self.conn.commit()
+
+    def mark_reminder_sent(self, user_id: int) -> None:
+        self.conn.execute(
+            "UPDATE member_checkin SET reminder_sent=1, reminder_sent_at=? WHERE user_id=?",
+            (utcnow().isoformat(), user_id),
+        )
+        self.conn.commit()
+
+    def get_row(self, user_id: int):
+        return self.conn.execute(
+            "SELECT * FROM member_checkin WHERE user_id=?", (user_id,)
+        ).fetchone()
+
+    def reminder_candidates(self):
+        threshold = (utcnow() - timedelta(hours=REMINDER_AFTER_HOURS)).isoformat()
+        return self.conn.execute("""
+            SELECT * FROM member_checkin
+            WHERE reminder_sent=0 AND verified_at IS NULL
+              AND joined_at IS NOT NULL AND joined_at <= ?
+        """, (threshold,)).fetchall()
+
+
+class CheckInView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(
-            discord.ui.Button(
-                label="Open Welcome Channel",
-                style=discord.ButtonStyle.link,
-                url=f"https://discord.com/channels/{GUILD_ID}/{WELCOME_INFO_CHANNEL_ID}",
-                emoji="📘",
+        self.add_item(discord.ui.Button(
+            label="Go to #rules",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{GUILD_ID}/{RULES_CHANNEL_ID}",
+            emoji="📘",
+        ))
+        self.add_item(discord.ui.Button(
+            label="Go to #joinmeets",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{GUILD_ID}/{JOIN_MEETS_HUB_CHANNEL_ID}",
+            emoji="🏁",
+        ))
+
+    @discord.ui.button(
+        label="Check My Progress",
+        style=discord.ButtonStyle.secondary,
+        emoji="📊",
+        custom_id="diff_checkin_progress_button",
+        row=1,
+    )
+    async def check_progress(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "This button only works inside the server.", ephemeral=True
             )
-        )
-        self.add_item(
-            discord.ui.Button(
-                label="Verify Account",
-                style=discord.ButtonStyle.link,
-                url=f"https://discord.com/channels/{GUILD_ID}/{VERIFY_CHANNEL_ID}",
-                emoji="✅",
-            )
-        )
+            return
+        cog: DiffWelcomeJoinSystem = interaction.client.cogs.get("DiffWelcomeJoinSystem")
+        if cog is None:
+            await interaction.response.send_message("System temporarily unavailable.", ephemeral=True)
+            return
+        state = cog.get_progress_state(interaction.user)
+        embed = cog.build_progress_embed(interaction.user, state)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# =========================================================
-# COG
-# =========================================================
 class DiffWelcomeJoinSystem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.db = CheckInDB(DB_FILE)
+        self.reminder_loop.start()
+
+    async def cog_load(self) -> None:
+        self.bot.add_view(CheckInView())
+
+    def cog_unload(self) -> None:
+        self.reminder_loop.cancel()
+
+    def verified_role(self, guild: discord.Guild) -> Optional[discord.Role]:
+        return guild.get_role(VERIFIED_ROLE_ID)
+
+    def unverified_role(self, guild: discord.Guild) -> Optional[discord.Role]:
+        return guild.get_role(UNVERIFIED_ROLE_ID)
+
+    def get_progress_state(self, member: discord.Member) -> ProgressState:
+        row = self.db.get_row(member.id)
+        posted = bool(row["posted_in_join_hub"]) if row else False
+        has_verified = any(r.id == VERIFIED_ROLE_ID for r in member.roles)
+        return ProgressState(has_verified, posted, has_verified)
+
+    def build_progress_embed(self, member: discord.Member, state: ProgressState) -> discord.Embed:
+        embed = discord.Embed(
+            title="📊 Your DIFF Check-In Progress",
+            description=f"**Progress:** `{state.progress_bar()}`",
+            color=weekly_color(),
+            timestamp=utcnow(),
+        )
+        embed.add_field(
+            name="Step 1 — Read Rules",
+            value="✅ Complete" if state.has_verified_role else "⏳ Pending",
+            inline=False,
+        )
+        embed.add_field(
+            name="Step 2 — Posted in Join Meets Hub",
+            value="✅ Complete" if state.posted_in_join_hub else "⏳ Pending",
+            inline=False,
+        )
+        embed.add_field(
+            name="Step 3 — Cleared to Enter",
+            value="✅ Complete" if state.cleared_to_enter else "⏳ Pending — awaiting staff verification",
+            inline=False,
+        )
+        embed.set_footer(text=f"Member: {member}")
+        return embed
+
+    async def _send_checkin_panel(self, channel: discord.TextChannel, member: discord.Member):
+        embed = discord.Embed(
+            title="🏁 DIFF CHECK-IN REQUIRED",
+            description=(
+                f"Welcome to **Different Meets**, {member.mention}!\n\n"
+                "Before entering the meet area, complete the steps below:\n\n"
+                f"🔴 **Step 1 — Read** <#{RULES_CHANNEL_ID}> to get the Verified role\n"
+                f"🔵 **Step 2 — Verify identity** in <#{JOIN_MEETS_HUB_CHANNEL_ID}>\n"
+                "🟢 **Step 3 — Get cleared to enter** for full access\n\n"
+                "🔒 **Access is locked until verification is complete.**\n"
+                "*No verification = No access to meet area, chats, or events*"
+            ),
+            color=weekly_color(),
+            timestamp=utcnow(),
+        )
+        embed.set_footer(text=FOOTER_TEXT)
+
+        file = None
+        if EMBLEM_FILE_PATH.exists():
+            file = discord.File(EMBLEM_FILE_PATH, filename="diff_welcome_emblem.png")
+            embed.set_image(url="attachment://diff_welcome_emblem.png")
+
+        view = CheckInView()
+        try:
+            if file:
+                await channel.send(content=member.mention, embed=embed, file=file, view=view,
+                                   allowed_mentions=discord.AllowedMentions(users=True))
+            else:
+                await channel.send(content=member.mention, embed=embed, view=view,
+                                   allowed_mentions=discord.AllowedMentions(users=True))
+        except Exception as e:
+            print(f"[DiffWelcomeJoinSystem] Failed to send check-in panel: {e}")
+
+    async def _log(self, guild: discord.Guild, text: str, color: Optional[discord.Color] = None):
+        ch = guild.get_channel(VERIFICATION_LOG_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            return
+        embed = discord.Embed(
+            title="📊 DIFF Verification Tracker",
+            description=text,
+            color=color or weekly_color(),
+            timestamp=utcnow(),
+        )
+        try:
+            await ch.send(embed=embed)
+        except Exception:
+            pass
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -57,78 +284,150 @@ class DiffWelcomeJoinSystem(commands.Cog):
             flag.unlink()
             guild = self.bot.get_guild(GUILD_ID)
             if guild and guild.me:
-                await self._send_welcome(guild.me)
-                print("[DiffWelcomeJoinSystem] Preview sent.")
+                ch = guild.get_channel(WELCOME_POST_CHANNEL_ID)
+                if isinstance(ch, discord.TextChannel):
+                    await self._send_checkin_panel(ch, guild.me)
+                    print("[DiffWelcomeJoinSystem] Preview sent.")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         if member.guild.id != GUILD_ID:
             return
 
-        unverified_role = member.guild.get_role(UNVERIFIED_ROLE_ID)
-        if unverified_role:
+        self.db.upsert_join(member.id)
+
+        unverified = self.unverified_role(member.guild)
+        verified = self.verified_role(member.guild)
+        if unverified and (not verified or verified not in member.roles):
+            if unverified not in member.roles:
+                try:
+                    await member.add_roles(unverified, reason="DIFF auto check-in — pending verification")
+                except discord.Forbidden:
+                    pass
+
+        ch = self.bot.get_channel(WELCOME_POST_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
+            await self._send_checkin_panel(ch, member)
+
+        await self._log(
+            member.guild,
+            f"**{member}** joined and entered the DIFF check-in flow.\nJoined: {fmt_ts(utcnow())}",
+            discord.Color.orange(),
+        )
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        if after.guild.id != GUILD_ID:
+            return
+
+        before_verified = any(r.id == VERIFIED_ROLE_ID for r in before.roles)
+        after_verified  = any(r.id == VERIFIED_ROLE_ID for r in after.roles)
+
+        if not before_verified and after_verified:
+            self.db.mark_verified(after.id)
+            unverified = self.unverified_role(after.guild)
+            if unverified and unverified in after.roles:
+                try:
+                    await after.remove_roles(unverified, reason="DIFF verified — access unlocked")
+                except discord.Forbidden:
+                    pass
+
+            await self._log(
+                after.guild,
+                f"✅ **{after}** has been verified and cleared to enter.",
+                discord.Color.green(),
+            )
+
+            if SEND_VERIFIED_DM:
+                try:
+                    embed = discord.Embed(
+                        title="✅ You're Cleared to Enter",
+                        description=(
+                            "You have been verified in **Different Meets** and now have full access to the community.\n\n"
+                            "Welcome to the meet — see you on the track! 🚗"
+                        ),
+                        color=discord.Color.green(),
+                        timestamp=utcnow(),
+                    )
+                    await after.send(embed=embed)
+                except discord.Forbidden:
+                    pass
+
+        elif before_verified and not after_verified:
+            self.db.clear_verified(after.id)
+            await self._log(
+                after.guild,
+                f"⚠️ **{after}** lost the Verified role.",
+                discord.Color.red(),
+            )
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.guild:
+            return
+        if message.guild.id != GUILD_ID:
+            return
+        if message.channel.id == JOIN_MEETS_HUB_CHANNEL_ID:
+            self.db.mark_join_hub_post(message.author.id)
+            await self._log(
+                message.guild,
+                f"📝 **{message.author}** posted in <#{JOIN_MEETS_HUB_CHANNEL_ID}>.",
+                discord.Color.blue(),
+            )
+
+    @tasks.loop(minutes=REMINDER_CHECK_EVERY_MINUTES)
+    async def reminder_loop(self):
+        await self.bot.wait_until_ready()
+        guild = self.bot.get_guild(GUILD_ID)
+        if guild is None:
+            return
+        verified_role = self.verified_role(guild)
+        for row in self.db.reminder_candidates():
+            member = guild.get_member(int(row["user_id"]))
+            if member is None:
+                continue
+            if verified_role and verified_role in member.roles:
+                self.db.mark_verified(member.id)
+                continue
             try:
-                await member.add_roles(unverified_role, reason="Auto-assigned Unverified role on join")
-            except Exception as e:
-                print(f"[DiffWelcomeJoinSystem] Could not assign Unverified role: {e}")
-
-        await self._send_welcome(member)
-
+                embed = discord.Embed(
+                    title="🔔 DIFF Check-In Reminder",
+                    description=(
+                        "You still need to finish your DIFF check-in.\n\n"
+                        f"🔴 Read <#{RULES_CHANNEL_ID}> to get the <@&{VERIFIED_ROLE_ID}> role\n"
+                        f"🔵 Verify in <#{JOIN_MEETS_HUB_CHANNEL_ID}>\n"
+                        "🟢 Once verified you will be cleared to enter\n\n"
+                        "Use the **Check My Progress** button in the welcome channel to see your status."
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=utcnow(),
+                )
+                await member.send(embed=embed)
+                self.db.mark_reminder_sent(member.id)
+                await self._log(guild, f"📨 Reminder DM sent to **{member}**.", discord.Color.gold())
+            except discord.Forbidden:
+                self.db.mark_reminder_sent(member.id)
 
     @commands.command(name="previewwelcome")
     @commands.has_permissions(manage_guild=True)
     async def previewwelcome(self, ctx: commands.Context):
-        """Send a preview of the welcome message to the welcome channel."""
-        await self._send_welcome(ctx.author)
+        ch = ctx.guild.get_channel(WELCOME_POST_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            await ctx.send("Welcome post channel not found.", ephemeral=True)
+            return
+        await self._send_checkin_panel(ch, ctx.author)
         try:
             await ctx.message.delete()
         except Exception:
             pass
 
-    async def _send_welcome(self, member: discord.Member):
-        channel = member.guild.get_channel(WELCOME_POST_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
-            return
-
-        welcome_channel = member.guild.get_channel(WELCOME_INFO_CHANNEL_ID)
-        verify_channel = member.guild.get_channel(VERIFY_CHANNEL_ID)
-
-        welcome_ref = welcome_channel.mention if welcome_channel else f"<#{WELCOME_INFO_CHANNEL_ID}>"
-        verify_ref = verify_channel.mention if verify_channel else f"<#{VERIFY_CHANNEL_ID}>"
-
-        description = (
-            f"Welcome to **{SERVER_NAME}**, {member.mention} 👋\n\n"
-            f"Before you can take part in the community, please complete the steps below:\n\n"
-            f"**1.** Visit {welcome_ref} to read the main community information.\n"
-            f"**2.** Head to {verify_ref} and verify your account.\n"
-            f"**3.** After verification, you can access the rest of the server and community channels.\n\n"
-            f"⚠️ **Verification is required before participating in the community.**"
-        )
-
-        embed = discord.Embed(
-            title="Welcome to Different Meets",
-            description=description,
-            color=discord.Color.blurple(),
-        )
-        embed.set_footer(text="Different Meets • Verify first, then enjoy the community")
-
-        file = None
-        if EMBLEM_FILE_PATH.exists():
-            file = discord.File(EMBLEM_FILE_PATH, filename="diff_welcome_emblem.png")
-            embed.set_image(url="attachment://diff_welcome_emblem.png")
-
-        view = WelcomeLinksView()
-        try:
-            if file:
-                await channel.send(content=member.mention, embed=embed, file=file, view=view)
-            else:
-                await channel.send(content=member.mention, embed=embed, view=view)
-        except Exception as e:
-            print(f"[DiffWelcomeJoinSystem] Failed to send welcome message: {e}")
+    @commands.command(name="checkinprogress")
+    @commands.has_permissions(manage_guild=True)
+    async def checkinprogress(self, ctx: commands.Context, member: discord.Member):
+        state = self.get_progress_state(member)
+        embed = self.build_progress_embed(member, state)
+        await ctx.send(embed=embed)
 
 
-# =========================================================
-# SETUP
-# =========================================================
 async def setup(bot: commands.Bot):
     await bot.add_cog(DiffWelcomeJoinSystem(bot))
