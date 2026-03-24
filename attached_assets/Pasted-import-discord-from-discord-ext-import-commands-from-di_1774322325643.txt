@@ -1,0 +1,126 @@
+import discord
+from discord.ext import commands
+from discord.ui import View, Button, Modal, TextInput
+import datetime
+
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# CHANNEL IDS
+HUB_CHANNEL_ID = 1134690348220825730
+BLACKLIST_CHANNEL_ID = 1057016810261712938
+STAFF_LOG_CHANNEL_ID = 1156363575150002226  # change if needed
+
+# ------------------------
+# BLACKLIST MODAL
+# ------------------------
+class BlacklistModal(Modal, title="🚫 Host Blacklist Submission"):
+
+    user = TextInput(label="User (Discord @ or PSN)", required=True)
+    reason = TextInput(label="Reason for Blacklisting", style=discord.TextStyle.paragraph)
+    evidence = TextInput(label="Evidence (links/screenshots)", required=False)
+    severity = TextInput(label="Severity (Warning / Serious / Permanent)", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🚫 DIFF Host Blacklist Entry",
+            color=discord.Color.red(),
+            timestamp=datetime.datetime.now()
+        )
+
+        embed.add_field(name="👤 User", value=self.user.value, inline=False)
+        embed.add_field(name="📝 Reason", value=self.reason.value, inline=False)
+        embed.add_field(name="📸 Evidence", value=self.evidence.value or "None", inline=False)
+        embed.add_field(name="📊 Severity", value=self.severity.value, inline=False)
+        embed.add_field(name="👮 Submitted By", value=interaction.user.mention, inline=False)
+
+        # SEND TO BLACKLIST CHANNEL
+        channel = bot.get_channel(BLACKLIST_CHANNEL_ID)
+        await channel.send(embed=embed)
+
+        # SEND TO STAFF LOGS
+        log_channel = bot.get_channel(STAFF_LOG_CHANNEL_ID)
+        await log_channel.send(f"📌 New blacklist submitted by {interaction.user.mention}", embed=embed)
+
+        await interaction.response.send_message("✅ Blacklist submitted successfully.", ephemeral=True)
+
+# ------------------------
+# APPEAL MODAL
+# ------------------------
+class AppealModal(Modal, title="📩 Blacklist Appeal"):
+
+    username = TextInput(label="Your Username", required=True)
+    reason = TextInput(label="Why should this be reviewed?", style=discord.TextStyle.paragraph)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "📩 Your appeal has been submitted. Staff will review it.",
+            ephemeral=True
+        )
+
+        log_channel = bot.get_channel(STAFF_LOG_CHANNEL_ID)
+        await log_channel.send(
+            f"📩 **Blacklist Appeal**\nUser: {interaction.user.mention}\nReason:\n{self.reason.value}"
+        )
+
+# ------------------------
+# BUTTON VIEW
+# ------------------------
+class HostHubView(View):
+
+    @discord.ui.button(label="🚫 Submit Blacklist", style=discord.ButtonStyle.danger)
+    async def blacklist(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(BlacklistModal())
+
+    @discord.ui.button(label="📊 View Blacklist", style=discord.ButtonStyle.secondary)
+    async def view_blacklist(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_message(
+            f"🔗 View blacklist here:\nhttps://discord.com/channels/850386896509337710/1057016810261712938",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="📩 Appeal Blacklist", style=discord.ButtonStyle.primary)
+    async def appeal(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(AppealModal())
+
+    @discord.ui.button(label="📋 Host Guidelines", style=discord.ButtonStyle.success)
+    async def guidelines(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_message(
+            "**DIFF Host Guidelines**\n\n"
+            "• Maintain clean meets\n"
+            "• No crashing / griefing\n"
+            "• Control the lobby\n"
+            "• Respect all members\n"
+            "• Follow DIFF standards",
+            ephemeral=True
+        )
+
+# ------------------------
+# COMMAND TO POST PANEL
+# ------------------------
+@bot.command()
+async def hosthub(ctx):
+    if ctx.channel.id != HUB_CHANNEL_ID:
+        return
+
+    embed = discord.Embed(
+        title="📌 DIFF Host Control Hub",
+        description=(
+            "*All-in-one control system for DIFF Hosts.*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🚫 Submit blacklist reports\n"
+            "📊 View blacklist records\n"
+            "📩 Appeal blacklist decisions\n"
+            "📋 Review hosting guidelines\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Stay professional. Stay consistent. Represent DIFF."
+        ),
+        color=discord.Color.blue()
+    )
+
+    await ctx.send(embed=embed, view=HostHubView())
+
+# ------------------------
+# RUN BOT
+# ------------------------
+bot.run("YOUR_BOT_TOKEN")
