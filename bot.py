@@ -6112,7 +6112,6 @@ class HostPerformanceHubView(discord.ui.View):
 
 
 async def _hp_post_or_refresh() -> None:
-    await bot.wait_until_ready()
     channel = bot.get_channel(HOST_HUB_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         try:
@@ -6243,7 +6242,7 @@ async def on_ready():
     bot.add_view(_MobileRefreshView())
     bot.add_view(HostPerformanceHubView())
     bot.add_view(HostSessionView())
-    bot.loop.create_task(_hp_post_or_refresh())
+    await _hp_post_or_refresh()
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
