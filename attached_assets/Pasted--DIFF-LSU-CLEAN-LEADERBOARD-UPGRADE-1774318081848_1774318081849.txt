@@ -1,0 +1,400 @@
+# ============================================================
+# DIFF LSU CLEAN LEADERBOARD UPGRADE (PYTHON VERSION)
+# Adds:
+# - auto edit panel instead of reposting
+# - Top 3 highlight (🥇🥈🥉)
+# - Most Improved Member system
+# - weekly leaderboard refresh
+# - crew hub stats panel
+#
+# REQUIRES:
+# - discord.py 2.x
+# - your bot must already be running with message_content intent if needed elsewhere
+#
+# REPLACE THESE:
+# - PUT_LEADERBOARD_CHANNEL_ID_HERE
+# - PUT_CREW_HUB_CHANNEL_ID_HERE
+# - PUT_NOTIFY_ROLE_ID_HERE
+#
+# DATA FILE USED:
+# ./data/diff_data.json
+#
+# EXPECTED DATA FORMAT:
+# {
+#   "users": {
+#     "123456789": {
+#       "attendance": 4,
+#       "lastAttendance": 2,
+#       "photos": 10
+#     }
+#   }
+# }
+# ============================================================
+
+import os
+import json
+import asyncio
+from datetime import datetime, timedelta, timezone
+
+import discord
+from discord.ext import commands, tasks
+
+# ===============================
+# CONFIG
+# ===============================
+
+LEADERBOARD_CHANNEL_ID = PUT_LEADERBOARD_CHANNEL_ID_HERE
+CREW_HUB_CHANNEL_ID = PUT_CREW_HUB_CHANNEL_ID_HERE
+NOTIFY_ROLE_ID = PUT_NOTIFY_ROLE_ID_HERE
+
+DATA_DIR = "./data"
+DATA_FILE = os.path.join(DATA_DIR, "diff_data.json")
+
+LEADERBOARD_VIEW_NAME = "diff_lsu_refresh_lb"
+HUB_VIEW_NAME = "diff_lsu_refresh_hub"
+
+# Sunday at 8:00 PM Eastern-ish
+# This uses server runtime local time/UTC handling in a simple way.
+WEEKLY_POST_WEEKDAY = 6  # Monday=0 ... Sunday=6
+WEEKLY_POST_HOUR = 20
+WEEKLY_POST_MINUTE = 0
+
+
+# ===============================
+# DATA HELPERS
+# ===============================
+
+def ensure_data_file():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if not os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"users": {}}, f, indent=2)
+
+
+def load_data():
+    ensure_data_file()
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"users": {}}
+
+
+def save_data(data):
+    ensure_data_file()
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def get_sorted_users():
+    data = load_data()
+    users = []
+
+    for user_id, stats in data.get("users", {}).items():
+        attendance = int(stats.get("attendance", 0) or 0)
+        last_attendance = int(stats.get("lastAttendance", 0) or 0)
+        photos = int(stats.get("photos", 0) or 0)
+        improvement = attendance - last_attendance
+
+        users.append({
+            "user_id": int(user_id),
+            "attendance": attendance,
+            "last_attendance": last_attendance,
+            "photos": photos,
+            "improvement": improvement,
+        })
+
+    users.sort(key=lambda x: x["attendance"], reverse=True)
+    return users
+
+
+def get_top_users(limit=10):
+    return get_sorted_users()[:limit]
+
+
+def get_most_improved():
+    improved = [u for u in get_sorted_users() if u["improvement"] > 0]
+    improved.sort(key=lambda x: x["improvement"], reverse=True)
+    return improved[0] if improved else None
+
+
+def get_overview():
+    users = get_sorted_users()
+    return {
+        "tracked": len(users),
+        "active": len([u for u in users if u["attendance"] > 0]),
+        "total_attendance": sum(u["attendance"] for u in users),
+        "completed_apps": len([u for u in users if u["photos"] >= 10]),
+    }
+
+
+def finalize_weekly_snapshot():
+    data = load_data()
+    for user_id, stats in data.get("users", {}).items():
+        stats["lastAttendance"] = int(stats.get("attendance", 0) or 0)
+    save_data(data)
+
+
+# ===============================
+# EMBED BUILDERS
+# ===============================
+
+def build_leaderboard_embed():
+    top = get_top_users(10)
+    top3 = top[:3]
+    rest = top[3:]
+
+    top_lines = []
+    if len(top3) > 0:
+        top_lines.append(f"🥇 **#1** <@{top3[0]['user_id']}> — **{top3[0]['attendance']}** meet(s)")
+    if len(top3) > 1:
+        top_lines.append(f"🥈 **#2** <@{top3[1]['user_id']}> — **{top3[1]['attendance']}** meet(s)")
+    if len(top3) > 2:
+        top_lines.append(f"🥉 **#3** <@{top3[2]['user_id']}> — **{top3[2]['attendance']}** meet(s)")
+
+    rest_lines = []
+    for idx, user in enumerate(rest, start=4):
+        rest_lines.append(f"📌 **#{idx}** <@{user['user_id']}> — **{user['attendance']}** meet(s)")
+
+    if not rest_lines:
+        rest_lines = ["No additional members ranked yet."]
+
+    improved = get_most_improved()
+    if improved:
+        improved_line = f"📈 **Most Improved Member:** <@{improved['user_id']}> (**+{improved['improvement']}**)"
+    else:
+        improved_line = "📈 **Most Improved Member:** No improvement data yet"
+
+    desc = "\n".join([
+        "📊 **Most active DIFF members**",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        *top_lines,
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        *rest_lines,
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        improved_line,
+        "",
+        "Stay active, stay consistent, and represent DIFF the right way.",
+    ])
+
+    embed = discord.Embed(
+        title="🏆 DIFF Weekly Leaderboard",
+        description=desc,
+        color=discord.Color.from_str("#111111"),
+        timestamp=datetime.now()
+    )
+    embed.set_footer(text="Different Meets • LSU Clean Activity Panel")
+    return embed
+
+
+def build_hub_embed():
+    stats = get_overview()
+    improved = get_most_improved()
+    top = get_top_users(3)
+
+    top_lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for i, user in enumerate(top):
+        top_lines.append(f"{medals[i]} <@{user['user_id']}> — {user['attendance']} meet(s)")
+
+    if not top_lines:
+        top_lines = ["No top members yet."]
+
+    improved_text = (
+        f"<@{improved['user_id']}> (+{improved['improvement']})"
+        if improved else
+        "No data yet"
+    )
+
+    desc = "\n".join([
+        "📌 **Live DIFF activity snapshot**",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"👥 **Tracked Members:** {stats['tracked']}",
+        f"🔥 **Active Members:** {stats['active']}",
+        f"📈 **Total Attendance Logged:** {stats['total_attendance']}",
+        f"📸 **Completed 10/10 Applications:** {stats['completed_apps']}",
+        f"🚀 **Most Improved:** {improved_text}",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "🏆 **Top 3 Right Now**",
+        *top_lines,
+        "",
+        "Path: **Join → Attend → Get noticed → Crew invite**",
+    ])
+
+    embed = discord.Embed(
+        title="📊 DIFF Crew Hub Stats",
+        description=desc,
+        color=discord.Color.from_str("#111111"),
+        timestamp=datetime.now()
+    )
+    embed.set_footer(text="Different Meets • Crew Hub Stats")
+    return embed
+
+
+# ===============================
+# VIEWS / BUTTONS
+# ===============================
+
+class LeaderboardRefreshView(discord.ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(
+        label="Refresh Leaderboard",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔄",
+        custom_id=LEADERBOARD_VIEW_NAME
+    )
+    async def refresh_leaderboard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_leaderboard_panel(self.bot, with_ping=False)
+        await interaction.response.send_message("Leaderboard panel updated.", ephemeral=True)
+
+
+class HubRefreshView(discord.ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(
+        label="Refresh Stats",
+        style=discord.ButtonStyle.secondary,
+        emoji="📊",
+        custom_id=HUB_VIEW_NAME
+    )
+    async def refresh_hub(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await update_hub_panel(self.bot)
+        await interaction.response.send_message("Crew hub stats updated.", ephemeral=True)
+
+
+# ===============================
+# PANEL UPSERT
+# ===============================
+
+async def find_existing_panel_message(channel: discord.TextChannel, custom_id: str):
+    try:
+        async for message in channel.history(limit=20):
+            if message.author.bot and message.components:
+                for row in message.components:
+                    for component in row.children:
+                        if getattr(component, "custom_id", None) == custom_id:
+                            return message
+    except Exception:
+        return None
+    return None
+
+
+async def upsert_panel(channel_id: int, custom_id: str, embed: discord.Embed, view: discord.ui.View, bot: commands.Bot, content: str | None = None):
+    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return False
+
+    existing = await find_existing_panel_message(channel, custom_id)
+
+    if existing:
+        await existing.edit(content=content, embed=embed, view=view)
+    else:
+        await channel.send(content=content, embed=embed, view=view)
+
+    return True
+
+
+async def update_leaderboard_panel(bot: commands.Bot, with_ping: bool = False):
+    content = None
+    if with_ping and NOTIFY_ROLE_ID:
+        content = f"<@&{NOTIFY_ROLE_ID}>"
+
+    await upsert_panel(
+        LEADERBOARD_CHANNEL_ID,
+        LEADERBOARD_VIEW_NAME,
+        build_leaderboard_embed(),
+        LeaderboardRefreshView(bot),
+        bot,
+        content=content
+    )
+
+
+async def update_hub_panel(bot: commands.Bot):
+    await upsert_panel(
+        CREW_HUB_CHANNEL_ID,
+        HUB_VIEW_NAME,
+        build_hub_embed(),
+        HubRefreshView(bot),
+        bot
+    )
+
+
+# ===============================
+# WEEKLY TIMER
+# ===============================
+
+def seconds_until_next_weekly_run():
+    now = datetime.now()
+    target = now.replace(
+        hour=WEEKLY_POST_HOUR,
+        minute=WEEKLY_POST_MINUTE,
+        second=0,
+        microsecond=0
+    )
+
+    days_ahead = WEEKLY_POST_WEEKDAY - now.weekday()
+    if days_ahead < 0:
+        days_ahead += 7
+
+    if days_ahead == 0 and now >= target:
+        days_ahead = 7
+
+    target = target + timedelta(days=days_ahead)
+    return max((target - now).total_seconds(), 1)
+
+
+async def weekly_panel_loop(bot: commands.Bot):
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        wait_seconds = seconds_until_next_weekly_run()
+        await asyncio.sleep(wait_seconds)
+
+        try:
+            await update_leaderboard_panel(bot, with_ping=True)
+            await update_hub_panel(bot)
+            finalize_weekly_snapshot()
+            print("[DIFF LSU] Weekly panels updated and snapshot saved.")
+        except Exception as e:
+            print(f"[DIFF LSU] Weekly scheduler error: {e}")
+
+
+# ===============================
+# SETUP FUNCTION
+# ===============================
+
+def setup_diff_lsu_clean_leaderboard(bot: commands.Bot):
+    ensure_data_file()
+
+    bot.add_view(LeaderboardRefreshView(bot))
+    bot.add_view(HubRefreshView(bot))
+
+    @bot.event
+    async def on_ready():
+        if getattr(bot, "_diff_lsu_ready_once", False):
+            return
+
+        bot._diff_lsu_ready_once = True
+
+        try:
+          await update_leaderboard_panel(bot, with_ping=False)
+          await update_hub_panel(bot)
+          bot.loop.create_task(weekly_panel_loop(bot))
+          print("[DIFF LSU] Auto-edit leaderboard + crew hub ready.")
+        except Exception as e:
+          print(f"[DIFF LSU] Setup error: {e}")
+
+
+# ============================================================
+# HOW TO ENABLE
+# Put this near the bottom of bot.py AFTER your bot is created:
+#
+# setup_diff_lsu_clean_leaderboard(bot)
+# ============================================================

@@ -704,6 +704,69 @@ def build_leaderboard_lines(guild: discord.Guild) -> list:
     return lines if lines else ["No activity data yet."]
 
 
+def _get_most_improved() -> dict | None:
+    best = None
+    best_gain = 0
+    for entry in _rsvp_leaderboard.values():
+        current = int(entry.get("attendance_count", 0))
+        last = int(entry.get("last_attendance_count", 0))
+        gain = current - last
+        if gain > best_gain:
+            best_gain = gain
+            best = entry
+    return best if best_gain > 0 else None
+
+
+def build_leaderboard_embed(guild: discord.Guild) -> discord.Embed:
+    top_all = sorted(
+        _rsvp_leaderboard.values(),
+        key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))),
+        reverse=True,
+    )[:10]
+    top3 = top_all[:3]
+    rest = top_all[3:]
+    medals = ["🥇", "🥈", "🥉"]
+
+    top_lines = []
+    for i, entry in enumerate(top3):
+        top_lines.append(f"{medals[i]} **#{i+1}** <@{entry['user_id']}> — **{entry.get('attendance_count', 0)}** meet(s)")
+
+    rest_lines = []
+    for idx, entry in enumerate(rest, start=4):
+        rest_lines.append(f"📌 **#{idx}** <@{entry['user_id']}> — **{entry.get('attendance_count', 0)}** meet(s)")
+    if not rest_lines:
+        rest_lines = ["No additional members ranked yet."]
+
+    improved = _get_most_improved()
+    if improved:
+        gain = int(improved.get("attendance_count", 0)) - int(improved.get("last_attendance_count", 0))
+        improved_line = f"📈 **Most Improved:** <@{improved['user_id']}> (**+{gain}** this week)"
+    else:
+        improved_line = "📈 **Most Improved:** No improvement data yet"
+
+    sep = "━━━━━━━━━━━━━━━━━━━━━━"
+    desc_parts = [
+        "📊 **Most active DIFF members**",
+        "",
+        sep,
+        *top_lines,
+        sep,
+        *rest_lines,
+        sep,
+        improved_line,
+        "",
+        "Stay active, stay consistent, and represent DIFF the right way.",
+    ]
+    embed = discord.Embed(
+        title="🏆 DIFF Weekly Leaderboard",
+        description="\n".join(desc_parts),
+        color=discord.Color.from_rgb(17, 17, 17),
+        timestamp=utc_now(),
+    )
+    embed.set_footer(text="Different Meets • Weekly Activity Panel")
+    return embed
+
+
 def build_member_stats_embed(member: discord.Member) -> discord.Embed:
     stats = get_user_stats(member.id)
     rep = get_user_reputation(member.id)
@@ -1757,13 +1820,7 @@ class RefreshLeaderboardButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("❌ Guild not found.", ephemeral=True)
-        embed = discord.Embed(
-            title="🏁 DIFF Activity Leaderboard",
-            description="\n\n".join(build_leaderboard_lines(interaction.guild)),
-            color=discord.Color.gold(),
-            timestamp=utc_now(),
-        )
-        embed.set_footer(text="Score = Attended×2 + Hosted×5 + Reputation")
+        embed = build_leaderboard_embed(interaction.guild)
         await interaction.response.edit_message(embed=embed, view=LeaderboardView())
 
 
@@ -1782,16 +1839,49 @@ def _build_crew_hub_embed() -> discord.Embed:
     active = sum(1 for e in entries if int(e.get("attendance_count", 0)) > 0)
     total_attendance = sum(int(e.get("attendance_count", 0)) for e in entries)
     total_hosted = sum(int(e.get("hosted_count", 0)) for e in entries)
+
+    try:
+        apps = _load_diff_json(APPLICATIONS_FILE) if os.path.exists(APPLICATIONS_FILE) else {}
+        completed_apps = sum(1 for a in apps.values() if a.get("status") == "Approved")
+    except Exception:
+        completed_apps = 0
+
+    top3 = sorted(entries, key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))), reverse=True)[:3]
+    medals = ["🥇", "🥈", "🥉"]
+    top_lines = [f"{medals[i]} <@{e['user_id']}> — {e.get('attendance_count', 0)} meet(s)" for i, e in enumerate(top3)] or ["No top members yet."]
+
+    improved = _get_most_improved()
+    if improved:
+        gain = int(improved.get("attendance_count", 0)) - int(improved.get("last_attendance_count", 0))
+        improved_text = f"<@{improved['user_id']}> (+{gain} this week)"
+    else:
+        improved_text = "No data yet"
+
+    sep = "━━━━━━━━━━━━━━━━━━━━━━"
+    desc_parts = [
+        "📌 **Live DIFF activity snapshot**",
+        "",
+        sep,
+        f"👥 **Tracked Members:** {total_tracked}",
+        f"🔥 **Active Members:** {active}",
+        f"✅ **Total Attendance Logged:** {total_attendance}",
+        f"🏁 **Total Meets Hosted:** {total_hosted}",
+        f"📋 **Approved Crew Members:** {completed_apps}",
+        f"🚀 **Most Improved:** {improved_text}",
+        sep,
+        "",
+        "🏆 **Top 3 Right Now**",
+        *top_lines,
+        "",
+        "Path: **Join → Attend → Get noticed → Crew invite**",
+    ]
     embed = discord.Embed(
-        title="📊 DIFF Crew Hub — Live Stats",
-        color=discord.Color.blue(),
+        title="📊 DIFF Crew Hub Stats",
+        description="\n".join(desc_parts),
+        color=discord.Color.from_rgb(17, 17, 17),
         timestamp=utc_now(),
     )
-    embed.add_field(name="👥 Members Tracked", value=str(total_tracked), inline=True)
-    embed.add_field(name="🟢 Active Members", value=str(active), inline=True)
-    embed.add_field(name="✅ Total Meets Attended", value=str(total_attendance), inline=True)
-    embed.add_field(name="🏁 Total Meets Hosted", value=str(total_hosted), inline=True)
-    embed.set_footer(text="Different Meets • Live Crew Stats")
+    embed.set_footer(text="Different Meets • Crew Hub Stats")
     return embed
 
 
@@ -4663,13 +4753,7 @@ async def mystats(interaction: discord.Interaction):
 async def postleaderboard(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
-    embed = discord.Embed(
-        title="🏁 DIFF Activity Leaderboard",
-        description="\n\n".join(build_leaderboard_lines(interaction.guild)),
-        color=discord.Color.gold(),
-        timestamp=utc_now(),
-    )
-    embed.set_footer(text="Score = Attended×2 + Hosted×5 + Reputation")
+    embed = build_leaderboard_embed(interaction.guild)
     await interaction.channel.send(embed=embed, view=LeaderboardView())
     await interaction.response.send_message("✅ Leaderboard posted.", ephemeral=True)
 
@@ -9380,14 +9464,7 @@ async def _auto_weekly_loop() -> None:
             except discord.HTTPException:
                 pass
             try:
-                lb_lines = build_leaderboard_lines(guild)
-                lb_embed = discord.Embed(
-                    title="🏆 DIFF Weekly Member Leaderboard",
-                    description="\n\n".join(lb_lines),
-                    color=discord.Color.gold(),
-                    timestamp=datetime.now(_tz.utc),
-                )
-                lb_embed.set_footer(text="Score = Attended×2 + Hosted×5 + Reputation • Different Meets")
+                lb_embed = build_leaderboard_embed(guild)
                 notify_role = guild.get_role(NOTIFY_ROLE_ID)
                 content = notify_role.mention if notify_role else None
                 await report_channel.send(content=content, embed=lb_embed, view=LeaderboardView())
@@ -9408,6 +9485,10 @@ async def _auto_weekly_loop() -> None:
                             pass
             except Exception:
                 pass
+        for entry in _rsvp_leaderboard.values():
+            entry["last_attendance_count"] = int(entry.get("attendance_count", 0))
+        _rsvp_save_all()
+
         _auto_stats.archive_and_reset()
         now = datetime.now(_tz.utc)
         log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
