@@ -7208,6 +7208,58 @@ async def _cmd_rollleaderboard(ctx: commands.Context):
 # OFFICIAL MEET ANNOUNCEMENT
 # =========================
 
+_om_rsvps: dict[int, dict[str, set]] = {}
+
+
+def _om_get_counts(msg_id: int) -> dict:
+    data = _om_rsvps.get(msg_id, {})
+    return {
+        "yes": len(data.get("yes", set())),
+        "maybe": len(data.get("maybe", set())),
+        "no": len(data.get("no", set())),
+    }
+
+
+class _OfficialMeetRSVPView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _handle(self, interaction: discord.Interaction, status: str):
+        msg_id = interaction.message.id
+        uid = interaction.user.id
+        if msg_id not in _om_rsvps:
+            _om_rsvps[msg_id] = {"yes": set(), "maybe": set(), "no": set()}
+        for s in ("yes", "maybe", "no"):
+            _om_rsvps[msg_id][s].discard(uid)
+        _om_rsvps[msg_id][status].add(uid)
+        counts = _om_get_counts(msg_id)
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                if child.custom_id == "diff_om_rsvp:yes":
+                    child.label = f"Attending ({counts['yes']})"
+                elif child.custom_id == "diff_om_rsvp:maybe":
+                    child.label = f"Maybe ({counts['maybe']})"
+                elif child.custom_id == "diff_om_rsvp:no":
+                    child.label = f"Not Attending ({counts['no']})"
+        label_map = {"yes": "Attending", "maybe": "Maybe", "no": "Not Attending"}
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(
+            f"You're marked as **{label_map[status]}** for this meet.", ephemeral=True
+        )
+
+    @discord.ui.button(label="Attending (0)", style=discord.ButtonStyle.success, custom_id="diff_om_rsvp:yes", row=0)
+    async def btn_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "yes")
+
+    @discord.ui.button(label="Maybe (0)", style=discord.ButtonStyle.secondary, custom_id="diff_om_rsvp:maybe", row=0)
+    async def btn_maybe(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "maybe")
+
+    @discord.ui.button(label="Not Attending (0)", style=discord.ButtonStyle.danger, custom_id="diff_om_rsvp:no", row=0)
+    async def btn_no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "no")
+
+
 def _om_build_message(theme: str, host: discord.Member, timestamp: int) -> str:
     ps_ping = f"<@&{PS5_ROLE_ID}>"
     cm_ping = f"<@&{NOTIFY_ROLE_ID}>"
@@ -7298,6 +7350,7 @@ async def _cmd_officialmeet(ctx: commands.Context, theme: str, date: str, time_s
     try:
         await channel.send(
             _om_build_message(theme=theme, host=host, timestamp=meet_ts),
+            view=_OfficialMeetRSVPView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True),
         )
     except discord.Forbidden:
@@ -7410,6 +7463,7 @@ async def on_ready():
     await _hp_post_or_refresh()
     bot.add_view(_RcRollCallView())
     bot.add_view(_RcAdminView())
+    bot.add_view(_OfficialMeetRSVPView())
     if not _rc_ensure_loop.is_running():
         _rc_ensure_loop.start()
 
