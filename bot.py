@@ -7611,6 +7611,48 @@ class _PopupDB:
 
 _popup_db = _PopupDB()
 
+_POPUP_TZ_MAP = {
+    "EST": "America/New_York", "EDT": "America/New_York", "ET": "America/New_York",
+    "CST": "America/Chicago", "CDT": "America/Chicago", "CT": "America/Chicago",
+    "MST": "America/Denver", "MDT": "America/Denver", "MT": "America/Denver",
+    "PST": "America/Los_Angeles", "PDT": "America/Los_Angeles", "PT": "America/Los_Angeles",
+    "UTC": "UTC", "GMT": "UTC",
+}
+
+
+def _popup_parse_time(raw: str) -> str:
+    """Convert '8pm EST' / '8:30pm CST' / '20:00 ET' to a Discord timestamp string.
+    Falls back to the original string if parsing fails."""
+    import re
+    from datetime import timedelta
+    m = re.search(
+        r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*([A-Za-z]{2,4})?',
+        raw.strip(), re.IGNORECASE
+    )
+    if not m:
+        return raw
+    hour = int(m.group(1))
+    minute = int(m.group(2)) if m.group(2) else 0
+    meridiem = m.group(3).lower() if m.group(3) else None
+    tz_abbr = m.group(4).upper() if m.group(4) else "EST"
+    tz_name = _POPUP_TZ_MAP.get(tz_abbr, "America/New_York")
+    if meridiem == "pm" and hour != 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    if hour > 23 or minute > 59:
+        return raw
+    try:
+        tz = ZoneInfo(tz_name)
+        now = datetime.now(tz)
+        local_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if local_dt <= now:
+            local_dt += timedelta(days=1)
+        ts = int(local_dt.timestamp())
+        return f"<t:{ts}:F> — <t:{ts}:R>"
+    except Exception:
+        return raw
+
 
 class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
     theme_field = discord.ui.TextInput(
@@ -7626,8 +7668,8 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
         max_length=100,
     )
     time_field = discord.ui.TextInput(
-        label="Time / Hammertime link",
-        placeholder="Paste your Hammertime link or time info",
+        label="Time",
+        placeholder="e.g. 8pm EST  or  8:30pm CST  or  20:00 ET",
         required=True,
         max_length=300,
     )
@@ -7640,7 +7682,7 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
     )
     ping_field = discord.ui.TextInput(
         label="Ping roles",
-        placeholder="Type: playstation, carmeet, both, or none",
+        placeholder="ps5, carmeet, both, or none",
         required=True,
         max_length=30,
     )
@@ -7661,12 +7703,12 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
             return
 
         raw_ping = self.ping_field.value.strip().lower()
-        ping_ps = raw_ping in {"playstation", "ps", "both", "all"}
-        ping_cm = raw_ping in {"carmeet", "car meet", "both", "all"}
+        ping_ps = any(w in raw_ping for w in ("playstation", "ps5", "ps", "both", "all"))
+        ping_cm = any(w in raw_ping for w in ("carmeet", "car meet", "car", "both", "all", "notify"))
 
         theme = self.theme_field.value.strip()
         location = self.location_field.value.strip()
-        time_text = self.time_field.value.strip()
+        time_text = _popup_parse_time(self.time_field.value.strip())
         notes = self.notes_field.value.strip()
 
         meet_id = _popup_db.add_meet(
