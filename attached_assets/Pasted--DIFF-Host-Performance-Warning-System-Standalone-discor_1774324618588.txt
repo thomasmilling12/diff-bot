@@ -1,0 +1,878 @@
+"""
+DIFF Host Performance + Warning System
+Standalone discord.py module for tracking host sessions, performance, and staff warnings.
+
+What this file adds:
+- Start/End host meet sessions
+- Track:
+    - Meets hosted
+    - Attendance
+    - Crew attendance
+    - Blacklist confirmation
+    - Checklist confirmation
+    - Lobby proof confirmation
+    - Today's Meet confirmation
+- Auto-score sessions
+- Auto-log warnings to staff channel
+- View host stats
+- Update-in-place main control panel so it does not duplicate
+
+How it works:
+1) A host clicks "Start Meet Session"
+2) The bot opens a private tracking thread in the configured host channel
+3) Inside the thread, the host uses buttons to confirm required steps
+4) The host submits attendance numbers with a modal
+5) The host clicks "End Meet Session"
+6) The bot calculates a score, stores stats, and logs results to the staff channel
+7) If required steps were skipped, warning logs are posted automatically
+
+Setup:
+1) Put this file in your bot project
+2) Update the config IDs below
+3) Load the cog:
+      await bot.add_cog(HostPerformanceCog(bot))
+4) In on_ready:
+      bot.add_view(HostPerformanceHubView(bot))
+      bot.add_view(HostSessionView(bot))
+5) Use:
+      !post_host_performance_hub
+   or:
+      /post_host_performance_hub
+
+Requirements:
+- discord.py 2.x
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+HOST_PERFORMANCE_CHANNEL_ID = 1134690348220825730   # host hub / control channel
+STAFF_LOG_CHANNEL_ID = 1485265848099799163          # change to your real staff log channel
+HOST_ROLE_IDS = [
+    1055823929358430248,  # Host
+    990011447193006101,   # Manager
+    850391378559238235,   # Co-Leader
+    850391095845584937,   # Leader
+]
+
+DATA_FILE = Path("host_performance_data.json")
+STATE_FILE = Path("host_performance_state.json")
+
+
+# =========================================================
+# FILE HELPERS
+# =========================================================
+
+def load_json(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def save_json(path: Path, data: Any) -> None:
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# =========================================================
+# DATA MODELS
+# =========================================================
+
+@dataclass
+class HostSession:
+    session_id: str
+    guild_id: int
+    channel_id: int
+    thread_id: int
+    host_id: int
+    host_name: str
+    meet_name: str
+    started_at: str
+    ended_at: Optional[str] = None
+
+    blacklist_checked: bool = False
+    checklist_completed: bool = False
+    lobby_opened: bool = False
+    lobby_proof_posted: bool = False
+    todays_meet_posted: bool = False
+
+    total_attendance: int = 0
+    diff_attendance: int = 0
+
+    ended: bool = False
+    score: int = 0
+    warning_count: int = 0
+
+
+# =========================================================
+# STORAGE LAYER
+# =========================================================
+
+class HostPerformanceStore:
+    def __init__(self):
+        self.data = load_json(DATA_FILE, {
+            "active_sessions": {},
+            "host_stats": {},
+            "hub_message_id": None,
+        })
+
+    def save(self) -> None:
+        save_json(DATA_FILE, self.data)
+
+    def get_hub_message_id(self) -> Optional[int]:
+        value = self.data.get("hub_message_id")
+        return int(value) if value else None
+
+    def set_hub_message_id(self, message_id: int) -> None:
+        self.data["hub_message_id"] = message_id
+        self.save()
+
+    def create_session(self, session: HostSession) -> None:
+        self.data["active_sessions"][session.session_id] = asdict(session)
+        self.save()
+
+    def get_session(self, session_id: str) -> Optional[HostSession]:
+        raw = self.data["active_sessions"].get(session_id)
+        if not raw:
+            return None
+        return HostSession(**raw)
+
+    def get_active_session_for_host(self, host_id: int) -> Optional[HostSession]:
+        for raw in self.data["active_sessions"].values():
+            if raw["host_id"] == host_id and not raw.get("ended", False):
+                return HostSession(**raw)
+        return None
+
+    def update_session(self, session: HostSession) -> None:
+        self.data["active_sessions"][session.session_id] = asdict(session)
+        self.save()
+
+    def finalize_session(self, session: HostSession) -> None:
+        self.data["active_sessions"][session.session_id] = asdict(session)
+
+        stats = self.data["host_stats"].setdefault(str(session.host_id), {
+            "host_name": session.host_name,
+            "meets_hosted": 0,
+            "total_attendance_sum": 0,
+            "diff_attendance_sum": 0,
+            "blacklist_checks": 0,
+            "checklists_completed": 0,
+            "lobby_proofs": 0,
+            "todays_meet_posts": 0,
+            "warning_count": 0,
+            "score_total": 0,
+            "last_session_at": None,
+        })
+
+        stats["host_name"] = session.host_name
+        stats["meets_hosted"] += 1
+        stats["total_attendance_sum"] += max(0, session.total_attendance)
+        stats["diff_attendance_sum"] += max(0, session.diff_attendance)
+        stats["blacklist_checks"] += 1 if session.blacklist_checked else 0
+        stats["checklists_completed"] += 1 if session.checklist_completed else 0
+        stats["lobby_proofs"] += 1 if session.lobby_proof_posted else 0
+        stats["todays_meet_posts"] += 1 if session.todays_meet_posted else 0
+        stats["warning_count"] += session.warning_count
+        stats["score_total"] += session.score
+        stats["last_session_at"] = session.ended_at
+
+        self.save()
+
+    def get_host_stats(self, host_id: int) -> Optional[Dict[str, Any]]:
+        return self.data["host_stats"].get(str(host_id))
+
+
+# =========================================================
+# EMBEDS
+# =========================================================
+
+def main_hub_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🧠 DIFF Host Performance Hub",
+        description=(
+            "*Track host sessions, attendance, required steps, and warning compliance.*\n\n"
+            "Use the buttons below to start a host session, confirm required actions, "
+            "submit attendance, and view your host stats.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**Available Tools**\n"
+            "🟢 Start Meet Session — open a tracked host session\n"
+            "📊 My Host Stats — view your performance totals\n"
+            "⚠️ System Info — see what gets tracked and warned\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "This system helps DIFF track quality, consistency, and host accountability."
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="DIFF Host Performance • Built for structure • Powered by consistency")
+    return embed
+
+
+def system_info_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="⚠️ DIFF Host Performance System Info",
+        description="*Here is what this system tracks automatically during each host session.*",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="📊 Performance Tracking",
+        value=(
+            "• Meets hosted\n"
+            "• Total attendance\n"
+            "• DIFF attendance\n"
+            "• Blacklist confirmations\n"
+            "• Checklist confirmations\n"
+            "• Lobby proof confirmations\n"
+            "• Today's Meet confirmations\n"
+            "• Host session score"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🚨 Warning Triggers",
+        value=(
+            "• Blacklist not checked\n"
+            "• Checklist not completed\n"
+            "• Lobby proof missing\n"
+            "• Today's Meet post missing\n"
+            "• Session ended with missing required steps"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Hosts are expected to use the tracking thread for every meet")
+    return embed
+
+
+def session_embed(session: HostSession) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"🚗 Host Session • {session.meet_name}",
+        description=(
+            f"**Host:** <@{session.host_id}>\n"
+            f"**Session ID:** `{session.session_id}`\n"
+            f"**Started:** {session.started_at}\n\n"
+            "Use the buttons below to mark progress during your meet."
+        ),
+        color=discord.Color.green(),
+    )
+    embed.add_field(
+        name="✅ Required Steps",
+        value=(
+            f"Blacklist Checked: {'✅' if session.blacklist_checked else '❌'}\n"
+            f"Checklist Completed: {'✅' if session.checklist_completed else '❌'}\n"
+            f"Lobby Opened: {'✅' if session.lobby_opened else '❌'}\n"
+            f"Lobby Proof Posted: {'✅' if session.lobby_proof_posted else '❌'}\n"
+            f"Today's Meet Posted: {'✅' if session.todays_meet_posted else '❌'}"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📈 Attendance",
+        value=(
+            f"Total Attendance: **{session.total_attendance}**\n"
+            f"DIFF Attendance: **{session.diff_attendance}**"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Complete every required step to avoid warnings")
+    return embed
+
+
+def stats_embed(user: discord.abc.User, stats: Dict[str, Any]) -> discord.Embed:
+    meets_hosted = stats.get("meets_hosted", 0)
+    avg_attendance = round(stats.get("total_attendance_sum", 0) / meets_hosted, 1) if meets_hosted else 0
+    avg_diff_attendance = round(stats.get("diff_attendance_sum", 0) / meets_hosted, 1) if meets_hosted else 0
+
+    embed = discord.Embed(
+        title="📊 DIFF Host Stats",
+        description=f"*Performance summary for {user.mention}*",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(
+        name="Core Stats",
+        value=(
+            f"Meets Hosted: **{meets_hosted}**\n"
+            f"Average Attendance: **{avg_attendance}**\n"
+            f"Average DIFF Attendance: **{avg_diff_attendance}**\n"
+            f"Score Total: **{stats.get('score_total', 0)}**\n"
+            f"Warnings: **{stats.get('warning_count', 0)}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Compliance",
+        value=(
+            f"Blacklist Checks: **{stats.get('blacklist_checks', 0)}**\n"
+            f"Checklists Completed: **{stats.get('checklists_completed', 0)}**\n"
+            f"Lobby Proofs: **{stats.get('lobby_proofs', 0)}**\n"
+            f"Today's Meet Posts: **{stats.get('todays_meet_posts', 0)}**"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Consistency is what builds trust in a host")
+    return embed
+
+
+def performance_log_embed(session: HostSession) -> discord.Embed:
+    embed = discord.Embed(
+        title="📊 Host Performance Update",
+        description=f"Host performance has been logged for <@{session.host_id}>.",
+        color=discord.Color.blue(),
+    )
+    embed.add_field(
+        name="Session Summary",
+        value=(
+            f"Meet: **{session.meet_name}**\n"
+            f"Total Attendance: **{session.total_attendance}**\n"
+            f"DIFF Attendance: **{session.diff_attendance}**\n"
+            f"Score: **{session.score}**\n"
+            f"Warnings: **{session.warning_count}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Compliance",
+        value=(
+            f"Blacklist Checked: {'✅' if session.blacklist_checked else '❌'}\n"
+            f"Checklist Completed: {'✅' if session.checklist_completed else '❌'}\n"
+            f"Lobby Proof Posted: {'✅' if session.lobby_proof_posted else '❌'}\n"
+            f"Today's Meet Posted: {'✅' if session.todays_meet_posted else '❌'}"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Auto-generated by the DIFF Host Performance System")
+    return embed
+
+
+def warning_embed(session: HostSession, issue: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="⚠️ Host Warning Logged",
+        description=f"A host warning has been logged for <@{session.host_id}>.",
+        color=discord.Color.red(),
+    )
+    embed.add_field(
+        name="Warning Details",
+        value=(
+            f"Meet: **{session.meet_name}**\n"
+            f"Issue: **{issue}**\n"
+            f"Session ID: `{session.session_id}`\n"
+            f"Time: **{utcnow_iso()}**"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Logged automatically for staff review")
+    return embed
+
+
+# =========================================================
+# SESSION SCORING
+# =========================================================
+
+def calculate_score_and_warnings(session: HostSession) -> tuple[int, list[str]]:
+    score = 0
+    warnings = []
+
+    score += 2  # hosted meet
+    if session.blacklist_checked:
+        score += 2
+    else:
+        score -= 3
+        warnings.append("Blacklist was not confirmed before or during the meet")
+
+    if session.checklist_completed:
+        score += 2
+    else:
+        score -= 2
+        warnings.append("Host checklist was not completed")
+
+    if session.lobby_proof_posted:
+        score += 2
+    else:
+        score -= 2
+        warnings.append("Lobby proof was not confirmed")
+
+    if session.todays_meet_posted:
+        score += 2
+    else:
+        score -= 2
+        warnings.append("Today's Meet post was not confirmed")
+
+    if session.total_attendance >= 15:
+        score += 2
+    elif session.total_attendance >= 8:
+        score += 1
+
+    if session.diff_attendance >= 5:
+        score += 1
+
+    return score, warnings
+
+
+# =========================================================
+# PERMISSION HELPERS
+# =========================================================
+
+def has_host_permissions(member: discord.Member) -> bool:
+    role_ids = {role.id for role in member.roles}
+    return any(rid in role_ids for rid in HOST_ROLE_IDS) or member.guild_permissions.manage_guild
+
+
+# =========================================================
+# MODALS
+# =========================================================
+
+class StartSessionModal(discord.ui.Modal, title="Start Host Session"):
+    meet_name = discord.ui.TextInput(
+        label="Meet Name",
+        placeholder="Example: Tire Lettering Meet",
+        max_length=100,
+    )
+
+    def __init__(self, cog: "HostPerformanceCog"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
+            return
+
+        if not has_host_permissions(interaction.user):
+            await interaction.response.send_message("You do not have permission to start a host session.", ephemeral=True)
+            return
+
+        existing = self.cog.store.get_active_session_for_host(interaction.user.id)
+        if existing:
+            await interaction.response.send_message(
+                f"You already have an active host session: `{existing.meet_name}`",
+                ephemeral=True,
+            )
+            return
+
+        parent_channel = interaction.channel
+        if not isinstance(parent_channel, discord.TextChannel):
+            await interaction.response.send_message("Use this button inside the configured host channel.", ephemeral=True)
+            return
+
+        session_id = f"{interaction.user.id}-{int(datetime.now().timestamp())}"
+        thread = await parent_channel.create_thread(
+            name=f"host-session-{interaction.user.display_name}-{self.meet_name.value[:40]}",
+            type=discord.ChannelType.private_thread if parent_channel.guild.me.guild_permissions.create_private_threads else discord.ChannelType.public_thread,
+            invitable=False if parent_channel.guild.me.guild_permissions.create_private_threads else True,
+        )
+
+        try:
+            await thread.add_user(interaction.user)
+        except Exception:
+            pass
+
+        session = HostSession(
+            session_id=session_id,
+            guild_id=interaction.guild_id,
+            channel_id=parent_channel.id,
+            thread_id=thread.id,
+            host_id=interaction.user.id,
+            host_name=interaction.user.display_name,
+            meet_name=self.meet_name.value,
+            started_at=utcnow_iso(),
+        )
+
+        self.cog.store.create_session(session)
+        await thread.send(embed=session_embed(session), view=HostSessionView(self.cog.bot))
+        await interaction.response.send_message(
+            f"Host session started successfully: {thread.mention}",
+            ephemeral=True,
+        )
+
+
+class AttendanceModal(discord.ui.Modal, title="Submit Attendance"):
+    total_attendance = discord.ui.TextInput(
+        label="Total Attendance",
+        placeholder="Example: 18",
+        max_length=4,
+    )
+    diff_attendance = discord.ui.TextInput(
+        label="DIFF Attendance",
+        placeholder="Example: 7",
+        max_length=4,
+    )
+
+    def __init__(self, cog: "HostPerformanceCog", session_id: str):
+        super().__init__()
+        self.cog = cog
+        self.session_id = session_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        session = self.cog.store.get_session(self.session_id)
+        if not session:
+            await interaction.response.send_message("Session not found.", ephemeral=True)
+            return
+
+        try:
+            total = max(0, int(str(self.total_attendance)))
+            diff = max(0, int(str(self.diff_attendance)))
+        except ValueError:
+            await interaction.response.send_message("Attendance must be valid numbers.", ephemeral=True)
+            return
+
+        session.total_attendance = total
+        session.diff_attendance = diff
+        self.cog.store.update_session(session)
+
+        await interaction.response.send_message(
+            f"Attendance updated. Total: **{total}** | DIFF: **{diff}**",
+            ephemeral=True,
+        )
+
+        if isinstance(interaction.channel, discord.Thread):
+            await interaction.channel.send(embed=session_embed(session), view=HostSessionView(self.cog.bot))
+
+
+# =========================================================
+# VIEWS
+# =========================================================
+
+class HostPerformanceHubView(discord.ui.View):
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(
+        label="Start Meet Session",
+        emoji="🟢",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_host_performance:start_session",
+        row=0,
+    )
+    async def start_session(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.bot.get_cog("HostPerformanceCog")
+        if cog is None:
+            await interaction.response.send_message("Host Performance system is not loaded.", ephemeral=True)
+            return
+        await interaction.response.send_modal(StartSessionModal(cog))
+
+    @discord.ui.button(
+        label="My Host Stats",
+        emoji="📊",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_host_performance:my_stats",
+        row=0,
+    )
+    async def my_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.bot.get_cog("HostPerformanceCog")
+        if cog is None:
+            await interaction.response.send_message("Host Performance system is not loaded.", ephemeral=True)
+            return
+
+        stats = cog.store.get_host_stats(interaction.user.id)
+        if not stats:
+            await interaction.response.send_message("No host stats found yet.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            embed=stats_embed(interaction.user, stats),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="System Info",
+        emoji="⚠️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_host_performance:system_info",
+        row=0,
+    )
+    async def system_info(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=system_info_embed(), ephemeral=True)
+
+
+class HostSessionView(discord.ui.View):
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    def get_cog(self) -> Optional["HostPerformanceCog"]:
+        cog = self.bot.get_cog("HostPerformanceCog")
+        return cog
+
+    async def _find_session_for_channel(self, channel_id: int) -> Optional[HostSession]:
+        cog = self.get_cog()
+        if cog is None:
+            return None
+        for raw in cog.store.data.get("active_sessions", {}).values():
+            if raw["thread_id"] == channel_id and not raw.get("ended", False):
+                return HostSession(**raw)
+        return None
+
+    async def _refresh_thread_embed(self, thread: discord.Thread, session: HostSession) -> None:
+        try:
+            async for message in thread.history(limit=10, oldest_first=True):
+                if message.author.id == self.bot.user.id and message.embeds:
+                    await message.edit(embed=session_embed(session), view=self)
+                    return
+        except Exception:
+            pass
+
+    @discord.ui.button(
+        label="Blacklist Checked",
+        emoji="🚫",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_host_session:blacklist_checked",
+        row=0,
+    )
+    async def blacklist_checked(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.get_cog()
+        if cog is None or not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("This action can only be used in a session thread.", ephemeral=True)
+            return
+
+        session = await self._find_session_for_channel(interaction.channel.id)
+        if not session:
+            await interaction.response.send_message("No active session found in this thread.", ephemeral=True)
+            return
+
+        session.blacklist_checked = True
+        cog.store.update_session(session)
+        await self._refresh_thread_embed(interaction.channel, session)
+        await interaction.response.send_message("Blacklist check confirmed.", ephemeral=True)
+
+    @discord.ui.button(
+        label="Checklist Complete",
+        emoji="📝",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_host_session:checklist_complete",
+        row=0,
+    )
+    async def checklist_complete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.get_cog()
+        if cog is None or not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("This action can only be used in a session thread.", ephemeral=True)
+            return
+
+        session = await self._find_session_for_channel(interaction.channel.id)
+        if not session:
+            await interaction.response.send_message("No active session found in this thread.", ephemeral=True)
+            return
+
+        session.checklist_completed = True
+        cog.store.update_session(session)
+        await self._refresh_thread_embed(interaction.channel, session)
+        await interaction.response.send_message("Checklist completion confirmed.", ephemeral=True)
+
+    @discord.ui.button(
+        label="Lobby Opened",
+        emoji="🚪",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_host_session:lobby_opened",
+        row=0,
+    )
+    async def lobby_opened(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.get_cog()
+        if cog is None or not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("This action can only be used in a session thread.", ephemeral=True)
+            return
+
+        session = await self._find_session_for_channel(interaction.channel.id)
+        if not session:
+            await interaction.response.send_message("No active session found in this thread.", ephemeral=True)
+            return
+
+        session.lobby_opened = True
+        cog.store.update_session(session)
+        await self._refresh_thread_embed(interaction.channel, session)
+        await interaction.response.send_message("Lobby opening confirmed.", ephemeral=True)
+
+    @discord.ui.button(
+        label="Proof Posted",
+        emoji="📸",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_host_session:proof_posted",
+        row=1,
+    )
+    async def proof_posted(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.get_cog()
+        if cog is None or not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("This action can only be used in a session thread.", ephemeral=True)
+            return
+
+        session = await self._find_session_for_channel(interaction.channel.id)
+        if not session:
+            await interaction.response.send_message("No active session found in this thread.", ephemeral=True)
+            return
+
+        session.lobby_proof_posted = True
+        cog.store.update_session(session)
+        await self._refresh_thread_embed(interaction.channel, session)
+        await interaction.response.send_message("Lobby proof confirmed.", ephemeral=True)
+
+    @discord.ui.button(
+        label="Today's Meet Posted",
+        emoji="📢",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_host_session:todays_meet_posted",
+        row=1,
+    )
+    async def todays_meet_posted(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.get_cog()
+        if cog is None or not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("This action can only be used in a session thread.", ephemeral=True)
+            return
+
+        session = await self._find_session_for_channel(interaction.channel.id)
+        if not session:
+            await interaction.response.send_message("No active session found in this thread.", ephemeral=True)
+            return
+
+        session.todays_meet_posted = True
+        cog.store.update_session(session)
+        await self._refresh_thread_embed(interaction.channel, session)
+        await interaction.response.send_message("Today's Meet confirmation saved.", ephemeral=True)
+
+    @discord.ui.button(
+        label="Submit Attendance",
+        emoji="📊",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_host_session:submit_attendance",
+        row=1,
+    )
+    async def submit_attendance(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.get_cog()
+        if cog is None or not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("This action can only be used in a session thread.", ephemeral=True)
+            return
+
+        session = await self._find_session_for_channel(interaction.channel.id)
+        if not session:
+            await interaction.response.send_message("No active session found in this thread.", ephemeral=True)
+            return
+
+        await interaction.response.send_modal(AttendanceModal(cog, session.session_id))
+
+    @discord.ui.button(
+        label="End Meet Session",
+        emoji="🏁",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_host_session:end_session",
+        row=2,
+    )
+    async def end_session(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.get_cog()
+        if cog is None or not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("This action can only be used in a session thread.", ephemeral=True)
+            return
+
+        session = await self._find_session_for_channel(interaction.channel.id)
+        if not session:
+            await interaction.response.send_message("No active session found in this thread.", ephemeral=True)
+            return
+
+        if interaction.user.id != session.host_id and not (
+            isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
+        ):
+            await interaction.response.send_message("Only the session host or staff can end this session.", ephemeral=True)
+            return
+
+        session.ended = True
+        session.ended_at = utcnow_iso()
+        session.score, warnings = calculate_score_and_warnings(session)
+        session.warning_count = len(warnings)
+        cog.store.finalize_session(session)
+
+        await self._refresh_thread_embed(interaction.channel, session)
+
+        staff_channel = cog.bot.get_channel(STAFF_LOG_CHANNEL_ID)
+        if isinstance(staff_channel, discord.TextChannel):
+            await staff_channel.send(embed=performance_log_embed(session))
+            for issue in warnings:
+                await staff_channel.send(embed=warning_embed(session, issue))
+
+        await interaction.response.send_message(
+            f"Meet session ended. Score: **{session.score}** | Warnings: **{session.warning_count}**",
+            ephemeral=True,
+        )
+
+        try:
+            await interaction.channel.send(
+                f"Session closed for <@{session.host_id}>.\n"
+                f"Final Score: **{session.score}**\n"
+                f"Warnings: **{session.warning_count}**"
+            )
+        except Exception:
+            pass
+
+
+# =========================================================
+# COG
+# =========================================================
+
+class HostPerformanceCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.store = HostPerformanceStore()
+
+    async def post_or_update_hub(self, channel: discord.TextChannel) -> discord.Message:
+        embed = main_hub_embed()
+        view = HostPerformanceHubView(self.bot)
+
+        message_id = self.store.get_hub_message_id()
+        if message_id:
+            try:
+                message = await channel.fetch_message(message_id)
+                await message.edit(embed=embed, view=view)
+                return message
+            except Exception:
+                pass
+
+        message = await channel.send(embed=embed, view=view)
+        self.store.set_hub_message_id(message.id)
+        return message
+
+    @commands.command(name="post_host_performance_hub")
+    @commands.has_permissions(manage_guild=True)
+    async def post_host_performance_hub_prefix(self, ctx: commands.Context):
+        channel = self.bot.get_channel(HOST_PERFORMANCE_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await ctx.reply("Configured host performance channel was not found.")
+            return
+
+        message = await self.post_or_update_hub(channel)
+        await ctx.reply(f"Host Performance Hub posted/updated: {message.jump_url}", mention_author=False)
+
+    @app_commands.command(name="post_host_performance_hub", description="Post or update the DIFF Host Performance Hub.")
+    async def post_host_performance_hub_slash(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+            return
+
+        channel = self.bot.get_channel(HOST_PERFORMANCE_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("Configured host performance channel was not found.", ephemeral=True)
+            return
+
+        message = await self.post_or_update_hub(channel)
+        await interaction.response.send_message(
+            f"Host Performance Hub posted/updated: {message.jump_url}",
+            ephemeral=True,
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(HostPerformanceCog(bot))
+    bot.add_view(HostPerformanceHubView(bot))
+    bot.add_view(HostSessionView(bot))

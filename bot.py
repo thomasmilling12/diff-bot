@@ -2988,6 +2988,10 @@ _HOSTFLOW_STATE_FILE = os.path.join("diff_data", "diff_host_flow_state.json")
 _HOSTFLOW_COOLDOWNS: dict[int, float] = {}
 _HOSTFLOW_COOLDOWN_SECS = 5
 _HOSTFLOW_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+_HOSTFLOW_PING_ON_START = True
+_HOSTFLOW_PING_ON_END = False
+_HOSTFLOW_SMART_PING_COOLDOWN = 3600  # seconds (60 min)
+_HOSTFLOW_GUILD_PING_TIMES: dict[int, float] = {}
 
 
 def _hostflow_get_saved_msg_id() -> int | None:
