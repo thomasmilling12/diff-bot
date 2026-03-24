@@ -1,0 +1,868 @@
+
+"""
+DIFF Staff Dashboard + Appeal + Insights System
+Features:
+- Staff dashboard panel with buttons
+- View moderation profiles
+- View host profiles
+- Approve punishments
+- Reset strikes
+- Review flagged hosts
+- Appeal system integration
+- Accept / deny appeal panel
+- Smart risk insights for members and hosts
+- JSON storage
+
+discord.py 2.x
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, List
+
+import discord
+from discord.ext import commands
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+GUILD_ID = 850386896509337710
+
+# Dashboard panel channel
+STAFF_DASHBOARD_CHANNEL_ID = 0  # set this
+
+# Appeal panel / submission channel
+APPEAL_PANEL_CHANNEL_ID = 0  # set this
+
+# Appeal review channel
+APPEAL_REVIEW_CHANNEL_ID = 0  # set this
+
+# Optional insights / alert channel
+STAFF_INSIGHTS_CHANNEL_ID = 0  # optional
+
+# Optional roles
+STAFF_ROLE_IDS = [
+    0,  # manager/admin role ids
+]
+
+WARNING_ROLE_ID = 0
+RESTRICTED_ROLE_ID = 0
+HOST_REVIEW_ROLE_ID = 0
+
+# Data paths
+DATA_DIR = "data"
+MOD_PROFILES_FILE = os.path.join(DATA_DIR, "moderation_profiles.json")
+HOST_PROFILES_FILE = os.path.join(DATA_DIR, "host_performance_profiles.json")
+APPEALS_FILE = os.path.join(DATA_DIR, "appeals_system.json")
+
+# Colors
+COLOR_PRIMARY = 0x1F6FEB
+COLOR_SUCCESS = 0x2ECC71
+COLOR_WARNING = 0xF39C12
+COLOR_DANGER = 0xE74C3C
+COLOR_MUTED = 0x95A5A6
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def ensure_data_dir() -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def load_json(path: str, default):
+    ensure_data_dir()
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, indent=4)
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def save_json(path: str, data) -> None:
+    ensure_data_dir()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+
+def member_has_staff_access(member: discord.Member) -> bool:
+    if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
+        return True
+    role_ids = {role.id for role in member.roles}
+    return any(role_id in role_ids for role_id in STAFF_ROLE_IDS if role_id)
+
+
+# =========================================================
+# APPEAL MODAL
+# =========================================================
+
+class AppealModal(discord.ui.Modal, title="DIFF Appeal Form"):
+    writeup_id = discord.ui.TextInput(
+        label="Write-Up ID / Strike ID",
+        placeholder="Example: WU-0001",
+        max_length=30,
+        required=True,
+    )
+
+    reason = discord.ui.TextInput(
+        label="Why are you appealing?",
+        placeholder="Explain your side clearly and respectfully.",
+        style=discord.TextStyle.paragraph,
+        max_length=1400,
+        required=True,
+    )
+
+    evidence = discord.ui.TextInput(
+        label="Evidence Link",
+        placeholder="Clip, screenshot, message link, etc.",
+        max_length=400,
+        required=False,
+    )
+
+    def __init__(self, cog: "StaffDashboardSystem"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.submit_appeal(
+            interaction=interaction,
+            writeup_id=str(self.writeup_id).strip(),
+            reason=str(self.reason).strip(),
+            evidence=str(self.evidence).strip() if str(self.evidence).strip() else "No evidence provided"
+        )
+
+
+# =========================================================
+# APPEAL REVIEW VIEW
+# =========================================================
+
+class AppealReviewView(discord.ui.View):
+    def __init__(self, cog: "StaffDashboardSystem", appeal_id: str):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.appeal_id = appeal_id
+
+    @discord.ui.button(label="Accept Appeal", style=discord.ButtonStyle.success, emoji="✅", custom_id="diff_appeal_accept")
+    async def accept_appeal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not member_has_staff_access(interaction.user):
+            await interaction.response.send_message("You do not have permission to review appeals.", ephemeral=True)
+            return
+        await self.cog.review_appeal(interaction, self.appeal_id, accepted=True)
+
+    @discord.ui.button(label="Deny Appeal", style=discord.ButtonStyle.danger, emoji="❌", custom_id="diff_appeal_deny")
+    async def deny_appeal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not member_has_staff_access(interaction.user):
+            await interaction.response.send_message("You do not have permission to review appeals.", ephemeral=True)
+            return
+        await self.cog.review_appeal(interaction, self.appeal_id, accepted=False)
+
+
+# =========================================================
+# DASHBOARD MODALS
+# =========================================================
+
+class ProfileLookupModal(discord.ui.Modal, title="View Member Moderation Profile"):
+    user_id = discord.ui.TextInput(
+        label="Discord User ID",
+        placeholder="Enter the member's Discord user ID",
+        max_length=30,
+        required=True,
+    )
+
+    def __init__(self, cog: "StaffDashboardSystem"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.send_member_profile_lookup(interaction, str(self.user_id).strip())
+
+
+class HostLookupModal(discord.ui.Modal, title="View Host Profile"):
+    user_id = discord.ui.TextInput(
+        label="Discord User ID",
+        placeholder="Enter the host's Discord user ID",
+        max_length=30,
+        required=True,
+    )
+
+    def __init__(self, cog: "StaffDashboardSystem"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.send_host_profile_lookup(interaction, str(self.user_id).strip())
+
+
+class PunishmentModal(discord.ui.Modal, title="Approve Punishment"):
+    user_id = discord.ui.TextInput(
+        label="Discord User ID",
+        placeholder="Enter the member's Discord user ID",
+        max_length=30,
+        required=True,
+    )
+
+    punishment_type = discord.ui.TextInput(
+        label="Punishment Type",
+        placeholder="warning or restricted",
+        max_length=30,
+        required=True,
+    )
+
+    reason = discord.ui.TextInput(
+        label="Reason",
+        placeholder="Why is this punishment being applied?",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        required=True,
+    )
+
+    def __init__(self, cog: "StaffDashboardSystem"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.apply_punishment(
+            interaction,
+            str(self.user_id).strip(),
+            str(self.punishment_type).strip().lower(),
+            str(self.reason).strip()
+        )
+
+
+class ResetStrikesModal(discord.ui.Modal, title="Reset Member Strikes"):
+    user_id = discord.ui.TextInput(
+        label="Discord User ID",
+        placeholder="Enter the member's Discord user ID",
+        max_length=30,
+        required=True,
+    )
+
+    reason = discord.ui.TextInput(
+        label="Reset Reason",
+        placeholder="Why are the strikes being reset?",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        required=True,
+    )
+
+    def __init__(self, cog: "StaffDashboardSystem"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.reset_member_strikes(
+            interaction,
+            str(self.user_id).strip(),
+            str(self.reason).strip()
+        )
+
+
+class ReviewHostModal(discord.ui.Modal, title="Review Flagged Host"):
+    user_id = discord.ui.TextInput(
+        label="Host Discord User ID",
+        placeholder="Enter the host's Discord user ID",
+        max_length=30,
+        required=True,
+    )
+
+    action = discord.ui.TextInput(
+        label="Action",
+        placeholder="clear or keep",
+        max_length=20,
+        required=True,
+    )
+
+    note = discord.ui.TextInput(
+        label="Review Note",
+        placeholder="Explain the decision.",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        required=True,
+    )
+
+    def __init__(self, cog: "StaffDashboardSystem"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.review_flagged_host(
+            interaction,
+            str(self.user_id).strip(),
+            str(self.action).strip().lower(),
+            str(self.note).strip()
+        )
+
+
+# =========================================================
+# VIEWS
+# =========================================================
+
+class AppealPanelView(discord.ui.View):
+    def __init__(self, cog: "StaffDashboardSystem"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Submit Appeal", style=discord.ButtonStyle.primary, emoji="🧾", custom_id="diff_submit_appeal")
+    async def submit_appeal_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AppealModal(self.cog))
+
+
+class StaffDashboardView(discord.ui.View):
+    def __init__(self, cog: "StaffDashboardSystem"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="View Profiles", style=discord.ButtonStyle.primary, emoji="👤", custom_id="diff_dashboard_profiles")
+    async def view_profiles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not member_has_staff_access(interaction.user):
+            await interaction.response.send_message("You do not have access to the staff dashboard.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ProfileLookupModal(self.cog))
+
+    @discord.ui.button(label="View Host Profiles", style=discord.ButtonStyle.primary, emoji="🏁", custom_id="diff_dashboard_host_profiles")
+    async def view_host_profiles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not member_has_staff_access(interaction.user):
+            await interaction.response.send_message("You do not have access to the staff dashboard.", ephemeral=True)
+            return
+        await interaction.response.send_modal(HostLookupModal(self.cog))
+
+    @discord.ui.button(label="Approve Punishments", style=discord.ButtonStyle.danger, emoji="⚠️", custom_id="diff_dashboard_punish")
+    async def approve_punishments(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not member_has_staff_access(interaction.user):
+            await interaction.response.send_message("You do not have access to the staff dashboard.", ephemeral=True)
+            return
+        await interaction.response.send_modal(PunishmentModal(self.cog))
+
+    @discord.ui.button(label="Reset Strikes", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="diff_dashboard_reset_strikes")
+    async def reset_strikes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not member_has_staff_access(interaction.user):
+            await interaction.response.send_message("You do not have access to the staff dashboard.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ResetStrikesModal(self.cog))
+
+    @discord.ui.button(label="Review Flagged Hosts", style=discord.ButtonStyle.success, emoji="📉", custom_id="diff_dashboard_review_hosts")
+    async def review_flagged_hosts(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not member_has_staff_access(interaction.user):
+            await interaction.response.send_message("You do not have access to the staff dashboard.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ReviewHostModal(self.cog))
+
+
+# =========================================================
+# COG
+# =========================================================
+
+class StaffDashboardSystem(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.bot.add_view(StaffDashboardView(self))
+        self.bot.add_view(AppealPanelView(self))
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        print("StaffDashboardSystem loaded.")
+
+    # -----------------------------------------------------
+    # DATA
+    # -----------------------------------------------------
+    def get_member_profiles(self) -> Dict[str, Any]:
+        return load_json(MOD_PROFILES_FILE, {})
+
+    def save_member_profiles(self, data: Dict[str, Any]) -> None:
+        save_json(MOD_PROFILES_FILE, data)
+
+    def get_host_profiles(self) -> Dict[str, Any]:
+        return load_json(HOST_PROFILES_FILE, {})
+
+    def save_host_profiles(self, data: Dict[str, Any]) -> None:
+        save_json(HOST_PROFILES_FILE, data)
+
+    def get_appeals(self) -> Dict[str, Any]:
+        return load_json(APPEALS_FILE, {"counter": 0, "entries": {}})
+
+    def save_appeals(self, data: Dict[str, Any]) -> None:
+        save_json(APPEALS_FILE, data)
+
+    def next_appeal_id(self) -> str:
+        data = self.get_appeals()
+        data["counter"] += 1
+        self.save_appeals(data)
+        return f"APL-{data['counter']:04d}"
+
+    # -----------------------------------------------------
+    # EMBEDS
+    # -----------------------------------------------------
+    def build_dashboard_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="📱 DIFF Staff Dashboard",
+            description=(
+                "Use the buttons below to manage moderation and staff reviews.\n\n"
+                "**Dashboard tools:**\n"
+                "• View member profiles\n"
+                "• Approve punishments\n"
+                "• Reset strikes\n"
+                "• Review flagged hosts\n"
+                "• View host profiles"
+            ),
+            color=COLOR_PRIMARY
+        )
+        embed.add_field(
+            name="Smart Insight Layer",
+            value=(
+                "This system also helps detect:\n"
+                "• high-risk members\n"
+                "• declining hosts\n"
+                "• repeated moderation problems"
+            ),
+            inline=False
+        )
+        embed.set_footer(text="Different Meets • Staff Dashboard")
+        return embed
+
+    def build_appeal_panel_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="🧾 DIFF Appeal Center",
+            description=(
+                "If you believe a write-up, strike, or moderation action should be reviewed, "
+                "use the button below to submit an appeal."
+            ),
+            color=COLOR_WARNING
+        )
+        embed.add_field(
+            name="Important",
+            value="All appeals must be respectful, honest, and supported by evidence if possible.",
+            inline=False
+        )
+        embed.set_footer(text="Different Meets • Appeal System")
+        return embed
+
+    def build_member_profile_embed(self, member: discord.Member, profile: Dict[str, Any]) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"🛡️ Moderation Profile • {member}",
+            color=COLOR_PRIMARY
+        )
+        embed.add_field(name="Write-Ups", value=str(profile.get("writeups", 0)), inline=True)
+        embed.add_field(name="Strikes", value=str(profile.get("strikes", 0)), inline=True)
+        embed.add_field(name="Attendance", value=str(profile.get("attendance_count", 0)), inline=True)
+        embed.add_field(name="Hosted Meets", value=str(profile.get("hosted_meets", 0)), inline=True)
+        embed.add_field(name="Feedback Avg", value=f"{profile.get('feedback_average', 0)}/5", inline=True)
+        embed.add_field(name="Flags", value=", ".join(profile.get("flags", [])) if profile.get("flags") else "None", inline=True)
+        embed.add_field(name="AI Insight", value=self.get_member_risk_insight(profile), inline=False)
+        embed.set_footer(text="Different Meets • Staff Dashboard")
+        return embed
+
+    def build_host_profile_embed(self, member: discord.Member, profile: Dict[str, Any]) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"🏁 Host Performance Profile • {member}",
+            color=COLOR_PRIMARY
+        )
+        embed.add_field(name="Hosted Meets", value=str(profile.get("hosted_meets", 0)), inline=True)
+        embed.add_field(name="Attendance Avg", value=str(profile.get("attendance_average", 0)), inline=True)
+        embed.add_field(name="Feedback Avg", value=f"{profile.get('feedback_average', 0)}/5", inline=True)
+        embed.add_field(name="Feedback Entries", value=str(profile.get("feedback_entries", 0)), inline=True)
+        embed.add_field(name="Host Write-Ups", value=str(profile.get("host_writeups", 0)), inline=True)
+        embed.add_field(name="Review Flagged", value="Yes" if profile.get("review_flagged") else "No", inline=True)
+        embed.add_field(name="AI Insight", value=self.get_host_risk_insight(profile), inline=False)
+        embed.set_footer(text="Different Meets • Staff Dashboard")
+        return embed
+
+    # -----------------------------------------------------
+    # INSIGHTS
+    # -----------------------------------------------------
+    def get_member_risk_insight(self, profile: Dict[str, Any]) -> str:
+        strikes = int(profile.get("strikes", 0))
+        writeups = int(profile.get("writeups", 0))
+        flags = profile.get("flags", [])
+
+        if strikes >= 4 or writeups >= 5:
+            return "This member is becoming high-risk and should be reviewed immediately."
+        if strikes >= 2 or writeups >= 3 or flags:
+            return "This member shows a rising moderation pattern and should be monitored."
+        return "This member is currently low-risk based on recorded moderation data."
+
+    def get_host_risk_insight(self, profile: Dict[str, Any]) -> str:
+        feedback_avg = float(profile.get("feedback_average", 0))
+        host_writeups = int(profile.get("host_writeups", 0))
+        attendance_avg = float(profile.get("attendance_average", 0))
+        hosted = int(profile.get("hosted_meets", 0))
+
+        if (hosted >= 2 and feedback_avg and feedback_avg <= 2.5) or host_writeups >= 2:
+            return "This host is declining in performance and should be reviewed."
+        if hosted >= 2 and attendance_avg <= 3:
+            return "This host is struggling with turnout and may need support or review."
+        return "This host is currently stable based on recorded performance data."
+
+    async def post_insight_alert(self, guild: discord.Guild, title: str, description: str, color: int = COLOR_WARNING):
+        if not STAFF_INSIGHTS_CHANNEL_ID:
+            return
+        channel = guild.get_channel(STAFF_INSIGHTS_CHANNEL_ID)
+        if channel is None:
+            return
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=utcnow()
+        )
+        embed.set_footer(text="Different Meets • Smart Insights")
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
+
+    # -----------------------------------------------------
+    # LOOKUPS
+    # -----------------------------------------------------
+    async def send_member_profile_lookup(self, interaction: discord.Interaction, user_id_text: str):
+        if not interaction.guild:
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+        try:
+            user_id = int(user_id_text)
+        except ValueError:
+            await interaction.response.send_message("Invalid user ID.", ephemeral=True)
+            return
+
+        member = interaction.guild.get_member(user_id)
+        if member is None:
+            await interaction.response.send_message("Member not found in this server.", ephemeral=True)
+            return
+
+        data = self.get_member_profiles()
+        profile = data.get(str(user_id))
+        if not profile:
+            await interaction.response.send_message("No moderation profile found for that member.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(embed=self.build_member_profile_embed(member, profile), ephemeral=True)
+
+    async def send_host_profile_lookup(self, interaction: discord.Interaction, user_id_text: str):
+        if not interaction.guild:
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+        try:
+            user_id = int(user_id_text)
+        except ValueError:
+            await interaction.response.send_message("Invalid user ID.", ephemeral=True)
+            return
+
+        member = interaction.guild.get_member(user_id)
+        if member is None:
+            await interaction.response.send_message("Host not found in this server.", ephemeral=True)
+            return
+
+        data = self.get_host_profiles()
+        profile = data.get(str(user_id))
+        if not profile:
+            await interaction.response.send_message("No host profile found for that member.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(embed=self.build_host_profile_embed(member, profile), ephemeral=True)
+
+    # -----------------------------------------------------
+    # PUNISHMENTS
+    # -----------------------------------------------------
+    async def apply_punishment(self, interaction: discord.Interaction, user_id_text: str, punishment_type: str, reason: str):
+        if not interaction.guild:
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+        try:
+            user_id = int(user_id_text)
+        except ValueError:
+            await interaction.response.send_message("Invalid user ID.", ephemeral=True)
+            return
+
+        member = interaction.guild.get_member(user_id)
+        if member is None:
+            await interaction.response.send_message("Member not found in this server.", ephemeral=True)
+            return
+
+        role_id = 0
+        if punishment_type == "warning":
+            role_id = WARNING_ROLE_ID
+        elif punishment_type == "restricted":
+            role_id = RESTRICTED_ROLE_ID
+        else:
+            await interaction.response.send_message("Punishment type must be `warning` or `restricted`.", ephemeral=True)
+            return
+
+        role = interaction.guild.get_role(role_id) if role_id else None
+        if role is None:
+            await interaction.response.send_message("Punishment role is not configured correctly.", ephemeral=True)
+            return
+
+        try:
+            if role not in member.roles:
+                await member.add_roles(role, reason=f"Staff dashboard punishment: {reason}")
+        except discord.HTTPException:
+            await interaction.response.send_message("I could not apply that role.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            f"✅ Applied **{punishment_type}** punishment to {member.mention}.",
+            ephemeral=True
+        )
+
+    async def reset_member_strikes(self, interaction: discord.Interaction, user_id_text: str, reason: str):
+        if not interaction.guild:
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+        try:
+            user_id = int(user_id_text)
+        except ValueError:
+            await interaction.response.send_message("Invalid user ID.", ephemeral=True)
+            return
+
+        data = self.get_member_profiles()
+        profile = data.get(str(user_id))
+        if not profile:
+            await interaction.response.send_message("No moderation profile found for that member.", ephemeral=True)
+            return
+
+        profile["strikes"] = 0
+        profile["flags"] = []
+        profile["last_updated"] = utcnow().isoformat()
+        data[str(user_id)] = profile
+        self.save_member_profiles(data)
+
+        member = interaction.guild.get_member(user_id)
+        if member:
+            for role_id in [WARNING_ROLE_ID, RESTRICTED_ROLE_ID]:
+                role = interaction.guild.get_role(role_id) if role_id else None
+                if role and role in member.roles:
+                    try:
+                        await member.remove_roles(role, reason=f"Strike reset: {reason}")
+                    except discord.HTTPException:
+                        pass
+
+        await interaction.response.send_message("✅ Member strikes were reset successfully.", ephemeral=True)
+
+    async def review_flagged_host(self, interaction: discord.Interaction, user_id_text: str, action: str, note: str):
+        if not interaction.guild:
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+        try:
+            user_id = int(user_id_text)
+        except ValueError:
+            await interaction.response.send_message("Invalid user ID.", ephemeral=True)
+            return
+
+        data = self.get_host_profiles()
+        profile = data.get(str(user_id))
+        if not profile:
+            await interaction.response.send_message("No host profile found for that member.", ephemeral=True)
+            return
+
+        member = interaction.guild.get_member(user_id)
+        if action == "clear":
+            profile["review_flagged"] = False
+            profile["last_updated"] = utcnow().isoformat()
+            data[str(user_id)] = profile
+            self.save_host_profiles(data)
+
+            if member:
+                role = interaction.guild.get_role(HOST_REVIEW_ROLE_ID) if HOST_REVIEW_ROLE_ID else None
+                if role and role in member.roles:
+                    try:
+                        await member.remove_roles(role, reason=f"Host review cleared: {note}")
+                    except discord.HTTPException:
+                        pass
+
+            await interaction.response.send_message("✅ Host review flag cleared.", ephemeral=True)
+        elif action == "keep":
+            await interaction.response.send_message("✅ Host review flag kept in place.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Action must be `clear` or `keep`.", ephemeral=True)
+
+    # -----------------------------------------------------
+    # APPEALS
+    # -----------------------------------------------------
+    async def submit_appeal(self, interaction: discord.Interaction, writeup_id: str, reason: str, evidence: str):
+        if not interaction.guild:
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+
+        appeal_id = self.next_appeal_id()
+        entry = {
+            "appeal_id": appeal_id,
+            "user_id": interaction.user.id,
+            "username": str(interaction.user),
+            "writeup_id": writeup_id,
+            "reason": reason,
+            "evidence": evidence,
+            "status": "Pending Review",
+            "submitted_at": utcnow().isoformat(),
+            "reviewed_by": None,
+            "reviewed_at": None,
+            "decision_note": None,
+            "message_id": None,
+        }
+
+        data = self.get_appeals()
+        data["entries"][appeal_id] = entry
+        self.save_appeals(data)
+
+        channel = interaction.guild.get_channel(APPEAL_REVIEW_CHANNEL_ID)
+        if channel:
+            embed = discord.Embed(
+                title=f"🧾 New Appeal Submitted • {appeal_id}",
+                color=COLOR_WARNING,
+                timestamp=utcnow()
+            )
+            embed.add_field(name="User", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Write-Up ID", value=writeup_id, inline=True)
+            embed.add_field(name="Status", value="Pending Review", inline=True)
+            embed.add_field(name="Appeal Reason", value=reason[:1024], inline=False)
+            embed.add_field(name="Evidence", value=evidence[:1024], inline=False)
+            embed.set_footer(text="Different Meets • Appeal Review")
+            msg = await channel.send(embed=embed, view=AppealReviewView(self, appeal_id))
+
+            data = self.get_appeals()
+            data["entries"][appeal_id]["message_id"] = msg.id
+            self.save_appeals(data)
+
+        await interaction.response.send_message("✅ Your appeal has been submitted for staff review.", ephemeral=True)
+
+    async def review_appeal(self, interaction: discord.Interaction, appeal_id: str, accepted: bool):
+        data = self.get_appeals()
+        entry = data["entries"].get(appeal_id)
+        if not entry:
+            await interaction.response.send_message("Appeal not found.", ephemeral=True)
+            return
+
+        entry["status"] = "Accepted" if accepted else "Denied"
+        entry["reviewed_by"] = interaction.user.mention
+        entry["reviewed_at"] = utcnow().isoformat()
+        entry["decision_note"] = "Appeal accepted by staff." if accepted else "Appeal denied by staff."
+        data["entries"][appeal_id] = entry
+        self.save_appeals(data)
+
+        embed = discord.Embed(
+            title=f"🧾 Appeal Reviewed • {appeal_id}",
+            color=COLOR_SUCCESS if accepted else COLOR_DANGER,
+            timestamp=utcnow()
+        )
+        embed.add_field(name="User ID", value=str(entry["user_id"]), inline=True)
+        embed.add_field(name="Write-Up ID", value=entry["writeup_id"], inline=True)
+        embed.add_field(name="Status", value=entry["status"], inline=True)
+        embed.add_field(name="Appeal Reason", value=entry["reason"][:1024], inline=False)
+        embed.add_field(name="Evidence", value=entry["evidence"][:1024], inline=False)
+        embed.add_field(name="Reviewed By", value=entry["reviewed_by"], inline=True)
+        embed.set_footer(text="Different Meets • Appeal Review")
+
+        try:
+            await interaction.message.edit(embed=embed, view=AppealReviewView(self, appeal_id))
+        except discord.HTTPException:
+            pass
+
+        member = interaction.guild.get_member(entry["user_id"]) if interaction.guild else None
+        if member:
+            try:
+                await member.send(f"Your DIFF appeal **{appeal_id}** has been **{entry['status']}**.")
+            except discord.HTTPException:
+                pass
+
+        await interaction.response.send_message(f"✅ Appeal {appeal_id} has been {entry['status'].lower()}.", ephemeral=True)
+
+    # -----------------------------------------------------
+    # COMMANDS
+    # -----------------------------------------------------
+    @commands.command(name="poststaffdashboard")
+    @commands.has_permissions(manage_guild=True)
+    async def post_staff_dashboard(self, ctx: commands.Context):
+        channel = ctx.guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        if channel is None:
+            await ctx.send("❌ STAFF_DASHBOARD_CHANNEL_ID is not set correctly.")
+            return
+        await channel.send(embed=self.build_dashboard_embed(), view=StaffDashboardView(self))
+        await ctx.send("✅ Staff dashboard panel posted.")
+
+    @commands.command(name="postappealpanel")
+    @commands.has_permissions(manage_guild=True)
+    async def post_appeal_panel(self, ctx: commands.Context):
+        channel = ctx.guild.get_channel(APPEAL_PANEL_CHANNEL_ID)
+        if channel is None:
+            await ctx.send("❌ APPEAL_PANEL_CHANNEL_ID is not set correctly.")
+            return
+        await channel.send(embed=self.build_appeal_panel_embed(), view=AppealPanelView(self))
+        await ctx.send("✅ Appeal panel posted.")
+
+    @commands.command(name="flaggedhosts")
+    @commands.has_permissions(manage_guild=True)
+    async def flagged_hosts(self, ctx: commands.Context):
+        data = self.get_host_profiles()
+        flagged = [p for p in data.values() if p.get("review_flagged")]
+
+        if not flagged:
+            await ctx.send("No flagged hosts right now.")
+            return
+
+        embed = discord.Embed(
+            title="📉 Flagged Hosts",
+            color=COLOR_WARNING
+        )
+
+        lines = []
+        for p in flagged[:10]:
+            lines.append(
+                f"**{p['display_name']}** — Feedback: {p.get('feedback_average', 0)}/5 | "
+                f"Host Write-Ups: {p.get('host_writeups', 0)} | "
+                f"Attendance Avg: {p.get('attendance_average', 0)}"
+            )
+
+        embed.add_field(name="Current Review List", value="\n".join(lines), inline=False)
+        embed.set_footer(text="Different Meets • Staff Dashboard")
+        await ctx.send(embed=embed)
+
+    @commands.command(name="smartinsights")
+    @commands.has_permissions(manage_guild=True)
+    async def smart_insights(self, ctx: commands.Context):
+        member_data = self.get_member_profiles()
+        host_data = self.get_host_profiles()
+
+        risky_members = []
+        for uid, profile in member_data.items():
+            insight = self.get_member_risk_insight(profile)
+            if "high-risk" in insight or "rising moderation pattern" in insight:
+                risky_members.append((profile.get("display_name", uid), insight))
+
+        risky_hosts = []
+        for uid, profile in host_data.items():
+            insight = self.get_host_risk_insight(profile)
+            if "declining" in insight or "struggling" in insight:
+                risky_hosts.append((profile.get("display_name", uid), insight))
+
+        embed = discord.Embed(
+            title="🧠 Smart Moderation Insights",
+            color=COLOR_PRIMARY
+        )
+
+        embed.add_field(
+            name="High-Risk / Rising Members",
+            value="\n".join([f"**{name}** — {insight}" for name, insight in risky_members[:8]]) if risky_members else "No risky members detected.",
+            inline=False
+        )
+        embed.add_field(
+            name="Declining / Struggling Hosts",
+            value="\n".join([f"**{name}** — {insight}" for name, insight in risky_hosts[:8]]) if risky_hosts else "No risky hosts detected.",
+            inline=False
+        )
+        embed.set_footer(text="Different Meets • Smart Insights")
+        await ctx.send(embed=embed)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(StaffDashboardSystem(bot))

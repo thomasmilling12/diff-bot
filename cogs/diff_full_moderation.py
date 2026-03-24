@@ -647,6 +647,277 @@ class FullModerationSystem(commands.Cog, name="FullModerationSystem"):
         embed.set_footer(text="Different Meets • Full Moderation System")
         await ctx.send(embed=embed)
 
+    # =========================================================
+    # TEST EXAMPLE COMMAND
+    # =========================================================
+
+    @commands.command(name="posttestexample")
+    @commands.has_permissions(administrator=True)
+    async def post_test_example(self, ctx: commands.Context):
+        """
+        Posts a full example walkthrough of every system using the seeded
+        test data.  Usage: !posttestexample
+        """
+        await ctx.message.delete()
+        ch = ctx.channel
+
+        # ── header ──────────────────────────────────────────
+        header = discord.Embed(
+            title       = "🧪 DIFF Bot — Full System Demo",
+            description = (
+                "This is a live walkthrough of all active systems using realistic "
+                "DIFF meet community data.\n\n"
+                "**Systems covered:**\n"
+                "1️⃣  Manager Hub (All-Time Leaderboard)\n"
+                "2️⃣  Season #3 Weekly Standings\n"
+                "3️⃣  Manager Write-Up System (5 entries)\n"
+                "4️⃣  Member Moderation Profiles\n"
+                "5️⃣  Host Performance Leaderboard\n"
+                "6️⃣  Full System Stats"
+            ),
+            color = COLOR_PRIMARY,
+        )
+        header.set_footer(text="Different Meets • System Demo")
+        await ch.send(embed=header)
+
+        # ── 1. manager hub all-time leaderboard ─────────────
+        perf_path = DATA_DIR / "manager_performance_stats.json"
+        perf_data = _load(perf_path, {})
+        ranked_all = sorted(perf_data.items(), key=lambda x: x[1].get("points", 0), reverse=True)
+
+        lb_lines = []
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        for rank, (name, s) in enumerate(ranked_all, 1):
+            medal = medals.get(rank, f"**#{rank}**")
+            lb_lines.append(
+                f"{medal} **{name}** — {s.get('points', 0)} pts | "
+                f"{s.get('meets_hosted', 0)} meets | "
+                f"{s.get('attendees_total', 0)} attendees"
+            )
+
+        e1 = discord.Embed(
+            title       = "1️⃣  Manager Hub — All-Time Leaderboard",
+            description = "\n".join(lb_lines) if lb_lines else "No data yet.",
+            color       = 0xF1C40F,
+        )
+        e1.set_footer(text="Updated in real-time via !manageradd")
+        await ch.send(embed=e1)
+
+        # ── 2. season leaderboard ────────────────────────────
+        season_path = DATA_DIR / "manager_season_stats.json"
+        meta_path   = DATA_DIR / "manager_season_meta.json"
+        seas_data   = _load(season_path, {})
+        meta        = _load(meta_path,   {"season_number": 1})
+        ranked_seas = sorted(seas_data.items(), key=lambda x: x[1].get("points", 0), reverse=True)
+
+        seas_lines = []
+        for rank, (name, s) in enumerate(ranked_seas, 1):
+            medal = medals.get(rank, f"**#{rank}**")
+            promo = " ⚡ Promo Alert" if s.get("points", 0) >= 25 else ""
+            seas_lines.append(
+                f"{medal} **{name}** — {s.get('points', 0)} pts this week | "
+                f"{s.get('meets_hosted', 0)} meets{promo}"
+            )
+
+        e2 = discord.Embed(
+            title       = f"2️⃣  Season #{meta.get('season_number', '?')} — Weekly Standings",
+            description = "\n".join(seas_lines) if seas_lines else "No data yet.",
+            color       = 0x9B59B6,
+        )
+        e2.add_field(name="Promo Threshold",  value="25 pts", inline=True)
+        e2.add_field(name="Reset Command",    value="`!seasonendweek`", inline=True)
+        e2.set_footer(text="Resets weekly via !seasonendweek")
+        await ch.send(embed=e2)
+
+        # ── 3. write-up entries ──────────────────────────────
+        wu_path  = DATA_DIR / "manager_writeups.json"
+        str_path = DATA_DIR / "manager_writeup_strikes.json"
+        wu_data  = _load(wu_path,  {"counter": 0, "entries": {}})
+        str_data = _load(str_path, {})
+        entries  = wu_data.get("entries", {})
+
+        type_colors = {
+            "Member Write-Up": COLOR_PRIMARY,
+            "Host Write-Up":   COLOR_DANGER,
+            "Warning Notice":  COLOR_WARNING,
+            "Strike Entry":    COLOR_DANGER,
+        }
+        status_icons = {
+            "Active":   "🔴",
+            "Resolved": "✅",
+            "Removed":  "⬛",
+        }
+
+        wu_header = discord.Embed(
+            title       = f"3️⃣  Manager Write-Up System — {len(entries)} Entries",
+            description = (
+                "Each entry below represents a live write-up embed with action buttons "
+                "(Mark Resolved / Add Strike / Delete Entry).\n\n"
+                "Entries survive bot restarts — buttons recover the write-up ID from the embed title."
+            ),
+            color = COLOR_WARNING,
+        )
+        wu_header.add_field(name="Active",   value=str(sum(1 for e in entries.values() if e["status"] == "Active")),   inline=True)
+        wu_header.add_field(name="Resolved", value=str(sum(1 for e in entries.values() if e["status"] == "Resolved")), inline=True)
+        wu_header.add_field(name="Strike Threshold", value="3 strikes → auto-alert fires to staff-logs", inline=False)
+        wu_header.set_footer(text="Panel posted via !postwriteuppanel")
+        await ch.send(embed=wu_header)
+
+        for wid, entry in entries.items():
+            color  = type_colors.get(entry["writeup_type"], COLOR_PRIMARY)
+            s_icon = status_icons.get(entry["status"], "❓")
+            e_wu   = discord.Embed(
+                title     = f"📋 {entry['writeup_type']} • {wid}",
+                color     = COLOR_SUCCESS if entry["status"] == "Resolved" else color,
+                timestamp = _utcnow(),
+            )
+            e_wu.add_field(name="Date",         value=entry["date"],                   inline=True)
+            e_wu.add_field(name="Member",        value=entry["member_name"],            inline=True)
+            e_wu.add_field(name="PSN",           value=entry["psn"],                   inline=True)
+            e_wu.add_field(name="Submitted By",  value=entry["submitted_by"],           inline=True)
+            e_wu.add_field(name="Severity",      value=entry["severity"],              inline=True)
+            e_wu.add_field(name="Status",        value=f"{s_icon} {entry['status']}",  inline=True)
+            e_wu.add_field(name="Reason",        value=entry["reason"][:1024],         inline=False)
+            e_wu.add_field(name="Evidence",      value=entry["evidence"][:512],        inline=False)
+            e_wu.add_field(name="Strike Count",  value=str(entry.get("strike_count", 0)), inline=True)
+            if entry.get("resolved_by"):
+                e_wu.add_field(name="Resolved By", value=entry["resolved_by"], inline=True)
+            if entry.get("strike_count", 0) >= 3:
+                e_wu.add_field(
+                    name  = "⚠️ Alert",
+                    value = "Strike threshold reached — auto-alert posted to staff-logs",
+                    inline= False,
+                )
+            e_wu.set_footer(text="Different Meets • Manager Write-Up System")
+            await ch.send(embed=e_wu)
+
+        # ── 4. member moderation profiles ───────────────────
+        mod_data    = self._members()
+        flag_colors = {"critical_flag": COLOR_DANGER, "restricted_flag": COLOR_DANGER, "warning_flag": COLOR_WARNING}
+
+        mod_header = discord.Embed(
+            title       = f"4️⃣  Full Moderation — {len(mod_data)} Member Profiles",
+            description = (
+                "Each profile tracks write-ups, strikes, feedback, and attendance.\n"
+                "Flags fire automatically when strike thresholds are crossed.\n\n"
+                f"⚠️ Warning threshold: **{WARNING_THRESHOLD}+ strikes**\n"
+                f"🚨 Restricted threshold: **{RESTRICTED_THRESHOLD}+ strikes**\n"
+                f"🛑 Critical threshold: **{CRITICAL_THRESHOLD}+ strikes**"
+            ),
+            color = COLOR_PRIMARY,
+        )
+        mod_header.set_footer(text="Use !modprofile @member for individual lookups")
+        await ch.send(embed=mod_header)
+
+        for uid, p in mod_data.items():
+            strikes = int(p["strikes"])
+            flags   = p.get("flags", [])
+            if "critical_flag" in flags:
+                c = COLOR_DANGER
+            elif "restricted_flag" in flags:
+                c = COLOR_DANGER
+            elif "warning_flag" in flags:
+                c = COLOR_WARNING
+            else:
+                c = COLOR_SUCCESS
+
+            e_m = discord.Embed(
+                title = f"🛡️ {p['display_name']}",
+                color = c,
+            )
+            e_m.add_field(name="⚠️ Write-Ups",    value=str(p["writeups"]),         inline=True)
+            e_m.add_field(name="🚨 Strikes",       value=str(strikes),               inline=True)
+            e_m.add_field(name="📊 Feedback",      value=f"{p['feedback_average']}/5 ({p['feedback_entries']} ratings)", inline=True)
+            e_m.add_field(name="🏟️ Attendance",    value=str(p["attendance_count"]), inline=True)
+            e_m.add_field(name="🏁 Hosted",        value=str(p["hosted_meets"]),     inline=True)
+            e_m.add_field(
+                name  = "🚩 Flags",
+                value = ", ".join(flags) if flags else "None",
+                inline= True,
+            )
+            if flags:
+                e_m.add_field(
+                    name  = "🔔 Auto-Actions Fired",
+                    value = (
+                        ("⚠️ Warning alert\n" if "warning_flag" in flags else "") +
+                        ("🚨 Restricted alert\n" if "restricted_flag" in flags else "") +
+                        ("🛑 Critical staff alert" if "critical_flag" in flags else "")
+                    ).strip() or "—",
+                    inline=False,
+                )
+            e_m.set_footer(text="Different Meets • Full Moderation System")
+            await ch.send(embed=e_m)
+
+        # ── 5. host performance leaderboard ─────────────────
+        host_data   = self._hosts()
+        ranked_host = sorted(
+            host_data.values(),
+            key=lambda p: (float(p["feedback_average"]), float(p["attendance_average"]), int(p["hosted_meets"])),
+            reverse=True,
+        )
+
+        host_lines = []
+        for rank, p in enumerate(ranked_host, 1):
+            medal   = medals.get(rank, f"**#{rank}**")
+            flagged = " 🚨 Under Review" if p.get("review_flagged") else ""
+            host_lines.append(
+                f"{medal} **{p['display_name']}**{flagged}\n"
+                f"└─ {p['hosted_meets']} meets | Att. avg: {p['attendance_average']} | "
+                f"Feedback: {p['feedback_average']}/5 | Host WUs: {p['host_writeups']}"
+            )
+
+        e5 = discord.Embed(
+            title       = "5️⃣  Host Performance Leaderboard",
+            description = "\n\n".join(host_lines) if host_lines else "No host data yet.",
+            color       = COLOR_SUCCESS,
+        )
+        e5.add_field(
+            name  = "Review Flag Triggers",
+            value = (
+                f"• Feedback avg ≤ {HOST_BAD_FEEDBACK_THRESHOLD}/5\n"
+                f"• ≥{HOST_WRITEUP_THRESHOLD} host write-ups\n"
+                f"• Attendance avg ≤ {HOST_LOW_ATTENDANCE_THRESHOLD}"
+            ),
+            inline=False,
+        )
+        e5.set_footer(text="Use !hostprofile @member for individual lookups")
+        await ch.send(embed=e5)
+
+        # ── 6. system summary stats ──────────────────────────
+        total_strikes = sum(int(p["strikes"]) for p in mod_data.values())
+        total_wus     = sum(int(p["writeups"]) for p in mod_data.values())
+        flagged_m     = sum(1 for p in mod_data.values() if p.get("flags"))
+        flagged_h     = sum(1 for p in host_data.values() if p.get("review_flagged"))
+        wu_total      = wu_data.get("counter", 0)
+        wu_active     = sum(1 for e in entries.values() if e["status"] == "Active")
+
+        e6 = discord.Embed(
+            title = "6️⃣  Full System Stats",
+            color = COLOR_PRIMARY,
+        )
+        e6.add_field(name="👥 Manager Profiles",   value=str(len(perf_data)),  inline=True)
+        e6.add_field(name="🏁 Host Profiles",      value=str(len(host_data)),  inline=True)
+        e6.add_field(name="📋 Write-Up Entries",   value=f"{wu_total} total / {wu_active} active", inline=True)
+        e6.add_field(name="🚨 Total Strikes",      value=str(total_strikes),   inline=True)
+        e6.add_field(name="🚩 Flagged Members",    value=str(flagged_m),       inline=True)
+        e6.add_field(name="📉 Hosts Under Review", value=str(flagged_h),       inline=True)
+        e6.add_field(
+            name  = "Data Files",
+            value = "`diff_data/` — all JSON, persists across restarts",
+            inline=False,
+        )
+        e6.add_field(
+            name  = "Active Cogs",
+            value = (
+                "`diff_manager_hub` · `diff_manager_season` · `diff_manager_writeups`\n"
+                "`diff_full_moderation` · `diff_feedback_system`\n"
+                "`diff_welcome_join` · `partner_expansion` · `partner_request_system`"
+            ),
+            inline=False,
+        )
+        e6.set_footer(text="Different Meets • Full System Demo Complete")
+        await ch.send(embed=e6)
+
 
 # =========================================================
 # SETUP
