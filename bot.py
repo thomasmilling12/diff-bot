@@ -214,6 +214,7 @@ async def _setup_hook():
     await bot.load_extension("cogs.diff_feedback_system")
     await bot.load_extension("cogs.diff_manager_hub")
     await bot.load_extension("cogs.diff_manager_season")
+    await bot.load_extension("cogs.diff_manager_writeups")
 
 bot.setup_hook = _setup_hook
 

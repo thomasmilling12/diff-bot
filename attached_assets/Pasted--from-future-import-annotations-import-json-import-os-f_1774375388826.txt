@@ -1,0 +1,523 @@
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from typing import Dict, Any, List
+
+import discord
+from discord.ext import commands
+
+GUILD_ID = 850386896509337710
+MANAGER_HUB_CHANNEL_ID = 1485273802391814224
+WRITEUP_CHANNEL_ID = 1485826044865937612
+WRITEUP_ALERT_CHANNEL_ID = 0
+
+MANAGER_ROLE_IDS = [
+    0,
+]
+
+STRIKE_THRESHOLD = 3
+
+COLOR_PRIMARY = 0x1F6FEB
+COLOR_WARNING = 0xF39C12
+COLOR_DANGER = 0xE74C3C
+COLOR_SUCCESS = 0x2ECC71
+COLOR_MUTED = 0x95A5A6
+
+DATA_DIR = "data"
+WRITEUPS_FILE = os.path.join(DATA_DIR, "manager_writeups.json")
+STRIKES_FILE = os.path.join(DATA_DIR, "manager_writeup_strikes.json")
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def ensure_data_dir() -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def load_json(path: str, default):
+    ensure_data_dir()
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, indent=4)
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def save_json(path: str, data) -> None:
+    ensure_data_dir()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+
+def member_has_access(member: discord.Member) -> bool:
+    if member.guild_permissions.manage_guild or member.guild_permissions.administrator:
+        return True
+    role_ids = {role.id for role in member.roles}
+    return any(role_id in role_ids for role_id in MANAGER_ROLE_IDS if role_id)
+
+
+class BaseWriteUpModal(discord.ui.Modal):
+    def __init__(self, cog: "ManagerWriteUpSystem", writeup_type: str):
+        super().__init__(title=f"{writeup_type} Form")
+        self.cog = cog
+        self.writeup_type = writeup_type
+
+        self.member_field = discord.ui.TextInput(
+            label="Member Mention / Name",
+            placeholder="Example: @username or PSN / Discord name",
+            max_length=100,
+            required=True,
+        )
+        self.psn_field = discord.ui.TextInput(
+            label="PSN",
+            placeholder="Example: Smokey",
+            max_length=100,
+            required=False,
+        )
+        self.reason_field = discord.ui.TextInput(
+            label="Reason",
+            placeholder="Explain the issue clearly and professionally.",
+            style=discord.TextStyle.paragraph,
+            max_length=1200,
+            required=True,
+        )
+        self.evidence_field = discord.ui.TextInput(
+            label="Evidence Link",
+            placeholder="Discord message link, image link, clip link, etc.",
+            max_length=400,
+            required=False,
+        )
+        self.severity_field = discord.ui.TextInput(
+            label="Severity",
+            placeholder="Low / Medium / High",
+            max_length=30,
+            required=True,
+        )
+
+        self.add_item(self.member_field)
+        self.add_item(self.psn_field)
+        self.add_item(self.reason_field)
+        self.add_item(self.evidence_field)
+        self.add_item(self.severity_field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.create_writeup(
+            interaction=interaction,
+            writeup_type=self.writeup_type,
+            member_name=str(self.member_field),
+            psn=str(self.psn_field) if str(self.psn_field).strip() else "Not Provided",
+            reason=str(self.reason_field),
+            evidence=str(self.evidence_field) if str(self.evidence_field).strip() else "No evidence link provided",
+            severity=str(self.severity_field),
+        )
+
+
+class RemoveWriteUpModal(discord.ui.Modal, title="Remove Write-Up"):
+    writeup_id = discord.ui.TextInput(
+        label="Write-Up ID",
+        placeholder="Example: WU-0001",
+        max_length=20,
+        required=True,
+    )
+    reason = discord.ui.TextInput(
+        label="Removal Reason",
+        placeholder="Explain why this write-up should be removed.",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        required=True,
+    )
+
+    def __init__(self, cog: "ManagerWriteUpSystem"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.remove_writeup_by_id(
+            interaction=interaction,
+            writeup_id=str(self.writeup_id).strip(),
+            removal_reason=str(self.reason).strip()
+        )
+
+
+class WriteUpActionView(discord.ui.View):
+    def __init__(self, cog: "ManagerWriteUpSystem", writeup_id: str):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.writeup_id = writeup_id
+
+    @discord.ui.button(label="Mark Resolved", style=discord.ButtonStyle.success, emoji="✅", custom_id="diff_writeup_resolve")
+    async def mark_resolved(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not member_has_access(interaction.user):
+            await interaction.response.send_message("You do not have permission to use this.", ephemeral=True)
+            return
+        await self.cog.resolve_writeup(interaction, self.writeup_id)
+
+    @discord.ui.button(label="Add Strike", style=discord.ButtonStyle.danger, emoji="⚠️", custom_id="diff_writeup_add_strike")
+    async def add_strike(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not member_has_access(interaction.user):
+            await interaction.response.send_message("You do not have permission to use this.", ephemeral=True)
+            return
+        await self.cog.add_strike_from_writeup(interaction, self.writeup_id)
+
+    @discord.ui.button(label="Delete Entry", style=discord.ButtonStyle.secondary, emoji="🗑️", custom_id="diff_writeup_delete")
+    async def delete_entry(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not member_has_access(interaction.user):
+            await interaction.response.send_message("You do not have permission to use this.", ephemeral=True)
+            return
+        await self.cog.delete_writeup_entry(interaction, self.writeup_id)
+
+
+class ManagerWriteUpSelect(discord.ui.Select):
+    def __init__(self, cog: "ManagerWriteUpSystem"):
+        self.cog = cog
+        options = [
+            discord.SelectOption(label="Member Write-Up", value="Member Write-Up", emoji="📝", description="Create a standard member write-up"),
+            discord.SelectOption(label="Host Write-Up", value="Host Write-Up", emoji="🏁", description="Create a host-specific write-up"),
+            discord.SelectOption(label="Warning Notice", value="Warning Notice", emoji="⚠️", description="Issue a warning entry"),
+            discord.SelectOption(label="Strike Entry", value="Strike Entry", emoji="🚨", description="Issue a strike entry"),
+            discord.SelectOption(label="Remove Write-Up", value="Remove Write-Up", emoji="🗑️", description="Remove an existing write-up"),
+        ]
+        super().__init__(
+            placeholder="Select a manager action...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="diff_manager_writeup_select"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not member_has_access(interaction.user):
+            await interaction.response.send_message("You do not have permission to use this panel.", ephemeral=True)
+            return
+
+        selected = self.values[0]
+        if selected == "Remove Write-Up":
+            await interaction.response.send_modal(RemoveWriteUpModal(self.cog))
+        else:
+            await interaction.response.send_modal(BaseWriteUpModal(self.cog, selected))
+
+
+class ManagerWriteUpPanel(discord.ui.View):
+    def __init__(self, cog: "ManagerWriteUpSystem"):
+        super().__init__(timeout=None)
+        self.add_item(ManagerWriteUpSelect(cog))
+
+
+class ManagerWriteUpSystem(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.bot.add_view(ManagerWriteUpPanel(self))
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        print("ManagerWriteUpSystem loaded.")
+
+    def get_writeups(self) -> Dict[str, Any]:
+        return load_json(WRITEUPS_FILE, {"counter": 0, "entries": {}})
+
+    def save_writeups(self, data: Dict[str, Any]) -> None:
+        save_json(WRITEUPS_FILE, data)
+
+    def get_strikes(self) -> Dict[str, Any]:
+        return load_json(STRIKES_FILE, {})
+
+    def save_strikes(self, data: Dict[str, Any]) -> None:
+        save_json(STRIKES_FILE, data)
+
+    def generate_writeup_id(self) -> str:
+        data = self.get_writeups()
+        data["counter"] += 1
+        self.save_writeups(data)
+        return f"WU-{data['counter']:04d}"
+
+    def build_writeup_embed(self, entry: Dict[str, Any], color: int) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"📋 {entry['writeup_type']} • {entry['writeup_id']}",
+            color=color,
+            timestamp=utcnow()
+        )
+        embed.add_field(name="Date", value=entry["date"], inline=True)
+        embed.add_field(name="Member", value=entry["member_name"], inline=True)
+        embed.add_field(name="PSN", value=entry["psn"], inline=True)
+        embed.add_field(name="Submitted By", value=entry["submitted_by"], inline=True)
+        embed.add_field(name="Severity", value=entry["severity"], inline=True)
+        embed.add_field(name="Status", value=entry["status"], inline=True)
+        embed.add_field(name="Reason", value=entry["reason"][:1024], inline=False)
+        embed.add_field(name="Evidence", value=entry["evidence"][:1024], inline=False)
+        embed.add_field(name="Strike Count", value=str(entry.get("strike_count", 0)), inline=True)
+        embed.set_footer(text="Different Meets • Manager Write-Up System")
+        return embed
+
+    async def create_writeup(
+        self,
+        interaction: discord.Interaction,
+        writeup_type: str,
+        member_name: str,
+        psn: str,
+        reason: str,
+        evidence: str,
+        severity: str,
+    ):
+        if not interaction.guild or interaction.guild.id != GUILD_ID:
+            await interaction.response.send_message("This system is not configured for this server.", ephemeral=True)
+            return
+
+        writeup_id = self.generate_writeup_id()
+        date_text = utcnow().strftime("%m/%d/%Y")
+
+        strikes = self.get_strikes()
+        current_strikes = strikes.get(member_name, 0)
+
+        if writeup_type == "Strike Entry":
+            current_strikes += 1
+            strikes[member_name] = current_strikes
+            self.save_strikes(strikes)
+
+        entry = {
+            "writeup_id": writeup_id,
+            "writeup_type": writeup_type,
+            "member_name": member_name,
+            "psn": psn,
+            "reason": reason,
+            "evidence": evidence,
+            "severity": severity,
+            "submitted_by": interaction.user.mention,
+            "submitted_by_id": interaction.user.id,
+            "date": date_text,
+            "status": "Active",
+            "created_at": utcnow().isoformat(),
+            "strike_count": current_strikes,
+            "message_id": None,
+        }
+
+        data = self.get_writeups()
+        data["entries"][writeup_id] = entry
+        self.save_writeups(data)
+
+        color = COLOR_PRIMARY
+        if writeup_type in ("Warning Notice",):
+            color = COLOR_WARNING
+        if writeup_type in ("Host Write-Up", "Strike Entry"):
+            color = COLOR_DANGER
+
+        embed = self.build_writeup_embed(entry, color)
+        channel = interaction.guild.get_channel(WRITEUP_CHANNEL_ID)
+        if channel is None:
+            await interaction.response.send_message("WRITEUP_CHANNEL_ID is not set correctly.", ephemeral=True)
+            return
+
+        message = await channel.send(embed=embed, view=WriteUpActionView(self, writeup_id))
+
+        data = self.get_writeups()
+        data["entries"][writeup_id]["message_id"] = message.id
+        self.save_writeups(data)
+
+        if current_strikes >= STRIKE_THRESHOLD:
+            await self.send_strike_threshold_alert(interaction.guild, entry, current_strikes)
+
+        await interaction.response.send_message(f"✅ {writeup_type} created successfully as {writeup_id}.", ephemeral=True)
+
+    async def send_strike_threshold_alert(self, guild: discord.Guild, entry: Dict[str, Any], strike_total: int):
+        if not WRITEUP_ALERT_CHANNEL_ID:
+            return
+        channel = guild.get_channel(WRITEUP_ALERT_CHANNEL_ID)
+        if channel is None:
+            return
+        embed = discord.Embed(
+            title="🚨 Strike Threshold Reached",
+            description=(
+                f"**Member:** {entry['member_name']}\n"
+                f"**PSN:** {entry['psn']}\n"
+                f"**Current Strikes:** {strike_total}\n"
+                f"**Latest Entry:** {entry['writeup_id']}"
+            ),
+            color=COLOR_DANGER,
+            timestamp=utcnow()
+        )
+        embed.set_footer(text="Different Meets • Automatic Strike Alert")
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
+
+    async def resolve_writeup(self, interaction: discord.Interaction, writeup_id: str):
+        data = self.get_writeups()
+        entry = data["entries"].get(writeup_id)
+        if not entry:
+            await interaction.response.send_message("Write-up not found.", ephemeral=True)
+            return
+        entry["status"] = "Resolved"
+        entry["resolved_by"] = interaction.user.mention
+        entry["resolved_at"] = utcnow().isoformat()
+        data["entries"][writeup_id] = entry
+        self.save_writeups(data)
+
+        embed = self.build_writeup_embed(entry, COLOR_SUCCESS)
+        try:
+            await interaction.message.edit(embed=embed, view=WriteUpActionView(self, writeup_id))
+        except discord.HTTPException:
+            pass
+        await interaction.response.send_message(f"✅ {writeup_id} marked as resolved.", ephemeral=True)
+
+    async def add_strike_from_writeup(self, interaction: discord.Interaction, writeup_id: str):
+        data = self.get_writeups()
+        entry = data["entries"].get(writeup_id)
+        if not entry:
+            await interaction.response.send_message("Write-up not found.", ephemeral=True)
+            return
+        strikes = self.get_strikes()
+        member_name = entry["member_name"]
+        strikes[member_name] = strikes.get(member_name, 0) + 1
+        self.save_strikes(strikes)
+
+        entry["strike_count"] = strikes[member_name]
+        entry["status"] = "Strike Added"
+        data["entries"][writeup_id] = entry
+        self.save_writeups(data)
+
+        embed = self.build_writeup_embed(entry, COLOR_DANGER)
+        try:
+            await interaction.message.edit(embed=embed, view=WriteUpActionView(self, writeup_id))
+        except discord.HTTPException:
+            pass
+
+        if strikes[member_name] >= STRIKE_THRESHOLD and interaction.guild:
+            await self.send_strike_threshold_alert(interaction.guild, entry, strikes[member_name])
+
+        await interaction.response.send_message(
+            f"⚠️ Strike added to {member_name}. Total strikes: {strikes[member_name]}.",
+            ephemeral=True
+        )
+
+    async def delete_writeup_entry(self, interaction: discord.Interaction, writeup_id: str):
+        data = self.get_writeups()
+        entry = data["entries"].pop(writeup_id, None)
+        if not entry:
+            await interaction.response.send_message("Write-up not found.", ephemeral=True)
+            return
+        self.save_writeups(data)
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException:
+            pass
+        await interaction.response.send_message(f"🗑️ {writeup_id} has been deleted.", ephemeral=True)
+
+    async def remove_writeup_by_id(self, interaction: discord.Interaction, writeup_id: str, removal_reason: str):
+        data = self.get_writeups()
+        entry = data["entries"].get(writeup_id)
+        if not entry:
+            await interaction.response.send_message("Write-up ID not found.", ephemeral=True)
+            return
+
+        entry["status"] = "Removed"
+        entry["removed_by"] = interaction.user.mention
+        entry["removal_reason"] = removal_reason
+        entry["removed_at"] = utcnow().isoformat()
+        data["entries"][writeup_id] = entry
+        self.save_writeups(data)
+
+        channel = interaction.guild.get_channel(WRITEUP_CHANNEL_ID) if interaction.guild else None
+        if channel and entry.get("message_id"):
+            try:
+                msg = await channel.fetch_message(entry["message_id"])
+                embed = self.build_writeup_embed(entry, COLOR_MUTED)
+                embed.add_field(name="Removal Reason", value=removal_reason[:1024], inline=False)
+                await msg.edit(embed=embed, view=WriteUpActionView(self, writeup_id))
+            except discord.HTTPException:
+                pass
+
+        await interaction.response.send_message(f"✅ {writeup_id} marked as removed.", ephemeral=True)
+
+    def build_panel_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="🛠️ DIFF Manager Write-Up Hub",
+            description=(
+                "Use the dropdown menu below to manage crew write-ups professionally.\n\n"
+                "**Available actions:**\n"
+                "• Member Write-Up\n"
+                "• Host Write-Up\n"
+                "• Warning Notice\n"
+                "• Strike Entry\n"
+                "• Remove Write-Up"
+            ),
+            color=COLOR_PRIMARY
+        )
+        embed.add_field(
+            name="How It Works",
+            value="Select an option from the dropdown, complete the form, and the bot will automatically post the write-up in the write-up channel.",
+            inline=False
+        )
+        embed.add_field(
+            name="System Notes",
+            value="All entries are stored automatically. Strike totals can be tracked. Repeat offenders can be reviewed with history commands.",
+            inline=False
+        )
+        embed.set_footer(text="Different Meets • Manager Hub")
+        return embed
+
+    @commands.command(name="postmanagerwriteuppanel")
+    @commands.has_permissions(manage_guild=True)
+    async def post_manager_writeup_panel(self, ctx: commands.Context):
+        channel = ctx.guild.get_channel(MANAGER_HUB_CHANNEL_ID)
+        if channel is None:
+            await ctx.send("❌ MANAGER_HUB_CHANNEL_ID is invalid.")
+            return
+        await channel.send(embed=self.build_panel_embed(), view=ManagerWriteUpPanel(self))
+        await ctx.send("✅ Manager write-up panel posted.")
+
+    @commands.command(name="writeuphistory")
+    @commands.has_permissions(manage_guild=True)
+    async def writeup_history(self, ctx: commands.Context, *, member_name: str):
+        data = self.get_writeups()
+        entries: List[Dict[str, Any]] = [
+            entry for entry in data["entries"].values()
+            if entry["member_name"].lower() == member_name.lower()
+        ]
+        if not entries:
+            await ctx.send("No write-up history found for that member.")
+            return
+        entries = sorted(entries, key=lambda x: x["created_at"], reverse=True)[:10]
+
+        embed = discord.Embed(
+            title=f"📚 Write-Up History • {member_name}",
+            color=COLOR_WARNING
+        )
+        lines = [
+            f"**{entry['writeup_id']}** — {entry['writeup_type']} — {entry['status']} — {entry['date']}"
+            for entry in entries
+        ]
+        embed.add_field(name="Recent Entries", value="\n".join(lines), inline=False)
+        strikes = self.get_strikes()
+        embed.add_field(name="Current Strike Count", value=str(strikes.get(member_name, 0)), inline=True)
+        embed.set_footer(text="Different Meets • Write-Up History")
+        await ctx.send(embed=embed)
+
+    @commands.command(name="writeupstats")
+    @commands.has_permissions(manage_guild=True)
+    async def writeup_stats(self, ctx: commands.Context):
+        data = self.get_writeups()
+        total = len(data["entries"])
+        active = sum(1 for e in data["entries"].values() if e["status"] == "Active")
+        resolved = sum(1 for e in data["entries"].values() if e["status"] == "Resolved")
+        removed = sum(1 for e in data["entries"].values() if e["status"] == "Removed")
+
+        embed = discord.Embed(title="📊 DIFF Write-Up Stats", color=COLOR_PRIMARY)
+        embed.add_field(name="Total Entries", value=str(total), inline=True)
+        embed.add_field(name="Active", value=str(active), inline=True)
+        embed.add_field(name="Resolved", value=str(resolved), inline=True)
+        embed.add_field(name="Removed", value=str(removed), inline=True)
+        embed.set_footer(text="Different Meets • Manager Write-Up Stats")
+        await ctx.send(embed=embed)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(ManagerWriteUpSystem(bot))
