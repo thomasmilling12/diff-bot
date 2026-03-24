@@ -8422,6 +8422,7 @@ async def on_ready():
         except Exception as _e:
             print(f"[PopupMeet] on_ready refresh error: {_e}")
     bot.add_view(WelcomeHubView())
+    bot.add_view(SocialMediaLinksView())
     bot.add_view(_RsvpView())
     bot.add_view(_IgDropView())
     for _g in bot.guilds:
@@ -15156,6 +15157,50 @@ async def refresh_join_panel(interaction: discord.Interaction) -> None:
 _WH_CHANNEL_ID = 1485687906382123331
 _WH_STATE_FILE = os.path.join(DATA_FOLDER, "diff_welcome_hub.json")
 
+_SOCIAL_INSTAGRAM = "https://instagram.com/diff_meets?igshid=Y2I2MzMwZWM3ZA=="
+_SOCIAL_YOUTUBE   = "https://youtube.com/@DIFF_Meets"
+_SOCIAL_TIKTOK    = "https://www.tiktok.com/@different_meets?_t=8iGiQZS9LXR&_r=1"
+_SOCIAL_REDDIT    = "https://www.reddit.com/u/DIFF_Meets/s/JzGIrrvZSd"
+_SOCIAL_TWITTER   = "https://x.com/diff_meets?s=21"
+
+
+def _social_build_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📲 DIFF Social Media Hub",
+        description=(
+            "Stay connected with **Different Meets** beyond the server.\n"
+            "Catch event highlights, community features, cinematic recaps, and platform updates."
+        ),
+        color=discord.Color.from_rgb(20, 20, 20),
+    )
+    embed.add_field(
+        name="🔥 Why Follow?",
+        value=(
+            "• See photos from recent meets\n"
+            "• Get featured — your car could be next 👀\n"
+            "• Watch recaps, edits, and event highlights\n"
+            "• Stay updated on DIFF posts, drops, and announcements"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="📸 Instagram", value="Main platform for event photos, features, and DIFF content.", inline=False)
+    embed.add_field(name="🎥 YouTube",   value="Watch event recaps, edits, and longer-form DIFF media.", inline=False)
+    embed.add_field(name="🎬 TikTok",    value="Quick clips, shorts, and DIFF highlights.", inline=False)
+    embed.add_field(name="💬 Reddit",    value="Community posts, discussions, and extra content.", inline=False)
+    embed.add_field(name="🐦 Twitter / X", value="Announcements, updates, and social posts.", inline=False)
+    embed.set_footer(text="Follow. Stay active. Get noticed. — Different Meets")
+    return embed
+
+
+class SocialMediaLinksView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(label="Instagram", emoji="📸", style=discord.ButtonStyle.link, url=_SOCIAL_INSTAGRAM, row=0))
+        self.add_item(discord.ui.Button(label="YouTube",   emoji="🎥", style=discord.ButtonStyle.link, url=_SOCIAL_YOUTUBE,   row=0))
+        self.add_item(discord.ui.Button(label="TikTok",    emoji="🎬", style=discord.ButtonStyle.link, url=_SOCIAL_TIKTOK,    row=0))
+        self.add_item(discord.ui.Button(label="Reddit",    emoji="💬", style=discord.ButtonStyle.link, url=_SOCIAL_REDDIT,    row=0))
+        self.add_item(discord.ui.Button(label="Twitter / X", emoji="🐦", style=discord.ButtonStyle.link, url=_SOCIAL_TWITTER, row=0))
+
 
 def _wh_state_load() -> dict:
     try:
@@ -15225,6 +15270,13 @@ class WelcomeHubView(discord.ui.View):
             label="Support", emoji="🎫", style=discord.ButtonStyle.link, row=0,
             url=f"https://discord.com/channels/{GUILD_ID}/{SUPPORT_CHANNEL_ID}",
         ))
+
+    @discord.ui.button(label="Social Media", emoji="📲", style=discord.ButtonStyle.secondary,
+                       custom_id="diff_wh_social", row=1)
+    async def social_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            embed=_social_build_embed(), view=SocialMediaLinksView(), ephemeral=True
+        )
 
     @discord.ui.button(label="How Meets Work", emoji="🚗", style=discord.ButtonStyle.secondary,
                        custom_id="diff_wh_meets", row=1)
@@ -15364,6 +15416,19 @@ async def _cmd_welcomehub(ctx: commands.Context):
     except Exception:
         pass
     await _wh_post_or_refresh(ctx.guild)
+
+
+@bot.command(name="postsocialhub")
+async def _cmd_postsocialhub(ctx: commands.Context, channel: discord.TextChannel = None):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    target = channel or ctx.channel
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await target.send(embed=_social_build_embed(), view=SocialMediaLinksView())
 
 
 # =========================

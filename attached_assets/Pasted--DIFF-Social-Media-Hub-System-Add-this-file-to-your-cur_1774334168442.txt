@@ -1,0 +1,230 @@
+# DIFF Social Media Hub System
+# Add this file to your current discord.py bot project.
+#
+# What this file includes:
+# - A polished DIFF Social Media embed
+# - Link buttons for Instagram, YouTube, TikTok, Reddit, and Twitter / X
+# - A Welcome Hub button that opens the social media panel ephemerally
+# - An admin command to post the social panel in a channel
+#
+# Requirements:
+# - discord.py 2.3+
+#
+# Setup example in your main bot file:
+#   from diff_social_media_hub import setup_social_media_hub
+#   await setup_social_media_hub(bot)
+#
+# Optional:
+# - Replace GUILD_ID with your server ID for faster command sync
+# - Change colors / wording / emojis to match your final DIFF branding
+
+from __future__ import annotations
+
+import discord
+from discord.ext import commands
+
+
+# =========================
+# CONFIG
+# =========================
+GUILD_ID = 850386896509337710
+SOCIAL_HUB_CHANNEL_ID = None  # Put a channel ID here if you want a default post target
+
+INSTAGRAM_URL = "https://instagram.com/diff_meets?igshid=Y2I2MzMwZWM3ZA=="
+YOUTUBE_URL = "https://youtube.com/@DIFF_Meets"
+TIKTOK_URL = "https://www.tiktok.com/@different_meets?_t=8iGiQZS9LXR&_r=1"
+REDDIT_URL = "https://www.reddit.com/u/DIFF_Meets/s/JzGIrrvZSd"
+TWITTER_X_URL = "https://x.com/diff_meets?s=21"
+
+
+# =========================
+# EMBED BUILDER
+# =========================
+def build_social_media_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📲 DIFF Social Media Hub",
+        description=(
+            "Stay connected with **Different Meets** beyond the server.\n"
+            "Catch event highlights, community features, cinematic recaps, and platform updates."
+        ),
+        color=discord.Color.from_rgb(20, 20, 20),
+    )
+
+    embed.add_field(
+        name="🔥 Why Follow?",
+        value=(
+            "• See photos from recent meets\n"
+            "• Get featured — your car could be next 👀\n"
+            "• Watch recaps, edits, and event highlights\n"
+            "• Stay updated on DIFF posts, drops, and announcements"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📸 Instagram",
+        value="Main platform for event photos, features, and DIFF content.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎥 YouTube",
+        value="Watch event recaps, edits, and longer-form DIFF media.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎬 TikTok",
+        value="Quick clips, shorts, and DIFF highlights.",
+        inline=False,
+    )
+    embed.add_field(
+        name="💬 Reddit",
+        value="Community posts, discussions, and extra content.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🐦 Twitter / X",
+        value="Announcements, updates, and social posts.",
+        inline=False,
+    )
+
+    embed.set_footer(text="Follow. Stay active. Get noticed. — Different Meets")
+    return embed
+
+
+# =========================
+# URL BUTTON VIEW
+# =========================
+class SocialMediaLinksView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+        self.add_item(
+            discord.ui.Button(
+                label="Instagram",
+                emoji="📸",
+                style=discord.ButtonStyle.link,
+                url=INSTAGRAM_URL,
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="YouTube",
+                emoji="🎥",
+                style=discord.ButtonStyle.link,
+                url=YOUTUBE_URL,
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="TikTok",
+                emoji="🎬",
+                style=discord.ButtonStyle.link,
+                url=TIKTOK_URL,
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Reddit",
+                emoji="💬",
+                style=discord.ButtonStyle.link,
+                url=REDDIT_URL,
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Twitter / X",
+                emoji="🐦",
+                style=discord.ButtonStyle.link,
+                url=TWITTER_X_URL,
+            )
+        )
+
+
+# =========================
+# WELCOME HUB BUTTON VIEW
+# =========================
+class WelcomeHubSocialButtonView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="📲 Social Media",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff:welcome:social_media",
+    )
+    async def social_media_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        embed = build_social_media_embed()
+        view = SocialMediaLinksView()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+# =========================
+# COG
+# =========================
+class SocialMediaHubCog(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+
+    @commands.hybrid_command(name="post_social_hub", description="Post the DIFF social media hub.")
+    @commands.has_permissions(manage_guild=True)
+    async def post_social_hub(self, ctx: commands.Context, channel: discord.TextChannel | None = None) -> None:
+        target = channel or ctx.channel
+        if target is None:
+            await ctx.reply("I could not find a channel to post in.")
+            return
+
+        embed = build_social_media_embed()
+        view = SocialMediaLinksView()
+        await target.send(embed=embed, view=view)
+
+        if ctx.channel and ctx.channel.id != target.id:
+            try:
+                await ctx.reply(f"Posted the DIFF Social Media Hub in {target.mention}.")
+            except discord.HTTPException:
+                pass
+
+    @commands.hybrid_command(name="post_social_button", description="Post the welcome hub social media button.")
+    @commands.has_permissions(manage_guild=True)
+    async def post_social_button(self, ctx: commands.Context, channel: discord.TextChannel | None = None) -> None:
+        target = channel or ctx.channel
+        if target is None:
+            await ctx.reply("I could not find a channel to post in.")
+            return
+
+        embed = discord.Embed(
+            title="🌐 DIFF Media Access",
+            description=(
+                "Press the button below to open the **DIFF Social Media Hub**.\n"
+                "Stay connected, catch recent content, and see where your car might get featured."
+            ),
+            color=discord.Color.dark_grey(),
+        )
+        embed.set_footer(text="Different Meets • Official Media Access")
+
+        await target.send(embed=embed, view=WelcomeHubSocialButtonView())
+
+        if ctx.channel and ctx.channel.id != target.id:
+            try:
+                await ctx.reply(f"Posted the social media button in {target.mention}.")
+            except discord.HTTPException:
+                pass
+
+
+# =========================
+# SETUP
+# =========================
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(SocialMediaHubCog(bot))
+
+    # Persistent views for buttons
+    bot.add_view(SocialMediaLinksView())
+    bot.add_view(WelcomeHubSocialButtonView())
+
+
+async def setup_social_media_hub(bot: commands.Bot) -> None:
+    """Optional helper if you prefer importing a custom setup function."""
+    await setup(bot)
