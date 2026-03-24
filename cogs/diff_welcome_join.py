@@ -65,9 +65,22 @@ class DiffWelcomeJoinSystem(commands.Cog):
             except Exception as e:
                 print(f"[DiffWelcomeJoinSystem] Could not assign Unverified role: {e}")
 
+        await self._send_welcome(member)
+
+
+    @commands.command(name="previewwelcome")
+    @commands.has_permissions(manage_guild=True)
+    async def previewwelcome(self, ctx: commands.Context):
+        """Send a preview of the welcome message to the welcome channel."""
+        await self._send_welcome(ctx.author)
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+
+    async def _send_welcome(self, member: discord.Member):
         channel = member.guild.get_channel(WELCOME_POST_CHANNEL_ID)
         if not isinstance(channel, discord.TextChannel):
-            print("[DiffWelcomeJoinSystem] WELCOME_POST_CHANNEL_ID not found or not a text channel.")
             return
 
         welcome_channel = member.guild.get_channel(WELCOME_INFO_CHANNEL_ID)
@@ -98,7 +111,6 @@ class DiffWelcomeJoinSystem(commands.Cog):
             embed.set_image(url="attachment://diff_welcome_emblem.png")
 
         view = WelcomeLinksView()
-
         try:
             if file:
                 await channel.send(content=member.mention, embed=embed, file=file, view=view)
