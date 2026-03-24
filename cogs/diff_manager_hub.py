@@ -326,7 +326,54 @@ class ManagerHubSystem(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         print("[ManagerHubSystem] Cog ready.")
+        await self._auto_upload_logos()
         await self.post_or_refresh_panel()
+
+    async def _auto_upload_logos(self):
+        logos = _load_logos()
+        existing_keys = {l["key"] for l in logos}
+
+        for preset in PRESET_LOGOS:
+            if preset["key"] not in existing_keys:
+                logos.append({
+                    "key": preset["key"],
+                    "name": preset["name"],
+                    "description": preset["description"],
+                    "url": "",
+                })
+
+        missing = [l for l in logos if not l.get("url")]
+        if not missing:
+            _save_logos(logos)
+            return
+
+        channel = self.bot.get_channel(MANAGER_HUB_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(MANAGER_HUB_CHANNEL_ID)
+            except Exception:
+                _save_logos(logos)
+                return
+
+        logo_dir = Path("diff_data/crew_logos")
+        uploaded = 0
+        for logo in logos:
+            if logo.get("url"):
+                continue
+            img_path = logo_dir / f"{logo['key']}.png"
+            if not img_path.exists():
+                continue
+            try:
+                msg = await channel.send(file=discord.File(img_path))
+                logo["url"] = msg.attachments[0].url
+                await msg.delete()
+                uploaded += 1
+            except Exception as e:
+                print(f"[ManagerHubSystem] Logo upload failed for {logo['key']}: {e}")
+
+        _save_logos(logos)
+        if uploaded:
+            print(f"[ManagerHubSystem] Auto-uploaded {uploaded} crew logo(s).")
 
     def build_main_embed(self) -> discord.Embed:
         logos = _load_logos()
