@@ -207,6 +207,12 @@ intents.presences = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
+async def _setup_hook():
+    await bot.load_extension("cogs.partner_expansion")
+
+bot.setup_hook = _setup_hook
+
+
 # Global view error handler — ensures every button/select in every view
 # always sends a response even when an unhandled exception occurs,
 # preventing the "This interaction failed" red error message.
@@ -8451,7 +8457,6 @@ async def on_ready():
             print(f"[PopupMeet] on_ready refresh error: {_e}")
     bot.add_view(WelcomeHubView())
     bot.add_view(SocialMediaLinksView())
-    bot.add_view(_PartnerPanelView(_pp_get_partners()))
     bot.add_view(_PshipPanelView())
     bot.add_view(_PshipStaffView())
     bot.add_view(_RsvpView())
@@ -8461,11 +8466,6 @@ async def on_ready():
             await _wh_post_or_refresh(_g)
         except Exception as _e:
             print(f"[WelcomeHub] on_ready error: {_e}")
-    for _g in bot.guilds:
-        try:
-            await _pp_post_or_refresh(_g)
-        except Exception as _e:
-            print(f"[PartnerPanel] on_ready error: {_e}")
     for _g in bot.guilds:
         try:
             await _ig_panel_post_or_refresh(_g)
