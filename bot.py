@@ -8421,8 +8421,14 @@ async def on_ready():
             await _popup_post_or_refresh(_g)
         except Exception as _e:
             print(f"[PopupMeet] on_ready refresh error: {_e}")
+    bot.add_view(WelcomeHubView())
     bot.add_view(_RsvpView())
     bot.add_view(_IgDropView())
+    for _g in bot.guilds:
+        try:
+            await _wh_post_or_refresh(_g)
+        except Exception as _e:
+            print(f"[WelcomeHub] on_ready error: {_e}")
     for _g in bot.guilds:
         try:
             await _ig_panel_post_or_refresh(_g)
@@ -15141,6 +15147,161 @@ async def refresh_join_panel(interaction: discord.Interaction) -> None:
             pass
     await channel.send(embed=_join_build_panel_embed(), view=JoinPlatformView())
     await interaction.followup.send(f"Join Hub panel reposted in {channel.mention} (no existing panel found).", ephemeral=True)
+
+
+# =========================
+# WELCOME HUB PANEL
+# =========================
+
+_WH_CHANNEL_ID = 1485687906382123331
+_WH_STATE_FILE = os.path.join(DATA_FOLDER, "diff_welcome_hub.json")
+
+
+def _wh_state_load() -> dict:
+    try:
+        with open(_WH_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _wh_state_save(data: dict) -> None:
+    try:
+        with open(_WH_STATE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def _wh_build_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📍 Welcome to Different Meets (DIFF)",
+        color=discord.Color.blue(),
+        description=(
+            "*The official hub for clean builds, organized meets, and a strong car community.*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🚗 **What is DIFF?**\n"
+            "Different Meets (DIFF) is a PS5-based GTA car meet community focused on "
+            "**clean, realistic builds**, organized meets, and a respectful environment.\n\n"
+            "We host:\n"
+            "🎬 Cinematic car meets\n"
+            "🏁 Themed events\n"
+            "📸 Photoshoots\n"
+            "🏆 Competitions & rankings\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📊 **Get Started:**\n"
+            "Use the buttons below to navigate the server and get set up.\n\n"
+            f"• 📋 **Rules & Requirements** — Know the standards in <#{RULES_CHANNEL_ID}>\n"
+            f"• 🚗 **How Meets Work** — Learn how to join & participate\n"
+            f"• 📅 **Upcoming Meets** — View the schedule in <#{UPCOMING_MEET_CHANNEL_ID}>\n"
+            f"• 🎫 **Support** — Get help in <#{SUPPORT_CHANNEL_ID}>\n"
+            f"• 📊 **My Stats** — View your personal meet activity\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "⚠️ **DIFF Standards:**\n"
+            "• Clean & realistic builds only\n"
+            "• Respect all members\n"
+            "• No trolling, griefing, or rice behavior\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "*Stay active, stay consistent, and represent DIFF the right way.*\n\n"
+            "— **Different Meets**"
+        ),
+    )
+    embed.set_footer(text="DIFF Welcome Hub")
+    return embed
+
+
+class WelcomeHubView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(
+            label="Rules", emoji="📋", style=discord.ButtonStyle.link, row=0,
+            url=f"https://discord.com/channels/{GUILD_ID}/{RULES_CHANNEL_ID}",
+        ))
+        self.add_item(discord.ui.Button(
+            label="Schedule", emoji="📅", style=discord.ButtonStyle.link, row=0,
+            url=f"https://discord.com/channels/{GUILD_ID}/{UPCOMING_MEET_CHANNEL_ID}",
+        ))
+        self.add_item(discord.ui.Button(
+            label="Support", emoji="🎫", style=discord.ButtonStyle.link, row=0,
+            url=f"https://discord.com/channels/{GUILD_ID}/{SUPPORT_CHANNEL_ID}",
+        ))
+
+    @discord.ui.button(label="How Meets Work", emoji="🚗", style=discord.ButtonStyle.secondary,
+                       custom_id="diff_wh_meets", row=1)
+    async def meets_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "**🚗 How DIFF Meets Work**\n\n"
+            "1. Watch for the meet announcement and schedule.\n"
+            "2. Join on time and be ready with a clean vehicle.\n"
+            "3. Follow the host's parking and lineup instructions.\n"
+            "4. Drive responsibly and represent DIFF properly.\n"
+            "5. Enjoy the meet, photos, and community.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="My Stats", emoji="📊", style=discord.ButtonStyle.secondary,
+                       custom_id="diff_wh_stats", row=1)
+    async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = interaction.user.id
+        lb_entry = _rsvp_leaderboard.get(str(uid), {})
+        att_count  = int(lb_entry.get("attendance_count", 0))
+        host_count = int(lb_entry.get("hosted_count", 0))
+        om_stats   = _om_stats_load().get("members", {}).get(str(uid), {})
+        on_time  = int(om_stats.get("attended", 0))
+        late     = int(om_stats.get("late", 0))
+        unable   = int(om_stats.get("unable", 0))
+        no_show  = int(om_stats.get("no_shows", 0))
+        lines = [
+            f"**📊 Your DIFF Stats — {interaction.user.display_name}**\n",
+            f"🎟️ Meets Attended: **{att_count}**",
+            f"🎙️ Meets Hosted: **{host_count}**",
+        ]
+        if any([on_time, late, unable, no_show]):
+            lines += [
+                "",
+                f"✅ On-Time Check-Ins: **{on_time}**",
+                f"🕐 Late Check-Ins: **{late}**",
+                f"❌ Unable to Join: **{unable}**",
+                f"⚠️ No-Shows: **{no_show}**",
+            ]
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+async def _wh_post_or_refresh(guild: discord.Guild) -> None:
+    channel = guild.get_channel(_WH_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await guild.fetch_channel(_WH_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+    data = _wh_state_load()
+    msg_id = data.get(str(guild.id))
+    if msg_id:
+        try:
+            msg = await channel.fetch_message(int(msg_id))
+            await msg.edit(embed=_wh_build_embed(), view=WelcomeHubView())
+            return
+        except discord.NotFound:
+            pass
+        except Exception:
+            return
+    msg = await channel.send(embed=_wh_build_embed(), view=WelcomeHubView())
+    data[str(guild.id)] = msg.id
+    _wh_state_save(data)
+
+
+@bot.command(name="welcomehub")
+async def _cmd_welcomehub(ctx: commands.Context):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _wh_post_or_refresh(ctx.guild)
 
 
 # =========================
