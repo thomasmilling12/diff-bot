@@ -8423,6 +8423,8 @@ async def on_ready():
             print(f"[PopupMeet] on_ready refresh error: {_e}")
     bot.add_view(WelcomeHubView())
     bot.add_view(SocialMediaLinksView())
+    bot.add_view(_PshipPanelView())
+    bot.add_view(_PshipStaffView())
     bot.add_view(_RsvpView())
     bot.add_view(_IgDropView())
     for _g in bot.guilds:
@@ -15434,6 +15436,399 @@ async def _cmd_postsocialhub(ctx: commands.Context, channel: discord.TextChannel
     except Exception:
         pass
     await target.send(embed=_social_build_embed(), view=SocialMediaLinksView())
+
+
+# =========================
+# PARTNERSHIP SYSTEM
+# =========================
+
+_PSHIP_PANEL_CHANNEL_ID    = 0  # channel where the public panel is posted
+_PSHIP_REVIEW_CHANNEL_ID   = 0  # staff-only review channel
+_PSHIP_ACCEPTED_CHANNEL_ID = 0  # public channel for accepted partner announcements (0 = skip)
+_PSHIP_PARTNER_ROLE_ID     = 0  # role assigned on acceptance (0 = skip)
+_PSHIP_STAFF_PING_ROLE_ID  = 0  # staff role pinged on new application (0 = skip)
+_PSHIP_FILE                = os.path.join(DATA_FOLDER, "diff_partnerships.json")
+
+_PSHIP_EMBED_COLOR   = discord.Color.from_rgb(88, 101, 242)
+_PSHIP_SUCCESS_COLOR = discord.Color.green()
+_PSHIP_DENIED_COLOR  = discord.Color.red()
+_PSHIP_WARN_COLOR    = discord.Color.gold()
+_PSHIP_FOOTER        = "Different Meets • Partnership System"
+
+
+def _pship_load() -> dict:
+    return _load_diff_json(_PSHIP_FILE) or {}
+
+
+def _pship_save(data: dict) -> None:
+    _save_diff_json(_PSHIP_FILE, data)
+
+
+def _pship_extract_app_id(message: discord.Message) -> str | None:
+    try:
+        desc = message.embeds[0].description or ""
+        import re as _re
+        m = _re.search(r"`(PARTNER-\d+-\d+)`", desc)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def _pship_build_info_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🤝 DIFF Partnership Program",
+        description=(
+            "Interested in partnering with **Different Meets**?\n"
+            "We work with communities that match our standards of **activity, professionalism, and clean community culture**."
+        ),
+        color=_PSHIP_EMBED_COLOR,
+    )
+    embed.add_field(
+        name="📌 Partnership Requirements",
+        value=(
+            "• Active and well-managed community\n"
+            "• Clean and respectful environment\n"
+            "• Related to car culture, GTA, automotive content, or gaming\n"
+            "• Good engagement and not inactive\n"
+            "• Organized setup with rules and moderation"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🚀 What You Get",
+        value=(
+            "• Promotion in the DIFF partnership area\n"
+            "• Exposure to our community\n"
+            "• Potential social media / event support\n"
+            "• Future collab opportunities"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📋 How To Apply",
+        value=(
+            "Press **Apply for Partnership** below and complete the application form.\n"
+            "A staff member will review your submission and respond once a decision is made."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="⚠️ Important Notes",
+        value=(
+            "• Not all applications are accepted\n"
+            "• Inactive or poor-quality partnerships may be removed\n"
+            "• Partnerships must stay mutually beneficial"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=_PSHIP_FOOTER)
+    return embed
+
+
+def _pship_build_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🤝 DIFF Partnership Center",
+        description=(
+            "Use the buttons below to learn how DIFF partnerships work or submit a partnership request.\n\n"
+            "We look for communities that are **active, respectful, organized, and aligned with DIFF standards**."
+        ),
+        color=_PSHIP_EMBED_COLOR,
+    )
+    embed.add_field(
+        name="Available Options",
+        value=(
+            "**📖 Partnership Info** — Read requirements and expectations\n"
+            "**📩 Apply for Partnership** — Submit your community for staff review"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=_PSHIP_FOOTER)
+    return embed
+
+
+def _pship_build_application_embed(app: dict, user: discord.User | discord.Member) -> discord.Embed:
+    embed = discord.Embed(
+        title="📨 New Partnership Application",
+        description=f"Application ID: `{app['application_id']}`",
+        color=_PSHIP_WARN_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Applicant", value=f"{user.mention} (`{app['applicant_name']}`)", inline=False)
+    embed.add_field(name="Community Name", value=app["server_name"], inline=False)
+    embed.add_field(name="Invite Link", value=app["invite_link"], inline=False)
+    embed.add_field(name="Community Type", value=app["community_type"], inline=True)
+    embed.add_field(name="Member Count", value=app["member_count"], inline=True)
+    embed.add_field(name="Why They Want To Partner", value=app["why_partner"][:1024], inline=False)
+    embed.add_field(name="Extra Info", value=(app["extra_info"][:1024] if app.get("extra_info") else "None provided"), inline=False)
+    embed.add_field(name="Status", value="🟡 Pending Review", inline=False)
+    if hasattr(user, "display_avatar") and user.display_avatar:
+        embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text=_PSHIP_FOOTER)
+    return embed
+
+
+def _pship_build_accepted_embed(app: dict, reviewer: discord.Member | discord.User) -> discord.Embed:
+    embed = discord.Embed(
+        title="✅ Partnership Accepted",
+        description=(
+            f"The partnership request for **{app['server_name']}** has been approved.\n\n"
+            "Welcome to the DIFF partnership network."
+        ),
+        color=_PSHIP_SUCCESS_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Community",    value=app["server_name"], inline=True)
+    embed.add_field(name="Invite Link",  value=app["invite_link"], inline=True)
+    embed.add_field(name="Reviewed By",  value=reviewer.mention,   inline=False)
+    embed.set_footer(text=_PSHIP_FOOTER)
+    return embed
+
+
+def _pship_build_denied_embed(app: dict, reviewer: discord.Member | discord.User, reason: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="❌ Partnership Denied",
+        description=f"The partnership request for **{app['server_name']}** was not approved.",
+        color=_PSHIP_DENIED_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Community",   value=app["server_name"], inline=True)
+    embed.add_field(name="Reviewed By", value=reviewer.mention,   inline=True)
+    embed.add_field(name="Reason",      value=reason[:1024],      inline=False)
+    embed.set_footer(text=_PSHIP_FOOTER)
+    return embed
+
+
+def _pship_build_log_embed(action: str, app: dict, reviewer: discord.Member | discord.User, reason: str | None = None) -> discord.Embed:
+    color = _PSHIP_SUCCESS_COLOR if action == "accepted" else _PSHIP_DENIED_COLOR
+    icon  = "✅" if action == "accepted" else "❌"
+    embed = discord.Embed(
+        title=f"{icon} Partnership {action.title()}",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Application ID", value=app["application_id"], inline=False)
+    embed.add_field(name="Applicant",      value=f"<@{app['applicant_id']}>", inline=True)
+    embed.add_field(name="Community",      value=app["server_name"],          inline=True)
+    embed.add_field(name="Reviewed By",    value=reviewer.mention,            inline=False)
+    if reason:
+        embed.add_field(name="Reason", value=reason[:1024], inline=False)
+    embed.set_footer(text=_PSHIP_FOOTER)
+    return embed
+
+
+async def _pship_process_accept(interaction: discord.Interaction, app_id: str) -> None:
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("❌ You don't have permission to review applications.", ephemeral=True)
+        return
+    data = _pship_load()
+    app = data.get(app_id)
+    if not app:
+        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+        return
+    if app.get("status") != "pending":
+        await interaction.response.send_message("⚠️ This application has already been reviewed.", ephemeral=True)
+        return
+    app["status"]        = "accepted"
+    app["reviewer_id"]   = interaction.user.id
+    app["reviewer_name"] = str(interaction.user)
+    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
+    data[app_id] = app
+    _pship_save(data)
+    guild = interaction.guild
+    applicant = guild.get_member(app["applicant_id"]) if guild else None
+    if applicant and _PSHIP_PARTNER_ROLE_ID:
+        role = guild.get_role(_PSHIP_PARTNER_ROLE_ID)
+        if role:
+            try:
+                await applicant.add_roles(role, reason="Partnership accepted")
+            except discord.Forbidden:
+                pass
+    updated = _pship_build_application_embed(app, applicant or interaction.user)
+    updated.color = _PSHIP_SUCCESS_COLOR
+    updated.set_field_at(len(updated.fields) - 1, name="Status", value=f"✅ Accepted by {interaction.user.mention}", inline=False)
+    await interaction.message.edit(embed=updated, view=None)
+    if applicant:
+        try:
+            await applicant.send(embed=_pship_build_accepted_embed(app, interaction.user))
+        except discord.Forbidden:
+            pass
+    if _PSHIP_ACCEPTED_CHANNEL_ID:
+        acc_ch = guild.get_channel(_PSHIP_ACCEPTED_CHANNEL_ID) if guild else None
+        if isinstance(acc_ch, discord.TextChannel):
+            await acc_ch.send(embed=_pship_build_accepted_embed(app, interaction.user))
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        await log_ch.send(embed=_pship_build_log_embed("accepted", app, interaction.user))
+    await interaction.response.send_message("✅ Partnership accepted.", ephemeral=True)
+
+
+async def _pship_process_deny(interaction: discord.Interaction, app_id: str, reason: str) -> None:
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message("❌ You don't have permission to review applications.", ephemeral=True)
+        return
+    data = _pship_load()
+    app = data.get(app_id)
+    if not app:
+        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+        return
+    if app.get("status") != "pending":
+        await interaction.response.send_message("⚠️ This application has already been reviewed.", ephemeral=True)
+        return
+    app["status"]        = "denied"
+    app["reviewer_id"]   = interaction.user.id
+    app["reviewer_name"] = str(interaction.user)
+    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
+    data[app_id] = app
+    _pship_save(data)
+    guild = interaction.guild
+    applicant = guild.get_member(app["applicant_id"]) if guild else None
+    updated = _pship_build_application_embed(app, applicant or interaction.user)
+    updated.color = _PSHIP_DENIED_COLOR
+    updated.set_field_at(len(updated.fields) - 1, name="Status", value=f"❌ Denied by {interaction.user.mention}", inline=False)
+    await interaction.message.edit(embed=updated, view=None)
+    if applicant:
+        try:
+            await applicant.send(embed=_pship_build_denied_embed(app, interaction.user, reason))
+        except discord.Forbidden:
+            pass
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        await log_ch.send(embed=_pship_build_log_embed("denied", app, interaction.user, reason=reason))
+    await interaction.response.send_message("❌ Partnership denied.", ephemeral=True)
+
+
+class _PshipDenyModal(discord.ui.Modal, title="Deny Partnership Application"):
+    reason = discord.ui.TextInput(
+        label="Reason for denial",
+        style=discord.TextStyle.paragraph,
+        placeholder="Explain why this partnership was denied.",
+        required=True,
+        max_length=500,
+    )
+
+    def __init__(self, app_id: str) -> None:
+        super().__init__()
+        self.app_id = app_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await _pship_process_deny(interaction, self.app_id, str(self.reason))
+
+
+class _PshipStaffView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅", custom_id="pship_accept")
+    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pship_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not find application ID.", ephemeral=True)
+            return
+        await _pship_process_accept(interaction, app_id)
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌", custom_id="pship_deny")
+    async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pship_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not find application ID.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_PshipDenyModal(app_id))
+
+
+class _PshipApplicationModal(discord.ui.Modal, title="DIFF Partnership Application"):
+    server_name    = discord.ui.TextInput(label="Community / Server Name",        placeholder="Enter your community name",                      required=True,  max_length=100)
+    invite_link    = discord.ui.TextInput(label="Invite Link / Social Link",       placeholder="Paste your Discord invite or main link",          required=True,  max_length=200)
+    community_type = discord.ui.TextInput(label="Community Type",                  placeholder="GTA, Car Community, Gaming, Automotive, etc.",    required=True,  max_length=100)
+    member_count   = discord.ui.TextInput(label="Approximate Member Count",        placeholder="Example: 250",                                    required=True,  max_length=20)
+    why_partner    = discord.ui.TextInput(label="Why do you want to partner?",     style=discord.TextStyle.paragraph,
+                                          placeholder="Tell us why this partnership makes sense.",                required=True,  max_length=1000)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        app_id = f"PARTNER-{interaction.user.id}-{int(datetime.now(timezone.utc).timestamp())}"
+        app = {
+            "application_id": app_id,
+            "applicant_id":   interaction.user.id,
+            "applicant_name": str(interaction.user),
+            "server_name":    str(self.server_name),
+            "invite_link":    str(self.invite_link),
+            "community_type": str(self.community_type),
+            "member_count":   str(self.member_count),
+            "why_partner":    str(self.why_partner),
+            "extra_info":     "",
+            "status":         "pending",
+        }
+        data = _pship_load()
+        data[app_id] = app
+        _pship_save(data)
+        review_ch = interaction.guild.get_channel(_PSHIP_REVIEW_CHANNEL_ID) if interaction.guild else None
+        if not isinstance(review_ch, discord.TextChannel):
+            await interaction.response.send_message(
+                "✅ Application received! Staff will review it shortly.\n"
+                f"Your Application ID: `{app_id}`",
+                ephemeral=True,
+            )
+            return
+        content = f"<@&{_PSHIP_STAFF_PING_ROLE_ID}> New partnership application submitted." if _PSHIP_STAFF_PING_ROLE_ID else None
+        await review_ch.send(
+            content=content,
+            embed=_pship_build_application_embed(app, interaction.user),
+            view=_PshipStaffView(),
+        )
+        confirm = discord.Embed(
+            title="✅ Application Submitted",
+            description=f"Your application has been sent to staff for review.\nApplication ID: `{app_id}`",
+            color=_PSHIP_SUCCESS_COLOR,
+        )
+        confirm.set_footer(text=_PSHIP_FOOTER)
+        await interaction.response.send_message(embed=confirm, ephemeral=True)
+
+
+class _PshipPanelView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Partnership Info", style=discord.ButtonStyle.secondary, emoji="📖", custom_id="pship_info")
+    async def info_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_message(embed=_pship_build_info_embed(), ephemeral=True)
+
+    @discord.ui.button(label="Apply for Partnership", style=discord.ButtonStyle.primary, emoji="📩", custom_id="pship_apply")
+    async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(_PshipApplicationModal())
+
+
+@bot.command(name="postpartnershippanel")
+async def _cmd_postpartnershippanel(ctx: commands.Context, channel: discord.TextChannel = None):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    target = channel or ctx.channel
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await target.send(embed=_pship_build_panel_embed(), view=_PshipPanelView())
+
+
+@bot.command(name="partnershiplist")
+async def _cmd_partnershiplist(ctx: commands.Context):
+    if not any(r.id in _JOIN_STAFF_ROLE_IDS for r in ctx.author.roles):
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    data = _pship_load()
+    if not data:
+        await ctx.send("No partnership applications on file.", delete_after=10)
+        return
+    lines = []
+    for app_id, app in data.items():
+        status_icon = {"pending": "🟡", "accepted": "✅", "denied": "❌"}.get(app.get("status", "pending"), "❔")
+        lines.append(f"{status_icon} `{app_id}` — **{app.get('server_name', '?')}** by <@{app.get('applicant_id', 0)}>")
+    embed = discord.Embed(
+        title="📋 Partnership Applications",
+        description="\n".join(lines[:25]),
+        color=_PSHIP_EMBED_COLOR,
+    )
+    embed.set_footer(text=_PSHIP_FOOTER)
+    await ctx.send(embed=embed)
 
 
 # =========================

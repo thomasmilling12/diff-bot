@@ -1,0 +1,514 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+from dataclasses import dataclass
+from typing import Optional
+import json
+import os
+from datetime import datetime
+
+
+# ============================================================
+# DIFF PARTNERSHIP SYSTEM
+# ------------------------------------------------------------
+# Drop this file into your bot project and load it as an extension.
+# Works with discord.py 2.x
+#
+# WHAT THIS SYSTEM DOES:
+# - Posts a Partnership Panel with buttons
+# - Partnership Info button shows the requirements/info
+# - Apply button opens a modal
+# - Creates a partnership review embed in a staff review channel
+# - Staff can Accept / Deny with buttons
+# - Accept: posts approval message, assigns partner role, logs action
+# - Deny: posts denial message, logs action
+# - Stores application status in a lightweight JSON file
+#
+# SETUP:
+# 1. Fill in the CONFIG section below
+# 2. Load this extension in your main bot file
+# 3. Run /partnership_panel in the channel where you want the panel posted
+#
+# Example load:
+# await bot.load_extension("diff_partnership_system")
+# ============================================================
+
+
+# =========================
+# CONFIG
+# =========================
+GUILD_ID = 850386896509337710
+
+# Channel IDs (replace these with your real channel IDs)
+PARTNERSHIP_PANEL_CHANNEL_ID = 0      # public channel where users see the panel
+PARTNERSHIP_REVIEW_CHANNEL_ID = 0     # staff-only review channel
+PARTNERSHIP_LOG_CHANNEL_ID = 0        # staff logs channel
+PARTNERSHIP_ACCEPTED_CHANNEL_ID = 0   # public/private channel for accepted partners
+
+# Role IDs
+PARTNER_ROLE_ID = 0                   # role to assign if accepted
+STAFF_REVIEW_ROLE_ID = 0              # optional: role pinged when an application is submitted
+
+# Optional: category for partnership tickets if you later expand this system
+PARTNERSHIP_CATEGORY_ID = 0
+
+# Embed branding
+EMBED_COLOR = 0x5865F2
+SUCCESS_COLOR = 0x57F287
+DENIED_COLOR = 0xED4245
+WARNING_COLOR = 0xFEE75C
+BOT_FOOTER = "Different Meets • Partnership System"
+
+# Storage file
+DATA_FILE = "partnership_applications.json"
+
+
+@dataclass
+class PartnershipApplication:
+    application_id: str
+    applicant_id: int
+    applicant_name: str
+    server_name: str
+    invite_link: str
+    community_type: str
+    member_count: str
+    why_partner: str
+    extra_info: str
+    status: str = "pending"
+    reviewer_id: Optional[int] = None
+    reviewer_name: Optional[str] = None
+    decided_at: Optional[str] = None
+
+
+class PartnershipStore:
+    def __init__(self, file_path: str = DATA_FILE):
+        self.file_path = file_path
+        self.data = self._load()
+
+    def _load(self):
+        if not os.path.exists(self.file_path):
+            return {}
+        try:
+            with open(self.file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def save(self):
+        with open(self.file_path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, indent=4)
+
+    def set(self, key: str, value: dict):
+        self.data[key] = value
+        self.save()
+
+    def get(self, key: str):
+        return self.data.get(key)
+
+    def update_status(self, key: str, status: str, reviewer_id: int, reviewer_name: str):
+        if key in self.data:
+            self.data[key]["status"] = status
+            self.data[key]["reviewer_id"] = reviewer_id
+            self.data[key]["reviewer_name"] = reviewer_name
+            self.data[key]["decided_at"] = datetime.utcnow().isoformat()
+            self.save()
+
+
+store = PartnershipStore()
+
+
+def build_partnership_info_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🤝 DIFF Partnership Program",
+        description=(
+            "Interested in partnering with **Different Meets**?\n"
+            "We work with communities that match our standards of **activity, professionalism, and clean community culture**."
+        ),
+        color=EMBED_COLOR,
+    )
+    embed.add_field(
+        name="📌 Partnership Requirements",
+        value=(
+            "• Active and well-managed community\n"
+            "• Clean and respectful environment\n"
+            "• Related to car culture, GTA, automotive content, or gaming\n"
+            "• Good engagement and not inactive\n"
+            "• Organized setup with rules and moderation"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🚀 What You Get",
+        value=(
+            "• Promotion in the DIFF partnership area\n"
+            "• Exposure to our community\n"
+            "• Potential social media/event support\n"
+            "• Future collab opportunities"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📋 How To Apply",
+        value=(
+            "Press **Apply for Partnership** below and complete the application form.\n"
+            "A staff member will review your submission and respond once a decision is made."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="⚠️ Important Notes",
+        value=(
+            "• Not all applications are accepted\n"
+            "• Inactive or poor-quality partnerships may be removed\n"
+            "• Partnerships must stay mutually beneficial"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=BOT_FOOTER)
+    return embed
+
+
+def build_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🤝 DIFF Partnership Center",
+        description=(
+            "Use the buttons below to learn how DIFF partnerships work or submit a partnership request.\n\n"
+            "We look for communities that are **active, respectful, organized, and aligned with DIFF standards**."
+        ),
+        color=EMBED_COLOR,
+    )
+    embed.add_field(
+        name="Available Options",
+        value=(
+            "**📖 Partnership Info** — Read requirements and expectations\n"
+            "**📩 Apply for Partnership** — Submit your community for staff review"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=BOT_FOOTER)
+    return embed
+
+
+def build_application_embed(app: PartnershipApplication, user: discord.User | discord.Member) -> discord.Embed:
+    embed = discord.Embed(
+        title="📨 New Partnership Application",
+        description=f"Application ID: `{app.application_id}`",
+        color=WARNING_COLOR,
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="Applicant", value=f"{user.mention} ({app.applicant_name})", inline=False)
+    embed.add_field(name="Community Name", value=app.server_name, inline=False)
+    embed.add_field(name="Invite Link", value=app.invite_link, inline=False)
+    embed.add_field(name="Community Type", value=app.community_type, inline=True)
+    embed.add_field(name="Member Count", value=app.member_count, inline=True)
+    embed.add_field(name="Why They Want To Partner", value=app.why_partner[:1024], inline=False)
+    embed.add_field(name="Extra Info", value=(app.extra_info[:1024] if app.extra_info else "None provided"), inline=False)
+    embed.add_field(name="Status", value="🟡 Pending Review", inline=False)
+    if user.display_avatar:
+        embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text=BOT_FOOTER)
+    return embed
+
+
+def build_accepted_embed(app: PartnershipApplication, reviewer: discord.Member | discord.User) -> discord.Embed:
+    embed = discord.Embed(
+        title="✅ Partnership Accepted",
+        description=(
+            f"The partnership request for **{app.server_name}** has been approved.\n\n"
+            "Welcome to the DIFF partnership network."
+        ),
+        color=SUCCESS_COLOR,
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="Community", value=app.server_name, inline=True)
+    embed.add_field(name="Invite Link", value=app.invite_link, inline=True)
+    embed.add_field(name="Reviewed By", value=reviewer.mention, inline=False)
+    embed.set_footer(text=BOT_FOOTER)
+    return embed
+
+
+def build_denied_embed(app: PartnershipApplication, reviewer: discord.Member | discord.User, reason: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="❌ Partnership Denied",
+        description=f"The partnership request for **{app.server_name}** was not approved.",
+        color=DENIED_COLOR,
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="Community", value=app.server_name, inline=True)
+    embed.add_field(name="Reviewed By", value=reviewer.mention, inline=True)
+    embed.add_field(name="Reason", value=reason[:1024], inline=False)
+    embed.set_footer(text=BOT_FOOTER)
+    return embed
+
+
+def build_log_embed(action: str, app: PartnershipApplication, reviewer: discord.Member | discord.User, reason: Optional[str] = None):
+    color = SUCCESS_COLOR if action.lower() == "accepted" else DENIED_COLOR
+    icon = "✅" if action.lower() == "accepted" else "❌"
+    embed = discord.Embed(
+        title=f"{icon} Partnership {action.title()}",
+        color=color,
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="Application ID", value=app.application_id, inline=False)
+    embed.add_field(name="Applicant", value=f"<@{app.applicant_id}>", inline=True)
+    embed.add_field(name="Community", value=app.server_name, inline=True)
+    embed.add_field(name="Reviewed By", value=reviewer.mention, inline=False)
+    if reason:
+        embed.add_field(name="Reason", value=reason[:1024], inline=False)
+    embed.set_footer(text=BOT_FOOTER)
+    return embed
+
+
+class DenyReasonModal(discord.ui.Modal, title="Deny Partnership Application"):
+    reason = discord.ui.TextInput(
+        label="Reason for denial",
+        style=discord.TextStyle.paragraph,
+        placeholder="Explain why this partnership was denied.",
+        required=True,
+        max_length=500,
+    )
+
+    def __init__(self, cog: "PartnershipSystem", application_id: str):
+        super().__init__()
+        self.cog = cog
+        self.application_id = application_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.process_denial(interaction, self.application_id, str(self.reason))
+
+
+class StaffReviewView(discord.ui.View):
+    def __init__(self, cog: "PartnershipSystem", application_id: str):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.application_id = application_id
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅", custom_id="partnership_accept")
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.process_accept(interaction, self.application_id)
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌", custom_id="partnership_deny")
+    async def deny_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(DenyReasonModal(self.cog, self.application_id))
+
+
+class PartnershipApplicationModal(discord.ui.Modal, title="DIFF Partnership Application"):
+    server_name = discord.ui.TextInput(
+        label="Community / Server Name",
+        placeholder="Enter your community name",
+        required=True,
+        max_length=100,
+    )
+    invite_link = discord.ui.TextInput(
+        label="Invite Link / Social Link",
+        placeholder="Paste your Discord invite or main link",
+        required=True,
+        max_length=200,
+    )
+    community_type = discord.ui.TextInput(
+        label="Community Type",
+        placeholder="GTA, Car Community, Gaming, Automotive, etc.",
+        required=True,
+        max_length=100,
+    )
+    member_count = discord.ui.TextInput(
+        label="Approximate Member Count",
+        placeholder="Example: 250",
+        required=True,
+        max_length=20,
+    )
+    why_partner = discord.ui.TextInput(
+        label="Why do you want to partner with DIFF?",
+        style=discord.TextStyle.paragraph,
+        placeholder="Tell us why this partnership makes sense.",
+        required=True,
+        max_length=1000,
+    )
+    extra_info = discord.ui.TextInput(
+        label="Extra Information",
+        style=discord.TextStyle.paragraph,
+        placeholder="Anything else staff should know?",
+        required=False,
+        max_length=1000,
+    )
+
+    def __init__(self, cog: "PartnershipSystem"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        app_id = f"PARTNER-{interaction.user.id}-{int(datetime.utcnow().timestamp())}"
+        app = PartnershipApplication(
+            application_id=app_id,
+            applicant_id=interaction.user.id,
+            applicant_name=str(interaction.user),
+            server_name=str(self.server_name),
+            invite_link=str(self.invite_link),
+            community_type=str(self.community_type),
+            member_count=str(self.member_count),
+            why_partner=str(self.why_partner),
+            extra_info=str(self.extra_info) if self.extra_info else "",
+        )
+
+        store.set(app_id, app.__dict__)
+
+        review_channel = interaction.client.get_channel(PARTNERSHIP_REVIEW_CHANNEL_ID)
+        if not review_channel:
+            await interaction.response.send_message(
+                "❌ Partnership review channel is not set correctly yet. Update the channel IDs in the file.",
+                ephemeral=True,
+            )
+            return
+
+        review_embed = build_application_embed(app, interaction.user)
+        content = f"<@&{STAFF_REVIEW_ROLE_ID}> New partnership application submitted." if STAFF_REVIEW_ROLE_ID else None
+        await review_channel.send(content=content, embed=review_embed, view=StaffReviewView(self.cog, app_id))
+
+        confirm = discord.Embed(
+            title="✅ Application Submitted",
+            description=(
+                "Your partnership application has been sent to staff for review.\n"
+                f"Application ID: `{app_id}`"
+            ),
+            color=SUCCESS_COLOR,
+        )
+        confirm.set_footer(text=BOT_FOOTER)
+        await interaction.response.send_message(embed=confirm, ephemeral=True)
+
+
+class PartnershipPanelView(discord.ui.View):
+    def __init__(self, cog: "PartnershipSystem"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Partnership Info", style=discord.ButtonStyle.secondary, emoji="📖", custom_id="partnership_info")
+    async def info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=build_partnership_info_embed(), ephemeral=True)
+
+    @discord.ui.button(label="Apply for Partnership", style=discord.ButtonStyle.primary, emoji="📩", custom_id="partnership_apply")
+    async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PartnershipApplicationModal(self.cog))
+
+
+class PartnershipSystem(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.bot.add_view(PartnershipPanelView(self))
+
+    async def cog_load(self):
+        self.bot.add_view(PartnershipPanelView(self))
+
+    async def process_accept(self, interaction: discord.Interaction, application_id: str):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("❌ You do not have permission to review partnership applications.", ephemeral=True)
+            return
+
+        app_data = store.get(application_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+            return
+
+        if app_data.get("status") != "pending":
+            await interaction.response.send_message("⚠️ This application has already been reviewed.", ephemeral=True)
+            return
+
+        app = PartnershipApplication(**app_data)
+        store.update_status(application_id, "accepted", interaction.user.id, str(interaction.user))
+
+        guild = interaction.guild
+        applicant = guild.get_member(app.applicant_id) if guild else None
+
+        # Assign role
+        if applicant and PARTNER_ROLE_ID:
+            role = guild.get_role(PARTNER_ROLE_ID)
+            if role:
+                try:
+                    await applicant.add_roles(role, reason="Partnership application accepted")
+                except discord.Forbidden:
+                    pass
+
+        # Update original review message
+        updated = build_application_embed(app, applicant or interaction.user)
+        updated.color = SUCCESS_COLOR
+        updated.set_field_at(len(updated.fields) - 1, name="Status", value=f"✅ Accepted by {interaction.user.mention}", inline=False)
+
+        await interaction.message.edit(embed=updated, view=None)
+
+        # DM applicant if possible
+        if applicant:
+            try:
+                await applicant.send(
+                    embed=build_accepted_embed(app, interaction.user)
+                )
+            except discord.Forbidden:
+                pass
+
+        # Accepted post
+        accepted_channel = guild.get_channel(PARTNERSHIP_ACCEPTED_CHANNEL_ID) if guild else None
+        if accepted_channel:
+            await accepted_channel.send(embed=build_accepted_embed(app, interaction.user))
+
+        # Logs
+        log_channel = guild.get_channel(PARTNERSHIP_LOG_CHANNEL_ID) if guild else None
+        if log_channel:
+            await log_channel.send(embed=build_log_embed("accepted", app, interaction.user))
+
+        await interaction.response.send_message("✅ Partnership accepted successfully.", ephemeral=True)
+
+    async def process_denial(self, interaction: discord.Interaction, application_id: str, reason: str):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("❌ You do not have permission to review partnership applications.", ephemeral=True)
+            return
+
+        app_data = store.get(application_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+            return
+
+        if app_data.get("status") != "pending":
+            await interaction.response.send_message("⚠️ This application has already been reviewed.", ephemeral=True)
+            return
+
+        app = PartnershipApplication(**app_data)
+        store.update_status(application_id, "denied", interaction.user.id, str(interaction.user))
+
+        guild = interaction.guild
+        applicant = guild.get_member(app.applicant_id) if guild else None
+
+        # Update original review message
+        updated = build_application_embed(app, applicant or interaction.user)
+        updated.color = DENIED_COLOR
+        updated.set_field_at(len(updated.fields) - 1, name="Status", value=f"❌ Denied by {interaction.user.mention}", inline=False)
+
+        await interaction.message.edit(embed=updated, view=None)
+
+        # DM applicant if possible
+        if applicant:
+            try:
+                await applicant.send(embed=build_denied_embed(app, interaction.user, reason))
+            except discord.Forbidden:
+                pass
+
+        # Logs
+        log_channel = guild.get_channel(PARTNERSHIP_LOG_CHANNEL_ID) if guild else None
+        if log_channel:
+            await log_channel.send(embed=build_log_embed("denied", app, interaction.user, reason=reason))
+
+        await interaction.response.send_message("❌ Partnership denied successfully.", ephemeral=True)
+
+    @app_commands.command(name="partnership_panel", description="Post the DIFF Partnership panel.")
+    async def partnership_panel(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+
+        await interaction.channel.send(embed=build_panel_embed(), view=PartnershipPanelView(self))
+        await interaction.response.send_message("✅ Partnership panel posted.", ephemeral=True)
+
+    @app_commands.command(name="partnership_info", description="Preview the partnership information embed.")
+    async def partnership_info(self, interaction: discord.Interaction):
+        await interaction.response.send_message(embed=build_partnership_info_embed(), ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(PartnershipSystem(bot), guild=discord.Object(id=GUILD_ID))
