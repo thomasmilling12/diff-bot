@@ -6,6 +6,7 @@ import json
 import os
 import random
 import re
+import sqlite3
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -2657,76 +2658,381 @@ async def _asched_update_panel(bot_client) -> None:
 
 
 # =========================
+# HOST AUTOMATION DB
+# =========================
+_HAUTO_DB_PATH = os.path.join("diff_data", "diff_host_automation.db")
+_HAUTO_BLACKLIST_POINT_PENALTY = 10
+_HAUTO_NO_SHOW_PENALTY = 3
+_HAUTO_SUCCESS_POINTS = 5
+_HAUTO_ONTIME_BONUS = 2
+
+
+class _HostAutoDB:
+    def __init__(self):
+        os.makedirs("diff_data", exist_ok=True)
+        self.conn = sqlite3.connect(_HAUTO_DB_PATH, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self._setup()
+
+    def _setup(self):
+        cur = self.conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS blacklist_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER,
+                discord_tag TEXT,
+                psn TEXT,
+                reason TEXT NOT NULL,
+                evidence TEXT,
+                severity TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                submitted_by_id INTEGER NOT NULL,
+                submitted_by_tag TEXT NOT NULL,
+                removed_host_role INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS host_points (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                points INTEGER NOT NULL DEFAULT 0,
+                penalties INTEGER NOT NULL DEFAULT 0,
+                last_updated TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
+        self.conn.commit()
+
+    def add_blacklist(self, guild_id, user_id, discord_tag, psn, reason, evidence,
+                      severity, submitted_by_id, submitted_by_tag, removed_host_role):
+        cur = self.conn.cursor()
+        cur.execute("""
+            INSERT INTO blacklist_entries
+                (guild_id, user_id, discord_tag, psn, reason, evidence, severity, status,
+                 submitted_by_id, submitted_by_tag, removed_host_role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+        """, (guild_id, user_id, discord_tag, psn, reason, evidence, severity,
+              submitted_by_id, submitted_by_tag, 1 if removed_host_role else 0,
+              datetime.utcnow().isoformat()))
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def is_blacklisted(self, guild_id, user_id):
+        cur = self.conn.cursor()
+        cur.execute("""
+            SELECT 1 FROM blacklist_entries
+            WHERE guild_id=? AND user_id=? AND status='active' LIMIT 1
+        """, (guild_id, user_id))
+        return cur.fetchone() is not None
+
+    def get_active_entry(self, guild_id, user_id):
+        cur = self.conn.cursor()
+        cur.execute("""
+            SELECT * FROM blacklist_entries
+            WHERE guild_id=? AND user_id=? AND status='active'
+            ORDER BY id DESC LIMIT 1
+        """, (guild_id, user_id))
+        return cur.fetchone()
+
+    def search(self, guild_id, query):
+        like = f"%{query.lower()}%"
+        cur = self.conn.cursor()
+        cur.execute("""
+            SELECT * FROM blacklist_entries
+            WHERE guild_id=? AND status='active'
+            AND (LOWER(COALESCE(discord_tag,'')) LIKE ?
+                 OR LOWER(COALESCE(psn,'')) LIKE ?
+                 OR LOWER(COALESCE(reason,'')) LIKE ?
+                 OR CAST(COALESCE(user_id,0) AS TEXT) LIKE ?)
+            ORDER BY id DESC LIMIT 10
+        """, (guild_id, like, like, like, like))
+        return cur.fetchall()
+
+    def clear_entry(self, guild_id, entry_id):
+        cur = self.conn.cursor()
+        cur.execute("""
+            UPDATE blacklist_entries SET status='cleared'
+            WHERE guild_id=? AND id=? AND status='active'
+        """, (guild_id, entry_id))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def adjust_points(self, guild_id, user_id, delta, penalty_delta=0):
+        cur = self.conn.cursor()
+        cur.execute("""
+            INSERT INTO host_points (guild_id, user_id, points, penalties, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id)
+            DO UPDATE SET
+                points=points+excluded.points,
+                penalties=penalties+excluded.penalties,
+                last_updated=excluded.last_updated
+        """, (guild_id, user_id, delta, penalty_delta, datetime.utcnow().isoformat()))
+        self.conn.commit()
+        cur.execute("SELECT points FROM host_points WHERE guild_id=? AND user_id=?",
+                    (guild_id, user_id))
+        row = cur.fetchone()
+        return int(row["points"]) if row else 0
+
+    def top_points(self, guild_id, limit=10):
+        cur = self.conn.cursor()
+        cur.execute("""
+            SELECT user_id, points, penalties FROM host_points
+            WHERE guild_id=?
+            ORDER BY points DESC, penalties ASC LIMIT ?
+        """, (guild_id, limit))
+        return cur.fetchall()
+
+
+_hauto_db = _HostAutoDB()
+
+
+def host_performance_tier(points: int) -> str:
+    if points >= 30:
+        return "🟢 Elite Host"
+    if points >= 15:
+        return "🔵 Active Host"
+    if points >= 0:
+        return "🟡 Inconsistent"
+    return "🔴 At Risk"
+
+
+async def _hauto_update_leaderboard(guild: discord.Guild) -> None:
+    channel = guild.get_channel(LEADERBOARD_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    rows = _hauto_db.top_points(guild.id, 10)
+    lines = []
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    for idx, row in enumerate(rows, start=1):
+        member = guild.get_member(int(row["user_id"]))
+        mention = member.mention if member else f"<@{row['user_id']}>"
+        pts = int(row["points"])
+        pen = int(row["penalties"])
+        tier = host_performance_tier(pts)
+        prefix = medals.get(idx, f"**{idx}.**")
+        lines.append(f"{prefix} {mention} — {pts} pts | {pen} penalties | {tier}")
+    embed = discord.Embed(
+        title="🏆 DIFF Host Performance Leaderboard",
+        description="\n".join(lines) if lines else "*No host performance data yet.*",
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.set_footer(text="Auto-updated host rankings • DIFF Host System")
+    try:
+        async for msg in channel.history(limit=10):
+            if msg.author.id == bot.user.id and msg.embeds and "Leaderboard" in (msg.embeds[0].title or ""):
+                await msg.edit(embed=embed)
+                return
+        await channel.send(embed=embed)
+    except Exception as e:
+        print(f"[Leaderboard] update failed: {e}")
+
+
+# =========================
 # HOST CONTROL HUB
 # =========================
 
 class _BlacklistModal(discord.ui.Modal, title="🚫 Host Blacklist Submission"):
-    user_field = discord.ui.TextInput(label="User (Discord @ or PSN)", required=True)
-    reason = discord.ui.TextInput(label="Reason for Blacklisting", style=discord.TextStyle.paragraph, required=True)
-    evidence = discord.ui.TextInput(label="Evidence (links/screenshots)", required=False)
-    severity = discord.ui.TextInput(label="Severity (Warning / Serious / Permanent)", required=True)
+    user_field = discord.ui.TextInput(label="User (Discord mention, ID, or name)", required=True, max_length=100)
+    psn_field = discord.ui.TextInput(label="PSN / GamerTag", required=False, max_length=100)
+    reason = discord.ui.TextInput(label="Reason for Blacklisting", style=discord.TextStyle.paragraph, required=True, max_length=1000)
+    evidence = discord.ui.TextInput(label="Evidence (links/screenshots)", required=False, max_length=1000)
+    severity = discord.ui.TextInput(label="Severity (Warning / Serious / Permanent)", required=True, max_length=50)
 
     async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        submitter = interaction.user
+        if not guild or not isinstance(submitter, discord.Member):
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+
+        raw = self.user_field.value.strip()
+        target_member: Optional[discord.Member] = None
+        if raw.startswith("<@") and raw.endswith(">"):
+            uid_str = "".join(ch for ch in raw if ch.isdigit())
+            if uid_str:
+                target_member = guild.get_member(int(uid_str))
+        elif raw.isdigit():
+            target_member = guild.get_member(int(raw))
+        else:
+            lower = raw.lower()
+            for m in guild.members:
+                if m.name.lower() == lower or m.display_name.lower() == lower:
+                    target_member = m
+                    break
+
+        if target_member and _hauto_db.is_blacklisted(guild.id, target_member.id):
+            await interaction.response.send_message("That user already has an active blacklist entry.", ephemeral=True)
+            return
+
+        removed_host_role = False
+        display_text = raw
+        user_id_val = None
+
+        if target_member:
+            display_text = f"{target_member.mention} ({target_member})"
+            user_id_val = target_member.id
+            host_role = guild.get_role(HOST_ROLE_ID)
+            if host_role and host_role in target_member.roles:
+                try:
+                    await target_member.remove_roles(host_role, reason="DIFF host blacklist applied")
+                    removed_host_role = True
+                except Exception:
+                    pass
+
+        entry_id = _hauto_db.add_blacklist(
+            guild_id=guild.id,
+            user_id=user_id_val,
+            discord_tag=str(target_member) if target_member else raw,
+            psn=self.psn_field.value.strip(),
+            reason=self.reason.value.strip(),
+            evidence=self.evidence.value.strip(),
+            severity=self.severity.value.strip(),
+            submitted_by_id=submitter.id,
+            submitted_by_tag=str(submitter),
+            removed_host_role=removed_host_role,
+        )
+
+        if target_member:
+            _hauto_db.adjust_points(guild.id, target_member.id, -_HAUTO_BLACKLIST_POINT_PENALTY, 1)
+
         embed = discord.Embed(
-            title="🚫 DIFF Host Blacklist Entry",
+            title=f"🚫 DIFF Host Blacklist Entry #{entry_id}",
             color=discord.Color.red(),
             timestamp=utc_now(),
         )
-        embed.add_field(name="👤 User", value=self.user_field.value, inline=False)
-        embed.add_field(name="📝 Reason", value=self.reason.value, inline=False)
-        embed.add_field(name="📸 Evidence", value=self.evidence.value or "None provided", inline=False)
-        embed.add_field(name="📊 Severity", value=self.severity.value, inline=False)
-        embed.add_field(name="👮 Submitted By", value=interaction.user.mention, inline=False)
-        embed.set_footer(text="Different Meets • Host Blacklist")
+        embed.add_field(name="👤 User", value=display_text, inline=False)
+        embed.add_field(name="🎮 PSN", value=self.psn_field.value.strip() or "Not provided", inline=True)
+        embed.add_field(name="📊 Severity", value=self.severity.value.strip(), inline=True)
+        embed.add_field(name="📝 Reason", value=self.reason.value.strip()[:1024], inline=False)
+        embed.add_field(name="📸 Evidence", value=(self.evidence.value.strip() or "None provided")[:1024], inline=False)
+        embed.add_field(name="⚙️ Action Taken", value="Host role removed" if removed_host_role else "Listed / no host role found", inline=False)
+        embed.set_footer(text=f"Submitted by {submitter} • Different Meets • Host Blacklist")
 
-        bl_ch = interaction.guild.get_channel(BLACKLIST_CHANNEL_ID) if interaction.guild else None
+        bl_ch = guild.get_channel(BLACKLIST_CHANNEL_ID)
         if isinstance(bl_ch, discord.TextChannel):
             try:
                 await bl_ch.send(embed=embed)
             except Exception:
                 pass
 
-        log_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
+        log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(log_ch, discord.TextChannel):
             try:
-                await log_ch.send(
-                    f"📌 New blacklist entry submitted by {interaction.user.mention}",
-                    embed=embed,
-                )
+                await log_ch.send(f"📌 New blacklist entry #{entry_id} submitted by {submitter.mention}", embed=embed)
             except Exception:
                 pass
 
-        await interaction.response.send_message("✅ Blacklist entry submitted successfully.", ephemeral=True)
+        await interaction.response.send_message(f"✅ Blacklist entry #{entry_id} submitted successfully.", ephemeral=True)
+
+
+class _BlacklistSearchModal(discord.ui.Modal, title="🔎 Search Host Blacklist"):
+    query = discord.ui.TextInput(label="Name, PSN, Discord ID, or keyword", required=True, max_length=100)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+        rows = _hauto_db.search(guild.id, self.query.value.strip())
+        if not rows:
+            await interaction.response.send_message("No active blacklist entries matched that search.", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="🔎 Host Blacklist Search Results",
+            description=f"Showing up to 10 active results for `{self.query.value.strip()}`",
+            color=discord.Color.dark_grey(),
+            timestamp=utc_now(),
+        )
+        for row in rows:
+            who = row["discord_tag"] or (f"User ID {row['user_id']}" if row["user_id"] else "Unknown")
+            embed.add_field(
+                name=f"Entry #{row['id']} • {row['severity']}",
+                value=(
+                    f"**User:** {who}\n"
+                    f"**PSN:** {row['psn'] or 'No PSN'}\n"
+                    f"**Reason:** {row['reason'][:120]}\n"
+                    f"**Date:** {row['created_at'][:10]}"
+                ),
+                inline=False,
+            )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class _AppealModal(discord.ui.Modal, title="📩 Blacklist Appeal"):
-    username = discord.ui.TextInput(label="Your Username / PSN", required=True)
+    psn = discord.ui.TextInput(label="Your PSN / Username", required=True, max_length=100)
     reason = discord.ui.TextInput(
         label="Why should this be reviewed?",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=1000,
     )
+    evidence = discord.ui.TextInput(
+        label="Evidence (optional)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1000,
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            "📩 Your appeal has been submitted. Staff will review it shortly.", ephemeral=True
-        )
-        log_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
-        if isinstance(log_ch, discord.TextChannel):
-            embed = discord.Embed(
-                title="📩 Blacklist Appeal Submitted",
-                color=discord.Color.orange(),
-                timestamp=utc_now(),
+        guild = interaction.guild
+        user = interaction.user
+        if not guild or not isinstance(user, discord.Member):
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True, manage_messages=True),
+        }
+        manager_role = guild.get_role(MANAGER_ROLE_ID)
+        if manager_role:
+            overwrites[manager_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+        leader_role = guild.get_role(LEADER_ROLE_ID)
+        if leader_role:
+            overwrites[leader_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+
+        channel_name = f"appeal-{user.name}".lower().replace(" ", "-")[:90]
+        try:
+            ticket_ch = await guild.create_text_channel(
+                name=channel_name,
+                overwrites=overwrites,
+                reason="DIFF host blacklist appeal ticket",
             )
-            embed.add_field(name="👤 User", value=interaction.user.mention, inline=False)
-            embed.add_field(name="📝 PSN / Username", value=self.username.value, inline=False)
-            embed.add_field(name="📋 Reason", value=self.reason.value, inline=False)
-            embed.set_footer(text="Different Meets • Blacklist Appeals")
+        except Exception:
+            await interaction.response.send_message("Couldn't create appeal ticket channel. Please contact staff directly.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="📩 DIFF Host Blacklist Appeal",
+            description="A blacklist appeal has been opened for review.",
+            color=discord.Color.orange(),
+            timestamp=utc_now(),
+        )
+        embed.add_field(name="👤 User", value=user.mention, inline=False)
+        embed.add_field(name="🎮 PSN", value=self.psn.value.strip(), inline=False)
+        embed.add_field(name="📋 Appeal Reason", value=self.reason.value.strip(), inline=False)
+        embed.add_field(name="📸 Evidence", value=self.evidence.value.strip() or "None provided", inline=False)
+        embed.set_footer(text="Different Meets • Blacklist Appeals")
+
+        ping = manager_role.mention if manager_role else "@staff"
+        try:
+            await ticket_ch.send(content=f"{ping} New blacklist appeal from {user.mention}", embed=embed)
+        except Exception:
+            pass
+
+        log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(log_ch, discord.TextChannel):
             try:
-                await log_ch.send(embed=embed)
+                await log_ch.send(f"📩 Blacklist appeal ticket opened by {user.mention}: {ticket_ch.mention}", embed=embed)
             except Exception:
                 pass
+
+        await interaction.response.send_message(f"✅ Your appeal ticket has been created: {ticket_ch.mention}", ephemeral=True)
 
 
 _HOSTHUB_STATE_FILE = os.path.join("diff_data", "diff_host_hub_state.json")
@@ -2917,6 +3223,10 @@ class HostHubView(discord.ui.View):
             return
         await interaction.response.send_modal(_BlacklistModal())
 
+    @discord.ui.button(label="Search Blacklist", emoji="🔎", style=discord.ButtonStyle.secondary, custom_id="diff_host_hub:search_blacklist", row=1)
+    async def search_blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(_BlacklistSearchModal())
+
     @discord.ui.button(label="View Blacklist", emoji="📊", style=discord.ButtonStyle.secondary, custom_id="diff_host_hub:view_blacklist", row=1)
     async def view_blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
@@ -2979,6 +3289,150 @@ async def _hosthub_cmd(ctx: commands.Context):
     except Exception:
         pass
     await _hosthub_post_or_refresh()
+
+
+@bot.command(name="blacklistsearch")
+async def _cmd_blacklistsearch(ctx: commands.Context, *, query: str = ""):
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    if not is_staff:
+        return
+    if not query:
+        await ctx.send("Usage: `!blacklistsearch <name/psn/id/keyword>`", delete_after=10)
+        return
+    rows = _hauto_db.search(ctx.guild.id, query)
+    if not rows:
+        await ctx.send("No active blacklist entries matched that search.", delete_after=15)
+        return
+    embed = discord.Embed(
+        title="🔎 Host Blacklist Search Results",
+        description=f"Showing up to 10 active results for `{query}`",
+        color=discord.Color.dark_grey(),
+        timestamp=datetime.utcnow(),
+    )
+    for row in rows:
+        who = row["discord_tag"] or (f"User ID {row['user_id']}" if row["user_id"] else "Unknown")
+        embed.add_field(
+            name=f"Entry #{row['id']} • {row['severity']}",
+            value=(
+                f"**User:** {who}\n"
+                f"**PSN:** {row['psn'] or 'No PSN'}\n"
+                f"**Reason:** {row['reason'][:120]}\n"
+                f"**Date:** {row['created_at'][:10]}"
+            ),
+            inline=False,
+        )
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="clearblacklist")
+async def _cmd_clearblacklist(ctx: commands.Context, entry_id: int = 0):
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    if not is_staff:
+        return
+    if not entry_id:
+        await ctx.send("Usage: `!clearblacklist <entry_id>`", delete_after=10)
+        return
+    success = _hauto_db.clear_entry(ctx.guild.id, entry_id)
+    if not success:
+        await ctx.send(f"Active blacklist entry #{entry_id} not found.", delete_after=10)
+        return
+    embed = discord.Embed(
+        title="✅ Host Blacklist Cleared",
+        description=f"Blacklist entry #{entry_id} has been cleared.",
+        color=discord.Color.green(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.set_footer(text=f"Cleared by {ctx.author}")
+    log_ch = ctx.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(log_ch, discord.TextChannel):
+        try:
+            await log_ch.send(content=f"Handled by {ctx.author.mention}", embed=embed)
+        except Exception:
+            pass
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="hostreport")
+async def _cmd_hostreport(ctx: commands.Context, host: Optional[discord.Member] = None, *, args: str = ""):
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    if not is_staff:
+        return
+    if not host:
+        await ctx.send(
+            "Usage: `!hostreport @host <meet_name> <attendance> <success|late|no-show> [notes]`\n"
+            "Example: `!hostreport @SpMex0322 Meet1 45 success Great meet`",
+            delete_after=20,
+        )
+        return
+    parts = args.split(None, 3)
+    if len(parts) < 3:
+        await ctx.send("Usage: `!hostreport @host <meet_name> <attendance> <status> [notes]`", delete_after=15)
+        return
+    meet_name = parts[0]
+    try:
+        attendance = int(parts[1])
+    except ValueError:
+        await ctx.send("Attendance must be a number.", delete_after=10)
+        return
+    status = parts[2].lower()
+    notes = parts[3] if len(parts) > 3 else None
+
+    point_change = 0
+    penalty_change = 0
+    if status == "success":
+        point_change = _HAUTO_SUCCESS_POINTS
+        result_label = "✅ Hosted Successfully"
+    elif status == "late":
+        point_change = _HAUTO_SUCCESS_POINTS - 1
+        result_label = "⏰ Hosted Late"
+    elif status == "no-show":
+        point_change = -_HAUTO_NO_SHOW_PENALTY
+        penalty_change = 1
+        result_label = "❌ No-Show"
+    else:
+        result_label = f"ℹ️ {status}"
+
+    new_total = _hauto_db.adjust_points(ctx.guild.id, host.id, point_change, penalty_change)
+
+    embed = discord.Embed(
+        title="📊 DIFF Host Report",
+        color=discord.Color.green() if point_change >= 0 else discord.Color.orange(),
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="Host", value=host.mention, inline=False)
+    embed.add_field(name="Meet", value=meet_name, inline=True)
+    embed.add_field(name="Attendance", value=str(attendance), inline=True)
+    embed.add_field(name="Result", value=result_label, inline=True)
+    embed.add_field(name="Points Change", value=f"{point_change:+}", inline=True)
+    embed.add_field(name="New Total", value=f"{new_total} pts | {host_performance_tier(new_total)}", inline=True)
+    if notes:
+        embed.add_field(name="Notes", value=notes, inline=False)
+    embed.set_footer(text=f"Submitted by {ctx.author}")
+
+    log_ch = ctx.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(log_ch, discord.TextChannel):
+        try:
+            await log_ch.send(embed=embed)
+        except Exception:
+            pass
+
+    await ctx.send(embed=embed)
+    await _hauto_update_leaderboard(ctx.guild)
+
+
+@bot.command(name="hostpoints")
+async def _cmd_hostpoints(ctx: commands.Context, user: Optional[discord.Member] = None, points: int = 0):
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    if not is_staff:
+        return
+    if not user:
+        await ctx.send("Usage: `!hostpoints @user <+/- amount>`", delete_after=10)
+        return
+    new_total = _hauto_db.adjust_points(ctx.guild.id, user.id, points)
+    await ctx.send(
+        f"✅ Updated {user.mention}. Points: **{new_total}** | Tier: **{host_performance_tier(new_total)}**"
+    )
+    await _hauto_update_leaderboard(ctx.guild)
 
 
 # =========================
@@ -11999,6 +12453,37 @@ async def _auto_weekly_loop() -> None:
                 await log_ch.send(embed=reset_embed)
             except discord.HTTPException:
                 pass
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    before_ids = {r.id for r in before.roles}
+    after_ids = {r.id for r in after.roles}
+    if HOST_ROLE_ID not in before_ids and HOST_ROLE_ID in after_ids:
+        if _hauto_db.is_blacklisted(after.guild.id, after.id):
+            host_role = after.guild.get_role(HOST_ROLE_ID)
+            if host_role:
+                try:
+                    await after.remove_roles(host_role, reason="Blacklisted user cannot hold the host role")
+                except Exception:
+                    return
+                entry = _hauto_db.get_active_entry(after.guild.id, after.id)
+                embed = discord.Embed(
+                    title="⛔ Host Role Auto-Removed",
+                    description="A blacklisted user was automatically prevented from holding the host role.",
+                    color=discord.Color.red(),
+                    timestamp=datetime.utcnow(),
+                )
+                embed.add_field(name="User", value=after.mention, inline=False)
+                if entry:
+                    embed.add_field(name="Blacklist Entry", value=f"#{entry['id']}", inline=True)
+                    embed.add_field(name="Severity", value=entry["severity"], inline=True)
+                log_ch = after.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+                if isinstance(log_ch, discord.TextChannel):
+                    try:
+                        await log_ch.send(embed=embed)
+                    except Exception:
+                        pass
 
 
 @bot.event

@@ -1,0 +1,1144 @@
+import asyncio
+import datetime as dt
+import json
+import sqlite3
+from typing import Optional, List
+
+import discord
+from discord.ext import commands, tasks
+
+# ============================================================
+# DIFF FULL HOST AUTOMATION SYSTEM
+# ------------------------------------------------------------
+# Features
+# - Host Control Hub
+# - Weekly host availability panel
+# - Per-day Yes / Maybe / No buttons
+# - Auto host blacklist check
+# - Auto prevent blacklisted users from being selected
+# - Auto weekly schedule builder
+# - Auto schedule post / refresh
+# - Auto host report system
+# - Auto host points + penalties
+# - Auto leaderboard refresh
+# - Appeal ticket integration
+# ============================================================
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+GUILD_ID = 850386896509337710
+
+# Main channels
+HOST_HUB_CHANNEL_ID = 1134690348220825730
+HOST_BLACKLIST_CHANNEL_ID = 1057016810261712938
+STAFF_LOG_CHANNEL_ID = 1485265848099799163
+LEADERBOARD_CHANNEL_ID = 1485282044392243290
+
+# Optional schedule + report channels
+HOST_SCHEDULE_CHANNEL_ID = 1485830232270307410   # replace if needed
+HOST_REPORT_CHANNEL_ID = 1089579004517953546     # replace if needed
+
+# Roles
+HOST_ROLE_ID = 1055823929358430248
+MANAGER_ROLE_ID = 990011447193006101
+CO_LEADER_ROLE_ID = 850391378559238235
+LEADER_ROLE_ID = 850391095845584937
+
+# Appeal ticket
+APPEAL_CATEGORY_ID = 0  # optional
+APPEAL_STAFF_ROLE_ID = MANAGER_ROLE_ID
+
+# Settings
+BOT_PREFIX = "!"
+BOT_TOKEN = "YOUR_BOT_TOKEN"
+DB_PATH = "diff_full_host_automation.db"
+TIMEZONE_LABEL = "EST / ET"
+BLACKLIST_POINT_PENALTY = 10
+NO_SHOW_POINT_PENALTY = 3
+SUCCESSFUL_HOST_POINTS = 5
+ON_TIME_BONUS = 2
+
+# Host capacity per day
+DEFAULT_HOST_SLOTS_PER_DAY = 1
+
+# Schedule post defaults
+SCHEDULE_DAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+# ------------------------------------------------------------
+# DISCORD SETUP
+# ------------------------------------------------------------
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+intents.guilds = True
+
+bot = commands.Bot(command_prefix=BOT_PREFIX, intents=intents)
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+class DB:
+    def __init__(self, path: str):
+        self.conn = sqlite3.connect(path)
+        self.conn.row_factory = sqlite3.Row
+        self.setup()
+
+    def setup(self):
+        cur = self.conn.cursor()
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS blacklist_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER,
+                discord_tag TEXT,
+                psn TEXT,
+                reason TEXT NOT NULL,
+                evidence TEXT,
+                severity TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                submitted_by_id INTEGER NOT NULL,
+                submitted_by_tag TEXT NOT NULL,
+                removed_host_role INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS host_points (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                points INTEGER NOT NULL DEFAULT 0,
+                penalties INTEGER NOT NULL DEFAULT 0,
+                last_updated TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS panel_state (
+                guild_id INTEGER NOT NULL,
+                panel_name TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, panel_name)
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS weekly_availability (
+                guild_id INTEGER NOT NULL,
+                week_key TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                day_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, week_key, user_id, day_name)
+            )
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS weekly_schedule (
+                guild_id INTEGER NOT NULL,
+                week_key TEXT NOT NULL,
+                day_name TEXT NOT NULL,
+                host_user_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'assigned',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, week_key, day_name)
+            )
+            """
+        )
+
+        self.conn.commit()
+
+    # ---------- blacklist ----------
+    def add_blacklist_entry(
+        self,
+        guild_id: int,
+        user_id: Optional[int],
+        discord_tag: str,
+        psn: str,
+        reason: str,
+        evidence: str,
+        severity: str,
+        submitted_by_id: int,
+        submitted_by_tag: str,
+        removed_host_role: bool,
+    ) -> int:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO blacklist_entries (
+                guild_id, user_id, discord_tag, psn, reason, evidence, severity, status,
+                submitted_by_id, submitted_by_tag, removed_host_role, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+            """,
+            (
+                guild_id, user_id, discord_tag, psn, reason, evidence, severity,
+                submitted_by_id, submitted_by_tag, 1 if removed_host_role else 0,
+                dt.datetime.utcnow().isoformat()
+            )
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def is_blacklisted(self, guild_id: int, user_id: int) -> bool:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT 1 FROM blacklist_entries
+            WHERE guild_id = ? AND user_id = ? AND status = 'active'
+            LIMIT 1
+            """,
+            (guild_id, user_id)
+        )
+        return cur.fetchone() is not None
+
+    def get_active_blacklist_entry(self, guild_id: int, user_id: int):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT * FROM blacklist_entries
+            WHERE guild_id = ? AND user_id = ? AND status = 'active'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (guild_id, user_id)
+        )
+        return cur.fetchone()
+
+    def search_blacklist(self, guild_id: int, query: str):
+        like = f"%{query.lower()}%"
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT * FROM blacklist_entries
+            WHERE guild_id = ? AND status = 'active'
+            AND (
+                LOWER(COALESCE(discord_tag, '')) LIKE ?
+                OR LOWER(COALESCE(psn, '')) LIKE ?
+                OR LOWER(COALESCE(reason, '')) LIKE ?
+                OR CAST(COALESCE(user_id, 0) AS TEXT) LIKE ?
+            )
+            ORDER BY id DESC
+            LIMIT 10
+            """,
+            (guild_id, like, like, like, like)
+        )
+        return cur.fetchall()
+
+    def clear_blacklist(self, guild_id: int, entry_id: int) -> bool:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            UPDATE blacklist_entries
+            SET status = 'cleared'
+            WHERE guild_id = ? AND id = ? AND status = 'active'
+            """,
+            (guild_id, entry_id)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    # ---------- points ----------
+    def adjust_points(self, guild_id: int, user_id: int, delta: int, penalty_delta: int = 0) -> int:
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO host_points (guild_id, user_id, points, penalties, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id)
+            DO UPDATE SET
+                points = points + excluded.points,
+                penalties = penalties + excluded.penalties,
+                last_updated = excluded.last_updated
+            """,
+            (guild_id, user_id, delta, penalty_delta, dt.datetime.utcnow().isoformat())
+        )
+        self.conn.commit()
+
+        cur.execute(
+            """
+            SELECT points FROM host_points
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id, user_id)
+        )
+        row = cur.fetchone()
+        return int(row["points"]) if row else 0
+
+    def top_points(self, guild_id: int, limit: int = 10):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT user_id, points, penalties
+            FROM host_points
+            WHERE guild_id = ?
+            ORDER BY points DESC, penalties ASC, user_id ASC
+            LIMIT ?
+            """,
+            (guild_id, limit)
+        )
+        return cur.fetchall()
+
+    # ---------- panels ----------
+    def save_panel_message(self, guild_id: int, panel_name: str, channel_id: int, message_id: int):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO panel_state (guild_id, panel_name, channel_id, message_id)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id, panel_name)
+            DO UPDATE SET channel_id = excluded.channel_id, message_id = excluded.message_id
+            """,
+            (guild_id, panel_name, channel_id, message_id)
+        )
+        self.conn.commit()
+
+    def get_panel_message(self, guild_id: int, panel_name: str):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT channel_id, message_id
+            FROM panel_state
+            WHERE guild_id = ? AND panel_name = ?
+            """,
+            (guild_id, panel_name)
+        )
+        return cur.fetchone()
+
+    # ---------- weekly availability ----------
+    def set_availability(self, guild_id: int, week_key: str, user_id: int, day_name: str, status: str):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO weekly_availability (guild_id, week_key, user_id, day_name, status, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, week_key, user_id, day_name)
+            DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at
+            """,
+            (guild_id, week_key, user_id, day_name, status, dt.datetime.utcnow().isoformat())
+        )
+        self.conn.commit()
+
+    def get_availability_for_day(self, guild_id: int, week_key: str, day_name: str):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT * FROM weekly_availability
+            WHERE guild_id = ? AND week_key = ? AND day_name = ?
+            ORDER BY updated_at ASC
+            """,
+            (guild_id, week_key, day_name)
+        )
+        return cur.fetchall()
+
+    def get_user_week_availability(self, guild_id: int, week_key: str, user_id: int):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT day_name, status
+            FROM weekly_availability
+            WHERE guild_id = ? AND week_key = ? AND user_id = ?
+            """,
+            (guild_id, week_key, user_id)
+        )
+        return {row["day_name"]: row["status"] for row in cur.fetchall()}
+
+    # ---------- weekly schedule ----------
+    def set_week_schedule_entry(self, guild_id: int, week_key: str, day_name: str, host_user_id: Optional[int]):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO weekly_schedule (guild_id, week_key, day_name, host_user_id, status, created_at)
+            VALUES (?, ?, ?, ?, 'assigned', ?)
+            ON CONFLICT(guild_id, week_key, day_name)
+            DO UPDATE SET host_user_id = excluded.host_user_id, created_at = excluded.created_at
+            """,
+            (guild_id, week_key, day_name, host_user_id, dt.datetime.utcnow().isoformat())
+        )
+        self.conn.commit()
+
+    def get_week_schedule(self, guild_id: int, week_key: str):
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT * FROM weekly_schedule
+            WHERE guild_id = ? AND week_key = ?
+            ORDER BY day_name ASC
+            """,
+            (guild_id, week_key)
+        )
+        return cur.fetchall()
+
+
+db = DB(DB_PATH)
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+def week_key_for_today() -> str:
+    today = dt.datetime.utcnow().date()
+    monday = today - dt.timedelta(days=today.weekday())
+    return monday.isoformat()
+
+def current_week_label() -> str:
+    wk = dt.date.fromisoformat(week_key_for_today())
+    end = wk + dt.timedelta(days=6)
+    return f"{wk.strftime('%b %d')} - {end.strftime('%b %d')}"
+
+def has_manage_access(member: discord.Member) -> bool:
+    if member.guild_permissions.administrator:
+        return True
+    allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    return any(role.id in allowed for role in member.roles)
+
+def host_performance_tier(points: int) -> str:
+    if points >= 30:
+        return "🟢 Elite Host"
+    if points >= 15:
+        return "🔵 Active Host"
+    if points >= 0:
+        return "🟡 Inconsistent"
+    return "🔴 At Risk"
+
+def parse_member(guild: discord.Guild, raw: str) -> Optional[discord.Member]:
+    raw = raw.strip()
+    if raw.startswith("<@") and raw.endswith(">"):
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if digits:
+            return guild.get_member(int(digits))
+    if raw.isdigit():
+        return guild.get_member(int(raw))
+
+    lower = raw.lower()
+    for m in guild.members:
+        if m.name.lower() == lower or m.display_name.lower() == lower or str(m).lower() == lower:
+            return m
+    return None
+
+async def safe_send_embed(channel, embed: discord.Embed, content: Optional[str] = None):
+    if channel is None:
+        return
+    try:
+        await channel.send(content=content, embed=embed)
+    except discord.HTTPException:
+        pass
+
+def build_blacklist_embed(entry_id: int, target_text: str, psn: str, reason: str, evidence: str,
+                          severity: str, submitted_by: str, removed_host_role: bool) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"🚫 DIFF Host Blacklist Entry #{entry_id}",
+        description="Official host restriction record.",
+        color=discord.Color.red(),
+        timestamp=dt.datetime.utcnow()
+    )
+    embed.add_field(name="👤 User", value=target_text or "Unknown", inline=False)
+    embed.add_field(name="🎮 PSN", value=psn or "Not provided", inline=True)
+    embed.add_field(name="📊 Severity", value=severity, inline=True)
+    embed.add_field(name="📝 Reason", value=reason[:1024], inline=False)
+    embed.add_field(name="📸 Evidence", value=(evidence or "No evidence provided")[:1024], inline=False)
+    embed.add_field(name="⚙️ Action Taken", value="Host role removed" if removed_host_role else "Listed / no host role found", inline=False)
+    embed.set_footer(text=f"Submitted by {submitted_by}")
+    return embed
+
+async def fetch_saved_message(guild: discord.Guild, panel_name: str) -> Optional[discord.Message]:
+    state = db.get_panel_message(guild.id, panel_name)
+    if not state:
+        return None
+    channel = guild.get_channel(int(state["channel_id"]))
+    if channel is None:
+        return None
+    try:
+        return await channel.fetch_message(int(state["message_id"]))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return None
+
+
+# ============================================================
+# LEADERBOARD / SCHEDULE BUILDERS
+# ============================================================
+async def update_leaderboard_post(guild: discord.Guild):
+    channel = guild.get_channel(LEADERBOARD_CHANNEL_ID)
+    if channel is None:
+        return
+
+    rows = db.top_points(guild.id, 10)
+    lines = []
+    for idx, row in enumerate(rows, start=1):
+        member = guild.get_member(int(row["user_id"]))
+        mention = member.mention if member else f"<@{int(row['user_id'])}>"
+        points = int(row["points"])
+        penalties = int(row["penalties"])
+        tier = host_performance_tier(points)
+        lines.append(f"**{idx}.** {mention} — {points} pts | penalties: {penalties} | {tier}")
+
+    embed = discord.Embed(
+        title="🏆 DIFF Host Performance Leaderboard",
+        description="\n".join(lines) if lines else "*No host performance data yet.*",
+        color=discord.Color.gold(),
+        timestamp=dt.datetime.utcnow()
+    )
+    embed.set_footer(text="Auto-updated host rankings")
+
+    msg = await fetch_saved_message(guild, "host_leaderboard")
+    if msg:
+        await msg.edit(embed=embed, view=None)
+    else:
+        sent = await channel.send(embed=embed)
+        db.save_panel_message(guild.id, "host_leaderboard", channel.id, sent.id)
+
+
+def pick_best_host_for_day(guild: discord.Guild, week_key: str, day_name: str, already_assigned: set[int]) -> Optional[int]:
+    rows = db.get_availability_for_day(guild.id, week_key, day_name)
+
+    yes_pool = []
+    maybe_pool = []
+
+    for row in rows:
+        uid = int(row["user_id"])
+        if uid in already_assigned:
+            continue
+        if db.is_blacklisted(guild.id, uid):
+            continue
+
+        member = guild.get_member(uid)
+        if member is None:
+            continue
+
+        has_host = any(role.id == HOST_ROLE_ID for role in member.roles)
+        if not has_host:
+            continue
+
+        points_rows = [r for r in db.top_points(guild.id, 1000) if int(r["user_id"]) == uid]
+        points = int(points_rows[0]["points"]) if points_rows else 0
+        entry = (uid, points)
+
+        if row["status"] == "yes":
+            yes_pool.append(entry)
+        elif row["status"] == "maybe":
+            maybe_pool.append(entry)
+
+    yes_pool.sort(key=lambda x: (-x[1], x[0]))
+    maybe_pool.sort(key=lambda x: (-x[1], x[0]))
+
+    if yes_pool:
+        return yes_pool[0][0]
+    if maybe_pool:
+        return maybe_pool[0][0]
+    return None
+
+
+async def build_weekly_schedule(guild: discord.Guild):
+    wk = week_key_for_today()
+    already_assigned = set()
+
+    for day_name in SCHEDULE_DAY_LABELS:
+        selected = pick_best_host_for_day(guild, wk, day_name, already_assigned)
+        db.set_week_schedule_entry(guild.id, wk, day_name, selected)
+        if selected:
+            already_assigned.add(selected)
+
+
+async def update_schedule_post(guild: discord.Guild):
+    await build_weekly_schedule(guild)
+
+    schedule_channel = guild.get_channel(HOST_SCHEDULE_CHANNEL_ID)
+    if schedule_channel is None:
+        return
+
+    wk = week_key_for_today()
+    rows = db.get_week_schedule(guild.id, wk)
+    schedule_map = {row["day_name"]: row["host_user_id"] for row in rows}
+
+    lines = []
+    for day_name in SCHEDULE_DAY_LABELS:
+        uid = schedule_map.get(day_name)
+        if uid:
+            member = guild.get_member(int(uid))
+            lines.append(f"**{day_name}:** {member.mention if member else f'<@{uid}>'}")
+        else:
+            lines.append(f"**{day_name}:** *No host assigned yet*")
+
+    embed = discord.Embed(
+        title="📅 DIFF Weekly Host Schedule",
+        description=(
+            f"**Week:** {current_week_label()}\n"
+            f"**Timezone:** {TIMEZONE_LABEL}\n\n"
+            + "\n".join(lines)
+        ),
+        color=discord.Color.blue(),
+        timestamp=dt.datetime.utcnow()
+    )
+    embed.set_footer(text="Built automatically from host responses")
+
+    msg = await fetch_saved_message(guild, "weekly_schedule")
+    if msg:
+        await msg.edit(embed=embed, view=None)
+    else:
+        sent = await schedule_channel.send(embed=embed)
+        db.save_panel_message(guild.id, "weekly_schedule", schedule_channel.id, sent.id)
+
+
+def build_availability_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📲 DIFF Host Availability Check-In",
+        description=(
+            f"*Weekly host response panel for {current_week_label()}.*\n\n"
+            "Use the buttons below for each day:\n"
+            "✅ Yes — I can host\n"
+            "❔ Maybe — I might host\n"
+            "❌ No — I can't host\n\n"
+            "Blacklisted users will be blocked automatically.\n"
+            "This panel feeds the auto host schedule."
+        ),
+        color=discord.Color.blurple(),
+        timestamp=dt.datetime.utcnow()
+    )
+    embed.set_footer(text="DIFF Host Automation")
+    return embed
+
+
+# ============================================================
+# VIEWS / MODALS
+# ============================================================
+class DayAvailabilityView(discord.ui.View):
+    def __init__(self, day_name: str):
+        super().__init__(timeout=None)
+        self.day_name = day_name
+
+    async def handle_status(self, interaction: discord.Interaction, status: str):
+        guild = interaction.guild
+        user = interaction.user
+
+        if guild is None or not isinstance(user, discord.Member):
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+
+        if db.is_blacklisted(guild.id, user.id):
+            entry = db.get_active_blacklist_entry(guild.id, user.id)
+            entry_txt = f"#{entry['id']}" if entry else "active entry"
+            await interaction.response.send_message(
+                f"⛔ You cannot volunteer to host because you are blacklisted ({entry_txt}).",
+                ephemeral=True
+            )
+            return
+
+        host_role = guild.get_role(HOST_ROLE_ID)
+        if host_role is None or host_role not in user.roles:
+            await interaction.response.send_message(
+                "Only users with the Host role can respond on the host availability panel.",
+                ephemeral=True
+            )
+            return
+
+        db.set_availability(guild.id, week_key_for_today(), user.id, self.day_name, status)
+        await update_schedule_post(guild)
+        await interaction.response.send_message(
+            f"✅ Your response for **{self.day_name}** has been set to **{status.upper()}**.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="✅ Yes", style=discord.ButtonStyle.success, custom_id="day_avail:yes")
+    async def yes_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_status(interaction, "yes")
+
+    @discord.ui.button(label="❔ Maybe", style=discord.ButtonStyle.primary, custom_id="day_avail:maybe")
+    async def maybe_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_status(interaction, "maybe")
+
+    @discord.ui.button(label="❌ No", style=discord.ButtonStyle.danger, custom_id="day_avail:no")
+    async def no_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_status(interaction, "no")
+
+
+class BlacklistModal(discord.ui.Modal, title="🚫 Host Blacklist Submission"):
+    target = discord.ui.TextInput(label="User (mention, ID, or Discord name)", required=True, max_length=100)
+    psn = discord.ui.TextInput(label="PSN / GamerTag", required=False, max_length=100)
+    reason = discord.ui.TextInput(label="Reason for blacklisting", style=discord.TextStyle.paragraph, required=True, max_length=1000)
+    evidence = discord.ui.TextInput(label="Evidence", style=discord.TextStyle.paragraph, required=False, max_length=1000)
+    severity = discord.ui.TextInput(label="Severity (Warning / Serious / Permanent)", required=True, max_length=50)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        user = interaction.user
+
+        if guild is None or not isinstance(user, discord.Member):
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+
+        if not has_manage_access(user):
+            await interaction.response.send_message("Only Leader, Co-Leader, or Manager can submit blacklist entries.", ephemeral=True)
+            return
+
+        member = parse_member(guild, self.target.value)
+        removed_host_role = False
+        display = self.target.value.strip()
+
+        if member:
+            if db.is_blacklisted(guild.id, member.id):
+                await interaction.response.send_message("That user already has an active blacklist entry.", ephemeral=True)
+                return
+
+            display = f"{member.mention} ({member})"
+            host_role = guild.get_role(HOST_ROLE_ID)
+            if host_role and host_role in member.roles:
+                try:
+                    await member.remove_roles(host_role, reason="DIFF host blacklist applied")
+                    removed_host_role = True
+                except (discord.HTTPException, discord.Forbidden):
+                    removed_host_role = False
+
+        entry_id = db.add_blacklist_entry(
+            guild_id=guild.id,
+            user_id=member.id if member else None,
+            discord_tag=str(member) if member else self.target.value.strip(),
+            psn=self.psn.value.strip(),
+            reason=self.reason.value.strip(),
+            evidence=self.evidence.value.strip(),
+            severity=self.severity.value.strip(),
+            submitted_by_id=user.id,
+            submitted_by_tag=str(user),
+            removed_host_role=removed_host_role,
+        )
+
+        if member:
+            db.adjust_points(guild.id, member.id, -BLACKLIST_POINT_PENALTY, 1)
+
+        embed = build_blacklist_embed(
+            entry_id, display, self.psn.value.strip(), self.reason.value.strip(),
+            self.evidence.value.strip(), self.severity.value.strip(), str(user), removed_host_role
+        )
+
+        await safe_send_embed(guild.get_channel(HOST_BLACKLIST_CHANNEL_ID), embed)
+        await safe_send_embed(guild.get_channel(STAFF_LOG_CHANNEL_ID), embed, content=f"📌 New blacklist submitted by {user.mention}")
+        await update_leaderboard_post(guild)
+        await update_schedule_post(guild)
+
+        await interaction.response.send_message(f"✅ Blacklist entry #{entry_id} submitted successfully.", ephemeral=True)
+
+
+class AppealModal(discord.ui.Modal, title="📩 Host Blacklist Appeal"):
+    psn = discord.ui.TextInput(label="Your PSN / username", required=True, max_length=100)
+    reason = discord.ui.TextInput(label="Why should this blacklist be reviewed?", style=discord.TextStyle.paragraph, required=True, max_length=1000)
+    evidence = discord.ui.TextInput(label="Evidence (optional)", style=discord.TextStyle.paragraph, required=False, max_length=1000)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        user = interaction.user
+
+        if guild is None or not isinstance(user, discord.Member):
+            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+            return
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True, manage_messages=True),
+        }
+
+        staff_role = guild.get_role(APPEAL_STAFF_ROLE_ID)
+        if staff_role:
+            overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+
+        category = guild.get_channel(APPEAL_CATEGORY_ID) if APPEAL_CATEGORY_ID else None
+        channel_name = f"appeal-{user.name}".lower().replace(" ", "-")[:90]
+
+        try:
+            ticket = await guild.create_text_channel(
+                name=channel_name,
+                category=category if isinstance(category, discord.CategoryChannel) else None,
+                overwrites=overwrites,
+                reason="DIFF host blacklist appeal ticket"
+            )
+        except discord.HTTPException:
+            await interaction.response.send_message("I couldn't create the appeal ticket channel.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="📩 DIFF Host Blacklist Appeal",
+            description="A blacklist appeal has been opened for review.",
+            color=discord.Color.blurple(),
+            timestamp=dt.datetime.utcnow()
+        )
+        embed.add_field(name="👤 User", value=user.mention, inline=False)
+        embed.add_field(name="🎮 PSN", value=self.psn.value.strip(), inline=False)
+        embed.add_field(name="📝 Appeal Reason", value=self.reason.value.strip(), inline=False)
+        embed.add_field(name="📸 Evidence", value=self.evidence.value.strip() or "No evidence provided", inline=False)
+
+        ping = staff_role.mention if staff_role else "@staff"
+        await ticket.send(content=f"{ping} New blacklist appeal submitted by {user.mention}", embed=embed)
+        await interaction.response.send_message(f"✅ Your appeal ticket has been created: {ticket.mention}", ephemeral=True)
+
+
+class HostControlHubView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🚫 Submit Blacklist", style=discord.ButtonStyle.danger, custom_id="hosthub:submit_blacklist")
+    async def submit_blacklist(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BlacklistModal())
+
+    @discord.ui.button(label="🔎 Search Blacklist", style=discord.ButtonStyle.secondary, custom_id="hosthub:search_blacklist")
+    async def search_blacklist(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Use `/blacklistsearch query:<name/psn/id>` to search blacklisted hosts.", ephemeral=True)
+
+    @discord.ui.button(label="📩 Appeal Blacklist", style=discord.ButtonStyle.primary, custom_id="hosthub:appeal")
+    async def appeal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AppealModal())
+
+    @discord.ui.button(label="📋 Host Guidelines", style=discord.ButtonStyle.success, custom_id="hosthub:guidelines")
+    async def guidelines(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "**DIFF Host Guidelines**\n\n"
+            "• Be organized and professional\n"
+            "• No crashing, griefing, or harassment\n"
+            "• Follow DIFF standards during meets\n"
+            "• Respect members and attendees\n"
+            "• Abuse of host power can lead to role removal and blacklist",
+            ephemeral=True
+        )
+
+
+# ============================================================
+# EVENTS
+# ============================================================
+@bot.event
+async def on_ready():
+    try:
+        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print(f"Synced {len(synced)} slash commands.")
+    except Exception as exc:
+        print(f"Command sync failed: {exc}")
+
+    bot.add_view(HostControlHubView())
+    for day in SCHEDULE_DAY_LABELS:
+        bot.add_view(DayAvailabilityView(day))
+
+    if not auto_refresh_schedule.is_running():
+        auto_refresh_schedule.start()
+
+    print(f"Logged in as {bot.user} ({bot.user.id})")
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    before_ids = {r.id for r in before.roles}
+    after_ids = {r.id for r in after.roles}
+
+    role_added = HOST_ROLE_ID not in before_ids and HOST_ROLE_ID in after_ids
+    if not role_added:
+        return
+
+    if not db.is_blacklisted(after.guild.id, after.id):
+        return
+
+    host_role = after.guild.get_role(HOST_ROLE_ID)
+    if host_role is None:
+        return
+
+    try:
+        await after.remove_roles(host_role, reason="Blacklisted users cannot hold the host role")
+    except (discord.HTTPException, discord.Forbidden):
+        return
+
+    entry = db.get_active_blacklist_entry(after.guild.id, after.id)
+    embed = discord.Embed(
+        title="⛔ Host Role Auto-Removed",
+        description="A blacklisted user was automatically prevented from holding the host role.",
+        color=discord.Color.red(),
+        timestamp=dt.datetime.utcnow()
+    )
+    embed.add_field(name="User", value=after.mention, inline=False)
+    if entry:
+        embed.add_field(name="Blacklist Entry", value=f"#{entry['id']}", inline=True)
+        embed.add_field(name="Severity", value=entry["severity"], inline=True)
+
+    await safe_send_embed(after.guild.get_channel(STAFF_LOG_CHANNEL_ID), embed)
+
+
+# ============================================================
+# TASKS
+# ============================================================
+@tasks.loop(minutes=10)
+async def auto_refresh_schedule():
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
+    await update_schedule_post(guild)
+    await update_leaderboard_post(guild)
+
+
+# ============================================================
+# SLASH COMMANDS
+# ============================================================
+@bot.tree.command(name="posthosthub", description="Post or refresh the DIFF Host Control Hub.", guild=discord.Object(id=GUILD_ID))
+async def posthosthub(interaction: discord.Interaction):
+    guild = interaction.guild
+    if guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("This command can only be used in the server.", ephemeral=True)
+        return
+
+    if not has_manage_access(interaction.user):
+        await interaction.response.send_message("Only Leader, Co-Leader, or Manager can post this hub.", ephemeral=True)
+        return
+
+    channel = guild.get_channel(HOST_HUB_CHANNEL_ID)
+    if channel is None:
+        await interaction.response.send_message("Host hub channel not found. Check HOST_HUB_CHANNEL_ID.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="📌 DIFF Host Control Hub",
+        description=(
+            "*The all-in-one host management system for Different Meets.*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🚫 **Submit Blacklist** — send official blacklist reports\n"
+            "🔎 **Search Blacklist** — check blacklisted users fast\n"
+            "📩 **Appeal Blacklist** — open a review ticket\n"
+            "📋 **Host Guidelines** — review DIFF standards\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "This hub connects directly to scheduling, blacklist protection, and host tracking."
+        ),
+        color=discord.Color.blue(),
+        timestamp=dt.datetime.utcnow()
+    )
+    embed.set_footer(text="DIFF Host Automation")
+
+    msg = await fetch_saved_message(guild, "host_control_hub")
+    if msg:
+        await msg.edit(embed=embed, view=HostControlHubView())
+        await interaction.response.send_message("✅ Host control hub refreshed.", ephemeral=True)
+    else:
+        sent = await channel.send(embed=embed, view=HostControlHubView())
+        db.save_panel_message(guild.id, "host_control_hub", channel.id, sent.id)
+        await interaction.response.send_message(f"✅ Host control hub posted in {channel.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="posthostavailability", description="Post or refresh the weekly host availability panel.", guild=discord.Object(id=GUILD_ID))
+async def posthostavailability(interaction: discord.Interaction):
+    guild = interaction.guild
+    if guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("This command can only be used in the server.", ephemeral=True)
+        return
+
+    if not has_manage_access(interaction.user):
+        await interaction.response.send_message("Only Leader, Co-Leader, or Manager can post availability panels.", ephemeral=True)
+        return
+
+    channel = guild.get_channel(HOST_SCHEDULE_CHANNEL_ID)
+    if channel is None:
+        await interaction.response.send_message("Schedule channel not found. Check HOST_SCHEDULE_CHANNEL_ID.", ephemeral=True)
+        return
+
+    header = await fetch_saved_message(guild, "availability_header")
+    embed = build_availability_embed()
+
+    if header:
+        await header.edit(embed=embed, view=None)
+    else:
+        sent = await channel.send(embed=embed)
+        db.save_panel_message(guild.id, "availability_header", channel.id, sent.id)
+
+    for day_name in SCHEDULE_DAY_LABELS:
+        panel_name = f"availability_{day_name.lower()}"
+        day_msg = await fetch_saved_message(guild, panel_name)
+
+        day_embed = discord.Embed(
+            title=f"📅 {day_name} Host Check-In",
+            description=f"Hosts: respond below for **{day_name}**.\nWeek: **{current_week_label()}**",
+            color=discord.Color.blurple(),
+            timestamp=dt.datetime.utcnow()
+        )
+
+        if day_msg:
+            await day_msg.edit(embed=day_embed, view=DayAvailabilityView(day_name))
+        else:
+            sent = await channel.send(embed=day_embed, view=DayAvailabilityView(day_name))
+            db.save_panel_message(guild.id, panel_name, channel.id, sent.id)
+
+    await update_schedule_post(guild)
+    await interaction.response.send_message("✅ Weekly host availability panels posted/refreshed.", ephemeral=True)
+
+
+@bot.tree.command(name="blacklistsearch", description="Search the host blacklist database.", guild=discord.Object(id=GUILD_ID))
+@discord.app_commands.describe(query="Name, PSN, ID, or keyword")
+async def blacklistsearch(interaction: discord.Interaction, query: str):
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
+        return
+
+    rows = db.search_blacklist(guild.id, query.strip())
+    if not rows:
+        await interaction.response.send_message("No active blacklist entries matched that search.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🔎 Host Blacklist Search Results",
+        description=f"Showing up to 10 active results for `{query}`",
+        color=discord.Color.dark_grey(),
+        timestamp=dt.datetime.utcnow()
+    )
+
+    for row in rows:
+        who = row["discord_tag"] or f"User ID {row['user_id']}" if row["user_id"] else "Unknown"
+        embed.add_field(
+            name=f"Entry #{row['id']} • {row['severity']}",
+            value=(
+                f"**User:** {who}\n"
+                f"**PSN:** {row['psn'] or 'No PSN'}\n"
+                f"**Reason:** {row['reason'][:150]}\n"
+                f"**Date:** {row['created_at'][:10]}"
+            ),
+            inline=False
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="clearblacklist", description="Clear an active blacklist entry.", guild=discord.Object(id=GUILD_ID))
+@discord.app_commands.describe(entry_id="Blacklist entry number")
+async def clearblacklist(interaction: discord.Interaction, entry_id: int):
+    guild = interaction.guild
+    if guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("This command can only be used in the server.", ephemeral=True)
+        return
+
+    if not has_manage_access(interaction.user):
+        await interaction.response.send_message("Only Leader, Co-Leader, or Manager can clear blacklist entries.", ephemeral=True)
+        return
+
+    success = db.clear_blacklist(guild.id, entry_id)
+    if not success:
+        await interaction.response.send_message("That active blacklist entry was not found.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="✅ Host Blacklist Cleared",
+        description=f"Blacklist entry #{entry_id} has been cleared.",
+        color=discord.Color.green(),
+        timestamp=dt.datetime.utcnow()
+    )
+    await safe_send_embed(guild.get_channel(STAFF_LOG_CHANNEL_ID), embed, content=f"Handled by {interaction.user.mention}")
+    await interaction.response.send_message(f"✅ Cleared blacklist entry #{entry_id}.", ephemeral=True)
+
+
+@bot.tree.command(name="buildschedule", description="Force rebuild the weekly host schedule.", guild=discord.Object(id=GUILD_ID))
+async def buildschedule(interaction: discord.Interaction):
+    guild = interaction.guild
+    if guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("This command can only be used in the server.", ephemeral=True)
+        return
+
+    if not has_manage_access(interaction.user):
+        await interaction.response.send_message("Only Leader, Co-Leader, or Manager can build schedules.", ephemeral=True)
+        return
+
+    await update_schedule_post(guild)
+    await interaction.response.send_message("✅ Weekly host schedule rebuilt.", ephemeral=True)
+
+
+@bot.tree.command(name="hostreport", description="Submit a completed host report after a meet.", guild=discord.Object(id=GUILD_ID))
+@discord.app_commands.describe(
+    host="Host who ran the meet",
+    meet_name="Name of the meet",
+    attendance="Approximate attendance count",
+    status="success / no-show / late",
+    notes="Optional notes"
+)
+async def hostreport(
+    interaction: discord.Interaction,
+    host: discord.Member,
+    meet_name: str,
+    attendance: int,
+    status: str,
+    notes: Optional[str] = None
+):
+    guild = interaction.guild
+    if guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("This command can only be used in the server.", ephemeral=True)
+        return
+
+    if not has_manage_access(interaction.user):
+        await interaction.response.send_message("Only Leader, Co-Leader, or Manager can submit host reports.", ephemeral=True)
+        return
+
+    normalized = status.strip().lower()
+
+    point_change = 0
+    penalty_change = 0
+    result_label = "Custom"
+
+    if normalized == "success":
+        point_change += SUCCESSFUL_HOST_POINTS
+        result_label = "✅ Hosted Successfully"
+    elif normalized == "late":
+        point_change += SUCCESSFUL_HOST_POINTS + ON_TIME_BONUS - 1
+        result_label = "⏰ Hosted Late"
+    elif normalized == "no-show":
+        point_change -= NO_SHOW_POINT_PENALTY
+        penalty_change += 1
+        result_label = "❌ No-Show"
+    else:
+        result_label = f"ℹ️ {status}"
+
+    new_total = db.adjust_points(guild.id, host.id, point_change, penalty_change)
+
+    embed = discord.Embed(
+        title="📊 DIFF Host Report",
+        color=discord.Color.green() if point_change >= 0 else discord.Color.orange(),
+        timestamp=dt.datetime.utcnow()
+    )
+    embed.add_field(name="Host", value=host.mention, inline=False)
+    embed.add_field(name="Meet", value=meet_name, inline=False)
+    embed.add_field(name="Attendance", value=str(attendance), inline=True)
+    embed.add_field(name="Result", value=result_label, inline=True)
+    embed.add_field(name="Points Change", value=f"{point_change:+}", inline=True)
+    embed.add_field(name="Notes", value=notes or "No notes provided", inline=False)
+    embed.add_field(name="New Total", value=f"{new_total} pts | {host_performance_tier(new_total)}", inline=False)
+    embed.set_footer(text=f"Submitted by {interaction.user}")
+
+    report_channel = guild.get_channel(HOST_REPORT_CHANNEL_ID)
+    await safe_send_embed(report_channel, embed)
+    await safe_send_embed(guild.get_channel(STAFF_LOG_CHANNEL_ID), embed)
+    await update_leaderboard_post(guild)
+
+    await interaction.response.send_message("✅ Host report submitted and leaderboard updated.", ephemeral=True)
+
+
+@bot.tree.command(name="hostpoints", description="Adjust host points manually.", guild=discord.Object(id=GUILD_ID))
+@discord.app_commands.describe(user="Host/member", points="Positive or negative number")
+async def hostpoints(interaction: discord.Interaction, user: discord.Member, points: int):
+    guild = interaction.guild
+    if guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("This command can only be used in the server.", ephemeral=True)
+        return
+
+    if not has_manage_access(interaction.user):
+        await interaction.response.send_message("Only Leader, Co-Leader, or Manager can adjust points.", ephemeral=True)
+        return
+
+    total = db.adjust_points(guild.id, user.id, points)
+    await update_leaderboard_post(guild)
+    await interaction.response.send_message(f"✅ Updated {user.mention}. Current points: **{total}**", ephemeral=True)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+if __name__ == "__main__":
+    bot.run(BOT_TOKEN)
