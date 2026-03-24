@@ -2497,6 +2497,7 @@ _ASCHED_FILE = os.path.join("diff_data", "diff_auto_schedule.json")
 _ASCHED_REFRESH_ID = "diff_auto_sched_refresh"
 _ASCHED_REBUILD_ID = "diff_auto_sched_rebuild"
 _ASCHED_DEFAULT_TEMPLATE = {day: {"class": "TBD", "time": "TBD"} for day in _HRSVP_DAYS}
+_ASCHED_ANNOUNCE_CHANNEL_ID = 1485861257708834836
 
 
 def _asched_default() -> dict:
@@ -2598,6 +2599,35 @@ def _asched_build_embed() -> discord.Embed:
     return embed
 
 
+async def _asched_post_finalized(bot_client) -> None:
+    channel = bot_client.get_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await bot_client.fetch_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    guild = channel.guild
+    ping_parts = []
+    ps5_role = guild.get_role(PS5_ROLE_ID)
+    if ps5_role:
+        ping_parts.append(ps5_role.mention)
+    notify_role = guild.get_role(NOTIFY_ROLE_ID)
+    if notify_role:
+        ping_parts.append(notify_role.mention)
+    ping_content = " ".join(ping_parts) if ping_parts else None
+
+    embed = _asched_build_embed()
+    embed.title = "📅 DIFF Meet Host Schedule — Finalized"
+
+    try:
+        await channel.send(content=ping_content, embed=embed)
+    except Exception as e:
+        print(f"[AutoSched] Announce post failed: {e}")
+
+
 class AutoScheduleView(discord.ui.View):
     def __init__(self, bot_ref=None):
         super().__init__(timeout=None)
@@ -2619,7 +2649,8 @@ class AutoScheduleView(discord.ui.View):
             return
         _asched_build()
         await _asched_update_panel(interaction.client)
-        await interaction.response.send_message("Schedule rebuilt from host responses.", ephemeral=True)
+        await _asched_post_finalized(interaction.client)
+        await interaction.response.send_message("Schedule rebuilt and posted to the announcement channel.", ephemeral=True)
 
 
 def _asched_is_sched_msg(msg: discord.Message, bot_id: int) -> bool:
