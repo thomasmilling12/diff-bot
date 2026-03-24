@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -102,6 +103,9 @@ GARAGE_TIMEOUT_HOURS = 24
 APPROVED_MEMBER_ROLE_ID = CREW_MEMBER_ROLE_ID
 APPLICATIONS_FILE = "diff_applications_full.json"
 STAFF_DASHBOARD_CHANNEL_ID = 1485273802391814224
+CREW_CANDIDATE_ROLE_ID = 0
+PHOTO_HASHES_FILE = os.path.join("diff_data", "diff_photo_hashes.json")
+CREW_PINGED_FILE = os.path.join("diff_data", "diff_crew_pinged.json")
 MEMBER_DATABASE_CHANNEL_ID = 1485274945473871903
 REAPPLY_COOLDOWN_DAYS = 14
 DATA_FOLDER = "diff_data"
@@ -1898,6 +1902,267 @@ class CrewHubView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(CrewHubRefreshButton())
+
+
+# =========================
+# NOTIFY PANEL — MEMBER SELF-SERVE ROLE TOGGLE
+# =========================
+
+def _photo_hashes_load() -> dict:
+    try:
+        if os.path.exists(PHOTO_HASHES_FILE):
+            with open(PHOTO_HASHES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _photo_hashes_save(data: dict) -> None:
+    os.makedirs(os.path.dirname(PHOTO_HASHES_FILE), exist_ok=True)
+    with open(PHOTO_HASHES_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def _crew_pinged_load() -> set:
+    try:
+        if os.path.exists(CREW_PINGED_FILE):
+            with open(CREW_PINGED_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+    except Exception:
+        pass
+    return set()
+
+
+def _crew_pinged_save(data: set) -> None:
+    os.makedirs(os.path.dirname(CREW_PINGED_FILE), exist_ok=True)
+    with open(CREW_PINGED_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(data), f, indent=2)
+
+
+def _attachment_hash(attachment: discord.Attachment) -> str:
+    raw = f"{attachment.filename}|{attachment.size}|{attachment.content_type or ''}|{attachment.url}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+class NotifyMeetView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Notify Me For Meets",
+        style=discord.ButtonStyle.primary,
+        emoji="🔔",
+        custom_id="diff_notify_meet_toggle",
+    )
+    async def toggle_notify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user if isinstance(interaction.user, discord.Member) else (interaction.guild.get_member(interaction.user.id) if interaction.guild else None)
+        if not member or not interaction.guild:
+            return await interaction.response.send_message("Could not find your profile.", ephemeral=True)
+        role = interaction.guild.get_role(NOTIFY_ROLE_ID)
+        if not role:
+            return await interaction.response.send_message("Notify role not configured.", ephemeral=True)
+        if role in member.roles:
+            try:
+                await member.remove_roles(role, reason="DIFF notify toggle off")
+            except discord.Forbidden:
+                return await interaction.response.send_message("I don't have permission to remove that role.", ephemeral=True)
+            return await interaction.response.send_message("🔕 Meet notifications turned **off**.", ephemeral=True)
+        else:
+            try:
+                await member.add_roles(role, reason="DIFF notify toggle on")
+            except discord.Forbidden:
+                return await interaction.response.send_message("I don't have permission to add that role.", ephemeral=True)
+            return await interaction.response.send_message("🔔 Meet notifications turned **on**.", ephemeral=True)
+
+
+# =========================
+# STAFF DASHBOARD PANEL
+# =========================
+
+def _build_staff_dashboard_embed() -> discord.Embed:
+    try:
+        apps = _load_diff_json(APPLICATIONS_FILE) if os.path.exists(APPLICATIONS_FILE) else {}
+    except Exception:
+        apps = {}
+
+    pending, ready = [], []
+    for user_id, app in apps.items():
+        status = app.get("status", "")
+        if status in ("Approved", "Denied"):
+            continue
+        if status == "PendingReview":
+            ready.append(int(user_id))
+        else:
+            pending.append(int(user_id))
+
+    inactive = [
+        int(e["user_id"])
+        for e in _rsvp_leaderboard.values()
+        if int(e.get("attendance_count", 0)) == 0
+    ]
+
+    def fmt(lst): return [f"• <@{u}>" for u in lst[:10]] or ["• None"]
+
+    sep = "━━━━━━━━━━━━━━━━━━━━━━"
+    embed = discord.Embed(
+        title="🧠 DIFF Staff Dashboard",
+        description="\n".join([
+            "Private staff control panel",
+            "",
+            sep,
+            f"📥 **Pending Applications ({len(pending)})**",
+            *fmt(pending),
+            "",
+            f"✅ **Ready For Review ({len(ready)})**",
+            *fmt(ready),
+            "",
+            f"📉 **Inactive Members ({len(inactive)})**",
+            *fmt(inactive),
+            sep,
+        ]),
+        color=discord.Color.dark_gray(),
+        timestamp=utc_now(),
+    )
+    embed.set_footer(text="Different Meets • Staff Dashboard")
+    return embed
+
+
+class StaffDashboardRefreshButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Refresh Dashboard", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="diff_staff_dashboard_refresh")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            return await interaction.response.send_message("Only staff can use this.", ephemeral=True)
+        await interaction.response.edit_message(embed=_build_staff_dashboard_embed(), view=StaffDashboardView())
+
+
+class StaffDashboardView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(StaffDashboardRefreshButton())
+
+
+async def _upsert_staff_dashboard(bot: commands.Bot) -> None:
+    channel = bot.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await bot.fetch_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+    existing = None
+    try:
+        async for msg in channel.history(limit=20):
+            if msg.author.bot and msg.components:
+                for row in msg.components:
+                    for child in row.children:
+                        if getattr(child, "custom_id", None) == "diff_staff_dashboard_refresh":
+                            existing = msg
+                            break
+                if existing:
+                    break
+    except Exception:
+        pass
+    embed = _build_staff_dashboard_embed()
+    view = StaffDashboardView()
+    try:
+        if existing:
+            await existing.edit(embed=embed, view=view)
+        else:
+            await channel.send(embed=embed, view=view)
+    except Exception:
+        pass
+
+
+async def _auto_staff_dashboard_loop() -> None:
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(43200)
+        try:
+            await _upsert_staff_dashboard(bot)
+        except Exception as e:
+            print(f"[Staff Dashboard] Refresh error: {e}")
+
+
+# =========================
+# CREW INVITE AUTOMATION
+# =========================
+
+async def run_crew_invite_automation() -> None:
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
+    try:
+        apps = _load_diff_json(APPLICATIONS_FILE) if os.path.exists(APPLICATIONS_FILE) else {}
+    except Exception:
+        apps = {}
+
+    already_pinged = _crew_pinged_load()
+    candidates = []
+
+    top10 = sorted(
+        _rsvp_leaderboard.values(),
+        key=lambda x: int(x.get("attendance_count", 0)),
+        reverse=True,
+    )[:10]
+
+    for entry in top10:
+        uid = int(entry["user_id"])
+        attendance = int(entry.get("attendance_count", 0))
+        status = apps.get(str(uid), {}).get("status", "")
+        if status == "Approved" and attendance >= 3 and uid not in already_pinged:
+            candidates.append((uid, attendance))
+
+    if not candidates:
+        return
+
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(log_ch, discord.TextChannel):
+        return
+
+    lines = [f"• <@{uid}> — {att} meet(s)" for uid, att in candidates]
+    try:
+        await log_ch.send(embed=discord.Embed(
+            title="🏆 Crew Invite Consideration",
+            description="\n".join([
+                "These members have reached top activity and should be considered for a crew invite:",
+                "",
+                *lines,
+                "",
+                "Path: **Join → Attend → Top 10 → Crew consideration**",
+            ]),
+            color=discord.Color.gold(),
+            timestamp=utc_now(),
+        ))
+    except Exception:
+        return
+
+    if CREW_CANDIDATE_ROLE_ID:
+        role = guild.get_role(CREW_CANDIDATE_ROLE_ID)
+        if role:
+            for uid, _ in candidates:
+                member = guild.get_member(uid)
+                if member:
+                    try:
+                        await member.add_roles(role, reason="DIFF crew candidate automation")
+                    except Exception:
+                        pass
+
+    already_pinged.update(uid for uid, _ in candidates)
+    _crew_pinged_save(already_pinged)
+
+
+async def _daily_crew_invite_check() -> None:
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(86400)
+        try:
+            await run_crew_invite_automation()
+        except Exception as e:
+            print(f"[Crew Invite] Automation error: {e}")
 
 
 # =========================
@@ -3824,6 +4089,8 @@ async def on_ready():
         bot.add_view(StaffReviewView())
         bot.add_view(JoinPlatformView())
         bot.add_view(JoinTicketView())
+        bot.add_view(NotifyMeetView())
+        bot.add_view(StaffDashboardView())
         _tab_state = _tab_load()
         _seen_member_ids: set[int] = set()
         for _link in _tab_state.get("ticket_links", {}).values():
@@ -3864,6 +4131,8 @@ async def on_ready():
     bot.loop.create_task(_tab_refresh_all_panels())
     bot.loop.create_task(_startup_refresh_all_panels())
     bot.loop.create_task(_auto_weekly_loop())
+    bot.loop.create_task(_auto_staff_dashboard_loop())
+    bot.loop.create_task(_daily_crew_invite_check())
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
@@ -4748,14 +5017,6 @@ async def mystats(interaction: discord.Interaction):
     embed = build_member_stats_embed(interaction.user)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-@bot.tree.command(name="postleaderboard", description="Post the DIFF activity leaderboard (staff only)")
-async def postleaderboard(interaction: discord.Interaction):
-    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
-    embed = build_leaderboard_embed(interaction.guild)
-    await interaction.channel.send(embed=embed, view=LeaderboardView())
-    await interaction.response.send_message("✅ Leaderboard posted.", ephemeral=True)
 
 
 @bot.tree.command(name="postattendancepanel", description="Post the meet attendance panel (staff only)")
@@ -7983,6 +8244,37 @@ async def post_crew_hub(interaction: discord.Interaction):
         await interaction.followup.send("Crew Hub panel posted and linked for auto-refresh.", ephemeral=True)
 
 
+@bot.tree.command(name="post-notify-panel", description="Post the meet notification opt-in panel in this channel (staff only)")
+async def post_notify_panel(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Use this in a text channel.", ephemeral=True)
+    embed = discord.Embed(
+        title="🔔 DIFF Meet Notifications",
+        description="\n".join([
+            "Want to be pinged when meets are announced?",
+            "",
+            "Press the button below to **toggle your notification role on or off**.",
+            "You can switch it at any time.",
+        ]),
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="Different Meets • Notification Panel")
+    await interaction.channel.send(embed=embed, view=NotifyMeetView())
+    await interaction.response.send_message("✅ Notification panel posted.", ephemeral=True)
+
+
+@bot.tree.command(name="post-staff-dashboard", description="Post/refresh the staff dashboard and run crew invite check (staff only)")
+async def post_staff_dashboard(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    await _upsert_staff_dashboard(bot)
+    await run_crew_invite_automation()
+    await interaction.followup.send("✅ Staff dashboard refreshed and crew invite check complete.", ephemeral=True)
+
+
 @bot.tree.command(name="attendance-promotions", description="Show promotion suggestions based on meet attendance")
 async def attendance_promotions(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -9519,23 +9811,66 @@ async def on_message(message: discord.Message) -> None:
     topic = message.channel.topic
     join_user_id = _join_parse_user_id(topic)
     if join_user_id and str(message.author.id) == join_user_id:
-        new_images = [a for a in message.attachments if a.content_type and a.content_type.startswith("image/")]
-        if new_images:
+        raw_images = [a for a in message.attachments if a.content_type and a.content_type.startswith("image/")]
+        if raw_images:
+            spam_ignored = max(0, len(raw_images) - 5)
+            candidates = raw_images[:5]
+
+            photo_hashes = _photo_hashes_load()
+            user_hashes: list = photo_hashes.setdefault(join_user_id, [])
+            accepted = 0
+            dupes = 0
+            for att in candidates:
+                h = _attachment_hash(att)
+                if h in user_hashes:
+                    dupes += 1
+                else:
+                    user_hashes.append(h)
+                    accepted += 1
+            _photo_hashes_save(photo_hashes)
+
             history = [m async for m in message.channel.history(limit=200)]
             total_images = sum(
                 len([a for a in m.attachments if a.content_type and a.content_type.startswith("image/")])
                 for m in history
                 if m.author.id == message.author.id
             )
-            prev_total = total_images - len(new_images)
+            prev_total = total_images - len(raw_images)
             capped = min(total_images, MIN_GARAGE_PHOTOS)
-            await message.channel.send(f"📸 Photo Progress: {capped}/{MIN_GARAGE_PHOTOS}")
+
+            msg_lines = [f"📸 **Photo Progress:** {capped}/{MIN_GARAGE_PHOTOS}"]
+            if accepted:
+                msg_lines.append(f"✅ Accepted this message: {accepted}")
+            if dupes:
+                msg_lines.append(f"⚠ Duplicate images ignored: {dupes}")
+            if spam_ignored:
+                msg_lines.append(f"⚠ Extra images ignored (anti-spam): {spam_ignored}")
+            await message.channel.send("\n".join(msg_lines))
+
             if prev_total < MIN_GARAGE_PHOTOS <= total_images:
                 leader_role = message.guild.get_role(LEADER_ROLE_ID)
                 co_role = message.guild.get_role(CO_LEADER_ROLE_ID)
                 mgr_role = message.guild.get_role(MANAGER_ROLE_ID)
                 mentions = " ".join(r.mention for r in [leader_role, co_role, mgr_role] if r)
-                await message.channel.send(f"{mentions}\n✅ This applicant has uploaded all required photos — ready for review.")
+                await message.channel.send(
+                    f"{mentions}\n✅ **Ready for review** — applicant reached {MIN_GARAGE_PHOTOS} valid photos.",
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+                log_ch = message.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+                if isinstance(log_ch, discord.TextChannel):
+                    try:
+                        await log_ch.send(embed=discord.Embed(
+                            title="✅ Application Ready For Review",
+                            description="\n".join([
+                                f"**User:** <@{join_user_id}>",
+                                f"**Channel:** {message.channel.mention}",
+                                f"**Valid Photos:** {capped}/{MIN_GARAGE_PHOTOS}",
+                            ]),
+                            color=discord.Color.green(),
+                            timestamp=utc_now(),
+                        ))
+                    except Exception:
+                        pass
         return
 
     # --- Staff ticket message tracking ---
