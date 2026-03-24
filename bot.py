@@ -7766,8 +7766,11 @@ def _popup_build_panel_embed() -> discord.Embed:
 
 @bot.command(name="postpopuppanel")
 async def _cmd_postpopuppanel(ctx: commands.Context):
-    if not any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", [])) \
-            and not ctx.author.guild_permissions.administrator:
+    is_owner = ctx.guild and ctx.guild.owner_id == ctx.author.id
+    is_admin = ctx.author.guild_permissions.administrator
+    is_staff = any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", []))
+    if not (is_owner or is_admin or is_staff):
+        await ctx.send("You need a staff role to use this command.", delete_after=8)
         return
     try:
         await ctx.message.delete()
