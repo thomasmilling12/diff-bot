@@ -2785,6 +2785,33 @@ def _hosthub_build_embed() -> discord.Embed:
     return embed
 
 
+async def _hosthub_post_or_refresh() -> None:
+    channel = bot.get_channel(HOST_HUB_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await bot.fetch_channel(HOST_HUB_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+    embed = _hosthub_build_embed()
+    view = HostHubView()
+    async for msg in channel.history(limit=20):
+        if msg.author.id == bot.user.id:
+            for row in msg.components:
+                for child in row.children:
+                    if getattr(child, "custom_id", "").startswith("hosthub_"):
+                        try:
+                            await msg.edit(embed=embed, view=view)
+                        except Exception:
+                            pass
+                        return
+    try:
+        await channel.send(embed=embed, view=view)
+    except Exception as e:
+        print(f"[HostHub] Post failed: {e}")
+
+
 @bot.command(name="hosthub")
 async def _hosthub_cmd(ctx: commands.Context):
     is_staff = any(
@@ -5301,6 +5328,7 @@ async def on_ready():
     _asched_build()
     await _asched_update_panel(bot)
     bot.add_view(HostHubView())
+    await _hosthub_post_or_refresh()
     bot.add_view(_MobileRefreshView())
 
     if not hierarchy_attendance_loop.is_running():
