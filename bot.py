@@ -6783,6 +6783,11 @@ class _RollCallDB:
         cur.execute("SELECT * FROM rollcall_panels WHERE guild_id=?", (guild_id,))
         return cur.fetchone()
 
+    def clear_panel(self, guild_id):
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM rollcall_panels WHERE guild_id=?", (guild_id,))
+        self.conn.commit()
+
     def upsert_meets(self, guild_id, meets: list):
         cur = self.conn.cursor()
         for m in meets:
@@ -7165,6 +7170,18 @@ async def _cmd_postrollcall(ctx: commands.Context):
         await ctx.message.delete()
     except Exception:
         pass
+    panel = _rc_db.get_panel(ctx.guild.id)
+    if panel:
+        channel = ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
+        if isinstance(channel, discord.TextChannel):
+            for mid in (panel.get("message_id"), panel.get("admin_message_id")):
+                if mid:
+                    try:
+                        old = await channel.fetch_message(mid)
+                        await old.delete()
+                    except Exception:
+                        pass
+        _rc_db.clear_panel(ctx.guild.id)
     await _rc_post_new_panel(ctx.guild, ping_roles=True)
 
 
