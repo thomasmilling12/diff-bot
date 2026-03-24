@@ -2599,6 +2599,46 @@ def _asched_build_embed() -> discord.Embed:
     return embed
 
 
+class _ASchedAnnounceView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Notify", emoji="🔔", style=discord.ButtonStyle.danger, custom_id="diff_asched_announce:notify")
+    async def notify_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_staff = any(
+            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+            for r in getattr(interaction.user, "roles", [])
+        )
+        if not is_staff:
+            await interaction.response.send_message("Only staff can send schedule notifications.", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("Could not find guild.", ephemeral=True)
+            return
+
+        ping_parts = []
+        ps5_role = guild.get_role(PS5_ROLE_ID)
+        if ps5_role:
+            ping_parts.append(ps5_role.mention)
+        notify_role = guild.get_role(NOTIFY_ROLE_ID)
+        if notify_role:
+            ping_parts.append(notify_role.mention)
+
+        if not ping_parts:
+            await interaction.response.send_message("No roles found to ping.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("Notification sent.", ephemeral=True)
+        try:
+            await interaction.channel.send(
+                content=" ".join(ping_parts) + " — 📅 **The DIFF Meet Host Schedule has been posted above. Check your meet!**"
+            )
+        except Exception as e:
+            print(f"[AutoSched] Notify ping failed: {e}")
+
+
 async def _asched_post_finalized(bot_client) -> None:
     channel = bot_client.get_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
@@ -2623,7 +2663,7 @@ async def _asched_post_finalized(bot_client) -> None:
     embed.title = "📅 DIFF Meet Host Schedule — Finalized"
 
     try:
-        await channel.send(content=ping_content, embed=embed)
+        await channel.send(content=ping_content, embed=embed, view=_ASchedAnnounceView())
     except Exception as e:
         print(f"[AutoSched] Announce post failed: {e}")
 
@@ -6721,6 +6761,7 @@ async def on_ready():
     bot.add_view(HostRSVPView())
     await _hrsvp_update_panel(bot)
     bot.add_view(AutoScheduleView(bot))
+    bot.add_view(_ASchedAnnounceView())
     _asched_build()
     await _asched_update_panel(bot)
     bot.add_view(HostHubView())
