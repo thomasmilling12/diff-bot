@@ -1,0 +1,597 @@
+"""
+DIFF Official Meet + Schedule Integration Add-On
+------------------------------------------------
+Drop this file into your current discord.py bot and load it as an extension.
+
+What this version adds:
+- Posts the DIFF Official Meet announcement in your meet channel
+- Pings the PlayStation role and Car Meet role
+- Uses Discord timestamps so times auto-convert for every user
+- Auto-sends reminder messages 1 hour before and 15 minutes before the meet
+- Adds Start Meet / End Meet buttons to the official meet post
+- Restores reminders and button data after bot restarts using a JSON file
+- Can be triggered manually OR directly from your finalized schedule system
+
+How to load:
+    await bot.load_extension("diff_official_meet_system")
+
+Required setup:
+1) Replace PLAYSTATION_ROLE_ID and CARMEET_ROLE_ID with your real role IDs
+2) Optionally set STAFF_LOG_CHANNEL_ID if you want end/start logs
+3) Load the extension in your main bot file
+
+Manual command:
+    !officialmeet "Theme Name" 2026-03-28 20:00 @HostUser
+
+Example:
+    !officialmeet "Tire Lettering" 2026-03-28 20:00 @Wayy2Frostyy-
+
+Schedule integration options:
+A) Call the cog directly from your finalized schedule code:
+       official = bot.get_cog("DiffOfficialMeetSystem")
+       await official.post_meet_from_schedule(
+           theme="Tire Lettering",
+           host_member=host_member,
+           local_dt=datetime(2026, 3, 28, 20, 0, tzinfo=ZoneInfo("America/New_York"))
+       )
+
+B) Or dispatch an event from your finalized schedule code:
+       bot.dispatch("diff_schedule_finalized", "Tire Lettering", host_member.id, local_dt.isoformat())
+
+The listener in this file will catch that and auto-post the official meet.
+
+Notes:
+- Input schedule time is assumed to be in SCHEDULE_TIMEZONE
+- Reminder/task state is stored in diff_official_meets.json
+- Start/End buttons work after restart because the view is re-registered
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
+import discord
+from discord.ext import commands
+
+# =========================
+# CONFIG
+# =========================
+
+MEET_CHANNEL_ID = 1485870611069796374
+
+# Optional: where the "session is now live" message should go.
+# If None, it posts in the same meet channel.
+LIVE_MESSAGE_CHANNEL_ID: Optional[int] = None
+
+# Optional: where host start/end activity logs should go.
+# Set to None if you do not want staff logs from this system.
+STAFF_LOG_CHANNEL_ID: Optional[int] = None
+
+# Replace these with your real role IDs
+PLAYSTATION_ROLE_ID = 0
+CARMEET_ROLE_ID = 0
+
+# Input timezone for scheduled meet times
+SCHEDULE_TIMEZONE = "America/New_York"
+
+# Prefix command name
+COMMAND_NAME = "officialmeet"
+
+# Local JSON file to persist scheduled meets
+DATA_FILE = Path("diff_official_meets.json")
+
+
+@dataclass
+class MeetRecord:
+    message_id: int
+    channel_id: int
+    live_channel_id: int | None
+    host_id: int
+    theme: str
+    timestamp: int
+    created_by_id: int
+    started: bool = False
+    ended: bool = False
+    one_hour_sent: bool = False
+    fifteen_sent: bool = False
+
+
+class StorageManager:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = asyncio.Lock()
+
+    async def load(self) -> dict[str, Any]:
+        async with self._lock:
+            if not self.path.exists():
+                return {}
+            try:
+                return json.loads(self.path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+
+    async def save(self, data: dict[str, Any]) -> None:
+        async with self._lock:
+            self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+class MeetControlView(discord.ui.View):
+    def __init__(self, cog: "DiffOfficialMeetSystem") -> None:
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Allow the host or members with Manage Guild
+        if not interaction.message:
+            return False
+
+        record = await self.cog.get_record(interaction.message.id)
+        if not record:
+            await interaction.response.send_message(
+                "I couldn't find the meet data for this post.", ephemeral=True
+            )
+            return False
+
+        user = interaction.user
+        if isinstance(user, discord.Member):
+            if user.id == record.host_id or user.guild_permissions.manage_guild:
+                return True
+
+        await interaction.response.send_message(
+            "Only the assigned host or staff can use these buttons.", ephemeral=True
+        )
+        return False
+
+    @discord.ui.button(
+        label="Start Meet",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_official_meet:start"
+    )
+    async def start_meet(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not interaction.message:
+            await interaction.response.send_message("Missing message context.", ephemeral=True)
+            return
+
+        result = await self.cog.start_meet(interaction.message.id, interaction.user.id)
+        if not result["ok"]:
+            await interaction.response.send_message(result["message"], ephemeral=True)
+            return
+
+        await self.cog.refresh_buttons(interaction.message)
+        await interaction.response.send_message("Meet marked as live.", ephemeral=True)
+
+    @discord.ui.button(
+        label="End Meet",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_official_meet:end"
+    )
+    async def end_meet(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not interaction.message:
+            await interaction.response.send_message("Missing message context.", ephemeral=True)
+            return
+
+        result = await self.cog.end_meet(interaction.message.id, interaction.user.id)
+        if not result["ok"]:
+            await interaction.response.send_message(result["message"], ephemeral=True)
+            return
+
+        await self.cog.refresh_buttons(interaction.message)
+        await interaction.response.send_message("Meet marked as ended.", ephemeral=True)
+
+
+class DiffOfficialMeetSystem(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self.storage = StorageManager(DATA_FILE)
+        self.view = MeetControlView(self)
+        self.restore_task: asyncio.Task | None = None
+
+    async def cog_load(self) -> None:
+        self.bot.add_view(self.view)
+        self.restore_task = asyncio.create_task(self.restore_state())
+
+    async def cog_unload(self) -> None:
+        if self.restore_task and not self.restore_task.done():
+            self.restore_task.cancel()
+
+    # -------------------------
+    # Public helper for schedule integration
+    # -------------------------
+
+    async def post_meet_from_schedule(
+        self,
+        theme: str,
+        host_member: discord.Member,
+        local_dt: datetime,
+        created_by_id: int | None = None,
+    ) -> discord.Message:
+        if local_dt.tzinfo is None:
+            local_dt = local_dt.replace(tzinfo=ZoneInfo(SCHEDULE_TIMEZONE))
+
+        return await self._create_official_meet_post(
+            theme=theme,
+            host_id=host_member.id,
+            timestamp=int(local_dt.timestamp()),
+            created_by_id=created_by_id or host_member.id,
+        )
+
+    async def post_meet_from_schedule_ids(
+        self,
+        theme: str,
+        host_id: int,
+        local_dt: datetime,
+        created_by_id: int | None = None,
+    ) -> discord.Message:
+        if local_dt.tzinfo is None:
+            local_dt = local_dt.replace(tzinfo=ZoneInfo(SCHEDULE_TIMEZONE))
+
+        return await self._create_official_meet_post(
+            theme=theme,
+            host_id=host_id,
+            timestamp=int(local_dt.timestamp()),
+            created_by_id=created_by_id or host_id,
+        )
+
+    # -------------------------
+    # Commands
+    # -------------------------
+
+    @commands.command(name=COMMAND_NAME)
+    @commands.has_permissions(manage_guild=True)
+    async def official_meet(
+        self,
+        ctx: commands.Context,
+        theme: str,
+        date: str,
+        time_str: str,
+        host: discord.Member,
+    ) -> None:
+        """
+        Usage:
+        !officialmeet "Theme Name" 2026-03-28 20:00 @HostUser
+        """
+        if PLAYSTATION_ROLE_ID == 0 or CARMEET_ROLE_ID == 0:
+            await ctx.send("Set PLAYSTATION_ROLE_ID and CARMEET_ROLE_ID in the file first.")
+            return
+
+        try:
+            local_dt = datetime.strptime(f"{date} {time_str}", "%Y-%m-%d %H:%M").replace(
+                tzinfo=ZoneInfo(SCHEDULE_TIMEZONE)
+            )
+        except ValueError:
+            await ctx.send("Invalid date/time format. Use: YYYY-MM-DD HH:MM")
+            return
+
+        if int(local_dt.timestamp()) <= int(datetime.now(timezone.utc).timestamp()):
+            await ctx.send("That meet time is in the past. Use a future date/time.")
+            return
+
+        sent = await self.post_meet_from_schedule(
+            theme=theme,
+            host_member=host,
+            local_dt=local_dt,
+            created_by_id=ctx.author.id,
+        )
+        await ctx.send(f"Official meet posted in <#{sent.channel.id}> for <t:{int(local_dt.timestamp())}:F>.")
+
+    # -------------------------
+    # Event listener for schedule finalization
+    # -------------------------
+
+    @commands.Cog.listener()
+    async def on_diff_schedule_finalized(
+        self,
+        theme: str,
+        host_id: int,
+        local_dt_iso: str,
+        created_by_id: int | None = None,
+    ) -> None:
+        """
+        Trigger this from your schedule system:
+            bot.dispatch("diff_schedule_finalized", "Tire Lettering", host_id, local_dt.isoformat())
+        """
+        try:
+            local_dt = datetime.fromisoformat(local_dt_iso)
+        except ValueError:
+            print("[DIFF Official Meet] Invalid ISO datetime received from schedule system.")
+            return
+
+        try:
+            await self.post_meet_from_schedule_ids(
+                theme=theme,
+                host_id=host_id,
+                local_dt=local_dt,
+                created_by_id=created_by_id or host_id,
+            )
+        except Exception as exc:
+            print(f"[DIFF Official Meet] Failed to post from finalized schedule: {exc}")
+
+    # -------------------------
+    # Core creation
+    # -------------------------
+
+    async def _create_official_meet_post(
+        self,
+        theme: str,
+        host_id: int,
+        timestamp: int,
+        created_by_id: int,
+    ) -> discord.Message:
+        channel = self.bot.get_channel(MEET_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            raise RuntimeError("Configured meet channel is missing or not a text channel.")
+
+        content = self.build_meet_message(theme=theme, host_id=host_id, timestamp=timestamp)
+
+        sent = await channel.send(
+            content,
+            view=self.view,
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+        )
+
+        record = MeetRecord(
+            message_id=sent.id,
+            channel_id=channel.id,
+            live_channel_id=LIVE_MESSAGE_CHANNEL_ID,
+            host_id=host_id,
+            theme=theme,
+            timestamp=timestamp,
+            created_by_id=created_by_id,
+        )
+        await self.upsert_record(record)
+
+        await self.schedule_reminders_for_record(record)
+        return sent
+
+    def build_meet_message(self, theme: str, host_id: int, timestamp: int) -> str:
+        playstation_ping = f"<@&{PLAYSTATION_ROLE_ID}>"
+        carmeet_ping = f"<@&{CARMEET_ROLE_ID}>"
+
+        return (
+            f"{playstation_ping} {carmeet_ping}\n\n"
+            f"🏁 **DIFF Official Meet**\n\n"
+            f"Date: <t:{timestamp}:F>\n"
+            f"Begins: <t:{timestamp}:R>\n"
+            f"Host: <@{host_id}>\n"
+            f"Theme: {theme}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"**Entry Info**\n\n"
+            f"Send your vehicle photos to the host before joining, unless told otherwise.\n\n"
+            f"All vehicles must match the meet theme and follow the standards listed in #meet-info and #rules.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"**Meet Notes**\n\n"
+            f"• Follow all host instructions at all times\n"
+            f"• Use #chat for meet communication and updates\n"
+            f"• Bring clean, realistic, theme-fitting vehicles only\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"**Style Direction**\n\n"
+            f"Choose vehicles that match tonight’s theme and represent DIFF properly."
+        )
+
+    # -------------------------
+    # Start / End actions
+    # -------------------------
+
+    async def start_meet(self, message_id: int, acted_by_id: int) -> dict[str, Any]:
+        record = await self.get_record(message_id)
+        if not record:
+            return {"ok": False, "message": "Meet record not found."}
+
+        if record.started:
+            return {"ok": False, "message": "This meet has already been started."}
+        if record.ended:
+            return {"ok": False, "message": "This meet has already been ended."}
+
+        record.started = True
+        await self.upsert_record(record)
+
+        live_channel_id = record.live_channel_id or record.channel_id
+        channel = self.bot.get_channel(live_channel_id)
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(
+                f"<@&{PLAYSTATION_ROLE_ID}> <@&{CARMEET_ROLE_ID}>\n\n"
+                f"🚨 **DIFF Session Is Now Live**\n\n"
+                f"⏳ Started: <t:{record.timestamp}:R>\n\n"
+                f"🎮 Join through the host: <@{record.host_id}>\n"
+                f"💬 Head to #chat for instructions\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"Stay clean, stay organized, and follow host direction."
+            )
+
+        await self.send_staff_log(
+            title="Meet Started",
+            description=(
+                f"Host: <@{record.host_id}>\n"
+                f"Theme: {record.theme}\n"
+                f"Scheduled Time: <t:{record.timestamp}:F>\n"
+                f"Started By: <@{acted_by_id}>\n"
+                f"Official Post: https://discord.com/channels/@me/{record.channel_id}/{record.message_id}"
+            )
+        )
+        return {"ok": True, "message": "Meet started."}
+
+    async def end_meet(self, message_id: int, acted_by_id: int) -> dict[str, Any]:
+        record = await self.get_record(message_id)
+        if not record:
+            return {"ok": False, "message": "Meet record not found."}
+
+        if record.ended:
+            return {"ok": False, "message": "This meet has already been ended."}
+
+        record.ended = True
+        await self.upsert_record(record)
+
+        channel = self.bot.get_channel(record.channel_id)
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(
+                f"📌 **DIFF Meet Closed**\n\n"
+                f"Host: <@{record.host_id}>\n"
+                f"Theme: {record.theme}\n"
+                f"Scheduled Time: <t:{record.timestamp}:F>\n\n"
+                f"Thank you to everyone who attended and helped keep the meet clean."
+            )
+
+        await self.send_staff_log(
+            title="Meet Ended",
+            description=(
+                f"Host: <@{record.host_id}>\n"
+                f"Theme: {record.theme}\n"
+                f"Scheduled Time: <t:{record.timestamp}:F>\n"
+                f"Ended By: <@{acted_by_id}>\n"
+                f"Official Post: https://discord.com/channels/@me/{record.channel_id}/{record.message_id}"
+            )
+        )
+        return {"ok": True, "message": "Meet ended."}
+
+    async def refresh_buttons(self, message: discord.Message) -> None:
+        record = await self.get_record(message.id)
+        if not record:
+            return
+
+        view = MeetControlView(self)
+
+        for child in view.children:
+            if isinstance(child, discord.ui.Button):
+                if child.custom_id == "diff_official_meet:start" and (record.started or record.ended):
+                    child.disabled = True
+                if child.custom_id == "diff_official_meet:end" and record.ended:
+                    child.disabled = True
+
+        await message.edit(view=view)
+
+    # -------------------------
+    # Reminder scheduling
+    # -------------------------
+
+    async def restore_state(self) -> None:
+        await self.bot.wait_until_ready()
+        data = await self.storage.load()
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+
+        for raw in data.values():
+            try:
+                record = MeetRecord(**raw)
+            except TypeError:
+                continue
+
+            # Skip fully ended past records
+            if record.ended and record.timestamp < now_ts - 86400:
+                continue
+
+            await self.schedule_reminders_for_record(record)
+
+            # Refresh button disabled state on restart
+            channel = self.bot.get_channel(record.channel_id)
+            if isinstance(channel, discord.TextChannel):
+                try:
+                    message = await channel.fetch_message(record.message_id)
+                    await self.refresh_buttons(message)
+                except discord.NotFound:
+                    continue
+                except Exception:
+                    continue
+
+    async def schedule_reminders_for_record(self, record: MeetRecord) -> None:
+        asyncio.create_task(self._run_one_hour_reminder(record.message_id))
+        asyncio.create_task(self._run_fifteen_min_reminder(record.message_id))
+
+    async def _run_one_hour_reminder(self, message_id: int) -> None:
+        record = await self.get_record(message_id)
+        if not record or record.one_hour_sent or record.ended:
+            return
+
+        delay = record.timestamp - int(datetime.now(timezone.utc).timestamp()) - 3600
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        record = await self.get_record(message_id)
+        if not record or record.one_hour_sent or record.ended:
+            return
+
+        channel = self.bot.get_channel(record.channel_id)
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(
+                "⏳ **DIFF Meet Reminder**\n\n"
+                "This meet begins in:\n"
+                f"<t:{record.timestamp}:R>\n\n"
+                "Be ready with your build and check in with the host."
+            )
+
+        record.one_hour_sent = True
+        await self.upsert_record(record)
+
+    async def _run_fifteen_min_reminder(self, message_id: int) -> None:
+        record = await self.get_record(message_id)
+        if not record or record.fifteen_sent or record.ended:
+            return
+
+        delay = record.timestamp - int(datetime.now(timezone.utc).timestamp()) - 900
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        record = await self.get_record(message_id)
+        if not record or record.fifteen_sent or record.ended:
+            return
+
+        channel = self.bot.get_channel(record.channel_id)
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(
+                "🚨 **DIFF Meet Starting Soon**\n\n"
+                f"⏳ <t:{record.timestamp}:R>\n\n"
+                "Make sure you're ready to join and have your cars prepared."
+            )
+
+        record.fifteen_sent = True
+        await self.upsert_record(record)
+
+    # -------------------------
+    # Storage helpers
+    # -------------------------
+
+    async def get_record(self, message_id: int) -> MeetRecord | None:
+        data = await self.storage.load()
+        raw = data.get(str(message_id))
+        if not raw:
+            return None
+        try:
+            return MeetRecord(**raw)
+        except TypeError:
+            return None
+
+    async def upsert_record(self, record: MeetRecord) -> None:
+        data = await self.storage.load()
+        data[str(record.message_id)] = asdict(record)
+        await self.storage.save(data)
+
+    # -------------------------
+    # Staff logs
+    # -------------------------
+
+    async def send_staff_log(self, title: str, description: str) -> None:
+        if STAFF_LOG_CHANNEL_ID is None:
+            return
+
+        channel = self.bot.get_channel(STAFF_LOG_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
+        embed.timestamp = datetime.now(timezone.utc)
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(DiffOfficialMeetSystem(bot))

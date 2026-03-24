@@ -7542,6 +7542,251 @@ async def _cmd_officialmeet(ctx: commands.Context, theme: str, date: str, time_s
 
 
 # =========================
+# POP-UP MEET SYSTEM
+# =========================
+
+_POPUP_PANEL_CHANNEL_ID = 1484768466023223418
+_POPUP_DB_FILE = os.path.join(DATA_FOLDER, "diff_popup_meets.db")
+
+
+class _PopupDB:
+    def __init__(self):
+        self.conn = sqlite3.connect(_POPUP_DB_FILE)
+        self.conn.row_factory = sqlite3.Row
+        self._setup()
+
+    def _setup(self):
+        cur = self.conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS popup_meets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                host_user_id INTEGER NOT NULL,
+                theme TEXT,
+                location TEXT NOT NULL,
+                time_text TEXT NOT NULL,
+                extra_notes TEXT,
+                ping_playstation INTEGER NOT NULL DEFAULT 0,
+                ping_carmeet INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS panel_state (
+                guild_id INTEGER NOT NULL,
+                panel_name TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, panel_name)
+            )
+        """)
+        self.conn.commit()
+
+    def add_meet(self, guild_id, host_id, theme, location, time_text, extra_notes, ping_ps, ping_cm) -> int:
+        cur = self.conn.cursor()
+        cur.execute("""
+            INSERT INTO popup_meets (guild_id, host_user_id, theme, location, time_text, extra_notes,
+                ping_playstation, ping_carmeet, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (guild_id, host_id, theme, location, time_text, extra_notes,
+              1 if ping_ps else 0, 1 if ping_cm else 0, datetime.utcnow().isoformat()))
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def save_panel(self, guild_id, channel_id, message_id):
+        cur = self.conn.cursor()
+        cur.execute("""
+            INSERT INTO panel_state (guild_id, panel_name, channel_id, message_id)
+            VALUES (?, 'popup', ?, ?)
+            ON CONFLICT(guild_id, panel_name)
+            DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id
+        """, (guild_id, channel_id, message_id))
+        self.conn.commit()
+
+    def get_panel(self, guild_id):
+        cur = self.conn.cursor()
+        cur.execute("SELECT channel_id, message_id FROM panel_state WHERE guild_id=? AND panel_name='popup'", (guild_id,))
+        return cur.fetchone()
+
+
+_popup_db = _PopupDB()
+
+
+class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
+    theme_field = discord.ui.TextInput(
+        label="Theme (optional)",
+        placeholder="Example: JDM Night / Clean Euros / Under 1M",
+        required=False,
+        max_length=100,
+    )
+    location_field = discord.ui.TextInput(
+        label="Location",
+        placeholder="Example: LS Car Meet / City / Sandy",
+        required=True,
+        max_length=100,
+    )
+    time_field = discord.ui.TextInput(
+        label="Time / Hammertime link",
+        placeholder="Paste your Hammertime link or time info",
+        required=True,
+        max_length=300,
+    )
+    notes_field = discord.ui.TextInput(
+        label="Extra notes (optional)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Example: Clean builds only / first come first served",
+        required=False,
+        max_length=500,
+    )
+    ping_field = discord.ui.TextInput(
+        label="Ping roles",
+        placeholder="Type: playstation, carmeet, both, or none",
+        required=True,
+        max_length=30,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        user = interaction.user
+        if guild is None or not isinstance(user, discord.Member):
+            await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
+            return
+        host_role = guild.get_role(HOST_ROLE_ID)
+        if not user.guild_permissions.administrator and (not host_role or host_role not in user.roles):
+            await interaction.response.send_message("Only users with the Host role can create pop-up meets.", ephemeral=True)
+            return
+        panel_ch = guild.get_channel(_POPUP_PANEL_CHANNEL_ID)
+        if not isinstance(panel_ch, discord.TextChannel):
+            await interaction.response.send_message("Pop-up meet channel not found.", ephemeral=True)
+            return
+
+        raw_ping = self.ping_field.value.strip().lower()
+        ping_ps = raw_ping in {"playstation", "ps", "both", "all"}
+        ping_cm = raw_ping in {"carmeet", "car meet", "both", "all"}
+
+        theme = self.theme_field.value.strip()
+        location = self.location_field.value.strip()
+        time_text = self.time_field.value.strip()
+        notes = self.notes_field.value.strip()
+
+        meet_id = _popup_db.add_meet(
+            guild.id, user.id, theme, location, time_text, notes, ping_ps, ping_cm
+        )
+
+        ping_parts = []
+        if ping_ps:
+            r = guild.get_role(PS5_ROLE_ID)
+            ping_parts.append(r.mention if r else "@PlayStation")
+        if ping_cm:
+            r = guild.get_role(NOTIFY_ROLE_ID)
+            ping_parts.append(r.mention if r else "@CarMeet")
+        ping_text = " ".join(ping_parts) or None
+
+        embed = discord.Embed(
+            title="⚡ DIFF Pop-Up Meet",
+            color=discord.Color.orange(),
+            timestamp=datetime.utcnow(),
+            description="A spontaneous meet has just been opened. Pull up quick.",
+        )
+        embed.add_field(name="👤 Host", value=user.mention, inline=False)
+        embed.add_field(name="🎨 Theme", value=theme or "Open theme", inline=True)
+        embed.add_field(name="📍 Location", value=location, inline=True)
+        embed.add_field(name="🕒 Time", value=time_text, inline=False)
+        embed.add_field(name="📝 Notes", value=notes or "No extra notes", inline=False)
+        embed.set_footer(text=f"Pop-Up Meet #{meet_id}")
+
+        await panel_ch.send(
+            content=ping_text,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(roles=True, users=False),
+        )
+
+        log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(log_ch, discord.TextChannel):
+            log_embed = discord.Embed(
+                title="📋 Pop-Up Meet Created",
+                color=discord.Color.green(),
+                timestamp=datetime.utcnow(),
+                description=f"{user.mention} created a new pop-up meet.",
+            )
+            log_embed.add_field(name="Meet ID", value=str(meet_id), inline=True)
+            log_embed.add_field(name="Location", value=location, inline=True)
+            log_embed.add_field(name="Theme", value=theme or "Open theme", inline=True)
+            try:
+                await log_ch.send(embed=log_embed)
+            except Exception:
+                pass
+
+        await interaction.response.send_message(f"Pop-up meet #{meet_id} posted successfully.", ephemeral=True)
+
+
+class _PopupMeetPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="⚡ Create Pop-Up Meet", style=discord.ButtonStyle.success, custom_id="diff_popup:create")
+    async def create_popup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user = interaction.user
+        if not isinstance(user, discord.Member):
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return
+        host_role = interaction.guild.get_role(HOST_ROLE_ID) if interaction.guild else None
+        if not user.guild_permissions.administrator and (not host_role or host_role not in user.roles):
+            await interaction.response.send_message("Only users with the Host role can use this.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_PopupMeetModal())
+
+
+def _popup_build_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="⚡ DIFF Pop-Up Meets Hub",
+        color=discord.Color.blue(),
+        timestamp=datetime.utcnow(),
+        description=(
+            "*Spontaneous meets hosted throughout the week.*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🚗 **What are Pop-Up Meets?**\n"
+            "Quick unscheduled meets hosted by approved DIFF hosts.\n\n"
+            "📋 **How It Works**\n"
+            "• Host clicks the button below\n"
+            "• Fills out meet details\n"
+            "• Bot posts a clean pop-up meet embed\n"
+            "• Members pull up and join fast\n\n"
+            "⚠️ **Rules**\n"
+            "• Clean builds only\n"
+            "• No crashing / griefing\n"
+            "• Respect the host\n"
+            "• Be ready to join quickly\n\n"
+            "Only users with the **Host** role can create pop-up meets."
+        ),
+    )
+    embed.set_footer(text="DIFF Pop-Up Meet System")
+    return embed
+
+
+@bot.command(name="postpopuppanel")
+async def _cmd_postpopuppanel(ctx: commands.Context):
+    if not any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", [])) \
+            and not ctx.author.guild_permissions.administrator:
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    row = _popup_db.get_panel(ctx.guild.id)
+    if row:
+        old_ch = ctx.guild.get_channel(row["channel_id"])
+        if isinstance(old_ch, discord.TextChannel):
+            try:
+                old_msg = await old_ch.fetch_message(row["message_id"])
+                await old_msg.delete()
+            except Exception:
+                pass
+    msg = await ctx.channel.send(embed=_popup_build_panel_embed(), view=_PopupMeetPanelView())
+    _popup_db.save_panel(ctx.guild.id, ctx.channel.id, msg.id)
+
+
+# =========================
 # EVENTS
 # =========================
 @bot.event
@@ -7645,6 +7890,7 @@ async def on_ready():
     bot.add_view(_RcAdminView())
     bot.add_view(_OfficialMeetRSVPView())
     asyncio.create_task(_om_restore_on_ready())
+    bot.add_view(_PopupMeetPanelView())
     if not _rc_ensure_loop.is_running():
         _rc_ensure_loop.start()
 
