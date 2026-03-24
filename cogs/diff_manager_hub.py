@@ -9,6 +9,7 @@ from discord.ext import commands
 
 GUILD_ID = 850386896509337710
 MANAGER_HUB_CHANNEL_ID = 1485273802391814224
+LOGO_STORAGE_CHANNEL_ID = 1485265848099799163  # staff-logs — messages kept alive for CDN
 
 HUB_TITLE = "🧠 DIFF Manager Hub"
 HUB_DESCRIPTION = (
@@ -340,40 +341,63 @@ class ManagerHubSystem(commands.Cog):
                     "name": preset["name"],
                     "description": preset["description"],
                     "url": "",
+                    "message_id": None,
+                    "storage_channel_id": None,
                 })
 
-        missing = [l for l in logos if not l.get("url")]
-        if not missing:
-            _save_logos(logos)
-            return
-
-        channel = self.bot.get_channel(MANAGER_HUB_CHANNEL_ID)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(MANAGER_HUB_CHANNEL_ID)
-            except Exception:
-                _save_logos(logos)
-                return
-
-        logo_dir = Path("diff_data/crew_logos")
-        uploaded = 0
+        # Refresh URLs for logos that already have a stored message_id
+        refreshed = 0
         for logo in logos:
-            if logo.get("url"):
-                continue
-            img_path = logo_dir / f"{logo['key']}.png"
-            if not img_path.exists():
-                continue
-            try:
-                msg = await channel.send(file=discord.File(img_path))
-                logo["url"] = msg.attachments[0].url
-                await msg.delete()
-                uploaded += 1
-            except Exception as e:
-                print(f"[ManagerHubSystem] Logo upload failed for {logo['key']}: {e}")
+            mid = logo.get("message_id")
+            cid = logo.get("storage_channel_id")
+            if mid and cid:
+                try:
+                    ch = self.bot.get_channel(cid) or await self.bot.fetch_channel(cid)
+                    msg = await ch.fetch_message(mid)
+                    if msg.attachments:
+                        logo["url"] = msg.attachments[0].proxy_url or msg.attachments[0].url
+                        refreshed += 1
+                except Exception as e:
+                    print(f"[ManagerHubSystem] URL refresh failed for {logo['key']}: {e}")
+
+        # Upload any still-missing logos — keep messages so URLs stay alive
+        missing = [l for l in logos if not l.get("url")]
+        if missing:
+            storage_ch = self.bot.get_channel(LOGO_STORAGE_CHANNEL_ID)
+            if storage_ch is None:
+                try:
+                    storage_ch = await self.bot.fetch_channel(LOGO_STORAGE_CHANNEL_ID)
+                except Exception:
+                    storage_ch = None
+
+            if storage_ch:
+                logo_dir = Path("diff_data/crew_logos")
+                uploaded = 0
+                for logo in logos:
+                    if logo.get("url"):
+                        continue
+                    img_path = logo_dir / f"{logo['key']}.png"
+                    if not img_path.exists():
+                        continue
+                    try:
+                        msg = await storage_ch.send(
+                            content=f"[LOGO STORAGE — do not delete] {logo['name']}",
+                            file=discord.File(img_path),
+                        )
+                        logo["url"] = msg.attachments[0].proxy_url or msg.attachments[0].url
+                        logo["message_id"] = msg.id
+                        logo["storage_channel_id"] = storage_ch.id
+                        uploaded += 1
+                    except Exception as e:
+                        print(f"[ManagerHubSystem] Logo upload failed for {logo['key']}: {e}")
+
+                if uploaded:
+                    print(f"[ManagerHubSystem] Uploaded {uploaded} new crew logo(s).")
+
+        if refreshed:
+            print(f"[ManagerHubSystem] Refreshed {refreshed} logo URL(s) from stored messages.")
 
         _save_logos(logos)
-        if uploaded:
-            print(f"[ManagerHubSystem] Auto-uploaded {uploaded} crew logo(s).")
 
     def build_main_embed(self) -> discord.Embed:
         logos = _load_logos()
@@ -535,11 +559,21 @@ class ManagerHubSystem(commands.Cog):
             name = parts[0].strip()
             url = parts[1].strip()
 
+        message_id = None
+        storage_channel_id = None
+
         if not url and ctx.message.attachments:
             try:
-                upload_msg = await ctx.channel.send(file=await ctx.message.attachments[0].to_file())
-                url = upload_msg.attachments[0].url
-                await upload_msg.delete()
+                storage_ch = self.bot.get_channel(LOGO_STORAGE_CHANNEL_ID)
+                if storage_ch is None:
+                    storage_ch = await self.bot.fetch_channel(LOGO_STORAGE_CHANNEL_ID)
+                upload_msg = await storage_ch.send(
+                    content=f"[LOGO STORAGE — do not delete] {name}",
+                    file=await ctx.message.attachments[0].to_file(),
+                )
+                url = upload_msg.attachments[0].proxy_url or upload_msg.attachments[0].url
+                message_id = upload_msg.id
+                storage_channel_id = storage_ch.id
             except Exception as e:
                 await ctx.send(f"❌ Failed to upload image: {e}", delete_after=10)
                 return
@@ -555,8 +589,18 @@ class ManagerHubSystem(commands.Cog):
         if existing:
             existing["url"] = url
             existing["name"] = name
+            if message_id:
+                existing["message_id"] = message_id
+                existing["storage_channel_id"] = storage_channel_id
         else:
-            logos.append({"key": key, "name": name, "description": "", "url": url})
+            logos.append({
+                "key": key,
+                "name": name,
+                "description": "",
+                "url": url,
+                "message_id": message_id,
+                "storage_channel_id": storage_channel_id,
+            })
 
         _save_logos(logos)
         await self.post_or_refresh_panel()
