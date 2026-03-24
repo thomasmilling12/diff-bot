@@ -1,0 +1,150 @@
+// ============================================================
+// DIFF WEEKLY LEADERBOARD + CREW HUB SYSTEM (FINAL)
+// ============================================================
+
+const {
+EmbedBuilder,
+ActionRowBuilder,
+ButtonBuilder,
+ButtonStyle,
+} = require('discord.js');
+const fs = require('fs');
+
+// ===============================
+// CONFIG
+// ===============================
+
+const CONFIG = {
+leaderboardChannelId: 'PUT_LEADERBOARD_CHANNEL_ID_HERE',
+crewHubChannelId: 'PUT_CREW_HUB_CHANNEL_ID_HERE',
+notifyRoleId: 'PUT_NOTIFY_ROLE_ID_HERE',
+};
+
+const DATA_FILE = './data/diff_data.json';
+
+// ===============================
+// DATA
+// ===============================
+
+function loadData() {
+if (!fs.existsSync(DATA_FILE)) {
+fs.writeFileSync(DATA_FILE, JSON.stringify({ users: {} }, null, 2));
+}
+return JSON.parse(fs.readFileSync(DATA_FILE));
+}
+
+// ===============================
+// LEADERBOARD
+// ===============================
+
+function getTopMembers() {
+const data = loadData();
+
+return Object.entries(data.users)
+.sort((a, b) => b[1].attendance - a[1].attendance)
+.slice(0, 10);
+}
+
+function buildLeaderboard() {
+const top = getTopMembers();
+
+const text = top.map((u, i) =>
+`${i+1}. <@${u[0]}> — ${u[1].attendance}`
+).join("\n");
+
+return new EmbedBuilder()
+.setTitle("🏆 DIFF Weekly Leaderboard")
+.setDescription(text || "No data yet");
+}
+
+// ===============================
+// CREW HUB
+// ===============================
+
+function buildHub() {
+const data = loadData();
+
+const users = Object.values(data.users);
+
+return new EmbedBuilder()
+.setTitle("📊 Crew Hub Stats")
+.setDescription(
+`Tracked: ${users.length}\n` +
+`Active: ${users.filter(u => u.attendance > 0).length}\n` +
+`Total Attendance: ${users.reduce((a,b)=>a+b.attendance,0)}`
+);
+}
+
+// ===============================
+// POST SYSTEM
+// ===============================
+
+async function postPanels(client) {
+const leaderboardChannel = await client.channels.fetch(CONFIG.leaderboardChannelId);
+const hubChannel = await client.channels.fetch(CONFIG.crewHubChannelId);
+
+await leaderboardChannel.send({
+content: `<@&${CONFIG.notifyRoleId}>`,
+embeds: [buildLeaderboard()],
+components: [
+new ActionRowBuilder().addComponents(
+new ButtonBuilder()
+.setCustomId("refresh_lb")
+.setLabel("Refresh")
+.setStyle(ButtonStyle.Secondary)
+)
+]
+});
+
+await hubChannel.send({
+embeds: [buildHub()],
+components: [
+new ActionRowBuilder().addComponents(
+new ButtonBuilder()
+.setCustomId("refresh_hub")
+.setLabel("Refresh")
+.setStyle(ButtonStyle.Secondary)
+)
+]
+});
+}
+
+// ===============================
+// READY
+// ===============================
+
+module.exports = (client) => {
+
+client.once("ready", async () => {
+console.log("DIFF HUB READY");
+
+// post once on startup
+postPanels(client);
+
+// auto weekly (every 7 days)
+setInterval(() => {
+postPanels(client);
+}, 1000 * 60 * 60 * 24 * 7);
+});
+
+// ===============================
+// BUTTONS
+// ===============================
+
+client.on("interactionCreate", async (i) => {
+
+if (!i.isButton()) return;
+
+if (i.customId === "refresh_lb") {
+await i.channel.send({ embeds: [buildLeaderboard()] });
+return i.reply({ content: "Leaderboard updated", ephemeral: true });
+}
+
+if (i.customId === "refresh_hub") {
+await i.channel.send({ embeds: [buildHub()] });
+return i.reply({ content: "Stats updated", ephemeral: true });
+}
+
+});
+
+};

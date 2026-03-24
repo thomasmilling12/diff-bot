@@ -1773,6 +1773,43 @@ class LeaderboardView(discord.ui.View):
         self.add_item(RefreshLeaderboardButton())
 
 
+CREW_HUB_STATE_FILE = os.path.join(DATA_FOLDER, "diff_crew_hub_state.json")
+
+
+def _build_crew_hub_embed() -> discord.Embed:
+    entries = list(_rsvp_leaderboard.values())
+    total_tracked = len(entries)
+    active = sum(1 for e in entries if int(e.get("attendance_count", 0)) > 0)
+    total_attendance = sum(int(e.get("attendance_count", 0)) for e in entries)
+    total_hosted = sum(int(e.get("hosted_count", 0)) for e in entries)
+    embed = discord.Embed(
+        title="📊 DIFF Crew Hub — Live Stats",
+        color=discord.Color.blue(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="👥 Members Tracked", value=str(total_tracked), inline=True)
+    embed.add_field(name="🟢 Active Members", value=str(active), inline=True)
+    embed.add_field(name="✅ Total Meets Attended", value=str(total_attendance), inline=True)
+    embed.add_field(name="🏁 Total Meets Hosted", value=str(total_hosted), inline=True)
+    embed.set_footer(text="Different Meets • Live Crew Stats")
+    return embed
+
+
+class CrewHubRefreshButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Refresh Stats", emoji="📊", style=discord.ButtonStyle.secondary, custom_id="diff_crew_hub_refresh")
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        embed = _build_crew_hub_embed()
+        await interaction.response.edit_message(embed=embed, view=CrewHubView())
+
+
+class CrewHubView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(CrewHubRefreshButton())
+
+
 # =========================
 # WEEKLY ROLL CALL — MODAL + VIEW
 # =========================
@@ -3681,6 +3718,7 @@ async def on_ready():
         bot.add_view(DIFFDashboardView())
         bot.add_view(MeetAttendancePanelView())
         bot.add_view(LeaderboardView())
+        bot.add_view(CrewHubView())
         bot.add_view(MeetRSVPView(meet1="Meet 1", meet2="Meet 2", meet3="Meet 3"))
         bot.add_view(ActivityDashboardView())
         bot.add_view(DiffPanel())
@@ -7833,6 +7871,34 @@ async def attendance_leaderboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
+@bot.tree.command(name="post-crew-hub", description="Post or refresh the DIFF Crew Hub stats panel (staff only)")
+async def post_crew_hub(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        return await interaction.response.send_message("Staff only.", ephemeral=True)
+    if not isinstance(interaction.channel, discord.TextChannel):
+        return await interaction.response.send_message("Use this in a text channel.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    embed = _build_crew_hub_embed()
+    state = _load_diff_json(CREW_HUB_STATE_FILE) or {}
+    msg_id = state.get("message_id")
+    ch_id = state.get("channel_id")
+    existing_msg = None
+    if msg_id and ch_id and interaction.guild:
+        ch = interaction.guild.get_channel(ch_id)
+        if isinstance(ch, discord.TextChannel):
+            try:
+                existing_msg = await ch.fetch_message(msg_id)
+            except discord.NotFound:
+                existing_msg = None
+    if existing_msg:
+        await existing_msg.edit(embed=embed, view=CrewHubView())
+        await interaction.followup.send("Crew Hub panel refreshed.", ephemeral=True)
+    else:
+        msg = await interaction.channel.send(embed=embed, view=CrewHubView())
+        _save_diff_json(CREW_HUB_STATE_FILE, {"message_id": msg.id, "channel_id": interaction.channel.id})
+        await interaction.followup.send("Crew Hub panel posted and linked for auto-refresh.", ephemeral=True)
+
+
 @bot.tree.command(name="attendance-promotions", description="Show promotion suggestions based on meet attendance")
 async def attendance_promotions(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -9272,6 +9338,35 @@ async def _auto_weekly_loop() -> None:
             try:
                 await report_channel.send(embed=_auto_build_weekly_embed(guild, rows))
             except discord.HTTPException:
+                pass
+            try:
+                lb_lines = build_leaderboard_lines(guild)
+                lb_embed = discord.Embed(
+                    title="🏆 DIFF Weekly Member Leaderboard",
+                    description="\n\n".join(lb_lines),
+                    color=discord.Color.gold(),
+                    timestamp=datetime.now(_tz.utc),
+                )
+                lb_embed.set_footer(text="Score = Attended×2 + Hosted×5 + Reputation • Different Meets")
+                notify_role = guild.get_role(NOTIFY_ROLE_ID)
+                content = notify_role.mention if notify_role else None
+                await report_channel.send(content=content, embed=lb_embed, view=LeaderboardView())
+            except discord.HTTPException:
+                pass
+            try:
+                hub_embed = _build_crew_hub_embed()
+                state = _load_diff_json(CREW_HUB_STATE_FILE) or {}
+                msg_id = state.get("message_id")
+                ch_id = state.get("channel_id")
+                if msg_id and ch_id:
+                    ch = guild.get_channel(ch_id)
+                    if isinstance(ch, discord.TextChannel):
+                        try:
+                            existing = await ch.fetch_message(msg_id)
+                            await existing.edit(embed=hub_embed, view=CrewHubView())
+                        except discord.NotFound:
+                            pass
+            except Exception:
                 pass
         _auto_stats.archive_and_reset()
         now = datetime.now(_tz.utc)
