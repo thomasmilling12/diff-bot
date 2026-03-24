@@ -1,3 +1,4 @@
+
 import asyncio
 import hashlib
 import io
@@ -2854,15 +2855,15 @@ def _hosthub_build_embed() -> discord.Embed:
         title="📍 DIFF Host Control Hub",
         description=(
             "*The all-in-one host hub for DIFF meet leaders.*\n\n"
-            "Use the buttons below to review hosting rules, responsibilities, "
-            "crew assignments, reminders, and your checklist before starting a meet.\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "### 📘 **Available Host Tools**\n"
             "**📘 Host Guide** — Full host rules and expectations\n"
             "**🎯 Role Assignments** — Crew job breakdown\n"
             "**⚠️ Meet Reminders** — Important host reminders\n"
             "**📝 Host Checklist** — Quick prep checklist\n"
-            "**🚫 Blacklist Check** — Review restrictions before inviting\n\n"
+            "**🚫 Blacklist Check** — Review restrictions before inviting\n"
+            "**🔴 Submit Blacklist** — Report a host violation *(staff only)*\n"
+            "**📊 View Blacklist** — Browse all blacklist records\n"
+            "**📩 Appeal Blacklist** — Submit an appeal for review\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "Stay organized. Lead properly. Represent DIFF the right way.\n\n"
             "— **Different Meets**"
@@ -2877,6 +2878,7 @@ class HostHubView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
+    # ── Row 0: reference guides ──
     @discord.ui.button(label="Host Guide", emoji="📘", style=discord.ButtonStyle.primary, custom_id="diff_host_hub:host_guide", row=0)
     async def host_guide_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(embed=_hosthub_guide_embed(), ephemeral=True)
@@ -2889,11 +2891,11 @@ class HostHubView(discord.ui.View):
     async def meet_reminders_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(embed=_hosthub_reminders_embed(), ephemeral=True)
 
-    @discord.ui.button(label="Host Checklist", emoji="📝", style=discord.ButtonStyle.success, custom_id="diff_host_hub:host_checklist", row=1)
+    @discord.ui.button(label="Host Checklist", emoji="📝", style=discord.ButtonStyle.success, custom_id="diff_host_hub:host_checklist", row=0)
     async def host_checklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(embed=_hosthub_checklist_embed(), ephemeral=True)
 
-    @discord.ui.button(label="Blacklist Check", emoji="🚫", style=discord.ButtonStyle.danger, custom_id="diff_host_hub:blacklist_check", row=1)
+    @discord.ui.button(label="Blacklist Check", emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="diff_host_hub:blacklist_check", row=0)
     async def blacklist_check_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         bl_view = discord.ui.View()
         bl_view.add_item(discord.ui.Button(
@@ -2903,6 +2905,26 @@ class HostHubView(discord.ui.View):
             emoji="🔗",
         ))
         await interaction.response.send_message(embed=_hosthub_blacklist_embed(), view=bl_view, ephemeral=True)
+
+    # ── Row 1: blacklist actions ──
+    @discord.ui.button(label="Submit Blacklist", emoji="🔴", style=discord.ButtonStyle.danger, custom_id="diff_host_hub:submit_blacklist", row=1)
+    async def submit_blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in getattr(interaction.user, "roles", []))
+        if not is_staff:
+            await interaction.response.send_message("Only staff can submit blacklist entries.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_BlacklistModal())
+
+    @discord.ui.button(label="View Blacklist", emoji="📊", style=discord.ButtonStyle.secondary, custom_id="diff_host_hub:view_blacklist", row=1)
+    async def view_blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            f"🔗 **Blacklist Records:**\nhttps://discord.com/channels/850386896509337710/{BLACKLIST_CHANNEL_ID}",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Appeal Blacklist", emoji="📩", style=discord.ButtonStyle.primary, custom_id="diff_host_hub:appeal_blacklist", row=1)
+    async def appeal_blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(_AppealModal())
 
 
 async def _hosthub_post_or_refresh() -> None:
