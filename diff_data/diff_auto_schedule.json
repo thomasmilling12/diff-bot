@@ -1,1 +1,23 @@
-{"Meet 1": {"class": "TBD", "time": "TBD"}, "Meet 2": {"class": "TBD", "time": "TBD"}, "Meet 3": {"class": "TBD", "time": "TBD"}}
+{
+  "days": {
+    "Meet 1": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none"
+    },
+    "Meet 2": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none"
+    },
+    "Meet 3": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none"
+    }
+  },
+  "updated_at": "2026-03-24T04:17:41.886276"
+}

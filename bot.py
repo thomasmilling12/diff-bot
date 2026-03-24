@@ -6131,9 +6131,12 @@ async def _hp_post_or_refresh() -> None:
             return
         except Exception:
             pass
-    msg = await channel.send(embed=embed, view=view)
-    data["hub_message_id"] = msg.id
-    _hp_save(data)
+    try:
+        msg = await channel.send(embed=embed, view=view)
+        data["hub_message_id"] = msg.id
+        _hp_save(data)
+    except Exception as e:
+        print(f"[HP] post error: {e}")
 
 
 @bot.command(name="hostperformance")
