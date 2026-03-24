@@ -112,6 +112,7 @@ STRIKE_3_ROLE_ID = 990106011664793600
 WARNING_1_ROLE_ID = 1266950150123950091
 RECAP_CHANNEL_ID = 1485829235258953928
 SEASON_CHANNEL_ID = 0
+IG_CONTENT_CHANNEL_ID = 1485830678980333568
 TOP1_ROLE_ID = 1485828728683757669
 TOP2_ROLE_ID = 1485828776838303955
 TOP3_ROLE_ID = 1485828874943074434
@@ -2090,6 +2091,138 @@ async def _ft_auto_progression_loop() -> None:
 # SEASON SYSTEM
 # =========================
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    _PIL_AVAILABLE = True
+except Exception:
+    _PIL_AVAILABLE = False
+
+_SEASON_BANNER_PATH = os.path.join("diff_data", "season_banner.png")
+_SEASON_CAPTION_PATH = os.path.join("diff_data", "season_caption.txt")
+_DEJAVU_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+_DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+
+def _ig_font(size: int):
+    for path in [_DEJAVU_BOLD, _DEJAVU]:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+
+def _season_build_ig_caption_full(winners: list[tuple[int, int]], month_label: str) -> str:
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [
+        "🏁 DIFF SEASON RESULTS",
+        month_label,
+        "",
+    ]
+    for i, (uid, score) in enumerate(winners[:3]):
+        lines.append(f"{medals[i]} <@{uid}> — {score} meets")
+    lines += [
+        "",
+        "Consistency gets noticed.",
+        "Attendance matters.",
+        "Respect the system and keep showing up.",
+        "",
+        "#DIFF #DifferentMeets #GTACarMeets #CarMeet #PS5 #GTAOnline",
+    ]
+    return "\n".join(lines)
+
+
+def _season_generate_banner(winners: list[tuple[int, int]], month_label: str) -> str | None:
+    if not _PIL_AVAILABLE:
+        return None
+    os.makedirs("diff_data", exist_ok=True)
+    try:
+        width, height = 1600, 900
+        img = Image.new("RGB", (width, height), (12, 12, 12))
+        draw = ImageDraw.Draw(img)
+
+        draw.rectangle((0, 0, width, 120), fill=(18, 18, 18))
+        draw.rectangle((0, height - 90, width, height), fill=(18, 18, 18))
+        draw.rectangle((70, 180, width - 70, 190), fill=(45, 45, 45))
+        draw.rectangle((70, 710, width - 70, 720), fill=(45, 45, 45))
+
+        title_font = _ig_font(64)
+        sub_font = _ig_font(36)
+        winner_font = _ig_font(52)
+        small_font = _ig_font(28)
+
+        draw.text((80, 35), "DIFF SEASON WINNERS", font=title_font, fill=(255, 255, 255))
+        draw.text((80, 115), month_label, font=sub_font, fill=(190, 190, 190))
+
+        medals_text = ["1ST", "2ND", "3RD"]
+        medal_colors = [(255, 215, 0), (192, 192, 192), (205, 127, 50)]
+        y_positions = [240, 390, 540]
+
+        for i, (uid, score) in enumerate(winners[:3]):
+            y = y_positions[i]
+            draw.rounded_rectangle(
+                (120, y, width - 120, y + 110),
+                radius=22,
+                fill=(24, 24, 24),
+                outline=(70, 70, 70),
+                width=2,
+            )
+            draw.text((160, y + 22), medals_text[i], font=winner_font, fill=medal_colors[i])
+            draw.text((340, y + 22), f"Member {uid}", font=winner_font, fill=(255, 255, 255))
+            draw.text((width - 380, y + 32), f"{score} meets", font=sub_font, fill=(220, 220, 220))
+
+        draw.text((80, 750), "Stay active. Stay consistent. Represent DIFF the right way.", font=small_font, fill=(180, 180, 180))
+        img.save(_SEASON_BANNER_PATH)
+        return _SEASON_BANNER_PATH
+    except Exception as e:
+        print(f"[Season] Banner generation failed: {e}")
+        return None
+
+
+async def _season_post_ig_content(guild: discord.Guild, winners: list[tuple[int, int]], month_label: str) -> None:
+    caption = _season_build_ig_caption_full(winners, month_label)
+    try:
+        os.makedirs("diff_data", exist_ok=True)
+        with open(_SEASON_CAPTION_PATH, "w", encoding="utf-8") as f:
+            f.write(caption)
+    except Exception:
+        pass
+
+    banner_path = _season_generate_banner(winners, month_label)
+
+    channel = guild.get_channel(IG_CONTENT_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await guild.fetch_channel(IG_CONTENT_CHANNEL_ID)
+        except Exception:
+            channel = None
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    embed = discord.Embed(
+        title="📸 Season Winner Content",
+        description="\n".join([
+            "**Instagram Caption**",
+            "",
+            caption[:3800] if len(caption) > 3800 else caption,
+        ]),
+        color=discord.Color.dark_gold(),
+        timestamp=utc_now(),
+    )
+    embed.set_footer(text="Different Meets • Season IG Content")
+
+    files = []
+    if banner_path and os.path.exists(banner_path):
+        files.append(discord.File(banner_path, filename="season_banner.png"))
+        embed.set_image(url="attachment://season_banner.png")
+
+    try:
+        await channel.send(embed=embed, files=files)
+    except Exception as e:
+        print(f"[Season] IG post failed: {e}")
+
+
 def _season_load() -> dict:
     try:
         if os.path.exists(SEASON_FILE):
@@ -2127,14 +2260,6 @@ def _season_build_embed(winners: list[tuple[int, int]], month_label: str) -> dis
     embed.set_footer(text="Different Meets • Monthly Season Results")
     return embed
 
-
-def _season_build_ig_caption(winners: list[tuple[int, int]], month_label: str) -> str:
-    medals = ["🥇", "🥈", "🥉"]
-    lines = [f"🏁 DIFF SEASON RESULTS — {month_label}"]
-    for i, (uid, score) in enumerate(winners):
-        lines.append(f"{medals[i]} Member #{uid} — {score} meets")
-    lines.append("\nStay active. Stay consistent. #DIFFMeets #GTACarMeet")
-    return "\n".join(lines)
 
 
 async def _season_give_rewards(guild: discord.Guild, winners: list[tuple[int, int]]) -> None:
@@ -2184,13 +2309,7 @@ async def _season_run(guild: discord.Guild) -> None:
 
     await _season_give_rewards(guild, winners)
 
-    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-    if isinstance(log_ch, discord.TextChannel):
-        caption = _season_build_ig_caption(winners, month_label)
-        try:
-            await log_ch.send(f"📸 **IG Caption for this season:**\n```\n{caption}\n```")
-        except Exception:
-            pass
+    await _season_post_ig_content(guild, winners, month_label)
 
     season_data = _season_load()
     season_data.setdefault("history", []).append({

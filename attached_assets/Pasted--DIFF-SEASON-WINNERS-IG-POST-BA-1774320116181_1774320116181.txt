@@ -1,0 +1,196 @@
+# ============================================================
+# DIFF SEASON WINNERS -> IG POST + BANNER GENERATOR
+# SAVE AS:
+# diff_season_ig_banner.py
+#
+# WHAT THIS ADDS
+# - Creates an Instagram-style caption for season winners
+# - Generates a simple winners banner image automatically
+# - Saves banner to ./data/season_banner.png
+# - Posts the caption + banner into your logs/content channel
+#
+# REQUIREMENTS
+# pip install pillow
+# discord.py 2.x
+#
+# ADD TO bot.py:
+# from diff_season_ig_banner import setup_diff_season_ig_banner, post_season_winner_content
+# setup_diff_season_ig_banner(bot)
+#
+# Then after your season results are calculated:
+# await post_season_winner_content(bot, guild, winners)
+#
+# winners format:
+# [(user_id_1, attendance_1), (user_id_2, attendance_2), (user_id_3, attendance_3)]
+#
+# REPLACE THESE:
+# IG_CONTENT_CHANNEL_ID
+# ============================================================
+
+import os
+import json
+from datetime import datetime
+from typing import List, Tuple
+
+import discord
+from discord.ext import commands
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_AVAILABLE = True
+except Exception:
+    PIL_AVAILABLE = False
+
+IG_CONTENT_CHANNEL_ID = 0  # PUT_IG_CONTENT_CHANNEL_ID_HERE
+
+DATA_DIR = "./data"
+BANNER_PATH = os.path.join(DATA_DIR, "season_banner.png")
+CAPTION_PATH = os.path.join(DATA_DIR, "season_caption.txt")
+
+
+def ensure_dir():
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def build_ig_caption(winners: List[Tuple[int, int]], season_name: str | None = None) -> str:
+    title = season_name or datetime.now().strftime("%B %Y Season Results")
+    medals = ["🥇", "🥈", "🥉"]
+
+    lines = [
+        "🏁 DIFF SEASON RESULTS",
+        title,
+        "",
+    ]
+
+    for i, (user_id, score) in enumerate(winners[:3]):
+        lines.append(f"{medals[i]} <@{user_id}> — {score} meets")
+
+    lines += [
+        "",
+        "Consistency gets noticed.",
+        "Attendance matters.",
+        "Respect the system and keep showing up.",
+        "",
+        "#DIFF #DifferentMeets #GTACarMeets #CarMeet #PS5 #GTAOnline",
+    ]
+    return "\n".join(lines)
+
+
+def _get_font(size: int):
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+
+def generate_banner(winners: List[Tuple[int, int]], season_name: str | None = None) -> str | None:
+    if not PIL_AVAILABLE:
+        return None
+
+    ensure_dir()
+
+    width, height = 1600, 900
+    img = Image.new("RGB", (width, height), (12, 12, 12))
+    draw = ImageDraw.Draw(img)
+
+    # Background accents
+    draw.rectangle((0, 0, width, 120), fill=(18, 18, 18))
+    draw.rectangle((0, height - 90, width, height), fill=(18, 18, 18))
+    draw.rectangle((70, 180, width - 70, 190), fill=(45, 45, 45))
+    draw.rectangle((70, 710, width - 70, 720), fill=(45, 45, 45))
+
+    # Fonts
+    title_font = _get_font(64)
+    sub_font = _get_font(36)
+    winner_font = _get_font(52)
+    small_font = _get_font(28)
+
+    title = "DIFF SEASON WINNERS"
+    season_text = season_name or datetime.now().strftime("%B %Y")
+
+    draw.text((80, 35), title, font=title_font, fill=(255, 255, 255))
+    draw.text((80, 115), season_text, font=sub_font, fill=(190, 190, 190))
+
+    medals = ["🥇", "🥈", "🥉"]
+    y_positions = [260, 400, 540]
+
+    for i, winner in enumerate(winners[:3]):
+        user_id, score = winner
+        medal = medals[i]
+        y = y_positions[i]
+
+        # Card
+        draw.rounded_rectangle((120, y, width - 120, y + 95), radius=22, fill=(24, 24, 24), outline=(70, 70, 70), width=2)
+
+        draw.text((160, y + 18), medal, font=winner_font, fill=(255, 255, 255))
+        draw.text((250, y + 18), f"Member {user_id}", font=winner_font, fill=(255, 255, 255))
+        draw.text((width - 360, y + 28), f"{score} meets", font=sub_font, fill=(220, 220, 220))
+
+    footer = "Stay active. Stay consistent. Represent DIFF the right way."
+    draw.text((80, 790), footer, font=small_font, fill=(180, 180, 180))
+
+    img.save(BANNER_PATH)
+    return BANNER_PATH
+
+
+async def post_season_winner_content(bot: commands.Bot, guild: discord.Guild, winners: List[Tuple[int, int]], season_name: str | None = None):
+    if not winners:
+        return False
+
+    ensure_dir()
+
+    caption = build_ig_caption(winners, season_name)
+    with open(CAPTION_PATH, "w", encoding="utf-8") as f:
+        f.write(caption)
+
+    banner_path = generate_banner(winners, season_name)
+
+    channel = guild.get_channel(IG_CONTENT_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await guild.fetch_channel(IG_CONTENT_CHANNEL_ID)
+        except Exception:
+            channel = None
+
+    if not isinstance(channel, discord.TextChannel):
+        return False
+
+    files = []
+    if banner_path and os.path.exists(banner_path):
+        files.append(discord.File(banner_path, filename="season_banner.png"))
+
+    embed = discord.Embed(
+        title="📸 Season Winner Content Ready",
+        description="\n".join([
+            "Your season winner content has been generated.",
+            "",
+            "**Instagram Caption**",
+            caption[:3500] if len(caption) > 3500 else caption,
+        ]),
+        color=discord.Color.dark_gold(),
+        timestamp=datetime.now(),
+    )
+
+    if files:
+        embed.set_image(url="attachment://season_banner.png")
+
+    await channel.send(embed=embed, files=files)
+    return True
+
+
+def setup_diff_season_ig_banner(bot: commands.Bot):
+    ensure_dir()
+
+    @bot.event
+    async def on_ready():
+        if getattr(bot, "_diff_season_ig_banner_ready_once", False):
+            return
+        bot._diff_season_ig_banner_ready_once = True
+        print("[DIFF IG BANNER] Season IG content system ready.")
