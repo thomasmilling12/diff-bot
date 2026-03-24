@@ -2351,7 +2351,7 @@ async def _season_loop() -> None:
 # =========================
 
 _HRSVP_FILE = os.path.join("diff_data", "diff_host_rsvp.json")
-_HRSVP_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_HRSVP_DAYS = ["Meet 1", "Meet 2", "Meet 3"]
 
 
 def _hrsvp_load() -> dict:
@@ -2379,7 +2379,7 @@ def _hrsvp_reset() -> dict:
 def _hrsvp_build_embed() -> discord.Embed:
     data = _hrsvp_load()
     desc = [
-        "📅 **DIFF Host Availability — Weekly Schedule**",
+        "📅 **DIFF Host Availability — Meet Schedule**",
         "*Hosts, mark your availability below.*",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━",
@@ -2418,10 +2418,10 @@ class HostRSVPView(discord.ui.View):
 class _HostRSVPBtn(discord.ui.Button):
     def __init__(self, day: str, choice: str, emoji: str, style: discord.ButtonStyle):
         super().__init__(
-            label=f"{day[:3]}",
+            label=day,
             emoji=emoji,
             style=style,
-            custom_id=f"hrsvp_{day}_{choice}",
+            custom_id=f"hrsvp_{day.replace(' ', '_')}_{choice}",
         )
         self.day = day
         self.choice = choice
@@ -2562,7 +2562,7 @@ def _asched_build() -> dict:
 def _asched_build_embed() -> discord.Embed:
     schedule = _asched_load()
     lines = [
-        "📋 **DIFF Auto Weekly Host Schedule**",
+        "📋 **DIFF Auto Meet Host Schedule**",
         "*Built automatically from host availability responses.*",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━",
