@@ -112,6 +112,7 @@ STRIKE_3_ROLE_ID = 990106011664793600
 WARNING_1_ROLE_ID = 1266950150123950091
 RECAP_CHANNEL_ID = 1485829235258953928
 SEASON_CHANNEL_ID = 0
+HOST_RSVP_CHANNEL_ID = 1485830232270307410
 IG_CONTENT_CHANNEL_ID = 1485830678980333568
 TOP1_ROLE_ID = 1485828728683757669
 TOP2_ROLE_ID = 1485828776838303955
@@ -2338,6 +2339,137 @@ async def _season_loop() -> None:
                         await _season_run(guild)
         except Exception as e:
             print(f"[Season] Loop error: {e}")
+
+
+# =========================
+# HOST RSVP SYSTEM
+# =========================
+
+_HRSVP_FILE = os.path.join("diff_data", "diff_host_rsvp.json")
+_HRSVP_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def _hrsvp_load() -> dict:
+    if os.path.exists(_HRSVP_FILE):
+        try:
+            with open(_HRSVP_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {day: {"yes": [], "no": [], "maybe": []} for day in _HRSVP_DAYS}
+
+
+def _hrsvp_save(data: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    with open(_HRSVP_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def _hrsvp_reset() -> dict:
+    data = {day: {"yes": [], "no": [], "maybe": []} for day in _HRSVP_DAYS}
+    _hrsvp_save(data)
+    return data
+
+
+def _hrsvp_build_embed() -> discord.Embed:
+    data = _hrsvp_load()
+    desc = [
+        "📅 **DIFF Host Availability — Weekly Schedule**",
+        "*Hosts, mark your availability below.*",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for day in _HRSVP_DAYS:
+        d = data.get(day, {"yes": [], "no": [], "maybe": []})
+        yes_tags = " ".join(f"<@{u}>" for u in d["yes"]) or "—"
+        no_count = len(d["no"])
+        maybe_tags = " ".join(f"<@{u}>" for u in d["maybe"]) or "—"
+        desc.append(f"**{day}**")
+        desc.append(f"✅ `{len(d['yes'])}` → {yes_tags}")
+        if no_count:
+            desc.append(f"❌ `{no_count}` unavailable")
+        desc.append(f"❓ `{len(d['maybe'])}` → {maybe_tags}")
+        desc.append("")
+    desc.append("━━━━━━━━━━━━━━━━━━━━━━")
+    desc.append("🌐 Convert times: https://hammertime.cyou/en")
+    embed = discord.Embed(
+        description="\n".join(desc),
+        color=discord.Color.dark_gray(),
+        timestamp=utc_now(),
+    )
+    embed.set_footer(text="Different Meets • Host Availability")
+    return embed
+
+
+class HostRSVPView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        for day in _HRSVP_DAYS:
+            self.add_item(_HostRSVPBtn(day, "yes",   "✅", discord.ButtonStyle.success))
+            self.add_item(_HostRSVPBtn(day, "no",    "❌", discord.ButtonStyle.danger))
+            self.add_item(_HostRSVPBtn(day, "maybe", "❓", discord.ButtonStyle.secondary))
+
+
+class _HostRSVPBtn(discord.ui.Button):
+    def __init__(self, day: str, choice: str, emoji: str, style: discord.ButtonStyle):
+        super().__init__(
+            label=f"{day[:3]}",
+            emoji=emoji,
+            style=style,
+            custom_id=f"hrsvp_{day}_{choice}",
+        )
+        self.day = day
+        self.choice = choice
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.user:
+            await interaction.response.defer()
+            return
+        has_host = any(r.id == HOST_ROLE_ID for r in getattr(interaction.user, "roles", []))
+        if not has_host:
+            await interaction.response.send_message("Only hosts can use this panel.", ephemeral=True)
+            return
+        data = _hrsvp_load()
+        uid = str(interaction.user.id)
+        for c in ("yes", "no", "maybe"):
+            lst = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []}).get(c, [])
+            if uid in lst:
+                lst.remove(uid)
+        data[self.day].setdefault(self.choice, []).append(uid)
+        _hrsvp_save(data)
+        await _hrsvp_update_panel(interaction.client)
+        label_map = {"yes": "✅ Available", "no": "❌ Unavailable", "maybe": "❓ Maybe"}
+        await interaction.response.send_message(
+            f"**{self.day}**: marked as **{label_map[self.choice]}**", ephemeral=True
+        )
+
+
+async def _hrsvp_update_panel(bot_client) -> None:
+    channel = bot_client.get_channel(HOST_RSVP_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await bot_client.fetch_channel(HOST_RSVP_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+    embed = _hrsvp_build_embed()
+    view = HostRSVPView()
+    async for msg in channel.history(limit=15):
+        if msg.author.id == bot_client.user.id and msg.embeds:
+            try:
+                await msg.edit(embed=embed, view=view)
+            except Exception:
+                pass
+            return
+    try:
+        await channel.send(
+            content=f"<@&{HOST_ROLE_ID}>",
+            embed=embed,
+            view=view,
+        )
+    except Exception as e:
+        print(f"[HostRSVP] Panel send failed: {e}")
 
 
 def _ft_build_suggestions_embed(guild: discord.Guild) -> discord.Embed:
@@ -4588,6 +4720,8 @@ async def on_ready():
     bot.loop.create_task(_daily_crew_invite_check())
     bot.loop.create_task(_ft_auto_progression_loop())
     bot.loop.create_task(_season_loop())
+    bot.add_view(HostRSVPView())
+    await _hrsvp_update_panel(bot)
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()

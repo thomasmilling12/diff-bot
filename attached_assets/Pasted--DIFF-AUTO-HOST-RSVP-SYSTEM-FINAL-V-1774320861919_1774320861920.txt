@@ -1,0 +1,174 @@
+# ============================================================
+# DIFF AUTO HOST RSVP SYSTEM (FINAL VERSION)
+#
+# FEATURES:
+# - Weekly schedule panel (ONE message, auto-edit)
+# - Each day has buttons:
+#     ✅ Yes I can host
+#     ❌ No I can't host
+#     ❓ Maybe
+# - Mentions HOST ROLE (not everyone)
+# - Uses Discord mentions instead of names
+# - Tracks responses per day
+# - Shows live counts
+# - Ready for timezone link (hammertime)
+#
+# SAVE AS:
+# diff_host_rsvp_system.py
+#
+# ADD TO bot.py:
+# from diff_host_rsvp_system import setup_diff_host_rsvp_system
+# setup_diff_host_rsvp_system(bot)
+#
+# ============================================================
+
+import discord
+from discord.ext import commands
+import json, os
+from datetime import datetime
+
+# ================= CONFIG =================
+
+CHANNEL_ID = 1485830232270307410  # your schedule channel
+HOST_ROLE_ID = 1055823929358430248  # host role
+
+DATA_FILE = "./data/diff_host_rsvp.json"
+
+DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+# ================= DATA =================
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {day: {"yes": [], "no": [], "maybe": []} for day in DAYS}
+    with open(DATA_FILE) as f:
+        return json.load(f)
+
+def save_data(data):
+    os.makedirs("./data", exist_ok=True)
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def reset_week():
+    data = {day: {"yes": [], "no": [], "maybe": []} for day in DAYS}
+    save_data(data)
+    return data
+
+# ================= EMBED =================
+
+def build_embed(guild):
+    data = load_data()
+
+    desc = ["📅 **DIFF Host Availability (Weekly)**",
+            "*Hosts, select your availability below.*",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━"]
+
+    for day in DAYS:
+        d = data.get(day, {"yes": [], "no": [], "maybe": []})
+
+        yes = [f"<@{u}>" for u in d["yes"]]
+        no = [f"<@{u}>" for u in d["no"]]
+        maybe = [f"<@{u}>" for u in d["maybe"]]
+
+        desc.append(f"**{day}**")
+        desc.append(f"✅ Yes: {len(yes)}")
+        desc.append(f"❌ No: {len(no)}")
+        desc.append(f"❓ Maybe: {len(maybe)}")
+        desc.append("")
+
+    desc.append("━━━━━━━━━━━━━━━━━━━━━━")
+    desc.append("🌐 Use this to convert times: https://hammertime.cyou/en")
+
+    return discord.Embed(
+        description="\n".join(desc),
+        color=discord.Color.dark_gray(),
+        timestamp=datetime.now()
+    )
+
+# ================= BUTTON VIEW =================
+
+class RSVPView(discord.ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    async def handle(self, interaction, day, choice):
+        data = load_data()
+        user = str(interaction.user.id)
+
+        # remove user from all choices first
+        for c in ["yes", "no", "maybe"]:
+            if user in data[day][c]:
+                data[day][c].remove(user)
+
+        data[day][choice].append(user)
+        save_data(data)
+
+        await update_panel(self.bot)
+        await interaction.response.send_message(f"{day}: marked as {choice.upper()}", ephemeral=True)
+
+    # create buttons dynamically
+    def build_buttons(self):
+        for day in DAYS:
+            self.add_item(RSVPButton(day, "yes", "✅"))
+            self.add_item(RSVPButton(day, "no", "❌"))
+            self.add_item(RSVPButton(day, "maybe", "❓"))
+
+class RSVPButton(discord.ui.Button):
+    def __init__(self, day, choice, emoji):
+        super().__init__(
+            label=f"{day[:3]} {choice}",
+            style=discord.ButtonStyle.secondary,
+            emoji=emoji,
+            custom_id=f"{day}_{choice}"
+        )
+        self.day = day
+        self.choice = choice
+
+    async def callback(self, interaction: discord.Interaction):
+        view: RSVPView = self.view
+        await view.handle(interaction, self.day, self.choice)
+
+# ================= PANEL =================
+
+async def update_panel(bot):
+    channel = bot.get_channel(CHANNEL_ID)
+    if not channel:
+        return
+
+    # find existing message
+    async for msg in channel.history(limit=10):
+        if msg.author.bot and msg.embeds:
+            await msg.edit(
+                embed=build_embed(channel.guild),
+                view=create_view(bot)
+            )
+            return
+
+    # if not found, send new
+    await channel.send(
+        content=f"<@&{HOST_ROLE_ID}>",
+        embed=build_embed(channel.guild),
+        view=create_view(bot)
+    )
+
+def create_view(bot):
+    view = RSVPView(bot)
+    view.build_buttons()
+    return view
+
+# ================= SETUP =================
+
+def setup_diff_host_rsvp_system(bot: commands.Bot):
+
+    @bot.event
+    async def on_ready():
+        if getattr(bot, "_host_rsvp_ready", False):
+            return
+        bot._host_rsvp_ready = True
+
+        reset_week()
+        await update_panel(bot)
+
+        print("DIFF Host RSVP System Ready")
