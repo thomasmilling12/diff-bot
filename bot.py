@@ -5,6 +5,7 @@ import os
 import random
 import re
 import sys
+import traceback
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Set
@@ -1045,6 +1046,7 @@ class DeniedResultView(discord.ui.View):
         self.applicant_id = applicant_id
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        traceback.print_exception(type(error), error, error.__traceback__)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
@@ -1114,6 +1116,7 @@ class DeniedResultView(discord.ui.View):
 # =========================
 class ReviewView(discord.ui.View):
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        traceback.print_exception(type(error), error, error.__traceback__)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
@@ -1127,20 +1130,16 @@ class ReviewView(discord.ui.View):
         self.app_id = app_id
         self.applicant_id = applicant_id
 
-    async def _check_photos(self, interaction: discord.Interaction, record: dict) -> bool:
-        ticket_channel = interaction.guild.get_channel(record.get("ticket_channel_id")) if record.get("ticket_channel_id") else None
+    async def _fetch_photo_count(self, guild: discord.Guild, record: dict) -> tuple[int, bool]:
+        """Returns (photo_count, channel_found). No interaction responses."""
+        ch_id = record.get("ticket_channel_id")
+        if not ch_id:
+            return 0, False
+        ticket_channel = guild.get_channel(ch_id)
         if not isinstance(ticket_channel, discord.TextChannel):
-            await interaction.response.send_message("Garage ticket channel could not be found.", ephemeral=True)
-            return False
+            return 0, False
         messages = [m async for m in ticket_channel.history(limit=200)]
-        photo_count = count_message_attachments(messages)
-        if photo_count < MIN_GARAGE_PHOTOS:
-            await interaction.response.send_message(
-                f"This applicant only has **{photo_count}** uploaded file(s). Minimum required is **{MIN_GARAGE_PHOTOS}** before making a decision.",
-                ephemeral=True,
-            )
-            return False
-        return True
+        return count_message_attachments(messages), True
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="diff_review_accept")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1153,12 +1152,18 @@ class ReviewView(discord.ui.View):
             return await interaction.response.send_message("Application record not found.", ephemeral=True)
         if record.get("status") not in {"Pending", "More Info Requested"}:
             return await interaction.response.send_message("This application has already been reviewed.", ephemeral=True)
-        if not await self._check_photos(interaction, record):
-            return
+        await interaction.response.defer()
+        photo_count, ch_found = await self._fetch_photo_count(interaction.guild, record)
+        if not ch_found:
+            return await interaction.followup.send("Garage ticket channel could not be found.", ephemeral=True)
+        if photo_count < MIN_GARAGE_PHOTOS:
+            return await interaction.followup.send(
+                f"This applicant only has **{photo_count}** uploaded file(s). Minimum required is **{MIN_GARAGE_PHOTOS}** before making a decision.",
+                ephemeral=True,
+            )
         applicant = interaction.guild.get_member(self.applicant_id)
         if applicant is None:
-            return await interaction.response.send_message("Applicant is no longer in the server.", ephemeral=True)
-        await interaction.response.defer()
+            return await interaction.followup.send("Applicant is no longer in the server.", ephemeral=True)
         approved_role = interaction.guild.get_role(APPROVED_MEMBER_ROLE_ID)
         if approved_role:
             try:
@@ -1197,8 +1202,6 @@ class ReviewView(discord.ui.View):
             return await interaction.response.send_message("Application record not found.", ephemeral=True)
         if record.get("status") not in {"Pending", "More Info Requested"}:
             return await interaction.response.send_message("This application has already been reviewed.", ephemeral=True)
-        if not await self._check_photos(interaction, record):
-            return
         await interaction.response.send_modal(DenyReasonModal(self.app_id, self.applicant_id, self))
 
     @discord.ui.button(label="Request More Info", style=discord.ButtonStyle.secondary, custom_id="diff_review_more_info")
@@ -2986,6 +2989,7 @@ class CrewPanelView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        traceback.print_exception(type(error), error, error.__traceback__)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
@@ -3098,6 +3102,7 @@ class DiffPanel(discord.ui.View):
         self.add_item(discord.ui.Button(label="🎨 Crew Color Voting", style=discord.ButtonStyle.link, url=COLOR_CHANNEL_URL, row=0))
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        traceback.print_exception(type(error), error, error.__traceback__)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
@@ -5151,6 +5156,7 @@ class SubmissionActionView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        traceback.print_exception(type(error), error, error.__traceback__)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
@@ -8496,6 +8502,7 @@ class SupportDropdownView(discord.ui.View):
         self.add_item(SupportDropdown())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        traceback.print_exception(type(error), error, error.__traceback__)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
@@ -9798,6 +9805,7 @@ class JoinPlatformView(discord.ui.View):
         self.add_item(JoinPlatformSelect())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        traceback.print_exception(type(error), error, error.__traceback__)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
@@ -9837,6 +9845,7 @@ class JoinTicketView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        traceback.print_exception(type(error), error, error.__traceback__)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message("Something went wrong. Please try again.", ephemeral=True)
