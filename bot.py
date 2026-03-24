@@ -206,6 +206,34 @@ intents.presences = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+
+# Global view error handler — ensures every button/select in every view
+# always sends a response even when an unhandled exception occurs,
+# preventing the "This interaction failed" red error message.
+async def _global_view_on_error(
+    self: discord.ui.View,
+    interaction: discord.Interaction,
+    error: Exception,
+    item: discord.ui.Item,
+) -> None:
+    import traceback
+    print(f"[ViewError] {type(self).__name__} / {getattr(item, 'custom_id', item)} → {error}")
+    traceback.print_exc()
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "Something went wrong. Please try again or contact staff.", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                "Something went wrong. Please try again or contact staff.", ephemeral=True
+            )
+    except Exception:
+        pass
+
+discord.ui.View.on_error = _global_view_on_error  # type: ignore
+
+
 # =========================
 # DATA
 # =========================
