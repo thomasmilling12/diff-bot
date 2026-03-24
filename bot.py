@@ -3759,6 +3759,50 @@ class HostFlowView(discord.ui.View):
             return
         await interaction.response.send_message(_hostflow_voice_script(interaction.user.mention), ephemeral=True)
 
+    @discord.ui.button(label="Request Feedback", emoji="📝", style=discord.ButtonStyle.secondary, custom_id="diff_hostflow:request_feedback", row=1)
+    async def request_feedback_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_host(interaction):
+            return
+        ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            await interaction.response.send_message("Meet flow channel not found.", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="📝 Leave Your Meet Feedback",
+            description=(
+                f"**{interaction.user.display_name}** is requesting feedback from tonight's meet!\n\n"
+                "Let us know how it went — your thoughts help us improve every event.\n\n"
+                "▢ Rate the meet experience\n"
+                "▢ Comment on the host's performance\n"
+                "▢ Share suggestions for next time"
+            ),
+            color=0x1F6FEB,
+        )
+        embed.set_footer(text="Different Meets • Meet Feedback • All responses are appreciated")
+        await ch.send(embed=embed, view=HostFeedbackRequestView())
+        await interaction.response.send_message(f"✅ Feedback request posted in {ch.mention}.", ephemeral=True)
+
+
+class HostFeedbackRequestView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Submit Feedback",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_hostflow_feedback_submit",
+        emoji="📝",
+    )
+    async def submit_feedback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from cogs.diff_feedback_system import FeedbackModal
+        cog = interaction.client.cogs.get("FeedbackSystem")
+        if cog is None:
+            await interaction.response.send_message(
+                "Feedback system is temporarily unavailable.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(FeedbackModal(cog))
+
 
 async def _hostflow_post_or_refresh() -> None:
     channel = bot.get_channel(HOST_HUB_CHANNEL_ID)
@@ -8406,6 +8450,7 @@ async def on_ready():
         bot.add_view(NotifyMeetView())
         bot.add_view(StaffDashboardView())
         bot.add_view(MeetInfoView())
+        bot.add_view(HostFeedbackRequestView())
         _tab_state = _tab_load()
         _seen_member_ids: set[int] = set()
         for _link in _tab_state.get("ticket_links", {}).values():
