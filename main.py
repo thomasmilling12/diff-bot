@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Set
 from zoneinfo import ZoneInfo
+import subprocess
 from dotenv import load_dotenv
 import discord
 from discord import app_commands
@@ -29,25 +30,15 @@ try:
 except Exception:
     PIL_AVAILABLE = False
 
-from flask import Flask
-from threading import Thread
-
 # =========================
-# WEB SERVER FOR RENDER / UPTIME
+# KEEP ALIVE FOR REPLIT
 # =========================
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "DIFF bot is alive", 200
-
-def start_web_server():
-    port = int(os.environ.get("PORT", 10000))
-
-    def run():
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
-    Thread(target=run, daemon=True).start()
+def keep_alive():
+    subprocess.Popen(
+        ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "120", "web:app"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 # =========================
@@ -16836,5 +16827,5 @@ async def _cmd_postigpanel(ctx: commands.Context):
 if not TOKEN:
     raise ValueError("TOKEN not found. Set it in Render environment variables.")
 
-start_web_server()
-bot.run(TOKEN)
+if __name__ == "__main__":
+    start_web_server_and_bot()
