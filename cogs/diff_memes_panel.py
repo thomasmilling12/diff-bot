@@ -33,7 +33,7 @@ class DiffMemesPanel(commands.Cog):
 
     def _build_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="『😂』 DIFF Memes Hub",
+            title="DIFF Memes Hub",
             description=(
                 "Welcome to the **DIFF Memes Channel** — the place for jokes, funny clips, "
                 "lighthearted content, and community laughs.\n\n"
