@@ -14404,22 +14404,50 @@ async def on_message(message: discord.Message) -> None:
             prev_total = total_images - len(raw_images)
             capped = min(total_images, MIN_GARAGE_PHOTOS)
 
-            msg_lines = [f"📸 **Photo Progress:** {capped}/{MIN_GARAGE_PHOTOS}"]
+            filled   = min(capped, MIN_GARAGE_PHOTOS)
+            empty    = MIN_GARAGE_PHOTOS - filled
+            bar      = "🟦" * filled + "⬛" * empty
+            complete = capped >= MIN_GARAGE_PHOTOS
+            progress_color = discord.Color.green() if complete else discord.Color.blue()
+
+            progress_embed = discord.Embed(
+                title = "📸 Photo Progress",
+                color = progress_color,
+                timestamp = utc_now(),
+            )
+            progress_embed.add_field(
+                name  = f"Progress  {capped}/{MIN_GARAGE_PHOTOS}",
+                value = bar,
+                inline= False,
+            )
             if accepted:
-                msg_lines.append(f"✅ Accepted this message: {accepted}")
+                progress_embed.add_field(name="✅ Accepted", value=str(accepted), inline=True)
             if dupes:
-                msg_lines.append(f"⚠ Duplicate images ignored: {dupes}")
+                progress_embed.add_field(name="🔁 Duplicates Ignored", value=str(dupes), inline=True)
             if spam_ignored:
-                msg_lines.append(f"⚠ Extra images ignored (anti-spam): {spam_ignored}")
-            await message.channel.send("\n".join(msg_lines))
+                progress_embed.add_field(name="⚠️ Extra Images (Anti-Spam)", value=str(spam_ignored), inline=True)
+            progress_embed.set_footer(text="Different Meets • Photo Review System")
+            await message.channel.send(embed=progress_embed)
 
             if prev_total < MIN_GARAGE_PHOTOS <= total_images:
                 leader_role = message.guild.get_role(LEADER_ROLE_ID)
                 co_role = message.guild.get_role(CO_LEADER_ROLE_ID)
                 mgr_role = message.guild.get_role(MANAGER_ROLE_ID)
                 mentions = " ".join(r.mention for r in [leader_role, co_role, mgr_role] if r)
+
+                review_embed = discord.Embed(
+                    title       = "✅ Application Ready for Review",
+                    description = f"{message.author.mention} has submitted all **{MIN_GARAGE_PHOTOS}** required photos and is ready to be reviewed.",
+                    color       = discord.Color.green(),
+                    timestamp   = utc_now(),
+                )
+                review_embed.add_field(name="📸 Valid Photos",  value=f"{capped}/{MIN_GARAGE_PHOTOS}", inline=True)
+                review_embed.add_field(name="📋 Channel",       value=message.channel.mention,        inline=True)
+                review_embed.set_thumbnail(url=message.author.display_avatar.url)
+                review_embed.set_footer(text="Different Meets • Application System")
                 await message.channel.send(
-                    f"{mentions}\n✅ **Ready for review** — applicant reached {MIN_GARAGE_PHOTOS} valid photos.",
+                    content=mentions if mentions else None,
+                    embed=review_embed,
                     allowed_mentions=discord.AllowedMentions(roles=True),
                 )
                 log_ch = message.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
