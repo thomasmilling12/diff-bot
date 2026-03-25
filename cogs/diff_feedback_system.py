@@ -118,9 +118,26 @@ class FeedbackModal(discord.ui.Modal, title="DIFF Meet Feedback"):
             pass
 
 
+class FeedbackView(discord.ui.View):
+    """Persistent view — registered on every startup so the button always works."""
+    def __init__(self, cog: "FeedbackSystem"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Submit Feedback",
+        style=discord.ButtonStyle.primary,
+        emoji="📝",
+        custom_id="diff_feedback_submit",
+    )
+    async def submit_feedback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(FeedbackModal(self.cog))
+
+
 class FeedbackSystem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.bot.add_view(FeedbackView(self))
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -195,6 +212,30 @@ class FeedbackSystem(commands.Cog):
         try:
             await log_channel.send(content=content, embed=embed)
         except discord.HTTPException:
+            pass
+
+    @commands.command(name="postfeedbackpanel")
+    @commands.has_permissions(manage_guild=True)
+    async def post_feedback_panel(self, ctx: commands.Context):
+        """Re-post the meet feedback panel with a working Submit button."""
+        embed = discord.Embed(
+            title="📝 Leave Your Meet Feedback",
+            description=(
+                f"**DIFF** is requesting feedback from tonight's meet!\n\n"
+                "Let us know how it went — your thoughts help us improve every event."
+            ),
+            color=COLOR_PRIMARY,
+        )
+        embed.add_field(name="\u00a0", value=(
+            "☐ Rate the meet experience\n"
+            "☐ Comment on the host's performance\n"
+            "☐ Share suggestions for next time"
+        ), inline=False)
+        embed.set_footer(text="Different Meets • Meet Feedback • All responses are appreciated")
+        await ctx.send(embed=embed, view=FeedbackView(self))
+        try:
+            await ctx.message.delete()
+        except Exception:
             pass
 
     @commands.command(name="feedbackleaderboard")
