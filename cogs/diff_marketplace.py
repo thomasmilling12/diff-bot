@@ -8,25 +8,26 @@ from typing import Dict, Any, Optional
 import discord
 from discord.ext import commands, tasks
 
-GUILD_ID                  = 850386896509337710
-MARKETPLACE_CHANNEL_ID    = 1182386801235742801
-MARKETPLACE_LOG_CHANNEL_ID = 1485265848099799163  # Staff Logs
+GUILD_ID                   = 850386896509337710
+MARKETPLACE_CHANNEL_ID     = 1182386801235742801   # Forum channel
+MARKETPLACE_LOG_CHANNEL_ID = 1485265848099799163   # Staff Logs
 
 LEADER_ROLE_ID    = 850391095845584937
 CO_LEADER_ROLE_ID = 850391378559238235
 MANAGER_ROLE_ID   = 990011447193006101
 
-AUTO_DELETE_AFTER_DAYS  = 7
+AUTO_DELETE_AFTER_DAYS   = 7
 LISTING_COOLDOWN_SECONDS = 300
 
 COLOR_PRIMARY = 0x1F6FEB
 COLOR_SUCCESS = 0x2ECC71
-COLOR_WARNING = 0xF39C12
 COLOR_MUTED   = 0x95A5A6
 
 DATA_DIR         = "diff_data"
 MARKETPLACE_FILE = os.path.join(DATA_DIR, "marketplace_listings.json")
-PANEL_TAG        = "DIFF_MARKETPLACE_PANEL_V1"
+
+PANEL_THREAD_NAME = "📌 Marketplace Panel"
+PANEL_TAG_TEXT    = "DIFF_MARKETPLACE_PANEL_V1"
 
 
 def utcnow() -> datetime:
@@ -60,7 +61,6 @@ def has_staff_access(member: discord.Member) -> bool:
 
 
 def _parse_listing_id(message: discord.Message) -> Optional[str]:
-    """Extract listing ID from embed title — e.g. '🛒 Selling • MKT-0001'."""
     if not message or not message.embeds:
         return None
     title = message.embeds[0].title or ""
@@ -161,10 +161,6 @@ class RemoveListingModal(discord.ui.Modal, title="Remove Marketplace Listing"):
 # ---------------------------------------------------------------------------
 
 class ListingActionView(discord.ui.View):
-    """Persistent view on each listing embed.
-    Listing ID is recovered from the embed title at interaction time.
-    """
-
     def __init__(self, cog: "MarketplaceSystem"):
         super().__init__(timeout=None)
         self.cog = cog
@@ -248,7 +244,7 @@ class MarketplaceSystem(commands.Cog):
         if guild is None:
             return
         channel = guild.get_channel(MARKETPLACE_CHANNEL_ID)
-        if isinstance(channel, discord.TextChannel):
+        if isinstance(channel, discord.ForumChannel):
             await self._post_or_refresh_panel(channel)
 
     # ------------------------------------------------------------------
@@ -256,7 +252,7 @@ class MarketplaceSystem(commands.Cog):
     # ------------------------------------------------------------------
 
     def get_data(self) -> Dict[str, Any]:
-        return load_json(MARKETPLACE_FILE, {"counter": 0, "entries": {}, "cooldowns": {}})
+        return load_json(MARKETPLACE_FILE, {"counter": 0, "entries": {}, "cooldowns": {}, "panel_thread_id": None})
 
     def save_data(self, data: Dict[str, Any]) -> None:
         save_json(MARKETPLACE_FILE, data)
@@ -298,7 +294,7 @@ class MarketplaceSystem(commands.Cog):
             value="Item • Details • Price • Contact • Tags",
             inline=False,
         )
-        embed.set_footer(text=PANEL_TAG)
+        embed.set_footer(text=PANEL_TAG_TEXT)
         return embed
 
     def build_listing_embed(self, entry: Dict[str, Any], color: int = COLOR_PRIMARY) -> discord.Embed:
@@ -318,34 +314,58 @@ class MarketplaceSystem(commands.Cog):
         return embed
 
     # ------------------------------------------------------------------
-    # Panel auto-post
+    # Panel — posts as a pinned thread in the forum
     # ------------------------------------------------------------------
 
-    async def _post_or_refresh_panel(self, channel: discord.TextChannel):
+    def _pick_tags(self, forum: discord.ForumChannel, count: int = 1) -> list:
+        """Return up to `count` available tags from the forum, or [] if none."""
+        return list(forum.available_tags[:count]) if forum.available_tags else []
+
+    async def _post_or_refresh_panel(self, forum: discord.ForumChannel):
+        data = self.get_data()
         embed = self.build_panel_embed()
         view  = MarketplacePanelView(self)
-        existing = None
 
-        async for msg in channel.history(limit=50):
-            if msg.author.id == self.bot.user.id and msg.embeds:
-                footer = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
-                if footer == PANEL_TAG:
-                    if existing is None:
-                        existing = msg
-                    else:
-                        try:
-                            await msg.delete()
-                        except Exception:
-                            pass
+        panel_thread_id = data.get("panel_thread_id")
 
-        if existing:
+        # Try to edit the existing panel thread's starter message
+        if panel_thread_id:
+            thread = forum.guild.get_channel_or_thread(panel_thread_id)
+            if thread is None:
+                try:
+                    thread = await forum.guild.fetch_channel(panel_thread_id)
+                except Exception:
+                    thread = None
+
+            if thread is not None:
+                try:
+                    starter = thread.get_partial_message(thread.id)
+                    msg = await starter.fetch()
+                    await msg.edit(embed=embed, view=view)
+                    try:
+                        await thread.edit(pinned=True)
+                    except Exception:
+                        pass
+                    return
+                except Exception:
+                    pass
+
+        # Create a new panel thread
+        try:
+            kwargs: dict = dict(name=PANEL_THREAD_NAME, embed=embed, view=view)
+            tags = self._pick_tags(forum, 1)
+            if tags:
+                kwargs["applied_tags"] = tags
+            result = await forum.create_thread(**kwargs)
+            thread = result.thread
             try:
-                await existing.edit(content=None, embed=embed, view=view)
-                return
+                await thread.edit(pinned=True)
             except Exception:
                 pass
-
-        await channel.send(embed=embed, view=view)
+            data["panel_thread_id"] = thread.id
+            self.save_data(data)
+        except Exception as e:
+            print(f"[MarketplaceSystem] Failed to create panel thread: {e}")
 
     # ------------------------------------------------------------------
     # Core logic
@@ -365,7 +385,7 @@ class MarketplaceSystem(commands.Cog):
             await interaction.response.send_message("This system is not configured for this server.", ephemeral=True)
             return
 
-        data = self.get_data()
+        data     = self.get_data()
         now_ts   = int(utcnow().timestamp())
         user_key = str(interaction.user.id)
         last_used = int(data["cooldowns"].get(user_key, 0))
@@ -375,6 +395,11 @@ class MarketplaceSystem(commands.Cog):
             await interaction.response.send_message(
                 f"Please wait {remaining}s before posting another listing.", ephemeral=True
             )
+            return
+
+        forum = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
+        if not isinstance(forum, discord.ForumChannel):
+            await interaction.response.send_message("Marketplace channel not found.", ephemeral=True)
             return
 
         listing_id = self.next_listing_id()
@@ -392,18 +417,24 @@ class MarketplaceSystem(commands.Cog):
             "status":         "Active",
             "created_at":     utcnow().isoformat(),
             "expires_at":     (utcnow() + timedelta(days=AUTO_DELETE_AFTER_DAYS)).isoformat(),
+            "thread_id":      None,
             "message_id":     None,
         }
 
-        channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
-        if channel is None:
-            await interaction.response.send_message("Marketplace channel not found.", ephemeral=True)
-            return
+        embed = self.build_listing_embed(entry)
 
-        embed   = self.build_listing_embed(entry)
-        message = await channel.send(embed=embed, view=ListingActionView(self))
+        # Each listing = its own forum thread
+        thread_name = f"{listing_type} • {item[:60]} ({listing_id})"
+        thread_kwargs: dict = dict(name=thread_name, embed=embed, view=ListingActionView(self))
+        tags = self._pick_tags(forum, 1)
+        if tags:
+            thread_kwargs["applied_tags"] = tags
+        result  = await forum.create_thread(**thread_kwargs)
+        thread  = result.thread
+        message = result.message
 
         data = self.get_data()
+        entry["thread_id"]  = thread.id
         entry["message_id"] = message.id
         data["entries"][listing_id] = entry
         data["cooldowns"][user_key] = now_ts
@@ -440,6 +471,15 @@ class MarketplaceSystem(commands.Cog):
         except discord.HTTPException:
             pass
 
+        # Archive the thread when sold or closed
+        if entry.get("thread_id"):
+            thread = interaction.guild.get_channel_or_thread(entry["thread_id"])
+            if thread:
+                try:
+                    await thread.edit(archived=True)
+                except Exception:
+                    pass
+
         await interaction.response.send_message(
             f"✅ Listing **{listing_id}** marked as {new_status}.", ephemeral=True
         )
@@ -459,13 +499,14 @@ class MarketplaceSystem(commands.Cog):
             await interaction.response.send_message("You can only remove your own listing.", ephemeral=True)
             return
 
-        channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
-        if channel and entry.get("message_id"):
-            try:
-                msg = await channel.fetch_message(entry["message_id"])
-                await msg.delete()
-            except discord.HTTPException:
-                pass
+        # Delete the forum thread
+        if entry.get("thread_id"):
+            thread = interaction.guild.get_channel_or_thread(entry["thread_id"])
+            if thread:
+                try:
+                    await thread.delete()
+                except discord.HTTPException:
+                    pass
 
         data["entries"].pop(listing_id, None)
         self.save_data(data)
@@ -484,7 +525,6 @@ class MarketplaceSystem(commands.Cog):
     async def auto_cleanup_expired_listings(self, guild: discord.Guild):
         data    = self.get_data()
         changed = False
-        channel = guild.get_channel(MARKETPLACE_CHANNEL_ID)
 
         for listing_id, entry in list(data["entries"].items()):
             expires_at = entry.get("expires_at")
@@ -496,12 +536,14 @@ class MarketplaceSystem(commands.Cog):
                 continue
 
             if utcnow() >= expiry:
-                if channel and entry.get("message_id"):
-                    try:
-                        msg = await channel.fetch_message(entry["message_id"])
-                        await msg.delete()
-                    except discord.HTTPException:
-                        pass
+                thread_id = entry.get("thread_id")
+                if thread_id:
+                    thread = guild.get_channel_or_thread(thread_id)
+                    if thread:
+                        try:
+                            await thread.delete()
+                        except discord.HTTPException:
+                            pass
                 data["entries"].pop(listing_id, None)
                 changed = True
 
@@ -515,17 +557,17 @@ class MarketplaceSystem(commands.Cog):
     @commands.command(name="postmarketpanel")
     @commands.has_permissions(manage_guild=True)
     async def post_market_panel(self, ctx: commands.Context):
-        """Posts or refreshes the Marketplace panel. Usage: !postmarketpanel"""
-        channel = ctx.guild.get_channel(MARKETPLACE_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
-            await ctx.send("❌ Marketplace channel not found.", delete_after=8)
+        """Posts or refreshes the Marketplace panel thread. Usage: !postmarketpanel"""
+        forum = ctx.guild.get_channel(MARKETPLACE_CHANNEL_ID)
+        if not isinstance(forum, discord.ForumChannel):
+            await ctx.send("❌ Marketplace forum channel not found.", delete_after=8)
             return
         try:
             await ctx.message.delete()
         except Exception:
             pass
-        await self._post_or_refresh_panel(channel)
-        await ctx.send(f"✅ Marketplace panel posted/refreshed in {channel.mention}.", delete_after=8)
+        await self._post_or_refresh_panel(forum)
+        await ctx.send(f"✅ Marketplace panel posted/refreshed in {forum.mention}.", delete_after=8)
 
     @commands.command(name="marketcleanup")
     @commands.has_permissions(manage_guild=True)
