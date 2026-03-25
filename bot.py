@@ -222,6 +222,7 @@ async def _setup_hook():
     await bot.load_extension("cogs.diff_irl_car_photos_panel")
     await bot.load_extension("cogs.diff_car_photos_panel")
     await bot.load_extension("cogs.diff_content_support_panel")
+    await bot.load_extension("cogs.diff_case_system")
 
 bot.setup_hook = _setup_hook
 
