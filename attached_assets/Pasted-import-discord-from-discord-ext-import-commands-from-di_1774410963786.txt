@@ -1,0 +1,98 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# ==========================================
+# DIFF Memes Channel Emblem Panel
+# Add this file to your bot and load the cog.
+# ==========================================
+
+CHANNEL_ID = 0  # Put your memes channel ID here
+DIFF_LOGO_URL = "https://your-logo-link-here.png"  # Put your DIFF logo image URL here
+EMBED_COLOR = 0x111111
+PANEL_TAG = "DIFF_MEMES_PANEL_V1"
+
+
+class DiffMemesPanel(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    async def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="『😂』 DIFF Memes Hub",
+            description=(
+                "Welcome to the **DIFF Memes Channel** — the place for jokes, funny clips, "
+                "lighthearted content, and community laughs.\n\n"
+                "Use this channel to:\n"
+                "• Share funny car meet memes\n"
+                "• Post GTA / PS5 / DIFF-related jokes\n"
+                "• Drop reaction images, clips, and entertaining content\n"
+                "• Keep the community active with good energy\n\n"
+                "**Channel Purpose**\n"
+                "This channel is here to keep the server fun, social, and entertaining while still "
+                "representing DIFF properly.\n\n"
+                "**Please avoid:**\n"
+                "• Spam or flooding the channel\n"
+                "• Offensive or disrespectful posts\n"
+                "• Anything that breaks server rules\n\n"
+                "Post smart. Keep it funny. Keep it DIFF."
+            ),
+            color=EMBED_COLOR,
+        )
+
+        if DIFF_LOGO_URL and DIFF_LOGO_URL.startswith("http"):
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+            embed.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+
+        embed.set_footer(text=PANEL_TAG)
+        return embed
+
+    async def post_or_refresh_panel(self, channel: discord.TextChannel) -> discord.Message | None:
+        embed = await self.build_embed()
+
+        async for message in channel.history(limit=50):
+            if message.author == self.bot.user and message.embeds:
+                footer = message.embeds[0].footer.text if message.embeds[0].footer else ""
+                if footer == PANEL_TAG:
+                    await message.edit(content=None, embed=embed, view=None)
+                    return message
+
+        return await channel.send(embed=embed)
+
+    @commands.command(name="setup_memes_panel")
+    @commands.has_permissions(manage_guild=True)
+    async def setup_memes_panel_prefix(self, ctx: commands.Context):
+        """Posts or refreshes the DIFF memes panel in the configured channel."""
+        channel = self.bot.get_channel(CHANNEL_ID)
+        if channel is None:
+            await ctx.send("I couldn't find the configured channel. Set CHANNEL_ID in the file first.")
+            return
+
+        message = await self.post_or_refresh_panel(channel)
+        if message:
+            await ctx.send(f"Memes panel posted/refreshed in {channel.mention}.", delete_after=10)
+
+    @app_commands.command(name="setup_memes_panel", description="Post or refresh the DIFF memes emblem panel")
+    async def setup_memes_panel_slash(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "You need Manage Server permission to use this.", ephemeral=True
+            )
+            return
+
+        channel = interaction.client.get_channel(CHANNEL_ID)
+        if channel is None:
+            await interaction.response.send_message(
+                "I couldn't find the configured channel. Set CHANNEL_ID in the file first.",
+                ephemeral=True,
+            )
+            return
+
+        await self.post_or_refresh_panel(channel)
+        await interaction.response.send_message(
+            f"Memes panel posted/refreshed in {channel.mention}.", ephemeral=True
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffMemesPanel(bot))
