@@ -1,0 +1,90 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# ==========================================
+# DIFF Meet Channel Emblem Panel
+# ==========================================
+
+CHANNEL_ID = 1485684577073758378
+DIFF_LOGO_URL = "https://your-logo-link-here.png"
+EMBED_COLOR = 0x111111
+PANEL_TAG = "DIFF_MEET_CHANNEL_PANEL_V1"
+
+
+class DiffMeetChannelPanel(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    async def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="『🎮』 DIFF Meet Channel",
+            description=(
+                "Welcome to the **DIFF Meet Channel** — this is where all official meets begin.\n\n"
+                "**What this channel is used for:**\n"
+                "• Meet start announcements\n"
+                "• Meet locations & movement updates\n"
+                "• Host instructions during the meet\n"
+                "• Important real-time meet communication\n\n"
+                "**Channel Rules:**\n"
+                "• Only hosts or staff should speak here during meets\n"
+                "• Follow all instructions posted in this channel\n"
+                "• Do not spam or talk over hosts\n"
+                "• Stay ready for location changes\n\n"
+                "**Important:**\n"
+                "When a meet is live, this channel becomes the main source of direction.\n"
+                "Make sure notifications are on so you don’t miss anything.\n\n"
+                "Stay ready. Stay organized. Stay DIFF."
+            ),
+            color=EMBED_COLOR,
+        )
+
+        if DIFF_LOGO_URL.startswith("http"):
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+            embed.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+
+        embed.set_footer(text=PANEL_TAG)
+        return embed
+
+    async def post_or_refresh_panel(self, channel: discord.TextChannel):
+        embed = await self.build_embed()
+
+        async for message in channel.history(limit=50):
+            if message.author == self.bot.user and message.embeds:
+                footer = message.embeds[0].footer.text if message.embeds[0].footer else ""
+                if footer == PANEL_TAG:
+                    await message.edit(embed=embed, view=None)
+                    return message
+
+        return await channel.send(embed=embed)
+
+    @commands.command(name="setup_meet_channel_panel")
+    @commands.has_permissions(manage_guild=True)
+    async def setup_meet_channel_panel_prefix(self, ctx: commands.Context):
+        channel = self.bot.get_channel(CHANNEL_ID)
+        if not channel:
+            await ctx.send("Channel not found.")
+            return
+
+        await self.post_or_refresh_panel(channel)
+        await ctx.send(f"Meet channel panel posted/refreshed in {channel.mention}.", delete_after=10)
+
+    @app_commands.command(name="setup_meet_channel_panel", description="Post or refresh DIFF meet channel panel")
+    async def setup_meet_channel_panel_slash(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("Missing permissions.", ephemeral=True)
+            return
+
+        channel = interaction.client.get_channel(CHANNEL_ID)
+        if not channel:
+            await interaction.response.send_message("Channel not found.", ephemeral=True)
+            return
+
+        await self.post_or_refresh_panel(channel)
+        await interaction.response.send_message(
+            f"Meet channel panel posted/refreshed in {channel.mention}.", ephemeral=True
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffMeetChannelPanel(bot))
