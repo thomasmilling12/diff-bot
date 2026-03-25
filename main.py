@@ -29,7 +29,28 @@ try:
 except Exception:
     PIL_AVAILABLE = False
 
+from flask import Flask
+from threading import Thread
+
 # =========================
+# WEB SERVER FOR RENDER / UPTIME
+# =========================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "DIFF bot is alive", 200
+
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 10000))
+
+    def run():
+        app.run(host="0.0.0.0", port=port)
+
+    Thread(target=run, daemon=True).start()
+
+
 # =========================
 # LOAD ENV
 # =========================
@@ -16816,6 +16837,7 @@ async def _cmd_postigpanel(ctx: commands.Context):
 if not TOKEN:
     raise ValueError("TOKEN not found. Set it in Render environment variables.")
 
+keep_alive()
 
 async def run_bot():
     try:
