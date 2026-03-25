@@ -220,6 +220,7 @@ async def _setup_hook():
     await bot.load_extension("cogs.diff_next_level_moderation")
     await bot.load_extension("cogs.diff_memes_panel")
     await bot.load_extension("cogs.diff_irl_car_photos_panel")
+    await bot.load_extension("cogs.diff_car_photos_panel")
 
 bot.setup_hook = _setup_hook
 

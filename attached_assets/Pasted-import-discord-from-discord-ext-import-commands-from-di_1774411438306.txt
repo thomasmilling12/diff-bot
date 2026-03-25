@@ -1,0 +1,91 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# ==========================================
+# DIFF Car Photos Channel Emblem Panel
+# ==========================================
+
+CHANNEL_ID = 1047335715270316079
+DIFF_LOGO_URL = "https://your-logo-link-here.png"
+EMBED_COLOR = 0x111111
+PANEL_TAG = "DIFF_CAR_PHOTOS_PANEL_V1"
+
+
+class DiffCarPhotosPanel(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    async def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="『📸』 DIFF Car Photos Hub",
+            description=(
+                "Welcome to the **DIFF Car Photos Channel** — your go-to place for sharing clean builds, "
+                "GTA shots, and high-quality automotive visuals.\n\n"
+                "Use this channel to:\n"
+                "• Post your best GTA car photos\n"
+                "• Share clean builds and themed setups\n"
+                "• Show angles, lighting, and creative shots\n"
+                "• Support other members' builds\n\n"
+                "**Channel Purpose**\n"
+                "This channel is for showcasing clean, realistic, and DIFF-style vehicles that match "
+                "our meet standards.\n\n"
+                "**Please avoid:**\n"
+                "• Low-quality or rushed screenshots\n"
+                "• Off-theme or unrealistic builds\n"
+                "• Spam posting multiple times back-to-back\n"
+                "• Disrespectful comments\n\n"
+                "Keep it clean. Keep it realistic. Keep it DIFF."
+            ),
+            color=EMBED_COLOR,
+        )
+
+        if DIFF_LOGO_URL.startswith("http"):
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+            embed.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+
+        embed.set_footer(text=PANEL_TAG)
+        return embed
+
+    async def post_or_refresh_panel(self, channel: discord.TextChannel):
+        embed = await self.build_embed()
+
+        async for message in channel.history(limit=50):
+            if message.author == self.bot.user and message.embeds:
+                footer = message.embeds[0].footer.text if message.embeds[0].footer else ""
+                if footer == PANEL_TAG:
+                    await message.edit(embed=embed, view=None)
+                    return message
+
+        return await channel.send(embed=embed)
+
+    @commands.command(name="setup_car_photos_panel")
+    @commands.has_permissions(manage_guild=True)
+    async def setup_car_photos_panel_prefix(self, ctx: commands.Context):
+        channel = self.bot.get_channel(CHANNEL_ID)
+        if not channel:
+            await ctx.send("Channel not found.")
+            return
+
+        await self.post_or_refresh_panel(channel)
+        await ctx.send(f"Car photos panel posted/refreshed in {channel.mention}.", delete_after=10)
+
+    @app_commands.command(name="setup_car_photos_panel", description="Post or refresh DIFF car photos panel")
+    async def setup_car_photos_panel_slash(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("Missing permissions.", ephemeral=True)
+            return
+
+        channel = interaction.client.get_channel(CHANNEL_ID)
+        if not channel:
+            await interaction.response.send_message("Channel not found.", ephemeral=True)
+            return
+
+        await self.post_or_refresh_panel(channel)
+        await interaction.response.send_message(
+            f"Car photos panel posted/refreshed in {channel.mention}.", ephemeral=True
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffCarPhotosPanel(bot))
