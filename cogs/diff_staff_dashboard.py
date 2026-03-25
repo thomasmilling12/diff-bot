@@ -15,6 +15,8 @@ from discord.ext import commands
 
 GUILD_ID = 850386896509337710
 
+DIFF_LOGO_URL = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm=2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a&=&format=webp&quality=lossless&width=1376&height=917"
+
 # Set to a channel ID or leave 0 to fall back to the command's own channel
 STAFF_DASHBOARD_CHANNEL_ID = 0
 APPEAL_PANEL_CHANNEL_ID    = 0
@@ -723,9 +725,14 @@ class StaffDashboardSystem(commands.Cog, name="StaffDashboardSystem"):
             if member:
                 decision = "accepted ✅" if accepted else "denied ❌"
                 try:
-                    await member.send(
-                        f"Your DIFF appeal **{appeal_id}** (for `{entry['writeup_id']}`) has been **{decision}** by staff."
+                    appeal_em = discord.Embed(
+                        title="DIFF Appeal Decision",
+                        description=f"Your appeal **{appeal_id}** (for `{entry['writeup_id']}`) has been **{decision}** by staff.",
+                        color=discord.Color.green() if accepted else discord.Color.red(),
                     )
+                    appeal_em.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+                    appeal_em.set_thumbnail(url=DIFF_LOGO_URL)
+                    await member.send(embed=appeal_em)
                 except discord.HTTPException:
                     pass
 

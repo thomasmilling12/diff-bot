@@ -924,7 +924,13 @@ def is_staff_reviewer(member: discord.Member) -> bool:
 
 async def safe_dm(user, message: str):
     try:
-        await user.send(message)
+        em = discord.Embed(
+            description=message,
+            color=discord.Color.dark_blue(),
+        )
+        em.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+        em.set_thumbnail(url=DIFF_LOGO_URL)
+        await user.send(embed=em)
     except Exception:
         pass
 
@@ -1118,7 +1124,14 @@ class AutoStaffReplyDropdown(discord.ui.Select):
             return await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
         dm_ok = True
         try:
-            await self.target_user.send(f"**DIFF Staff Response**\n\n{reply}")
+            dm_em = discord.Embed(
+                title="DIFF Staff Response",
+                description=reply,
+                color=discord.Color.dark_blue(),
+            )
+            dm_em.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+            dm_em.set_thumbnail(url=DIFF_LOGO_URL)
+            await self.target_user.send(embed=dm_em)
         except Exception:
             dm_ok = False
         try:
@@ -11039,7 +11052,13 @@ async def _tab_post_staff_log(title: str, description: str, color: discord.Color
 
 async def _fus_safe_dm(member: discord.Member, message: str) -> None:
     try:
-        await member.send(message)
+        em = discord.Embed(
+            description=message,
+            color=discord.Color.dark_blue(),
+        )
+        em.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+        em.set_thumbnail(url=DIFF_LOGO_URL)
+        await member.send(embed=em)
     except Exception:
         pass
 

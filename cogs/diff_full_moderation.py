@@ -14,6 +14,8 @@ from discord.ext import commands
 
 GUILD_ID = 850386896509337710
 
+DIFF_LOGO_URL = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm=2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a&=&format=webp&quality=lossless&width=1376&height=917"
+
 MOD_ALERT_CHANNEL_ID = 1485265848099799163   # staff-logs
 
 WARNING_ROLE_ID    = 0   # optional — fill in role ID
@@ -273,7 +275,13 @@ class FullModerationSystem(commands.Cog, name="FullModerationSystem"):
         if not SEND_DM_NOTIFICATIONS:
             return
         try:
-            await member.send(message)
+            em = discord.Embed(
+                description=message,
+                color=discord.Color.dark_blue(),
+            )
+            em.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+            em.set_thumbnail(url=DIFF_LOGO_URL)
+            await member.send(embed=em)
         except discord.HTTPException:
             pass
 

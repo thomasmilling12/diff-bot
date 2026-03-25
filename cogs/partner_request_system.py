@@ -14,6 +14,8 @@ from discord.ext import commands
 
 GUILD_ID = 850386896509337710
 
+DIFF_LOGO_URL = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm=2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a&=&format=webp&quality=lossless&width=1376&height=917"
+
 PARTNER_REQUEST_CHANNEL_ID = 1485892421593337926
 PARTNER_REVIEW_CHANNEL_ID = 1057016810261712938
 
@@ -270,9 +272,14 @@ class PartnerReviewView(discord.ui.View):
         try:
             member = interaction.guild.get_member(req["submitted_by_id"])
             if member:
-                await member.send(
-                    f"✅ Your partner request for **{req['server_name']}** has been **approved** in **{interaction.guild.name}**!"
+                pr_em = discord.Embed(
+                    title="Partner Request Approved",
+                    description=f"Your partner request for **{req['server_name']}** has been **approved** in **{interaction.guild.name}**!",
+                    color=discord.Color.green(),
                 )
+                pr_em.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+                pr_em.set_thumbnail(url=DIFF_LOGO_URL)
+                await member.send(embed=pr_em)
         except Exception:
             pass
 
@@ -320,9 +327,14 @@ class PartnerReviewView(discord.ui.View):
         try:
             member = interaction.guild.get_member(req["submitted_by_id"])
             if member:
-                await member.send(
-                    f"Your partner request for **{req['server_name']}** was not approved in **{interaction.guild.name}**."
+                pr_em = discord.Embed(
+                    title="Partner Request Denied",
+                    description=f"Your partner request for **{req['server_name']}** was not approved in **{interaction.guild.name}**.",
+                    color=discord.Color.red(),
                 )
+                pr_em.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+                pr_em.set_thumbnail(url=DIFF_LOGO_URL)
+                await member.send(embed=pr_em)
         except Exception:
             pass
 
