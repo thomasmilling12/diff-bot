@@ -41,12 +41,11 @@ app = Flask(__name__)
 def home():
     return "DIFF bot is alive", 200
 
-
-def keep_alive():
+def start_web_server():
     port = int(os.environ.get("PORT", 10000))
 
     def run():
-        app.run(host="0.0.0.0", port=port)
+        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
     Thread(target=run, daemon=True).start()
 
@@ -16837,28 +16836,5 @@ async def _cmd_postigpanel(ctx: commands.Context):
 if not TOKEN:
     raise ValueError("TOKEN not found. Set it in Render environment variables.")
 
-keep_alive()
-
-async def run_bot():
-    try:
-        await bot.start(TOKEN)
-    except discord.errors.HTTPException as e:
-        if e.status == 429:
-            print(f"[Rate limited by Discord] Retrying in 10s...")
-        else:
-            print(f"[HTTP error] {e} — retrying in 10s")
-    except Exception as e:
-        print(f"[Connection error] {e} — retrying in 10s")
-    finally:
-        try:
-            if not bot.is_closed():
-                await bot.close()
-        except Exception:
-            pass
-
-asyncio.run(run_bot())
-
-print(f"[Restarting process in 10s...]")
-import time
-time.sleep(10)
-os.execv(sys.executable, [sys.executable] + sys.argv)
+start_web_server()
+bot.run(TOKEN)
