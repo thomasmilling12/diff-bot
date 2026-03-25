@@ -225,6 +225,7 @@ async def _setup_hook():
     await bot.load_extension("cogs.diff_case_system")
     await bot.load_extension("cogs.diff_meet_channel_panel")
     await bot.load_extension("cogs.diff_meet_host_system")
+    await bot.load_extension("cogs.diff_marketplace")
 
 bot.setup_hook = _setup_hook
 
