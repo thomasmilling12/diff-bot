@@ -231,6 +231,28 @@ async def _setup_hook():
 bot.setup_hook = _setup_hook
 
 
+@bot.command(name="fixunverified")
+@commands.has_permissions(manage_roles=True)
+async def fix_unverified(ctx: commands.Context):
+    """Strips Unverified role from anyone who already has Verified. Usage: !fixunverified"""
+    guild = ctx.guild
+    verified_role   = guild.get_role(VERIFIED_ROLE_ID)
+    unverified_role = guild.get_role(UNVERIFIED_ROLE_ID)
+    if not verified_role or not unverified_role:
+        await ctx.send("❌ Could not find Verified or Unverified role.", delete_after=10)
+        return
+    msg = await ctx.send("🔄 Scanning members...")
+    fixed = 0
+    async for member in guild.fetch_members(limit=None):
+        if verified_role in member.roles and unverified_role in member.roles:
+            try:
+                await member.remove_roles(unverified_role, reason="!fixunverified — already verified")
+                fixed += 1
+            except discord.HTTPException:
+                pass
+    await msg.edit(content=f"✅ Done. Removed Unverified from **{fixed}** member(s).")
+
+
 # Global view error handler — ensures every button/select in every view
 # always sends a response even when an unhandled exception occurs,
 # preventing the "This interaction failed" red error message.
@@ -5304,6 +5326,13 @@ class RulesAcceptView(discord.ui.View):
                 ephemeral=True,
             )
             return
+
+        unverified = interaction.guild.get_role(UNVERIFIED_ROLE_ID)
+        if unverified and unverified in member.roles:
+            try:
+                await member.remove_roles(unverified, reason="Rules accepted — removing unverified")
+            except discord.HTTPException:
+                pass
 
         await interaction.response.send_message(
             "✅ You accepted the rules and got the Verified role. Welcome to DIFF Meets.",
