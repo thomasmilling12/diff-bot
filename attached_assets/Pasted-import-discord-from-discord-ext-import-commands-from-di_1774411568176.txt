@@ -1,0 +1,91 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# ==========================================
+# DIFF Content Support Channel Emblem Panel
+# ==========================================
+
+CHANNEL_ID = 1156043026855108679
+DIFF_LOGO_URL = "https://your-logo-link-here.png"
+EMBED_COLOR = 0x111111
+PANEL_TAG = "DIFF_CONTENT_SUPPORT_PANEL_V1"
+
+
+class DiffContentSupportPanel(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    async def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="『💬』 DIFF Content Support Hub",
+            description=(
+                "Welcome to the **DIFF Content Support Channel** — your place for help, feedback, "
+                "and improving your content.\n\n"
+                "Use this channel to:\n"
+                "• Ask for help with car photos, edits, or clips\n"
+                "• Get feedback on your builds or posts\n"
+                "• Share content ideas before posting\n"
+                "• Learn how to improve your DIFF-style content\n\n"
+                "**Channel Purpose**\n"
+                "This channel is here to help members grow, improve, and stay consistent with "
+                "clean, high-quality DIFF content.\n\n"
+                "**Please avoid:**\n"
+                "• Spamming links without context\n"
+                "• Ignoring feedback from others\n"
+                "• Off-topic conversations\n"
+                "• Disrespectful behavior\n\n"
+                "Ask smart. Improve fast. Stay DIFF."
+            ),
+            color=EMBED_COLOR,
+        )
+
+        if DIFF_LOGO_URL.startswith("http"):
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+            embed.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+
+        embed.set_footer(text=PANEL_TAG)
+        return embed
+
+    async def post_or_refresh_panel(self, channel: discord.TextChannel):
+        embed = await self.build_embed()
+
+        async for message in channel.history(limit=50):
+            if message.author == self.bot.user and message.embeds:
+                footer = message.embeds[0].footer.text if message.embeds[0].footer else ""
+                if footer == PANEL_TAG:
+                    await message.edit(embed=embed, view=None)
+                    return message
+
+        return await channel.send(embed=embed)
+
+    @commands.command(name="setup_content_support_panel")
+    @commands.has_permissions(manage_guild=True)
+    async def setup_content_support_panel_prefix(self, ctx: commands.Context):
+        channel = self.bot.get_channel(CHANNEL_ID)
+        if not channel:
+            await ctx.send("Channel not found.")
+            return
+
+        await self.post_or_refresh_panel(channel)
+        await ctx.send(f"Content support panel posted/refreshed in {channel.mention}.", delete_after=10)
+
+    @app_commands.command(name="setup_content_support_panel", description="Post or refresh DIFF content support panel")
+    async def setup_content_support_panel_slash(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("Missing permissions.", ephemeral=True)
+            return
+
+        channel = interaction.client.get_channel(CHANNEL_ID)
+        if not channel:
+            await interaction.response.send_message("Channel not found.", ephemeral=True)
+            return
+
+        await self.post_or_refresh_panel(channel)
+        await interaction.response.send_message(
+            f"Content support panel posted/refreshed in {channel.mention}.", ephemeral=True
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffContentSupportPanel(bot))
