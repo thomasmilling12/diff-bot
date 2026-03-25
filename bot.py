@@ -72,7 +72,8 @@ RULES_BTN_JOIN_MEETS_ID = 1277084633858576406
 RULES_BTN_MEET_RULES_ID = 1047161846257438743
 RULES_BTN_SUPPORT_ID = 1156363575150002226
 
-VERIFIED_ROLE_ID = 1141424243616256032
+VERIFIED_ROLE_ID   = 1141424243616256032
+UNVERIFIED_ROLE_ID = 1486011550916411512
 
 HIERARCHY_CHANNEL_ID = 1195941548240687266
 
@@ -15045,13 +15046,19 @@ class JoinTicketView(discord.ui.View):
         await interaction.response.send_message(f"{member.mention} has been accepted.", ephemeral=True)
 
         roles_to_add = []
-        for rid in (PS5_ROLE_ID, MEET_ATTENDER_ROLE_ID):
+        for rid in (PS5_ROLE_ID, MEET_ATTENDER_ROLE_ID, VERIFIED_ROLE_ID):
             r = interaction.guild.get_role(rid)
             if r:
                 roles_to_add.append(r)
         if roles_to_add:
             try:
                 await member.add_roles(*roles_to_add, reason=f"PS join approved by {interaction.user}")
+            except discord.HTTPException:
+                pass
+        unverified_role = interaction.guild.get_role(UNVERIFIED_ROLE_ID)
+        if unverified_role and unverified_role in member.roles:
+            try:
+                await member.remove_roles(unverified_role, reason="PS join approved — removing unverified")
             except discord.HTTPException:
                 pass
         role = interaction.guild.get_role(PS5_ROLE_ID)
