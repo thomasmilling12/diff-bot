@@ -339,13 +339,14 @@ class MarketplaceSystem(commands.Cog):
 
             if thread is not None:
                 try:
+                    # Ensure the thread is unlocked so users can interact
+                    try:
+                        await thread.edit(pinned=True, locked=False)
+                    except Exception:
+                        pass
                     starter = thread.get_partial_message(thread.id)
                     msg = await starter.fetch()
                     await msg.edit(embed=embed, view=view)
-                    try:
-                        await thread.edit(pinned=True)
-                    except Exception:
-                        pass
                     return
                 except Exception:
                     pass
@@ -359,7 +360,7 @@ class MarketplaceSystem(commands.Cog):
             result = await forum.create_thread(**kwargs)
             thread = result.thread
             try:
-                await thread.edit(pinned=True)
+                await thread.edit(pinned=True, locked=False)
             except Exception:
                 pass
             data["panel_thread_id"] = thread.id
