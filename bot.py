@@ -16775,16 +16775,15 @@ if not TOKEN:
 keep_alive()
 
 async def run_bot():
-    delay = 60
     try:
         await bot.start(TOKEN)
     except discord.errors.HTTPException as e:
         if e.status == 429:
-            print(f"[Rate limited by Discord] Waiting {delay}s before retrying...")
+            print(f"[Rate limited by Discord] Retrying in 10s...")
         else:
-            print(f"[HTTP error] {e} — retrying in {delay}s")
+            print(f"[HTTP error] {e} — retrying in 10s")
     except Exception as e:
-        print(f"[Connection error] {e} — retrying in {delay}s")
+        print(f"[Connection error] {e} — retrying in 10s")
     finally:
         try:
             if not bot.is_closed():
@@ -16794,7 +16793,7 @@ async def run_bot():
 
 asyncio.run(run_bot())
 
-print(f"[Restarting process in 60s...]")
+print(f"[Restarting process in 10s...]")
 import time
-time.sleep(60)
+time.sleep(10)
 os.execv(sys.executable, [sys.executable] + sys.argv)
