@@ -1,0 +1,285 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# =========================================================
+# DIFF Meet Channel + Host System Integration
+# - Posts a permanent host control panel
+# - Start Meet button posts official start message in meet channel
+# - End Meet button posts ending message in meet channel
+# - Auto logs host activity in staff log channel
+# - Auto refreshes panel without creating duplicates
+# =========================================================
+
+# -------------------------
+# CONFIG
+# -------------------------
+HOST_PANEL_CHANNEL_ID = 0          # Channel where the host control panel should be posted
+MEET_CHANNEL_ID = 1485684577073758378
+HOST_LOG_CHANNEL_ID = 0            # Staff/private log channel for host activity
+PLAYSTATION_ROLE_ID = 0            # Role to ping when meet starts
+CARMEET_ROLE_ID = 0                # Role to ping when meet starts
+HOST_ROLE_ID = 0                   # Host role allowed to use buttons
+DIFF_LOGO_URL = "https://your-logo-link-here.png"
+EMBED_COLOR = 0x111111
+PANEL_TAG = "DIFF_HOST_MEET_SYSTEM_V1"
+
+
+# -------------------------
+# VIEW
+# -------------------------
+class HostMeetControlView(discord.ui.View):
+    def __init__(self, cog: "DiffMeetHostSystem"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if HOST_ROLE_ID == 0:
+            await interaction.response.send_message(
+                "Set HOST_ROLE_ID in the file first.", ephemeral=True
+            )
+            return False
+
+        has_host_role = any(role.id == HOST_ROLE_ID for role in getattr(interaction.user, "roles", []))
+        has_manage_guild = getattr(interaction.user.guild_permissions, "manage_guild", False)
+
+        if not (has_host_role or has_manage_guild):
+            await interaction.response.send_message(
+                "Only approved hosts or staff can use this panel.", ephemeral=True
+            )
+            return False
+
+        return True
+
+    @discord.ui.button(label="Start Meet", style=discord.ButtonStyle.success, emoji="🏁", custom_id="diff:start_meet")
+    async def start_meet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        meet_channel = interaction.client.get_channel(MEET_CHANNEL_ID)
+        if meet_channel is None:
+            await interaction.response.send_message(
+                "Meet channel not found. Check MEET_CHANNEL_ID.", ephemeral=True
+            )
+            return
+
+        ps_role = f"<@&{PLAYSTATION_ROLE_ID}>" if PLAYSTATION_ROLE_ID else "@PlayStation"
+        cm_role = f"<@&{CARMEET_ROLE_ID}>" if CARMEET_ROLE_ID else "@CarMeet"
+        host_mention = interaction.user.mention
+
+        embed = discord.Embed(
+            title="『🏁』 DIFF Official Meet Started",
+            description=(
+                f"{ps_role}\n{cm_role}\n\n"
+                f"The meet is now **live**.\n\n"
+                f"**Host:** {host_mention}\n"
+                f"**Use this channel for:**\n"
+                f"• Meet start updates\n"
+                f"• Meet locations\n"
+                f"• Host instructions\n"
+                f"• Movement between spots\n\n"
+                f"Please stay ready and follow host directions."
+            ),
+            color=EMBED_COLOR
+        )
+        if DIFF_LOGO_URL.startswith("http"):
+            embed.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.set_footer(text="DIFF Meet Start Notice")
+
+        await meet_channel.send(embed=embed)
+        await self.cog.log_host_action(
+            interaction.guild,
+            f"🏁 **Meet Started**\nHost: {interaction.user.mention}\nChannel: {meet_channel.mention}"
+        )
+
+        await interaction.response.send_message(
+            f"Meet start message sent in {meet_channel.mention}.", ephemeral=True
+        )
+
+    @discord.ui.button(label="End Meet", style=discord.ButtonStyle.danger, emoji="🛑", custom_id="diff:end_meet")
+    async def end_meet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        meet_channel = interaction.client.get_channel(MEET_CHANNEL_ID)
+        if meet_channel is None:
+            await interaction.response.send_message(
+                "Meet channel not found. Check MEET_CHANNEL_ID.", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title="『🛑』 DIFF Meet Ended",
+            description=(
+                f"The meet has now **ended**.\n\n"
+                f"**Host:** {interaction.user.mention}\n\n"
+                f"Thank you to everyone who attended and helped keep the meet clean.\n"
+                f"Watch for the next official announcement and future events."
+            ),
+            color=EMBED_COLOR
+        )
+        if DIFF_LOGO_URL.startswith("http"):
+            embed.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.set_footer(text="DIFF Meet End Notice")
+
+        await meet_channel.send(embed=embed)
+        await self.cog.log_host_action(
+            interaction.guild,
+            f"🛑 **Meet Ended**\nHost: {interaction.user.mention}\nChannel: {meet_channel.mention}"
+        )
+
+        await interaction.response.send_message(
+            f"Meet end message sent in {meet_channel.mention}.", ephemeral=True
+        )
+
+    @discord.ui.button(label="Post Location Update", style=discord.ButtonStyle.primary, emoji="📍", custom_id="diff:location_update")
+    async def location_update(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = LocationUpdateModal(self.cog)
+        await interaction.response.send_modal(modal)
+
+
+class LocationUpdateModal(discord.ui.Modal, title="DIFF Meet Location Update"):
+    location_name = discord.ui.TextInput(
+        label="New Location / Spot Name",
+        placeholder="Example: Airport Parking Lot / Spot 2",
+        max_length=100
+    )
+    extra_notes = discord.ui.TextInput(
+        label="Extra Notes",
+        placeholder="Example: Pull in slowly, stay in order, no revving",
+        required=False,
+        style=discord.TextStyle.paragraph,
+        max_length=300
+    )
+
+    def __init__(self, cog: "DiffMeetHostSystem"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        meet_channel = interaction.client.get_channel(MEET_CHANNEL_ID)
+        if meet_channel is None:
+            await interaction.response.send_message(
+                "Meet channel not found. Check MEET_CHANNEL_ID.", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title="『📍』 DIFF Meet Location Update",
+            description=(
+                f"**Host:** {interaction.user.mention}\n"
+                f"**New Location:** {self.location_name}\n\n"
+                f"**Notes:**\n{self.extra_notes or 'No extra notes provided.'}"
+            ),
+            color=EMBED_COLOR
+        )
+        if DIFF_LOGO_URL.startswith("http"):
+            embed.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.set_footer(text="DIFF Meet Location Update")
+
+        await meet_channel.send(embed=embed)
+        await self.cog.log_host_action(
+            interaction.guild,
+            f"📍 **Location Update**\nHost: {interaction.user.mention}\nLocation: {self.location_name}"
+        )
+
+        await interaction.response.send_message(
+            f"Location update sent in {meet_channel.mention}.", ephemeral=True
+        )
+
+
+# -------------------------
+# COG
+# -------------------------
+class DiffMeetHostSystem(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    async def build_panel_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="『🎮』 DIFF Host Meet Control",
+            description=(
+                "Use this panel to control the live meet flow.\n\n"
+                "**Available Actions:**\n"
+                "🏁 **Start Meet** — posts the official meet-start message in the meet channel\n"
+                "📍 **Post Location Update** — sends the next spot / movement update\n"
+                "🛑 **End Meet** — closes out the meet officially\n\n"
+                "**Notes:**\n"
+                "• Only approved hosts or staff can use this panel\n"
+                "• All activity can be logged to a staff channel\n"
+                "• This panel auto-refreshes and avoids duplicates"
+            ),
+            color=EMBED_COLOR
+        )
+        if DIFF_LOGO_URL.startswith("http"):
+            embed.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.set_footer(text=PANEL_TAG)
+        return embed
+
+    async def log_host_action(self, guild: discord.Guild | None, text: str):
+        if HOST_LOG_CHANNEL_ID == 0 or guild is None:
+            return
+
+        log_channel = guild.get_channel(HOST_LOG_CHANNEL_ID) or self.bot.get_channel(HOST_LOG_CHANNEL_ID)
+        if log_channel is not None:
+            await log_channel.send(text)
+
+    async def post_or_refresh_panel(self, channel: discord.TextChannel):
+        embed = await self.build_panel_embed()
+        view = HostMeetControlView(self)
+
+        async for message in channel.history(limit=50):
+            if message.author == self.bot.user and message.embeds:
+                footer = message.embeds[0].footer.text if message.embeds[0].footer else ""
+                if footer == PANEL_TAG:
+                    await message.edit(embed=embed, view=view, content=None)
+                    return message
+
+        return await channel.send(embed=embed, view=view)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        self.bot.add_view(HostMeetControlView(self))
+
+    @commands.command(name="setup_host_meet_system")
+    @commands.has_permissions(manage_guild=True)
+    async def setup_host_meet_system_prefix(self, ctx: commands.Context):
+        if HOST_PANEL_CHANNEL_ID == 0:
+            await ctx.send("Set HOST_PANEL_CHANNEL_ID in the file first.")
+            return
+
+        channel = self.bot.get_channel(HOST_PANEL_CHANNEL_ID)
+        if not channel:
+            await ctx.send("Host panel channel not found.")
+            return
+
+        await self.post_or_refresh_panel(channel)
+        await ctx.send(f"Host meet control panel posted/refreshed in {channel.mention}.", delete_after=10)
+
+    @app_commands.command(
+        name="setup_host_meet_system",
+        description="Post or refresh the DIFF host meet control panel"
+    )
+    async def setup_host_meet_system_slash(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("Missing permissions.", ephemeral=True)
+            return
+
+        if HOST_PANEL_CHANNEL_ID == 0:
+            await interaction.response.send_message(
+                "Set HOST_PANEL_CHANNEL_ID in the file first.", ephemeral=True
+            )
+            return
+
+        channel = interaction.client.get_channel(HOST_PANEL_CHANNEL_ID)
+        if not channel:
+            await interaction.response.send_message("Host panel channel not found.", ephemeral=True)
+            return
+
+        await self.post_or_refresh_panel(channel)
+        await interaction.response.send_message(
+            f"Host meet control panel posted/refreshed in {channel.mention}.",
+            ephemeral=True
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffMeetHostSystem(bot))
