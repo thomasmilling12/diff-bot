@@ -8555,6 +8555,26 @@ async def on_ready():
 
     status_message_id = data.get("panel_message_id")
 
+    # ── server lock: leave any guild that isn't the authorised DIFF server ──
+    for guild in list(bot.guilds):
+        if guild.id != GUILD_ID:
+            print(f"[ServerLock] Leaving unauthorised guild: {guild.name} ({guild.id})")
+            try:
+                await guild.leave()
+            except Exception as _e:
+                print(f"[ServerLock] Could not leave {guild.id}: {_e}")
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    """Immediately leave any server that isn't the authorised DIFF server."""
+    if guild.id != GUILD_ID:
+        print(f"[ServerLock] Joined unauthorised guild {guild.name} ({guild.id}) — leaving.")
+        try:
+            await guild.leave()
+        except Exception as _e:
+            print(f"[ServerLock] Could not leave {guild.id}: {_e}")
+
 
 # =========================
 # APPLICATION TIMEOUT LOOP
