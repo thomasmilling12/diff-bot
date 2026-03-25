@@ -53,8 +53,7 @@ class DiffMemesPanel(commands.Cog):
             ),
             color=EMBED_COLOR,
         )
-        embed.set_thumbnail(url=DIFF_LOGO_URL)
-        embed.set_author(name="Different Meets", icon_url=DIFF_LOGO_URL)
+        embed.set_image(url=DIFF_LOGO_URL)
         embed.set_footer(text=PANEL_TAG)
         return embed
 
