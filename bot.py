@@ -15803,6 +15803,36 @@ class _PartnerAddTriggerView(discord.ui.View):
         await interaction.response.send_modal(_PartnerAddModal())
 
 
+async def _pp_scan_existing(channel: discord.TextChannel) -> discord.Message | None:
+    """Return the most recent hub panel message posted by this bot in the channel."""
+    try:
+        async for msg in channel.history(limit=50):
+            if msg.author.id == channel.guild.me.id and msg.embeds:
+                if msg.embeds[0].title == "🤝 DIFF Partnership Hub":
+                    return msg
+    except Exception:
+        pass
+    return None
+
+
+async def _pp_delete_duplicates(channel: discord.TextChannel, keep_id: int) -> None:
+    """Delete all hub panel messages in the channel except the one we want to keep."""
+    try:
+        async for old_msg in channel.history(limit=50):
+            if (
+                old_msg.id != keep_id
+                and old_msg.author.id == channel.guild.me.id
+                and old_msg.embeds
+                and old_msg.embeds[0].title == "🤝 DIFF Partnership Hub"
+            ):
+                try:
+                    await old_msg.delete()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 async def _pp_post_or_refresh(guild: discord.Guild) -> None:
     channel = guild.get_channel(_PP_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
@@ -15817,18 +15847,37 @@ async def _pp_post_or_refresh(guild: discord.Guild) -> None:
     view     = _PartnerPanelView(partners)
     data     = _pp_load()
     msg_id   = data.get("panel_message_id")
+
+    # Try the stored message ID first
     if msg_id:
         try:
             msg = await channel.fetch_message(int(msg_id))
             await msg.edit(embed=embed, view=view)
+            await _pp_delete_duplicates(channel, msg.id)
             return
         except discord.NotFound:
-            pass
+            data["panel_message_id"] = None
+            _pp_save(data)
         except Exception:
             return
+
+    # Stored ID missing or deleted — scan channel history to find any existing panel
+    existing = await _pp_scan_existing(channel)
+    if existing:
+        try:
+            await existing.edit(embed=embed, view=view)
+            data["panel_message_id"] = existing.id
+            _pp_save(data)
+            await _pp_delete_duplicates(channel, existing.id)
+            return
+        except Exception:
+            pass
+
+    # Truly no existing panel — post fresh
     msg = await channel.send(embed=embed, view=view)
     data["panel_message_id"] = msg.id
     _pp_save(data)
+    await _pp_delete_duplicates(channel, msg.id)
 
 
 @bot.command(name="postpartnerpanel")
