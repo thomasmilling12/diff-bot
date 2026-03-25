@@ -3,7 +3,8 @@ modules = ["python-3.11"]
 expertMode = true
 
 [nix]
-packages = ["nano"]
+packages = ["cairo", "ffmpeg-full", "freetype", "ghostscript", "gobject-introspection", "gtk3", "nano", "pkg-config", "qhull", "tcl", "tk"]
+channel = "stable-25_05"
 
 [deployment]
 run = ["python", "bot.py"]
