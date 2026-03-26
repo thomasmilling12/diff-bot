@@ -1,0 +1,559 @@
+import json
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# =========================================================
+# DIFF Smart Punishment System + Auto Escalation
+# ---------------------------------------------------------
+# FEATURES
+# - Warning database
+# - Automatic punishment escalation
+# - 1 warn  -> warn only
+# - 2 warns -> auto timeout
+# - 3 warns -> auto kick
+# - 4 warns -> auto ban
+# - Case numbers
+# - Mod logs
+# - Warning logs
+# - Manual warning button panel
+# - Check warnings button
+# - Remove warning slash command
+#
+# CHANNELS
+# Mod Logs:
+#   1486598266211664003
+# Warning Logs:
+#   1486599502834958366
+#
+# IMPORTANT
+# - Change STAFF_ROLE_ID
+# - Change PUNISHMENT_PANEL_CHANNEL_ID if you want the panel elsewhere
+# - Bot role must be above members it moderates
+# =========================================================
+
+MOD_LOG_CHANNEL_ID = 1486598266211664003
+WARNING_LOG_CHANNEL_ID = 1486599502834958366
+PUNISHMENT_PANEL_CHANNEL_ID = 1486599502834958366
+
+STAFF_ROLE_ID = 123456789012345678  # CHANGE THIS
+
+AUTO_TIMEOUT_MINUTES = 60
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+WARNINGS_FILE = DATA_DIR / "smart_punishment_warnings.json"
+CASES_FILE = DATA_DIR / "smart_punishment_cases.json"
+
+PANEL_TITLE = "⚖️ DIFF Smart Punishment System"
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def load_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def save_json(path: Path, data):
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def is_staff(member: discord.abc.User) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    return member.guild_permissions.administrator or any(role.id == STAFF_ROLE_ID for role in member.roles)
+
+
+def next_case_number() -> int:
+    data = load_json(CASES_FILE, {"last_case": 0})
+    data["last_case"] += 1
+    save_json(CASES_FILE, data)
+    return data["last_case"]
+
+
+def get_all_warnings() -> dict:
+    return load_json(WARNINGS_FILE, {})
+
+
+def save_all_warnings(data: dict):
+    save_json(WARNINGS_FILE, data)
+
+
+def add_warning(guild_id: int, user_id: int, warning_entry: dict):
+    data = get_all_warnings()
+    guild_key = str(guild_id)
+    user_key = str(user_id)
+
+    if guild_key not in data:
+        data[guild_key] = {}
+    if user_key not in data[guild_key]:
+        data[guild_key][user_key] = []
+
+    data[guild_key][user_key].append(warning_entry)
+    save_all_warnings(data)
+
+
+def get_warnings_for_user(guild_id: int, user_id: int) -> list:
+    data = get_all_warnings()
+    return data.get(str(guild_id), {}).get(str(user_id), [])
+
+
+def set_warnings_for_user(guild_id: int, user_id: int, warnings: list):
+    data = get_all_warnings()
+    guild_key = str(guild_id)
+    user_key = str(user_id)
+
+    if guild_key not in data:
+        data[guild_key] = {}
+    data[guild_key][user_key] = warnings
+    save_all_warnings(data)
+
+
+def build_embed(title: str, color: discord.Color, member, moderator, case_id: int, reason: str, extra: str = ""):
+    embed = discord.Embed(
+        title=title,
+        color=color,
+        timestamp=utc_now()
+    )
+    embed.add_field(name="User", value=f"{member.mention if hasattr(member, 'mention') else member}\n`{member.id}`", inline=True)
+    embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator.id}`", inline=True)
+    embed.add_field(name="Case", value=f"`#{case_id}`", inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason provided.", inline=False)
+    if extra:
+        embed.add_field(name="Extra", value=extra, inline=False)
+    embed.set_footer(text="DIFF Meets • Smart Punishment System")
+    return embed
+
+
+class WarningTargetView(discord.ui.View):
+    def __init__(self, cog: "SmartPunishmentCog"):
+        super().__init__(timeout=120)
+        self.add_item(WarningTargetSelect(cog))
+
+
+class WarningTargetSelect(discord.ui.UserSelect):
+    def __init__(self, cog: "SmartPunishmentCog"):
+        super().__init__(
+            placeholder="Select a member to warn...",
+            min_values=1,
+            max_values=1,
+            custom_id="diff:smartpunish:warn:userselect"
+        )
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
+            return
+
+        selected = self.values[0]
+        member = selected if isinstance(selected, discord.Member) else interaction.guild.get_member(selected.id)
+
+        if member is None:
+            await interaction.response.send_message("That member could not be found.", ephemeral=True)
+            return
+
+        await interaction.response.send_modal(WarningModal(self.cog, member))
+
+
+class WarningCheckView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+        self.add_item(WarningCheckSelect())
+
+
+class WarningCheckSelect(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(
+            placeholder="Select a member to check warnings...",
+            min_values=1,
+            max_values=1,
+            custom_id="diff:smartpunish:check:userselect"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
+            return
+
+        selected = self.values[0]
+        member = selected if isinstance(selected, discord.Member) else interaction.guild.get_member(selected.id)
+        if member is None:
+            await interaction.response.send_message("That member could not be found.", ephemeral=True)
+            return
+
+        warnings = get_warnings_for_user(interaction.guild.id, member.id)
+        if not warnings:
+            await interaction.response.send_message(f"{member.mention} has **0 warnings**.", ephemeral=True)
+            return
+
+        lines = []
+        for idx, warning in enumerate(warnings[-10:], start=max(1, len(warnings) - 9)):
+            lines.append(
+                f"**{idx}.** Case `#{warning['case_id']}` — {warning['reason']}"
+            )
+
+        embed = discord.Embed(
+            title=f"📋 Warning History for {member}",
+            description="\n".join(lines),
+            color=discord.Color.orange()
+        )
+        embed.add_field(name="Total Warnings", value=str(len(warnings)), inline=False)
+        embed.set_footer(text="Showing up to the latest 10 warnings")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class WarningModal(discord.ui.Modal, title="Warn Member"):
+    reason = discord.ui.TextInput(
+        label="Warning Reason",
+        placeholder="Enter the reason for the warning...",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        required=True
+    )
+
+    def __init__(self, cog: "SmartPunishmentCog", member: discord.Member):
+        super().__init__()
+        self.cog = cog
+        self.member = member
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
+            return
+
+        if self.member == interaction.user:
+            await interaction.response.send_message("You cannot warn yourself.", ephemeral=True)
+            return
+
+        if self.member.guild_permissions.administrator:
+            await interaction.response.send_message("You cannot punish an administrator with this system.", ephemeral=True)
+            return
+
+        case_id = next_case_number()
+        reason_text = str(self.reason).strip()
+
+        warning_entry = {
+            "case_id": case_id,
+            "reason": reason_text,
+            "moderator_id": interaction.user.id,
+            "timestamp": utc_now().isoformat()
+        }
+        add_warning(interaction.guild.id, self.member.id, warning_entry)
+
+        current_warnings = get_warnings_for_user(interaction.guild.id, self.member.id)
+        total = len(current_warnings)
+
+        warning_embed = build_embed(
+            "⚠️ Warning Issued",
+            discord.Color.orange(),
+            self.member,
+            interaction.user,
+            case_id,
+            reason_text,
+            extra=f"Total warnings: {total}"
+        )
+
+        warning_channel = interaction.client.get_channel(WARNING_LOG_CHANNEL_ID)
+        mod_log_channel = interaction.client.get_channel(MOD_LOG_CHANNEL_ID)
+
+        if warning_channel:
+            await warning_channel.send(embed=warning_embed)
+        if mod_log_channel:
+            await mod_log_channel.send(embed=warning_embed)
+
+        escalation_result = await self.cog.handle_escalation(
+            interaction=interaction,
+            member=self.member,
+            total_warnings=total,
+            original_reason=reason_text
+        )
+
+        try:
+            dm_embed = discord.Embed(
+                title="⚠️ You Have Been Warned",
+                description=(
+                    f"You were warned in **{interaction.guild.name}**.\n\n"
+                    f"**Reason:** {reason_text}\n"
+                    f"**Case:** #{case_id}\n"
+                    f"**Total Warnings:** {total}\n"
+                    f"{f'**Escalation:** {escalation_result}' if escalation_result else ''}"
+                ),
+                color=discord.Color.orange()
+            )
+            await self.member.send(embed=dm_embed)
+        except Exception:
+            pass
+
+        response_text = f"Warned {self.member.mention}. Total warnings: **{total}**."
+        if escalation_result:
+            response_text += f"\nAuto escalation applied: **{escalation_result}**."
+
+        await interaction.response.send_message(response_text, ephemeral=True)
+
+
+class SmartPunishmentPanel(discord.ui.View):
+    def __init__(self, cog: "SmartPunishmentCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Warn Member", style=discord.ButtonStyle.danger, emoji="⚠️", custom_id="diff:smartpunish:warn")
+    async def warn_member(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
+            return
+        await interaction.response.send_message("Select a member to warn:", view=WarningTargetView(self.cog), ephemeral=True)
+
+    @discord.ui.button(label="Check Warnings", style=discord.ButtonStyle.secondary, emoji="📋", custom_id="diff:smartpunish:check")
+    async def check_warnings(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
+            return
+        await interaction.response.send_message("Select a member to check:", view=WarningCheckView(), ephemeral=True)
+
+
+class SmartPunishmentCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.view = SmartPunishmentPanel(self)
+
+    async def handle_escalation(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        total_warnings: int,
+        original_reason: str
+    ) -> str | None:
+        moderator = interaction.user
+        mod_log_channel = interaction.client.get_channel(MOD_LOG_CHANNEL_ID)
+
+        if total_warnings == 2:
+            case_id = next_case_number()
+            try:
+                await member.timeout(utc_now() + timedelta(minutes=AUTO_TIMEOUT_MINUTES), reason=f"Auto escalation after warnings: {original_reason}")
+            except Exception as e:
+                if mod_log_channel:
+                    error_embed = build_embed(
+                        "⚠️ Auto Escalation Failed",
+                        discord.Color.red(),
+                        member,
+                        moderator,
+                        case_id,
+                        original_reason,
+                        extra=f"Failed timeout: {str(e)[:1000]}"
+                    )
+                    await mod_log_channel.send(embed=error_embed)
+                return None
+
+            embed = build_embed(
+                "⏳ Auto Escalation: Timeout",
+                discord.Color.red(),
+                member,
+                moderator,
+                case_id,
+                original_reason,
+                extra=f"Triggered by reaching 2 warnings • Duration: {AUTO_TIMEOUT_MINUTES} minutes"
+            )
+            if mod_log_channel:
+                await mod_log_channel.send(embed=embed)
+            return f"Timeout for {AUTO_TIMEOUT_MINUTES} minutes"
+
+        if total_warnings == 3:
+            case_id = next_case_number()
+            try:
+                await member.kick(reason=f"Auto escalation after warnings: {original_reason}")
+            except Exception as e:
+                if mod_log_channel:
+                    error_embed = build_embed(
+                        "⚠️ Auto Escalation Failed",
+                        discord.Color.red(),
+                        member,
+                        moderator,
+                        case_id,
+                        original_reason,
+                        extra=f"Failed kick: {str(e)[:1000]}"
+                    )
+                    await mod_log_channel.send(embed=error_embed)
+                return None
+
+            embed = build_embed(
+                "👢 Auto Escalation: Kick",
+                discord.Color.dark_red(),
+                member,
+                moderator,
+                case_id,
+                original_reason,
+                extra="Triggered by reaching 3 warnings"
+            )
+            if mod_log_channel:
+                await mod_log_channel.send(embed=embed)
+            return "Kick"
+
+        if total_warnings >= 4:
+            case_id = next_case_number()
+            try:
+                await member.ban(reason=f"Auto escalation after warnings: {original_reason}", delete_message_days=0)
+            except TypeError:
+                try:
+                    await member.ban(reason=f"Auto escalation after warnings: {original_reason}", delete_message_seconds=0)
+                except Exception as e:
+                    if mod_log_channel:
+                        error_embed = build_embed(
+                            "⚠️ Auto Escalation Failed",
+                            discord.Color.red(),
+                            member,
+                            moderator,
+                            case_id,
+                            original_reason,
+                            extra=f"Failed ban: {str(e)[:1000]}"
+                        )
+                        await mod_log_channel.send(embed=error_embed)
+                    return None
+            except Exception as e:
+                if mod_log_channel:
+                    error_embed = build_embed(
+                        "⚠️ Auto Escalation Failed",
+                        discord.Color.red(),
+                        member,
+                        moderator,
+                        case_id,
+                        original_reason,
+                        extra=f"Failed ban: {str(e)[:1000]}"
+                    )
+                    await mod_log_channel.send(embed=error_embed)
+                return None
+
+            embed = build_embed(
+                "🔨 Auto Escalation: Ban",
+                discord.Color.dark_red(),
+                member,
+                moderator,
+                case_id,
+                original_reason,
+                extra="Triggered by reaching 4 warnings"
+            )
+            if mod_log_channel:
+                await mod_log_channel.send(embed=embed)
+            return "Ban"
+
+        return None
+
+    async def post_or_refresh_panel(self):
+        await self.bot.wait_until_ready()
+        channel = self.bot.get_channel(PUNISHMENT_PANEL_CHANNEL_ID)
+
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            print("Smart punishment panel channel not found.")
+            return
+
+        try:
+            async for msg in channel.history(limit=50):
+                if msg.author.id != self.bot.user.id:
+                    continue
+
+                panel_match = False
+                if msg.embeds:
+                    for emb in msg.embeds:
+                        if emb.title == PANEL_TITLE:
+                            panel_match = True
+                            break
+
+                custom_ids = []
+                for row in msg.components:
+                    for component in row.children:
+                        custom_ids.append(getattr(component, "custom_id", None))
+
+                if panel_match or "diff:smartpunish:warn" in custom_ids:
+                    await msg.delete()
+        except Exception as e:
+            print(f"Failed cleaning old smart punishment panels: {e}")
+
+        embed = discord.Embed(
+            title=PANEL_TITLE,
+            description=(
+                "**Automatic Warning Escalation System**\n\n"
+                "Use this panel to warn members and check warning history.\n\n"
+                "**Escalation Rules:**\n"
+                "• 1 warning = warning only\n"
+                "• 2 warnings = auto timeout\n"
+                "• 3 warnings = auto kick\n"
+                "• 4 warnings = auto ban\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "All actions are logged automatically.\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.dark_red()
+        )
+        embed.set_footer(text="DIFF Meets • Smart Punishment Panel")
+
+        await channel.send(embed=embed, view=self.view)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        self.bot.add_view(self.view)
+        try:
+            await self.post_or_refresh_panel()
+        except Exception as e:
+            print(f"Failed to refresh smart punishment panel: {e}")
+
+    @app_commands.command(name="remove_warning", description="Remove one warning from a member by warning number.")
+    @app_commands.describe(member="The member", warning_number="The warning number to remove, based on oldest-first order")
+    async def remove_warning(self, interaction: discord.Interaction, member: discord.Member, warning_number: int):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can use this command.", ephemeral=True)
+            return
+
+        warnings = get_warnings_for_user(interaction.guild.id, member.id)
+        if not warnings:
+            await interaction.response.send_message("That member has no warnings.", ephemeral=True)
+            return
+
+        if warning_number < 1 or warning_number > len(warnings):
+            await interaction.response.send_message(f"That warning number is invalid. They have {len(warnings)} warning(s).", ephemeral=True)
+            return
+
+        removed = warnings.pop(warning_number - 1)
+        set_warnings_for_user(interaction.guild.id, member.id, warnings)
+
+        embed = discord.Embed(
+            title="🧾 Warning Removed",
+            color=discord.Color.green(),
+            timestamp=utc_now()
+        )
+        embed.add_field(name="User", value=f"{member.mention}\n`{member.id}`", inline=True)
+        embed.add_field(name="Moderator", value=f"{interaction.user.mention}", inline=True)
+        embed.add_field(name="Removed Warning", value=f"Case `#{removed['case_id']}` — {removed['reason']}", inline=False)
+        embed.add_field(name="Remaining Warnings", value=str(len(warnings)), inline=False)
+        embed.set_footer(text="DIFF Meets • Smart Punishment System")
+
+        mod_log_channel = interaction.client.get_channel(MOD_LOG_CHANNEL_ID)
+        if mod_log_channel:
+            await mod_log_channel.send(embed=embed)
+
+        await interaction.response.send_message(
+            f"Removed warning #{warning_number} from {member.mention}. Remaining warnings: **{len(warnings)}**.",
+            ephemeral=True
+        )
+
+    @app_commands.command(name="refresh_smart_punishment_panel", description="Refresh the smart punishment panel.")
+    async def refresh_smart_punishment_panel(self, interaction: discord.Interaction):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can refresh this panel.", ephemeral=True)
+            return
+
+        await self.post_or_refresh_panel()
+        await interaction.response.send_message("Smart punishment panel refreshed.", ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(SmartPunishmentCog(bot))
