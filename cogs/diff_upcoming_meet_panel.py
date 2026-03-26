@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import discord
@@ -10,7 +12,15 @@ from discord.ext import commands
 # =========================================================
 # CONFIG
 # =========================================================
-TARGET_CHANNEL_ID = 1485861257708834836
+UPCOMING_HUB_CHANNEL_ID  = 1485861257708834836
+OFFICIAL_MEET_CHANNEL_ID = 1485870611069796374
+POPUP_MEET_CHANNEL_ID    = 1484768466023223418
+MEET_CHAT_CHANNEL_ID     = 1195953265377021952
+MEET_MEDIA_CHANNEL_ID    = 1266933655486332999
+LOG_CHANNEL_ID           = 1485265848099799163
+GUILD_ID                 = 850386896509337710
+
+CARMEET_ROLE_ID = 1138691141009674260   # Car Meet / Notify role
 
 STAFF_ROLE_IDS: set[int] = {
     850391095845584937,   # Leader
@@ -21,6 +31,7 @@ STAFF_ROLE_IDS: set[int] = {
 PANEL_TAG  = "DIFF_UPCOMING_MEET_PANEL_V1"
 DATA_DIR   = "diff_data"
 PANEL_FILE = os.path.join(DATA_DIR, "upcoming_meet_panel.json")
+STATE_FILE = os.path.join(DATA_DIR, "upcoming_meet_state.json")
 
 DIFF_LOGO_URL = (
     "https://media.discordapp.net/attachments/1107375326625005719/"
@@ -29,16 +40,53 @@ DIFF_LOGO_URL = (
     "&=&format=webp&quality=lossless&width=1376&height=917"
 )
 
-BUTTONS = [
-    ("🏁 Official Meet Posts", "https://discord.com/channels/850386896509337710/1485870611069796374"),
-    ("⚡ Pop-Up Meets",        "https://discord.com/channels/850386896509337710/1484768466023223418"),
-    ("💬 Meet Chat",           "https://discord.com/channels/850386896509337710/1195953265377021952"),
-    ("📸 Meet Media",          "https://discord.com/channels/850386896509337710/1266933655486332999"),
+# =========================================================
+# DATE / TIME PARSER  (same logic as diff_crew_events)
+# =========================================================
+_TZ_OFFSETS: dict[str, int] = {
+    "UTC": 0,   "GMT": 0,
+    "EST": -300,"EDT": -240,
+    "CST": -360,"CDT": -300,
+    "MST": -420,"MDT": -360,
+    "PST": -480,"PDT": -420,
+    "AST": -240,"ADT": -180,
+    "HST": -600,"AKST": -540,"AKDT": -480,
+    "BST": 60,  "CET": 60,  "CEST": 120,
+    "EET": 120, "EEST": 180,
+    "IST": 330, "JST": 540, "AEST": 600,"AEDT": 660,
+}
+_DATE_FORMATS = [
+    "%B %d %Y %I:%M %p","%B %d %Y %I%p",
+    "%B %d, %Y %I:%M %p","%B %d, %Y %I%p",
+    "%m/%d/%Y %I:%M %p", "%m/%d/%Y %I%p",
+    "%m/%d/%Y %H:%M",    "%Y-%m-%d %H:%M",
+    "%Y-%m-%d %I:%M %p", "%B %d %I:%M %p",
+    "%B %d %I%p",
 ]
+
+def _parse_datetime(text: str) -> Optional[int]:
+    text = text.strip()
+    tz_offset = 0
+    parts = text.rsplit(None, 1)
+    if len(parts) == 2 and parts[-1].upper() in _TZ_OFFSETS:
+        tz_offset = _TZ_OFFSETS[parts[-1].upper()]
+        text = parts[0].strip()
+    text = re.sub(r"(\d)(AM|PM|am|pm)", r"\1 \2", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not re.search(r"\b(202\d|203\d)\b", text):
+        text = text + f" {datetime.now(timezone.utc).year}"
+    for fmt in _DATE_FORMATS:
+        try:
+            naive = datetime.strptime(text, fmt)
+            tz    = timezone(timedelta(minutes=tz_offset))
+            return int(naive.replace(tzinfo=tz).timestamp())
+        except ValueError:
+            continue
+    return None
 
 
 # =========================================================
-# HELPERS
+# FILE HELPERS
 # =========================================================
 def _load_json(path: str) -> dict:
     if not os.path.exists(path):
@@ -67,29 +115,69 @@ def _save_panel_msg_id(msg_id: int) -> None:
     _save_json(PANEL_FILE, data)
 
 
+def _load_state() -> dict:
+    return _load_json(STATE_FILE)
+
+
+def _save_state(data: dict) -> None:
+    _save_json(STATE_FILE, data)
+
+
+# =========================================================
+# PERMISSIONS + PING HELPERS
+# =========================================================
 def _is_staff(member: discord.Member) -> bool:
     if member.guild_permissions.administrator:
         return True
     return any(r.id in STAFF_ROLE_IDS for r in member.roles)
 
 
-# =========================================================
-# VIEW + EMBED
-# =========================================================
-class UpcomingMeetPanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        for label, url in BUTTONS:
-            self.add_item(discord.ui.Button(
-                label=label, url=url, style=discord.ButtonStyle.link
-            ))
+def _ping_content(mode: str, guild: Optional[discord.Guild]) -> Optional[str]:
+    if mode == "everyone":
+        return "@everyone"
+    if mode == "here":
+        return "@here"
+    if mode == "carmeet" and guild:
+        role = guild.get_role(CARMEET_ROLE_ID)
+        return role.mention if role else None
+    return None
 
 
-def _panel_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="📅 DIFF Upcoming Meet Hub",
-        color=discord.Color.gold(),
-        description=(
+def _ping_mentions(mode: str) -> discord.AllowedMentions:
+    if mode in ("everyone", "here"):
+        return discord.AllowedMentions(everyone=True)
+    if mode == "carmeet":
+        return discord.AllowedMentions(roles=True)
+    return discord.AllowedMentions.none()
+
+
+# =========================================================
+# EMBEDS
+# =========================================================
+def _hub_embed() -> discord.Embed:
+    state   = _load_state()
+    current = state.get("current_meet")
+
+    if current:
+        mtype = "Official Meet" if current["meet_type"] == "official" else "Pop-Up Meet"
+        ch_id = OFFICIAL_MEET_CHANNEL_ID if current["meet_type"] == "official" else POPUP_MEET_CHANNEL_ID
+        live_tag = "  🔴 **LIVE NOW**" if current.get("live") else ""
+        description = (
+            "**What this channel is used for**\n\n"
+            "This channel shows the **latest upcoming DIFF meet** before it goes live.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Current Upcoming Meet**{live_tag}\n"
+            f"• Type: {mtype}\n"
+            f"• Theme: {current['theme']}\n"
+            f"• Host: {current['host']}\n"
+            f"• Starts: <t:{current['timestamp']}:F>\n"
+            f"• Countdown: <t:{current['timestamp']}:R>\n"
+            f"• Post: <#{ch_id}>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Use the buttons below to jump to official posts, pop-ups, meet chat, and meet media."
+        )
+    else:
+        description = (
             "**What this channel is used for**\n\n"
             "This channel keeps members updated on **upcoming DIFF meets** before they begin.\n\n"
             "You can use this channel to:\n"
@@ -98,37 +186,231 @@ def _panel_embed() -> discord.Embed:
             "• Stay ready for future public or pop-up meet drops\n"
             "• Know where to go once a meet announcement is live\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "**Quick Access Buttons Below**\n"
-            "Use the buttons to jump straight to important meet channels.\n"
+            "**No active upcoming meet is set right now.**\n"
+            "Staff can create one using the panel buttons below.\n"
             "━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-    )
+        )
+
+    embed = discord.Embed(title="📅 DIFF Upcoming Meet Hub", description=description,
+                          color=discord.Color.gold())
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text=PANEL_TAG)
     return embed
 
 
 # =========================================================
+# MODALS
+# =========================================================
+class CreateMeetModal(discord.ui.Modal, title="Create Upcoming Meet"):
+    theme_input = discord.ui.TextInput(
+        label="Meet Theme / Title",
+        placeholder="Example: DIFF Official Meet – JDM Night",
+        max_length=120, required=True,
+    )
+    host_input = discord.ui.TextInput(
+        label="Host",
+        placeholder="@Host or Host Name",
+        max_length=120, required=True,
+    )
+    time_input = discord.ui.TextInput(
+        label="Date & Time",
+        placeholder="Example: April 5 9:00 PM EST  or  04/05 9PM PST",
+        max_length=50, required=True,
+    )
+    notes_input = discord.ui.TextInput(
+        label="Extra Notes (optional)",
+        placeholder="Rules, entry info, style direction…",
+        style=discord.TextStyle.paragraph, max_length=1200, required=False,
+    )
+
+    def __init__(self, cog: "UpcomingMeetCog", meet_type: str, ping_mode: str):
+        super().__init__()
+        self.cog       = cog
+        self.meet_type = meet_type
+        self.ping_mode = ping_mode
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not _is_staff(member):
+            return await interaction.response.send_message(
+                "Only staff can use this system.", ephemeral=True
+            )
+
+        ts = _parse_datetime(str(self.time_input))
+        if ts is None:
+            return await interaction.response.send_message(
+                "❌ Couldn't read that date/time. Try:\n"
+                "• `April 5 9:00 PM EST`\n"
+                "• `04/05/2026 9PM PST`\n"
+                "• `2026-04-05 21:00 UTC`",
+                ephemeral=True,
+            )
+
+        await self.cog.create_meet_post(
+            interaction=interaction,
+            meet_type=self.meet_type,
+            ping_mode=self.ping_mode,
+            theme=str(self.theme_input).strip(),
+            host=str(self.host_input).strip(),
+            ts=ts,
+            notes=str(self.notes_input).strip(),
+        )
+
+
+# =========================================================
+# INTERMEDIATE VIEWS  (ephemeral, not persistent)
+# =========================================================
+class PingModeView(discord.ui.View):
+    """Step 2 of the create flow — choose ping type, then open modal."""
+
+    def __init__(self, cog: "UpcomingMeetCog", meet_type: str):
+        super().__init__(timeout=120)
+        self.cog       = cog
+        self.meet_type = meet_type
+
+    async def _open_modal(self, interaction: discord.Interaction, mode: str) -> None:
+        await interaction.response.send_modal(
+            CreateMeetModal(self.cog, self.meet_type, mode)
+        )
+
+    @discord.ui.button(label="Ping @everyone",     style=discord.ButtonStyle.danger,    emoji="📣")
+    async def ping_everyone(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._open_modal(i, "everyone")
+
+    @discord.ui.button(label="Ping @here",         style=discord.ButtonStyle.primary,   emoji="📍")
+    async def ping_here(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._open_modal(i, "here")
+
+    @discord.ui.button(label="Ping Car Meet Role", style=discord.ButtonStyle.success,   emoji="🚗")
+    async def ping_carmeet(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._open_modal(i, "carmeet")
+
+    @discord.ui.button(label="No Ping",            style=discord.ButtonStyle.secondary, emoji="🔕")
+    async def ping_none(self, i: discord.Interaction, b: discord.ui.Button):
+        await self._open_modal(i, "none")
+
+
+class MeetTypeView(discord.ui.View):
+    """Step 1 of the create flow — choose Official or Pop-Up."""
+
+    def __init__(self, cog: "UpcomingMeetCog"):
+        super().__init__(timeout=120)
+        self.cog = cog
+
+    @discord.ui.button(label="Official Meet", style=discord.ButtonStyle.primary,   emoji="🏁")
+    async def official(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(
+            content="**Step 2 — Choose ping type:**",
+            view=PingModeView(self.cog, "official"),
+        )
+
+    @discord.ui.button(label="Pop-Up Meet", style=discord.ButtonStyle.secondary, emoji="⚡")
+    async def popup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(
+            content="**Step 2 — Choose ping type:**",
+            view=PingModeView(self.cog, "popup"),
+        )
+
+
+# =========================================================
+# MAIN PANEL VIEW  (persistent)
+# =========================================================
+class UpcomingMeetHubView(discord.ui.View):
+    def __init__(self, cog: "UpcomingMeetCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+        # Row 0 — link buttons
+        for label, ch_id in [
+            ("🏁 Official Meet Posts", OFFICIAL_MEET_CHANNEL_ID),
+            ("⚡ Pop-Up Meets",        POPUP_MEET_CHANNEL_ID),
+            ("💬 Meet Chat",           MEET_CHAT_CHANNEL_ID),
+            ("📸 Meet Media",          MEET_MEDIA_CHANNEL_ID),
+        ]:
+            self.add_item(discord.ui.Button(
+                label=label,
+                url=f"https://discord.com/channels/{GUILD_ID}/{ch_id}",
+                style=discord.ButtonStyle.link,
+                row=0,
+            ))
+
+    # Row 1 — interactive staff buttons
+    @discord.ui.button(label="Create Upcoming Meet Post", emoji="📝",
+                       style=discord.ButtonStyle.success,
+                       custom_id="diff_upcoming_create_v1", row=1)
+    async def create_post(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not _is_staff(member):
+            return await interaction.response.send_message(
+                "Only staff can use this button.", ephemeral=True
+            )
+        await interaction.response.send_message(
+            "**Step 1 — Choose meet type:**",
+            view=MeetTypeView(self.cog),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Mark Meet Live", emoji="🚨",
+                       style=discord.ButtonStyle.primary,
+                       custom_id="diff_upcoming_live_v1", row=1)
+    async def mark_live(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not _is_staff(member):
+            return await interaction.response.send_message(
+                "Only staff can use this button.", ephemeral=True
+            )
+        await self.cog.mark_meet_live(interaction)
+
+    @discord.ui.button(label="Clear Current Meet", emoji="🗑️",
+                       style=discord.ButtonStyle.danger,
+                       custom_id="diff_upcoming_clear_v1", row=1)
+    async def clear_meet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not _is_staff(member):
+            return await interaction.response.send_message(
+                "Only staff can use this button.", ephemeral=True
+            )
+        await self.cog.clear_meet(interaction)
+
+
+# =========================================================
 # COG
 # =========================================================
-class UpcomingMeetPanelCog(commands.Cog):
+class UpcomingMeetCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot  = bot
-        self.view = UpcomingMeetPanelView()
+        self.view = UpcomingMeetHubView(self)
         self.bot.add_view(self.view)
 
-    async def ensure_panel(self) -> None:
-        channel = self.bot.get_channel(TARGET_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
+    # --------------------------------------------------
+    async def log_action(self, guild: Optional[discord.Guild], message: str) -> None:
+        if not guild or not LOG_CHANNEL_ID:
+            return
+        ch = guild.get_channel(LOG_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
             try:
-                channel = await self.bot.fetch_channel(TARGET_CHANNEL_ID)
+                await ch.send(message)
             except Exception:
-                channel = None
-        if not isinstance(channel, discord.TextChannel):
-            print(f"[UpcomingMeetPanel] Channel {TARGET_CHANNEL_ID} not found.")
+                pass
+
+    # --------------------------------------------------
+    async def _get_hub_channel(self) -> Optional[discord.TextChannel]:
+        ch = self.bot.get_channel(UPCOMING_HUB_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            try:
+                ch = await self.bot.fetch_channel(UPCOMING_HUB_CHANNEL_ID)
+            except Exception:
+                ch = None
+        return ch if isinstance(ch, discord.TextChannel) else None
+
+    # --------------------------------------------------
+    async def ensure_panel(self) -> None:
+        channel = await self._get_hub_channel()
+        if not channel:
+            print(f"[UpcomingMeetPanel] Channel {UPCOMING_HUB_CHANNEL_ID} not found.")
             return
 
-        embed    = _panel_embed()
+        embed    = _hub_embed()
         saved_id = _get_panel_msg_id()
 
         if saved_id:
@@ -142,7 +424,7 @@ class UpcomingMeetPanelCog(commands.Cog):
             except Exception as e:
                 print(f"[UpcomingMeetPanel] Edit failed: {e}")
 
-        # Fallback: remove stale panel by tag
+        # Fallback: scan by tag and remove stale panel
         try:
             async for msg in channel.history(limit=50):
                 if (
@@ -164,6 +446,130 @@ class UpcomingMeetPanelCog(commands.Cog):
         except Exception as e:
             print(f"[UpcomingMeetPanel] Post failed: {e}")
 
+    # --------------------------------------------------
+    async def create_meet_post(
+        self,
+        interaction: discord.Interaction,
+        meet_type: str,
+        ping_mode: str,
+        theme: str,
+        host: str,
+        ts: int,
+        notes: str,
+    ) -> None:
+        ch_id   = OFFICIAL_MEET_CHANNEL_ID if meet_type == "official" else POPUP_MEET_CHANNEL_ID
+        channel = self.bot.get_channel(ch_id)
+        if not isinstance(channel, discord.TextChannel):
+            return await interaction.response.send_message(
+                "Target meet channel not found.", ephemeral=True
+            )
+
+        title = "🏁 DIFF Official Meet" if meet_type == "official" else "⚡ DIFF Pop-Up Meet"
+        color = discord.Color.blue() if meet_type == "official" else discord.Color.orange()
+
+        desc = (
+            f"**Theme:** {theme}\n"
+            f"**Host:** {host}\n"
+            f"**Date:** <t:{ts}:F>\n"
+            f"**Begins:** <t:{ts}:R>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "**Meet Notes**\n"
+        )
+        desc += (
+            f"{notes}\n\n"
+            if notes
+            else (
+                "• Follow all host instructions\n"
+                "• Bring clean, realistic, theme-fitting vehicles\n"
+                "• Use meet chat for updates\n\n"
+            )
+        )
+        desc += f"━━━━━━━━━━━━━━━━━━━━━━\n**Quick Links:** <#{MEET_CHAT_CHANNEL_ID}> • <#{MEET_MEDIA_CHANNEL_ID}>"
+
+        embed = discord.Embed(title=title, description=desc, color=color)
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.set_footer(text="DIFF Meets • Upcoming Meet Automation")
+
+        await channel.send(
+            content=_ping_content(ping_mode, interaction.guild),
+            embed=embed,
+            allowed_mentions=_ping_mentions(ping_mode),
+        )
+
+        _save_state({
+            "current_meet": {
+                "meet_type": meet_type,
+                "ping_mode": ping_mode,
+                "theme":     theme,
+                "host":      host,
+                "timestamp": ts,
+                "notes":     notes,
+                "live":      False,
+            }
+        })
+
+        await self.ensure_panel()
+        await interaction.response.send_message(
+            f"{'Official' if meet_type == 'official' else 'Pop-up'} meet posted and hub updated.",
+            ephemeral=True,
+        )
+        await self.log_action(
+            interaction.guild,
+            f"📅 Upcoming meet posted: **{theme}** by {interaction.user.mention}"
+        )
+
+    # --------------------------------------------------
+    async def mark_meet_live(self, interaction: discord.Interaction) -> None:
+        state   = _load_state()
+        current = state.get("current_meet")
+        if not current:
+            return await interaction.response.send_message(
+                "There is no current upcoming meet saved.", ephemeral=True
+            )
+
+        ch_id   = OFFICIAL_MEET_CHANNEL_ID if current["meet_type"] == "official" else POPUP_MEET_CHANNEL_ID
+        channel = self.bot.get_channel(ch_id)
+        if not isinstance(channel, discord.TextChannel):
+            return await interaction.response.send_message(
+                "Meet channel not found.", ephemeral=True
+            )
+
+        live_embed = discord.Embed(
+            title="🚨 Meet Is Now Live",
+            description=(
+                f"**Theme:** {current['theme']}\n"
+                f"**Host:** {current['host']}\n\n"
+                f"Head to <#{MEET_CHAT_CHANNEL_ID}> for live meet communication.\n"
+                f"Post your content in <#{MEET_MEDIA_CHANNEL_ID}>."
+            ),
+            color=discord.Color.red(),
+        )
+        live_embed.set_thumbnail(url=DIFF_LOGO_URL)
+        live_embed.set_footer(text="DIFF Meets • Live Meet Update")
+        await channel.send(embed=live_embed)
+
+        current["live"] = True
+        _save_state(state)
+        await self.ensure_panel()
+        await interaction.response.send_message("Meet marked as live.", ephemeral=True)
+        await self.log_action(
+            interaction.guild,
+            f"🚨 Meet marked live: **{current['theme']}** by {interaction.user.mention}"
+        )
+
+    # --------------------------------------------------
+    async def clear_meet(self, interaction: discord.Interaction) -> None:
+        _save_state({})
+        await self.ensure_panel()
+        await interaction.response.send_message(
+            "Current meet cleared and hub reset.", ephemeral=True
+        )
+        await self.log_action(
+            interaction.guild,
+            f"🗑️ Upcoming meet cleared by {interaction.user.mention}"
+        )
+
+    # --------------------------------------------------
     @commands.Cog.listener()
     async def on_ready(self):
         await self.ensure_panel()
@@ -173,11 +579,11 @@ class UpcomingMeetPanelCog(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def cmd_refresh(self, ctx: commands.Context):
         await self.ensure_panel()
-        await ctx.send("Upcoming meet panel refreshed.", delete_after=8)
+        await ctx.send("Upcoming meet hub refreshed.", delete_after=8)
 
 
 # =========================================================
 # SETUP
 # =========================================================
 async def setup(bot: commands.Bot):
-    await bot.add_cog(UpcomingMeetPanelCog(bot))
+    await bot.add_cog(UpcomingMeetCog(bot))
