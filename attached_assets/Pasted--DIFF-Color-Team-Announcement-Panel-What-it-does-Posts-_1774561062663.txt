@@ -1,0 +1,357 @@
+"""
+DIFF Color Team Announcement Panel
+---------------------------------
+What it does:
+- Posts ONE no-dupe announcement panel in your color team channel
+- Managers can press a button to create an announcement
+- Automatically pings the Color Team role when announcement is sent
+- Refreshes the existing panel instead of posting duplicates
+
+Post channel:
+1485453653916520549
+"""
+
+import json
+from pathlib import Path
+from typing import Optional
+
+import discord
+from discord.ext import commands
+
+# =========================================================
+# CONFIG
+# =========================================================
+
+COLOR_TEAM_CHANNEL_ID = 1485453653916520549
+
+# Put your real Color Team role ID here
+COLOR_TEAM_ROLE_ID = 0  # change this
+
+# Optional manager role IDs
+# Leave empty if admins / manage_guild should control access
+MANAGER_ROLE_IDS = [
+    # 123456789012345678,
+]
+
+DATA_FILE = Path("diff_color_team_announcement_panel_data.json")
+
+
+# =========================================================
+# STORAGE
+# =========================================================
+
+def load_data() -> dict:
+    if DATA_FILE.exists():
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_data(data: dict) -> None:
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def user_is_manager(member: discord.Member) -> bool:
+    if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
+        return True
+
+    if MANAGER_ROLE_IDS:
+        role_ids = {role.id for role in member.roles}
+        return any(role_id in role_ids for role_id in MANAGER_ROLE_IDS)
+
+    return False
+
+
+def get_color_team_ping() -> str:
+    return f"<@&{COLOR_TEAM_ROLE_ID}>" if COLOR_TEAM_ROLE_ID else "@Color Team"
+
+
+# =========================================================
+# EMBEDS
+# =========================================================
+
+def build_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🎨 DIFF Color Team Announcement Center",
+        description=(
+            "Managers can use the button below to create and send official Color Team announcements.\n\n"
+            "**What this panel does**\n"
+            "• creates clean Color Team announcements\n"
+            "• auto pings the Color Team role\n"
+            "• keeps one panel only\n"
+            "• refreshes without creating duplicates"
+        ),
+        color=0xF59E0B,
+    )
+    embed.add_field(
+        name="How To Use",
+        value=(
+            "1. Press **Create Color Team Announcement**\n"
+            "2. Fill out the form\n"
+            "3. Submit\n"
+            "4. The bot sends the announcement automatically"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Access",
+        value="Managers / authorized staff only.",
+        inline=False,
+    )
+    embed.set_footer(text="DIFF • Color Team System")
+    return embed
+
+
+def build_announcement_embed(
+    manager: discord.Member,
+    title: str,
+    body: str,
+    footer_text: str,
+) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"🎨 {title.strip() or 'DIFF Color Team Update'}",
+        description=body,
+        color=0xF59E0B,
+    )
+    embed.set_author(
+        name=f"DIFF Management • {manager.display_name}",
+        icon_url=manager.display_avatar.url,
+    )
+    embed.add_field(name="Target", value=get_color_team_ping(), inline=True)
+    embed.add_field(name="Sent By", value=manager.mention, inline=True)
+    embed.set_footer(text=footer_text.strip() if footer_text.strip() else "DIFF Color Team")
+    return embed
+
+
+# =========================================================
+# MODAL
+# =========================================================
+
+class ColorTeamAnnouncementModal(discord.ui.Modal, title="Create Color Team Announcement"):
+    announcement_title = discord.ui.TextInput(
+        label="Announcement title",
+        placeholder="Example: New Weekly Crew Color Notice",
+        required=True,
+        max_length=100,
+    )
+
+    announcement_body = discord.ui.TextInput(
+        label="Announcement message",
+        placeholder="Write the full Color Team announcement here...",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=2000,
+    )
+
+    footer_text = discord.ui.TextInput(
+        label="Footer / sign-off",
+        placeholder="DIFF Color Team",
+        required=False,
+        max_length=100,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "This can only be used inside the server.",
+                ephemeral=True,
+            )
+            return
+
+        if not user_is_manager(interaction.user):
+            await interaction.response.send_message(
+                "You do not have permission to use this panel.",
+                ephemeral=True,
+            )
+            return
+
+        channel = interaction.guild.get_channel(COLOR_TEAM_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "I could not find the Color Team channel.",
+                ephemeral=True,
+            )
+            return
+
+        embed = build_announcement_embed(
+            manager=interaction.user,
+            title=self.announcement_title.value,
+            body=self.announcement_body.value,
+            footer_text=self.footer_text.value or "",
+        )
+
+        await channel.send(
+            content=get_color_team_ping(),
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(
+                roles=True,
+                users=True,
+                everyone=False,
+            ),
+        )
+
+        await interaction.response.send_message(
+            "✅ Color Team announcement sent.",
+            ephemeral=True,
+        )
+
+
+# =========================================================
+# VIEW
+# =========================================================
+
+class ColorTeamAnnouncementPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Create Color Team Announcement",
+        emoji="🎨",
+        style=discord.ButtonStyle.blurple,
+        custom_id="diff_color_team_create_announcement",
+    )
+    async def create_announcement(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "This can only be used inside the server.",
+                ephemeral=True,
+            )
+            return
+
+        if not user_is_manager(interaction.user):
+            await interaction.response.send_message(
+                "You do not have permission to use this panel.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(ColorTeamAnnouncementModal())
+
+    @discord.ui.button(
+        label="Refresh Panel",
+        emoji="♻️",
+        style=discord.ButtonStyle.gray,
+        custom_id="diff_color_team_refresh_panel",
+    )
+    async def refresh_panel(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "This can only be used inside the server.",
+                ephemeral=True,
+            )
+            return
+
+        if not user_is_manager(interaction.user):
+            await interaction.response.send_message(
+                "You do not have permission to use this panel.",
+                ephemeral=True,
+            )
+            return
+
+        await ensure_single_panel(interaction.client)
+        await interaction.response.send_message(
+            "✅ Color Team panel refreshed.",
+            ephemeral=True,
+        )
+
+
+# =========================================================
+# PANEL MANAGEMENT
+# =========================================================
+
+async def ensure_single_panel(bot: commands.Bot) -> None:
+    channel = bot.get_channel(COLOR_TEAM_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        print(f"[ColorTeamPanel] Channel {COLOR_TEAM_CHANNEL_ID} not found.")
+        return
+
+    data = load_data()
+    panel_message_id = data.get("panel_message_id")
+
+    embed = build_panel_embed()
+    view = ColorTeamAnnouncementPanelView()
+
+    if panel_message_id:
+        try:
+            msg = await channel.fetch_message(panel_message_id)
+            await msg.edit(content=None, embed=embed, view=view)
+            print("[ColorTeamPanel] Existing panel refreshed.")
+            return
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            print(f"[ColorTeamPanel] Could not edit saved panel: {e}")
+
+    try:
+        async for msg in channel.history(limit=50):
+            if (
+                msg.author == bot.user
+                and msg.embeds
+                and msg.embeds[0].title == "🎨 DIFF Color Team Announcement Center"
+            ):
+                await msg.edit(content=None, embed=embed, view=view)
+                data["panel_message_id"] = msg.id
+                save_data(data)
+                print("[ColorTeamPanel] Found old panel and refreshed it.")
+                return
+    except Exception as e:
+        print(f"[ColorTeamPanel] History scan failed: {e}")
+
+    new_msg = await channel.send(embed=embed, view=view)
+    data["panel_message_id"] = new_msg.id
+    save_data(data)
+    print("[ColorTeamPanel] New panel posted.")
+
+
+# =========================================================
+# COG
+# =========================================================
+
+class DiffColorTeamAnnouncementPanel(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.bot.add_view(ColorTeamAnnouncementPanelView())
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if getattr(self.bot, "_diff_color_team_panel_ready", False):
+            return
+
+        self.bot._diff_color_team_panel_ready = True
+        await ensure_single_panel(self.bot)
+
+    @commands.command(name="colorannouncepanel")
+    @commands.has_permissions(manage_guild=True)
+    async def colorannouncepanel(self, ctx: commands.Context):
+        await ensure_single_panel(self.bot)
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+
+    @commands.command(name="setcolorteamrole")
+    @commands.has_permissions(administrator=True)
+    async def setcolorteamrole(self, ctx: commands.Context, role: discord.Role):
+        global COLOR_TEAM_ROLE_ID
+        COLOR_TEAM_ROLE_ID = role.id
+        await ctx.send(f"✅ Color Team role set to {role.mention}", delete_after=10)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DiffColorTeamAnnouncementPanel(bot))

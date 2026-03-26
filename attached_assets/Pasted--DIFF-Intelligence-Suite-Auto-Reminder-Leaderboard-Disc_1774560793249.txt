@@ -1,3 +1,27 @@
+"""
+DIFF Intelligence Suite - Auto Reminder + Leaderboard + Discipline + Manager Dashboard
+--------------------------------------------------------------------------------------
+What this file adds:
+- Smart announcement creation panel
+- Auto reminder system
+  * reminder after 15 minutes for hosts who did not acknowledge
+  * escalation after 30 minutes with optional urgent ping
+- Host acknowledgement tracking
+- Response speed tracking
+- Weekly leaderboard stats
+- Smart discipline tracking
+  * miss 3 announcements -> warning log
+  * miss 5 announcements -> manager flag
+- Manager dashboard panel
+  * view announcement stats
+  * view host performance
+  * view ignored announcements
+  * one-click refresh
+
+Main panel channel:
+1486228191243669646
+"""
+
 import asyncio
 import json
 import re
@@ -12,30 +36,28 @@ from discord.ext import commands
 # =========================================================
 
 ANNOUNCEMENT_PANEL_CHANNEL_ID = 1486228191243669646
-MANAGER_DASHBOARD_CHANNEL_ID  = 1486228191243669646  # change with !setdiffdashboard
-HOST_ROLE_ID                  = 1055823929358430248
-URGENT_PING_ROLE_ID           = 0
-STAFF_LOG_CHANNEL_ID          = 1485265848099799163
-PUNISHMENT_LOG_CHANNEL_ID     = 0
+MANAGER_DASHBOARD_CHANNEL_ID = 1486228191243669646  # change if you want a different channel
 
-MANAGER_ROLE_IDS: list[int] = []
+HOST_ROLE_ID = 0
+URGENT_PING_ROLE_ID = 0
+STAFF_LOG_CHANNEL_ID = 0
+PUNISHMENT_LOG_CHANNEL_ID = 0  # optional
 
-REMINDER_DELAY_MINUTES    = 15
-ESCALATION_DELAY_MINUTES  = 30
+MANAGER_ROLE_IDS = [
+    # 123456789012345678,
+]
+
+# Reminder settings
+REMINDER_DELAY_MINUTES = 15
+ESCALATION_DELAY_MINUTES = 30
 AUTO_ESCALATE_USE_URGENT_ROLE = True
 
-PANEL_HEADER_URL        = ""
+# Branding
+PANEL_HEADER_URL = ""
 ANNOUNCEMENT_BANNER_URL = ""
-DIFF_LOGO_URL           = ""
+DIFF_LOGO_URL = ""
 
-DATA_FILE = Path("diff_data/host_team_announcement_panel.json")
-
-ANNOUNCEMENT_PANEL_TITLES = {
-    "🏁 DIFF Intelligence Announcement Center",
-    "🏁 DIFF Announcement Intelligence Center",
-    "🏁 DIFF Host Team Announcement Center",
-    "📢 DIFF Host Team Announcement Panel",
-}
+DATA_FILE = Path("diff_intelligence_suite_data.json")
 
 
 # =========================================================
@@ -52,7 +74,6 @@ def load_data() -> dict:
 
 
 def save_data(data: dict) -> None:
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     DATA_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
@@ -113,24 +134,24 @@ TYPE_KEYWORDS = {
         "calendar", "rescheduled", "swap", "time change", "time moved",
     ],
     "reminder": [
-        "reminder", "don't forget", "make sure", "check in", "be ready", "remember",
+        "reminder", "don't forget", "make sure", "check in", "be ready", "remember"
     ],
     "host_call": [
         "who can host", "need host", "hosts respond", "reply below", "check availability",
-        "need coverage", "roll call", "can anyone host",
+        "need coverage", "roll call", "can anyone host"
     ],
     "meeting_notice": [
-        "meeting", "vc", "voice chat", "briefing", "discussion", "staff meeting",
+        "meeting", "vc", "voice chat", "briefing", "discussion", "staff meeting"
     ],
     "urgent_notice": [
         "urgent", "immediately", "asap", "right now", "critical", "important notice",
-        "emergency", "do this now",
+        "emergency", "do this now"
     ],
 }
 
 URGENT_WORDS = [
     "urgent", "asap", "immediately", "right now", "critical", "emergency",
-    "must", "important", "do this now", "need this fixed", "required today",
+    "must", "important", "do this now", "need this fixed", "required today"
 ]
 
 
@@ -159,27 +180,32 @@ def suggest_announcement_type(body: str, title: str = "") -> str:
     haystack = clean_text(f"{title} {body}")
     best_key = "general_update"
     best_score = 0
+
     for key, keywords in TYPE_KEYWORDS.items():
         score = sum(1 for kw in keywords if kw in haystack)
         if score > best_score:
             best_key = key
             best_score = score
+
     if best_score == 0 and detect_urgent(body, title):
         return "urgent_notice"
+
     return best_key
 
 
 def user_is_manager(member: discord.Member) -> bool:
     if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
         return True
+
     if MANAGER_ROLE_IDS:
         role_ids = {role.id for role in member.roles}
         return any(rid in role_ids for rid in MANAGER_ROLE_IDS)
+
     return False
 
 
 def get_host_ping() -> str:
-    return f"<@&{HOST_ROLE_ID}>"
+    return f"<@&{HOST_ROLE_ID}>" if HOST_ROLE_ID else "@Host Role"
 
 
 def get_urgent_ping() -> str:
@@ -197,10 +223,12 @@ def maybe_set_thumbnail(embed: discord.Embed, url: str) -> None:
 
 
 def get_target_host_ids(guild: discord.Guild) -> list[int]:
+    if not HOST_ROLE_ID:
+        return []
     role = guild.get_role(HOST_ROLE_ID)
     if not role:
         return []
-    return [m.id for m in role.members if not m.bot]
+    return [member.id for member in role.members if not member.bot]
 
 
 def get_member_display(guild: discord.Guild, user_id: int) -> str:
@@ -245,10 +273,10 @@ def leaderboard_rows(data: dict) -> list[tuple]:
     rows = []
     for user_id, stat in data["host_stats"].items():
         total = stat.get("total_required", 0)
-        ack   = stat.get("acknowledged", 0)
+        ack = stat.get("acknowledged", 0)
         missed = stat.get("missed", 0)
-        pct   = (ack / total * 100.0) if total else 0.0
-        avg   = (
+        pct = (ack / total * 100.0) if total else 0.0
+        avg = (
             stat.get("response_seconds_total", 0.0) / stat.get("response_count", 1)
             if stat.get("response_count", 0) else 0.0
         )
@@ -268,23 +296,6 @@ def ignored_announcements_list(data: dict) -> list[tuple]:
     return items
 
 
-def apply_miss_to_host(data: dict, guild: discord.Guild, user_id: int) -> tuple[dict, str | None]:
-    stats = ensure_host_stat(data, user_id, get_member_display(guild, user_id))
-    stats["missed"]        = int(stats.get("missed", 0)) + 1
-    stats["weekly_missed"] = int(stats.get("weekly_missed", 0)) + 1
-    reason = None
-    if stats["missed"] == 3:
-        stats["warning_count"]       = int(stats.get("warning_count", 0)) + 1
-        stats["last_warning_reason"] = "Missed 3 announcements"
-        reason = "Missed 3 announcements → warning threshold reached."
-    elif stats["missed"] == 5:
-        stats["warning_count"]       = int(stats.get("warning_count", 0)) + 1
-        stats["flagged"]             = True
-        stats["last_warning_reason"] = "Missed 5 announcements"
-        reason = "Missed 5 announcements → host flagged for managers."
-    return stats, reason
-
-
 # =========================================================
 # EMBEDS
 # =========================================================
@@ -295,19 +306,11 @@ def build_announcement_panel_embed() -> discord.Embed:
         description=(
             "Managers can send smart host announcements from one control panel.\n\n"
             "**Features**\n"
-            "• Auto-suggest announcement type from message text\n"
-            "• Urgent wording detection\n"
-            "• Auto reminders (15 min) + escalation (30 min)\n"
-            "• Host acknowledgement tracking\n"
-            "• Response speed leaderboard + discipline tracking\n\n"
-            "📋 **Staff Commands**\n"
-            "`!diffsuitepanels` — Refresh both panels\n"
-            "`!sethostrole @role` — Set host role to track\n"
-            "`!seturgentrole @role` — Set urgent ping role\n"
-            "`!setdifflogchannel #ch` — Set staff log channel\n"
-            "`!setdiffpunishchannel #ch` — Set discipline log channel\n"
-            "`!setdiffdashboard #ch` — Move manager dashboard\n"
-            "`!resetdiffweekly` — Reset weekly stats"
+            "• auto-suggest announcement type\n"
+            "• urgent wording detection\n"
+            "• auto reminders + escalation\n"
+            "• host acknowledgements\n"
+            "• leaderboard + discipline tracking"
         ),
         color=0xF59E0B,
     )
@@ -329,58 +332,45 @@ def build_announcement_panel_embed() -> discord.Embed:
 
 
 def build_dashboard_panel_embed(data: dict) -> discord.Embed:
-    total_ann   = len(data["announcements"])
-    open_ann    = sum(1 for a in data["announcements"].values() if not a.get("closed"))
+    total_announcements = len(data["announcements"])
+    open_announcements = sum(1 for a in data["announcements"].values() if not a.get("closed"))
     total_hosts = len(data["host_stats"])
     total_flags = sum(1 for s in data["host_stats"].values() if s.get("flagged"))
-    total_warns = sum(int(s.get("warning_count", 0)) for s in data["host_stats"].values())
+    total_warnings = sum(int(s.get("warning_count", 0)) for s in data["host_stats"].values())
 
     embed = discord.Embed(
         title="📱 DIFF Manager Dashboard",
         description=(
-            "Use the buttons below to view live announcement stats, "
-            "host performance, and ignored announcements."
+            "Use the buttons below to view live announcement stats, host performance, and ignored announcements."
         ),
         color=0xF59E0B,
     )
-    embed.add_field(name="Announcements",   value=str(total_ann),   inline=True)
-    embed.add_field(name="Open / Tracking", value=str(open_ann),    inline=True)
-    embed.add_field(name="Hosts Tracked",   value=str(total_hosts), inline=True)
-    embed.add_field(name="Warnings",        value=str(total_warns), inline=True)
-    embed.add_field(name="Flagged Hosts",   value=str(total_flags), inline=True)
-    embed.add_field(
-        name="Reminder Cycle",
-        value=f"{REMINDER_DELAY_MINUTES}m / {ESCALATION_DELAY_MINUTES}m",
-        inline=True,
-    )
+    embed.add_field(name="Announcements", value=str(total_announcements), inline=True)
+    embed.add_field(name="Open / Tracking", value=str(open_announcements), inline=True)
+    embed.add_field(name="Hosts Tracked", value=str(total_hosts), inline=True)
+    embed.add_field(name="Warnings", value=str(total_warnings), inline=True)
+    embed.add_field(name="Flagged Hosts", value=str(total_flags), inline=True)
+    embed.add_field(name="Reminder Cycle", value=f"{REMINDER_DELAY_MINUTES}m / {ESCALATION_DELAY_MINUTES}m", inline=True)
     maybe_set_thumbnail(embed, DIFF_LOGO_URL)
     embed.set_footer(text="DIFF • Manager Dashboard")
     return embed
 
 
-def build_sent_embed(
-    member: discord.Member,
-    announcement_type: str,
-    custom_title: str,
-    body: str,
-    urgent_mode: bool,
-) -> discord.Embed:
+def build_sent_embed(member: discord.Member, announcement_type: str, custom_title: str, body: str, urgent_mode: bool) -> discord.Embed:
     info = ANNOUNCEMENT_TYPES[announcement_type]
     title_text = custom_title.strip() if custom_title.strip() else info["title_prefix"]
     if urgent_mode:
         title_text = f"URGENT • {title_text}"
+
     embed = discord.Embed(
         title=f"{info['emoji']} {title_text}",
         description=body,
         color=info["color"],
     )
-    embed.set_author(
-        name=f"DIFF Management • {member.display_name}",
-        icon_url=member.display_avatar.url,
-    )
-    embed.add_field(name="Type",    value=info["label"],   inline=True)
-    embed.add_field(name="Sent By", value=member.mention,  inline=True)
-    embed.add_field(name="Target",  value=get_host_ping(), inline=True)
+    embed.set_author(name=f"DIFF Management • {member.display_name}", icon_url=member.display_avatar.url)
+    embed.add_field(name="Type", value=info["label"], inline=True)
+    embed.add_field(name="Sent By", value=member.mention, inline=True)
+    embed.add_field(name="Target", value=get_host_ping(), inline=True)
     if urgent_mode:
         embed.add_field(name="Priority", value="Urgent mode enabled", inline=False)
     maybe_set_image(embed, ANNOUNCEMENT_BANNER_URL)
@@ -390,26 +380,26 @@ def build_sent_embed(
 
 
 def build_log_embed(guild: discord.Guild, announcement_id: str, record: dict) -> discord.Embed:
-    ack_ids     = record.get("acknowledged_host_ids", [])
+    ack_ids = record.get("acknowledged_host_ids", [])
     missing_ids = record.get("missing_host_ids_current", [])
-    ack_preview     = "\n".join(f"• {get_member_display(guild, uid)}" for uid in ack_ids[:15]) or "None yet"
-    missing_preview = "\n".join(f"• {get_member_display(guild, uid)}" for uid in missing_ids[:15]) or "None"
+    ack_preview = "\n".join(f"• {get_member_display(guild, uid)}" for uid in ack_ids[:15]) if ack_ids else "None yet"
+    missing_preview = "\n".join(f"• {get_member_display(guild, uid)}" for uid in missing_ids[:15]) if missing_ids else "None"
 
     embed = discord.Embed(
         title="📊 DIFF Announcement Log",
         color=0xF59E0B,
         timestamp=utc_now(),
     )
-    embed.add_field(name="Announcement ID", value=announcement_id,                              inline=False)
-    embed.add_field(name="Type",     value=record.get("type_label", "Unknown"),                 inline=True)
-    embed.add_field(name="Urgent",   value="Yes" if record.get("urgent_mode") else "No",        inline=True)
-    embed.add_field(name="Closed",   value="Yes" if record.get("closed") else "No",             inline=True)
-    embed.add_field(name="Title",    value=record.get("title", "No title"),                     inline=False)
-    embed.add_field(name="Acknowledged", value=str(len(ack_ids)),                               inline=True)
-    embed.add_field(name="Missing",  value=str(len(missing_ids)),                               inline=True)
-    embed.add_field(name="Message Link", value=record.get("jump_url", "Unavailable"),           inline=True)
-    embed.add_field(name="Acknowledged By", value=ack_preview[:1024],                          inline=False)
-    embed.add_field(name="Still Missing",   value=missing_preview[:1024],                      inline=False)
+    embed.add_field(name="Announcement ID", value=announcement_id, inline=False)
+    embed.add_field(name="Type", value=record.get("type_label", "Unknown"), inline=True)
+    embed.add_field(name="Urgent", value="Yes" if record.get("urgent_mode") else "No", inline=True)
+    embed.add_field(name="Closed", value="Yes" if record.get("closed") else "No", inline=True)
+    embed.add_field(name="Title", value=record.get("title", "No title"), inline=False)
+    embed.add_field(name="Acknowledged", value=str(len(ack_ids)), inline=True)
+    embed.add_field(name="Missing", value=str(len(missing_ids)), inline=True)
+    embed.add_field(name="Message Link", value=record.get("jump_url", "Unavailable"), inline=True)
+    embed.add_field(name="Acknowledged By", value=ack_preview[:1024], inline=False)
+    embed.add_field(name="Still Missing", value=missing_preview[:1024], inline=False)
     maybe_set_thumbnail(embed, DIFF_LOGO_URL)
     embed.set_footer(text="DIFF • Staff Dashboard")
     return embed
@@ -422,28 +412,32 @@ def build_warning_embed(guild: discord.Guild, user_id: int, stats: dict, reason:
         color=0xEF4444,
         timestamp=utc_now(),
     )
-    embed.add_field(name="Host",     value=f"<@{user_id}>",                     inline=True)
-    embed.add_field(name="Warnings", value=str(stats.get("warning_count", 0)),   inline=True)
-    embed.add_field(name="Flagged",  value="Yes" if stats.get("flagged") else "No", inline=True)
-    embed.add_field(name="Reason",   value=reason,                               inline=False)
+    embed.add_field(name="Host", value=f"<@{user_id}>", inline=True)
+    embed.add_field(name="Warnings", value=str(stats.get("warning_count", 0)), inline=True)
+    embed.add_field(name="Flagged", value="Yes" if stats.get("flagged") else "No", inline=True)
+    embed.add_field(name="Reason", value=reason, inline=False)
     maybe_set_thumbnail(embed, DIFF_LOGO_URL)
     embed.set_footer(text="DIFF • Discipline Tracking")
     return embed
 
 
 def build_stats_embed(data: dict) -> discord.Embed:
-    total       = len(data["announcements"])
-    closed      = sum(1 for a in data["announcements"].values() if a.get("closed"))
+    total = len(data["announcements"])
+    closed = sum(1 for a in data["announcements"].values() if a.get("closed"))
     acknowledged = sum(len(a.get("acknowledged_host_ids", [])) for a in data["announcements"].values())
-    reminders   = sum(1 for a in data["announcements"].values() if a.get("reminder_sent"))
+    reminders = sum(1 for a in data["announcements"].values() if a.get("reminder_sent"))
     escalations = sum(1 for a in data["announcements"].values() if a.get("escalation_sent"))
 
-    embed = discord.Embed(title="📈 DIFF Announcement Stats", color=0xF59E0B, timestamp=utc_now())
-    embed.add_field(name="Total Announcements",   value=str(total),        inline=True)
-    embed.add_field(name="Closed",                value=str(closed),       inline=True)
-    embed.add_field(name="Total Acknowledgements",value=str(acknowledged), inline=True)
-    embed.add_field(name="Reminders Sent",        value=str(reminders),    inline=True)
-    embed.add_field(name="Escalations Sent",      value=str(escalations),  inline=True)
+    embed = discord.Embed(
+        title="📈 DIFF Announcement Stats",
+        color=0xF59E0B,
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="Total Announcements", value=str(total), inline=True)
+    embed.add_field(name="Closed Announcements", value=str(closed), inline=True)
+    embed.add_field(name="Total Acknowledgements", value=str(acknowledged), inline=True)
+    embed.add_field(name="Reminder Sent", value=str(reminders), inline=True)
+    embed.add_field(name="Escalations Sent", value=str(escalations), inline=True)
     maybe_set_thumbnail(embed, DIFF_LOGO_URL)
     embed.set_footer(text="DIFF • Manager Dashboard")
     return embed
@@ -451,24 +445,32 @@ def build_stats_embed(data: dict) -> discord.Embed:
 
 def build_leaderboard_embed(data: dict) -> discord.Embed:
     rows = leaderboard_rows(data)
-    embed = discord.Embed(title="🏆 DIFF Host Responsiveness Leaderboard", color=0xF59E0B, timestamp=utc_now())
+    embed = discord.Embed(
+        title="🏆 DIFF Host Responsiveness Leaderboard",
+        color=0xF59E0B,
+        timestamp=utc_now(),
+    )
     if not rows:
         embed.description = "No host stats yet."
         return embed
 
     top_lines = []
+    low_lines = []
+
     for idx, row in enumerate(rows[:10], start=1):
         pct, _, _, user_id, name, total, ack, missed, avg = row
-        top_lines.append(f"**{idx}. {name}** — {pct:.0f}% ack | avg {format_seconds(avg)} | missed {missed}")
+        top_lines.append(
+            f"**{idx}. {name}** — {pct:.0f}% ack | avg {format_seconds(avg)} | missed {missed}"
+        )
 
-    low_rows = sorted(rows, key=lambda x: (x[0], -x[8], -x[7]))[:5]
-    low_lines = []
-    for row in low_rows:
+    for row in sorted(rows, key=lambda x: (x[0], -x[8], -x[7]))[:5]:
         pct, _, _, user_id, name, total, ack, missed, avg = row
-        low_lines.append(f"**{name}** — {pct:.0f}% ack | avg {format_seconds(avg)} | missed {missed}")
+        low_lines.append(
+            f"**{name}** — {pct:.0f}% ack | avg {format_seconds(avg)} | missed {missed}"
+        )
 
-    embed.add_field(name="Top Hosts",          value="\n".join(top_lines)[:1024],              inline=False)
-    embed.add_field(name="Lowest Performers",  value=("\n".join(low_lines) or "None")[:1024],  inline=False)
+    embed.add_field(name="Top Hosts", value="\n".join(top_lines)[:1024], inline=False)
+    embed.add_field(name="Lowest Performers", value=("\n".join(low_lines) or "None")[:1024], inline=False)
     maybe_set_thumbnail(embed, DIFF_LOGO_URL)
     embed.set_footer(text="DIFF • Weekly Host Performance")
     return embed
@@ -476,7 +478,11 @@ def build_leaderboard_embed(data: dict) -> discord.Embed:
 
 def build_ignored_embed(guild: discord.Guild, data: dict) -> discord.Embed:
     items = ignored_announcements_list(data)
-    embed = discord.Embed(title="🚫 DIFF Ignored Announcements", color=0xEF4444, timestamp=utc_now())
+    embed = discord.Embed(
+        title="🚫 DIFF Ignored Announcements",
+        color=0xEF4444,
+        timestamp=utc_now(),
+    )
     if not items:
         embed.description = "No ignored announcements recorded."
         return embed
@@ -487,6 +493,7 @@ def build_ignored_embed(guild: discord.Guild, data: dict) -> discord.Embed:
         if len(missing) > 5:
             missing_names += f" +{len(missing) - 5} more"
         lines.append(f"**{title}**\nMissing: {missing_names}\nID: `{ann_id}`")
+
     embed.description = "\n\n".join(lines)[:4096]
     maybe_set_thumbnail(embed, DIFF_LOGO_URL)
     embed.set_footer(text="DIFF • Manager Review")
@@ -500,13 +507,15 @@ def build_ignored_embed(guild: discord.Guild, data: dict) -> discord.Embed:
 async def update_staff_log(bot: commands.Bot, guild: discord.Guild, announcement_id: str) -> None:
     if not STAFF_LOG_CHANNEL_ID:
         return
-    data   = ensure_data_shape(load_data())
+    data = ensure_data_shape(load_data())
     record = data["announcements"].get(announcement_id)
     if not record:
         return
+
     log_channel = guild.get_channel(STAFF_LOG_CHANNEL_ID)
     if not isinstance(log_channel, discord.TextChannel):
         return
+
     log_message_id = record.get("log_message_id")
     if log_message_id:
         try:
@@ -515,21 +524,20 @@ async def update_staff_log(bot: commands.Bot, guild: discord.Guild, announcement
             return
         except Exception:
             pass
+
     try:
         new_msg = await log_channel.send(embed=build_log_embed(guild, announcement_id, record))
         data["announcements"][announcement_id]["log_message_id"] = new_msg.id
         save_data(data)
-    except Exception as e:
-        print(f"[HostTeamAnnouncementPanel] Staff log error: {e}")
+    except Exception:
+        pass
 
 
-async def maybe_send_discipline_notice(
-    bot: commands.Bot, guild: discord.Guild, user_id: int, stats: dict, reason: str
-) -> None:
-    target = PUNISHMENT_LOG_CHANNEL_ID or STAFF_LOG_CHANNEL_ID
-    if not target:
+async def maybe_send_discipline_notice(bot: commands.Bot, guild: discord.Guild, user_id: int, stats: dict, reason: str) -> None:
+    target_channel_id = PUNISHMENT_LOG_CHANNEL_ID or STAFF_LOG_CHANNEL_ID
+    if not target_channel_id:
         return
-    channel = guild.get_channel(target)
+    channel = guild.get_channel(target_channel_id)
     if not isinstance(channel, discord.TextChannel):
         return
     try:
@@ -538,21 +546,41 @@ async def maybe_send_discipline_notice(
         pass
 
 
+def apply_miss_to_host(data: dict, guild: discord.Guild, user_id: int) -> tuple[dict, str | None]:
+    stats = ensure_host_stat(data, user_id, get_member_display(guild, user_id))
+    stats["missed"] = int(stats.get("missed", 0)) + 1
+    stats["weekly_missed"] = int(stats.get("weekly_missed", 0)) + 1
+
+    reason = None
+    if stats["missed"] == 3:
+        stats["warning_count"] = int(stats.get("warning_count", 0)) + 1
+        stats["last_warning_reason"] = "Missed 3 announcements"
+        reason = "Missed 3 announcements → warning threshold reached."
+    elif stats["missed"] == 5:
+        stats["warning_count"] = int(stats.get("warning_count", 0)) + 1
+        stats["flagged"] = True
+        stats["last_warning_reason"] = "Missed 5 announcements"
+        reason = "Missed 5 announcements → host flagged for managers."
+
+    return stats, reason
+
+
 # =========================================================
-# ACK VIEW — per-announcement dynamic custom_id
+# ACK VIEW
 # =========================================================
 
-class AckButton(discord.ui.Button):
+class AnnouncementAcknowledgeView(discord.ui.View):
     def __init__(self, announcement_id: str):
-        super().__init__(
-            label="Seen / Acknowledged",
-            emoji="✅",
-            style=discord.ButtonStyle.green,
-            custom_id=f"diff_ann_ack_{announcement_id}",
-        )
+        super().__init__(timeout=None)
         self.announcement_id = announcement_id
 
-    async def callback(self, interaction: discord.Interaction) -> None:
+    @discord.ui.button(
+        label="Seen / Acknowledged",
+        emoji="✅",
+        style=discord.ButtonStyle.green,
+        custom_id="diff_suite_ack_button",
+    )
+    async def acknowledge(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
             return
@@ -561,17 +589,18 @@ class AckButton(discord.ui.Button):
             role_ids = {r.id for r in interaction.user.roles}
             if HOST_ROLE_ID not in role_ids and not user_is_manager(interaction.user):
                 await interaction.response.send_message(
-                    "Only hosts or managers can acknowledge announcements.", ephemeral=True
+                    "Only hosts or managers can acknowledge announcements.",
+                    ephemeral=True,
                 )
                 return
 
-        data   = ensure_data_shape(load_data())
+        data = ensure_data_shape(load_data())
         record = data["announcements"].get(self.announcement_id)
         if not record:
             await interaction.response.send_message("Announcement record not found.", ephemeral=True)
             return
 
-        uid     = interaction.user.id
+        uid = interaction.user.id
         ack_ids = set(record.get("acknowledged_host_ids", []))
         if uid in ack_ids:
             await interaction.response.send_message("You already acknowledged this announcement.", ephemeral=True)
@@ -582,25 +611,18 @@ class AckButton(discord.ui.Button):
         missing_current = set(record.get("target_host_ids", [])) - ack_ids
         record["missing_host_ids_current"] = sorted(missing_current)
 
-        created_at       = parse_iso(record["created_at"])
+        created_at = parse_iso(record["created_at"])
         response_seconds = max((utc_now() - created_at).total_seconds(), 0.0)
 
         host_stats = ensure_host_stat(data, uid, interaction.user.display_name)
-        host_stats["acknowledged"]           = int(host_stats.get("acknowledged", 0)) + 1
-        host_stats["weekly_acknowledged"]    = int(host_stats.get("weekly_acknowledged", 0)) + 1
+        host_stats["acknowledged"] = int(host_stats.get("acknowledged", 0)) + 1
+        host_stats["weekly_acknowledged"] = int(host_stats.get("weekly_acknowledged", 0)) + 1
         host_stats["response_seconds_total"] = float(host_stats.get("response_seconds_total", 0.0)) + response_seconds
-        host_stats["response_count"]         = int(host_stats.get("response_count", 0)) + 1
+        host_stats["response_count"] = int(host_stats.get("response_count", 0)) + 1
 
         save_data(data)
         await update_staff_log(interaction.client, interaction.guild, self.announcement_id)
         await interaction.response.send_message("✅ Acknowledged.", ephemeral=True)
-
-
-class AnnouncementAcknowledgeView(discord.ui.View):
-    def __init__(self, announcement_id: str):
-        super().__init__(timeout=None)
-        self.announcement_id = announcement_id
-        self.add_item(AckButton(announcement_id))
 
 
 # =========================================================
@@ -626,6 +648,7 @@ class SmartAnnouncementModal(discord.ui.Modal, title="Create Smart Announcement"
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
             return
+
         if not user_is_manager(interaction.user):
             await interaction.response.send_message("You do not have permission to use this panel.", ephemeral=True)
             return
@@ -633,19 +656,18 @@ class SmartAnnouncementModal(discord.ui.Modal, title="Create Smart Announcement"
         suggested_type = suggest_announcement_type(self.body_text.value, self.custom_title.value or "")
         urgent_detected = detect_urgent(self.body_text.value, self.custom_title.value or "")
 
-        info    = ANNOUNCEMENT_TYPES[suggested_type]
         preview = discord.Embed(
             title="🧠 Smart Suggestion Ready",
             description=(
-                f"**Suggested Type:** {info['emoji']} {info['label']}\n"
-                f"**Urgent Detected:** {'Yes ⚠️' if urgent_detected else 'No'}\n\n"
-                "Press **Send Announcement** to post it."
+                f"**Suggested Type:** {ANNOUNCEMENT_TYPES[suggested_type]['emoji']} {ANNOUNCEMENT_TYPES[suggested_type]['label']}\n"
+                f"**Urgent Detected:** {'Yes' if urgent_detected else 'No'}\n\n"
+                f"Press **Send Announcement** to post it."
             ),
-            color=info["color"],
+            color=ANNOUNCEMENT_TYPES[suggested_type]["color"],
         )
         preview.add_field(
             name="Preview Title",
-            value=(self.custom_title.value or info["title_prefix"]),
+            value=(self.custom_title.value or ANNOUNCEMENT_TYPES[suggested_type]["title_prefix"]),
             inline=False,
         )
         preview.add_field(name="Preview Body", value=self.body_text.value[:1024], inline=False)
@@ -665,18 +687,17 @@ class SmartAnnouncementModal(discord.ui.Modal, title="Create Smart Announcement"
 class SmartAnnouncementConfirmView(discord.ui.View):
     def __init__(self, suggested_type: str, urgent_detected: bool, draft_title: str, draft_body: str):
         super().__init__(timeout=600)
-        self.suggested_type  = suggested_type
+        self.suggested_type = suggested_type
         self.urgent_detected = urgent_detected
-        self.draft_title     = draft_title
-        self.draft_body      = draft_body
+        self.draft_title = draft_title
+        self.draft_body = draft_body
 
     @discord.ui.button(label="Send Announcement", emoji="📢", style=discord.ButtonStyle.blurple)
-    async def send_announcement(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def send_announcement(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
             return
+
         if not user_is_manager(interaction.user):
             await interaction.response.send_message("You do not have permission to use this panel.", ephemeral=True)
             return
@@ -689,7 +710,9 @@ class SmartAnnouncementConfirmView(discord.ui.View):
         urgent_mode = self.urgent_detected
         pings = [get_host_ping()]
         if urgent_mode and AUTO_ESCALATE_USE_URGENT_ROLE and get_urgent_ping():
+            # on original post, include urgent ping only if detected urgent
             pings.append(get_urgent_ping())
+
         content = " ".join(x for x in pings if x).strip()
 
         embed = build_sent_embed(
@@ -701,13 +724,11 @@ class SmartAnnouncementConfirmView(discord.ui.View):
         )
 
         announcement_id = f"ann-{int(utc_now().timestamp())}-{interaction.user.id}"
-        ack_view = AnnouncementAcknowledgeView(announcement_id)
-        interaction.client.add_view(ack_view)
-
+        sent_view = AnnouncementAcknowledgeView(announcement_id)
         sent_message = await panel_channel.send(
             content=content,
             embed=embed,
-            view=ack_view,
+            view=sent_view,
             allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
         )
 
@@ -716,33 +737,34 @@ class SmartAnnouncementConfirmView(discord.ui.View):
 
         for host_id in target_host_ids:
             ensure_host_stat(data, host_id, get_member_display(interaction.guild, host_id))
-            data["host_stats"][str(host_id)]["total_required"] = (
-                int(data["host_stats"][str(host_id)].get("total_required", 0)) + 1
-            )
+            data["host_stats"][str(host_id)]["total_required"] = int(data["host_stats"][str(host_id)].get("total_required", 0)) + 1
 
         data["announcements"][announcement_id] = {
-            "title":                  self.draft_title.strip() or ANNOUNCEMENT_TYPES[self.suggested_type]["title_prefix"],
-            "type":                   self.suggested_type,
-            "type_label":             ANNOUNCEMENT_TYPES[self.suggested_type]["label"],
-            "urgent_mode":            urgent_mode,
-            "message_id":             sent_message.id,
-            "channel_id":             sent_message.channel.id,
-            "jump_url":               sent_message.jump_url,
-            "created_by_id":          interaction.user.id,
-            "created_by_name":        interaction.user.display_name,
-            "created_at":             utc_now_iso(),
-            "target_host_ids":        sorted(target_host_ids),
-            "acknowledged_host_ids":  [],
+            "title": self.draft_title.strip() or ANNOUNCEMENT_TYPES[self.suggested_type]["title_prefix"],
+            "type": self.suggested_type,
+            "type_label": ANNOUNCEMENT_TYPES[self.suggested_type]["label"],
+            "urgent_mode": urgent_mode,
+            "message_id": sent_message.id,
+            "channel_id": sent_message.channel.id,
+            "jump_url": sent_message.jump_url,
+            "created_by_id": interaction.user.id,
+            "created_by_name": interaction.user.display_name,
+            "created_at": utc_now_iso(),
+            "target_host_ids": sorted(target_host_ids),
+            "acknowledged_host_ids": [],
             "missing_host_ids_current": sorted(target_host_ids),
             "missing_host_ids_final": [],
-            "reminder_sent":          False,
-            "reminder_sent_at":       None,
-            "escalation_sent":        False,
-            "escalation_sent_at":     None,
-            "log_message_id":         None,
-            "closed":                 False,
+            "reminder_sent": False,
+            "reminder_sent_at": None,
+            "escalation_sent": False,
+            "escalation_sent_at": None,
+            "log_message_id": None,
+            "closed": False,
         }
         save_data(data)
+
+        # Register persistent ack view immediately for this message
+        interaction.client.add_view(AnnouncementAcknowledgeView(announcement_id))
 
         await update_staff_log(interaction.client, interaction.guild, announcement_id)
         await interaction.response.send_message("✅ Smart announcement sent.", ephemeral=True)
@@ -755,7 +777,7 @@ class SmartAnnouncementConfirmView(discord.ui.View):
 
 
 # =========================================================
-# PANEL VIEWS
+# PANELS
 # =========================================================
 
 class IntelligencePanelView(discord.ui.View):
@@ -768,9 +790,7 @@ class IntelligencePanelView(discord.ui.View):
         style=discord.ButtonStyle.blurple,
         custom_id="diff_suite_create_announcement",
     )
-    async def create_smart_announcement(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def create_smart_announcement(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
             return
@@ -785,9 +805,7 @@ class IntelligencePanelView(discord.ui.View):
         style=discord.ButtonStyle.gray,
         custom_id="diff_suite_refresh_announcement_panel",
     )
-    async def refresh_panel(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def refresh_panel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
             return
@@ -809,6 +827,9 @@ class ManagerDashboardView(discord.ui.View):
         custom_id="diff_suite_view_stats",
     )
     async def view_stats(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+            return
         if not user_is_manager(interaction.user):
             await interaction.response.send_message("You do not have permission.", ephemeral=True)
             return
@@ -822,6 +843,9 @@ class ManagerDashboardView(discord.ui.View):
         custom_id="diff_suite_view_leaderboard",
     )
     async def view_leaderboard(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+            return
         if not user_is_manager(interaction.user):
             await interaction.response.send_message("You do not have permission.", ephemeral=True)
             return
@@ -835,13 +859,14 @@ class ManagerDashboardView(discord.ui.View):
         custom_id="diff_suite_view_ignored",
     )
     async def view_ignored(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+            return
         if not user_is_manager(interaction.user):
             await interaction.response.send_message("You do not have permission.", ephemeral=True)
             return
         data = ensure_data_shape(load_data())
-        await interaction.response.send_message(
-            embed=build_ignored_embed(interaction.guild, data), ephemeral=True
-        )
+        await interaction.response.send_message(embed=build_ignored_embed(interaction.guild, data), ephemeral=True)
 
     @discord.ui.button(
         label="Refresh Dashboard",
@@ -850,6 +875,9 @@ class ManagerDashboardView(discord.ui.View):
         custom_id="diff_suite_refresh_dashboard",
     )
     async def refresh_dashboard(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+            return
         if not user_is_manager(interaction.user):
             await interaction.response.send_message("You do not have permission.", ephemeral=True)
             return
@@ -861,64 +889,49 @@ class ManagerDashboardView(discord.ui.View):
 # PANEL MANAGEMENT
 # =========================================================
 
-async def _get_channel(bot: commands.Bot, channel_id: int) -> discord.TextChannel | None:
-    ch = bot.get_channel(channel_id)
-    if isinstance(ch, discord.TextChannel):
-        return ch
-    try:
-        ch = await bot.fetch_channel(channel_id)
-        return ch if isinstance(ch, discord.TextChannel) else None
-    except Exception as e:
-        print(f"[HostTeamAnnouncementPanel] Channel {channel_id} not found: {e}")
-        return None
-
-
 async def ensure_announcement_panel(bot: commands.Bot) -> None:
-    data    = ensure_data_shape(load_data())
-    channel = await _get_channel(bot, ANNOUNCEMENT_PANEL_CHANNEL_ID)
-    if not channel:
+    data = ensure_data_shape(load_data())
+    channel = bot.get_channel(ANNOUNCEMENT_PANEL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        print(f"[DIFF Suite] Announcement channel {ANNOUNCEMENT_PANEL_CHANNEL_ID} not found.")
         return
 
-    embed      = build_announcement_panel_embed()
-    view       = IntelligencePanelView()
+    embed = build_announcement_panel_embed()
+    view = IntelligencePanelView()
     message_id = data.get("announcement_panel_message_id")
 
     if message_id:
         try:
             msg = await channel.fetch_message(message_id)
             await msg.edit(content=None, embed=embed, view=view)
-            print("[HostTeamAnnouncementPanel] Announcement panel refreshed.")
             return
-        except discord.NotFound:
+        except Exception:
             pass
-        except Exception as e:
-            print(f"[HostTeamAnnouncementPanel] Could not edit announcement panel: {e}")
 
     try:
         async for msg in channel.history(limit=50):
-            if msg.author == bot.user and msg.embeds and msg.embeds[0].title in ANNOUNCEMENT_PANEL_TITLES:
+            if msg.author == bot.user and msg.embeds and msg.embeds[0].title == "🏁 DIFF Intelligence Announcement Center":
                 await msg.edit(content=None, embed=embed, view=view)
                 data["announcement_panel_message_id"] = msg.id
                 save_data(data)
-                print("[HostTeamAnnouncementPanel] Found old announcement panel and refreshed it.")
                 return
-    except Exception as e:
-        print(f"[HostTeamAnnouncementPanel] History scan failed: {e}")
+    except Exception:
+        pass
 
     new_msg = await channel.send(embed=embed, view=view)
     data["announcement_panel_message_id"] = new_msg.id
     save_data(data)
-    print("[HostTeamAnnouncementPanel] New announcement panel posted.")
 
 
 async def ensure_dashboard_panel(bot: commands.Bot) -> None:
-    data    = ensure_data_shape(load_data())
-    channel = await _get_channel(bot, MANAGER_DASHBOARD_CHANNEL_ID)
-    if not channel:
+    data = ensure_data_shape(load_data())
+    channel = bot.get_channel(MANAGER_DASHBOARD_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        print(f"[DIFF Suite] Dashboard channel {MANAGER_DASHBOARD_CHANNEL_ID} not found.")
         return
 
-    embed      = build_dashboard_panel_embed(data)
-    view       = ManagerDashboardView()
+    embed = build_dashboard_panel_embed(data)
+    view = ManagerDashboardView()
     message_id = data.get("dashboard_panel_message_id")
 
     if message_id:
@@ -926,10 +939,8 @@ async def ensure_dashboard_panel(bot: commands.Bot) -> None:
             msg = await channel.fetch_message(message_id)
             await msg.edit(content=None, embed=embed, view=view)
             return
-        except discord.NotFound:
+        except Exception:
             pass
-        except Exception as e:
-            print(f"[HostTeamAnnouncementPanel] Could not edit dashboard panel: {e}")
 
     try:
         async for msg in channel.history(limit=50):
@@ -944,7 +955,6 @@ async def ensure_dashboard_panel(bot: commands.Bot) -> None:
     new_msg = await channel.send(embed=embed, view=view)
     data["dashboard_panel_message_id"] = new_msg.id
     save_data(data)
-    print("[HostTeamAnnouncementPanel] New dashboard panel posted.")
 
 
 # =========================================================
@@ -952,7 +962,7 @@ async def ensure_dashboard_panel(bot: commands.Bot) -> None:
 # =========================================================
 
 async def process_open_announcements(bot: commands.Bot) -> None:
-    data    = ensure_data_shape(load_data())
+    data = ensure_data_shape(load_data())
     changed = False
 
     for announcement_id, record in list(data["announcements"].items()):
@@ -963,39 +973,32 @@ async def process_open_announcements(bot: commands.Bot) -> None:
         if not isinstance(channel, discord.TextChannel):
             continue
 
-        guild      = channel.guild
+        guild = channel.guild
         created_at = parse_iso(record["created_at"])
-        elapsed    = utc_now() - created_at
+        elapsed = utc_now() - created_at
 
-        target_ids = set(record.get("target_host_ids", []))
-        ack_ids    = set(record.get("acknowledged_host_ids", []))
-        missing_ids = sorted(target_ids - ack_ids)
+        target_host_ids = set(record.get("target_host_ids", []))
+        ack_ids = set(record.get("acknowledged_host_ids", []))
+        missing_ids = sorted(target_host_ids - ack_ids)
         record["missing_host_ids_current"] = missing_ids
 
-        ann_changed = False
-
-        if (
-            elapsed >= timedelta(minutes=REMINDER_DELAY_MINUTES)
-            and not record.get("reminder_sent")
-            and missing_ids
-        ):
+        # reminder
+        if elapsed >= timedelta(minutes=REMINDER_DELAY_MINUTES) and not record.get("reminder_sent") and missing_ids:
             mentions = " ".join(f"<@{uid}>" for uid in missing_ids[:25])
+            content = f"⏰ Reminder: the following hosts still need to acknowledge this announcement.\n{mentions}"
             try:
                 await channel.send(
-                    content=f"⏰ Reminder: the following hosts still need to acknowledge this announcement.\n{mentions}",
+                    content=content,
                     allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
                 )
-                record["reminder_sent"]    = True
+                record["reminder_sent"] = True
                 record["reminder_sent_at"] = utc_now_iso()
-                ann_changed = True
-                changed     = True
+                changed = True
             except Exception:
                 pass
 
-        if (
-            elapsed >= timedelta(minutes=ESCALATION_DELAY_MINUTES)
-            and not record.get("escalation_sent")
-        ):
+        # escalation + closure
+        if elapsed >= timedelta(minutes=ESCALATION_DELAY_MINUTES) and not record.get("escalation_sent"):
             if missing_ids:
                 parts = ["🚨 Escalation: some hosts still have not acknowledged this announcement."]
                 if AUTO_ESCALATE_USE_URGENT_ROLE and get_urgent_ping():
@@ -1003,7 +1006,7 @@ async def process_open_announcements(bot: commands.Bot) -> None:
                 parts.append(" ".join(f"<@{uid}>" for uid in missing_ids[:25]))
                 try:
                     await channel.send(
-                        content="\n".join(p for p in parts if p),
+                        content="\n".join(part for part in parts if part),
                         allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
                     )
                 except Exception:
@@ -1014,14 +1017,13 @@ async def process_open_announcements(bot: commands.Bot) -> None:
                     if reason:
                         await maybe_send_discipline_notice(bot, guild, user_id, stats, reason)
 
-            record["escalation_sent"]    = True
+            record["escalation_sent"] = True
             record["escalation_sent_at"] = utc_now_iso()
-            record["closed"]             = True
+            record["closed"] = True
             record["missing_host_ids_final"] = missing_ids
-            ann_changed = True
-            changed     = True
+            changed = True
 
-        if ann_changed:
+        if changed:
             await update_staff_log(bot, guild, announcement_id)
 
     if changed:
@@ -1033,18 +1035,19 @@ async def process_open_announcements(bot: commands.Bot) -> None:
 # COG
 # =========================================================
 
-class HostTeamAnnouncementPanel(commands.Cog):
+class DiffIntelligenceSuite(commands.Cog):
     def __init__(self, bot: commands.Bot):
-        self.bot          = bot
+        self.bot = bot
         self.reminder_task = None
         self.bot.add_view(IntelligencePanelView())
         self.bot.add_view(ManagerDashboardView())
 
     @commands.Cog.listener()
     async def on_ready(self):
-        if getattr(self.bot, "_diff_host_team_announcement_panel_ready", False):
+        if getattr(self.bot, "_diff_intelligence_suite_ready", False):
             return
-        self.bot._diff_host_team_announcement_panel_ready = True
+
+        self.bot._diff_intelligence_suite_ready = True
 
         data = ensure_data_shape(load_data())
         for announcement_id in data.get("announcements", {}).keys():
@@ -1054,17 +1057,15 @@ class HostTeamAnnouncementPanel(commands.Cog):
         await ensure_dashboard_panel(self.bot)
 
         if self.reminder_task is None:
-            self.reminder_task = self.bot.loop.create_task(self._reminder_loop())
+            self.reminder_task = self.bot.loop.create_task(self.reminder_loop())
 
-        print("[HostTeamAnnouncementPanel] Cog ready.")
-
-    async def _reminder_loop(self):
+    async def reminder_loop(self):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             try:
                 await process_open_announcements(self.bot)
             except Exception as e:
-                print(f"[HostTeamAnnouncementPanel] Reminder loop error: {e}")
+                print(f"[DIFF Suite] Reminder loop error: {e}")
             await asyncio.sleep(60)
 
     def cog_unload(self):
@@ -1076,15 +1077,6 @@ class HostTeamAnnouncementPanel(commands.Cog):
     async def diffsuitepanels(self, ctx: commands.Context):
         await ensure_announcement_panel(self.bot)
         await ensure_dashboard_panel(self.bot)
-        try:
-            await ctx.message.delete()
-        except Exception:
-            pass
-
-    @commands.command(name="hostannouncepanel")
-    @commands.has_permissions(manage_guild=True)
-    async def hostannouncepanel(self, ctx: commands.Context):
-        await ensure_announcement_panel(self.bot)
         try:
             await ctx.message.delete()
         except Exception:
@@ -1132,10 +1124,10 @@ class HostTeamAnnouncementPanel(commands.Cog):
         data = ensure_data_shape(load_data())
         for stat in data["host_stats"].values():
             stat["weekly_acknowledged"] = 0
-            stat["weekly_missed"]       = 0
+            stat["weekly_missed"] = 0
         save_data(data)
         await ctx.send("✅ Weekly DIFF stats reset.", delete_after=10)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(HostTeamAnnouncementPanel(bot))
+    await bot.add_cog(DiffIntelligenceSuite(bot))
