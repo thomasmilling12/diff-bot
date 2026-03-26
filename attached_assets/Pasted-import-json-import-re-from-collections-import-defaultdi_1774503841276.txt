@@ -1,0 +1,372 @@
+import json
+import re
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import discord
+from discord.ext import commands, tasks
+
+# =========================================================
+# DIFF Auto Mod + Join/Leave + Auto Role System
+# ---------------------------------------------------------
+# FEATURES
+# - Anti-spam
+# - Auto-timeout / auto-mute style punishment
+# - Bad word filter
+# - Invite link filter
+# - Join logs
+# - Leave logs
+# - Auto role on join
+# - Re-apply saved member roles when they rejoin (Dyno-style)
+#
+# CHANGE THESE IDS BEFORE USING
+# =========================================================
+
+GUILD_ID = 850386896509337710
+
+# Logs
+MOD_LOG_CHANNEL_ID = 1486598266211664003
+JOIN_LEAVE_LOG_CHANNEL_ID = 1486598266211664003  # change if you want a different channel
+
+# Roles
+MEMBER_AUTO_ROLE_ID = 123456789012345678   # role to automatically give new joins
+MUTED_TIMEOUT_ROLE_ID = None               # optional: set if you want an extra role added during automod actions
+
+# Staff role bypass
+STAFF_ROLE_ID = 123456789012345678
+
+# Automod settings
+SPAM_MESSAGE_COUNT = 5
+SPAM_WINDOW_SECONDS = 12
+SPAM_TIMEOUT_MINUTES = 10
+
+DUPLICATE_MESSAGE_COUNT = 4
+DUPLICATE_WINDOW_SECONDS = 20
+
+MASS_MENTION_LIMIT = 5
+
+BLOCK_INVITES = True
+BLOCK_BAD_WORDS = True
+
+BAD_WORDS = {
+    "badword1",
+    "badword2",
+    "badword3",
+}
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+ROLE_BACKUP_FILE = DATA_DIR / "member_role_backup.json"
+AUTOMOD_STATE_FILE = DATA_DIR / "automod_state.json"
+
+
+def load_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def save_json(path: Path, data):
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def is_staff(member: discord.Member) -> bool:
+    return member.guild_permissions.administrator or any(role.id == STAFF_ROLE_ID for role in member.roles)
+
+
+def clean_content_for_compare(content: str) -> str:
+    return re.sub(r"\s+", " ", content.lower().strip())
+
+
+def contains_bad_word(content: str) -> str | None:
+    lowered = re.sub(r"[^a-zA-Z0-9\s]", " ", content.lower())
+    words = lowered.split()
+    for word in words:
+        if word in BAD_WORDS:
+            return word
+    return None
+
+
+def contains_invite(content: str) -> bool:
+    patterns = [
+        r"(https?://)?discord\.gg/[A-Za-z0-9]+",
+        r"(https?://)?discord\.com/invite/[A-Za-z0-9]+",
+    ]
+    return any(re.search(pattern, content, re.IGNORECASE) for pattern in patterns)
+
+
+class AutoModCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.user_message_times: dict[int, deque] = defaultdict(deque)
+        self.user_message_texts: dict[int, deque] = defaultdict(deque)
+        self.cleanup_cache.start()
+
+    def cog_unload(self):
+        self.cleanup_cache.cancel()
+
+    @tasks.loop(minutes=5)
+    async def cleanup_cache(self):
+        now = utc_now()
+        cutoff = now - timedelta(minutes=10)
+
+        for user_id in list(self.user_message_times.keys()):
+            dq = self.user_message_times[user_id]
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+            if not dq:
+                self.user_message_times.pop(user_id, None)
+
+        for user_id in list(self.user_message_texts.keys()):
+            dq = self.user_message_texts[user_id]
+            while dq and dq[0][1] < cutoff:
+                dq.popleft()
+            if not dq:
+                self.user_message_texts.pop(user_id, None)
+
+    @cleanup_cache.before_loop
+    async def before_cleanup(self):
+        await self.bot.wait_until_ready()
+
+    async def log_embed(self, embed: discord.Embed):
+        channel = self.bot.get_channel(MOD_LOG_CHANNEL_ID)
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(embed=embed)
+
+    async def apply_automod_action(self, message: discord.Message, reason: str, extra: str = ""):
+        member = message.author
+        if not isinstance(member, discord.Member):
+            return
+
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        timeout_until = utc_now() + timedelta(minutes=SPAM_TIMEOUT_MINUTES)
+        timeout_applied = False
+        timeout_error = None
+
+        try:
+            await member.timeout(timeout_until, reason=f"AutoMod: {reason}")
+            timeout_applied = True
+        except Exception as e:
+            timeout_error = str(e)
+
+        if MUTED_TIMEOUT_ROLE_ID:
+            role = member.guild.get_role(MUTED_TIMEOUT_ROLE_ID)
+            if role:
+                try:
+                    await member.add_roles(role, reason=f"AutoMod: {reason}")
+                except Exception:
+                    pass
+
+        embed = discord.Embed(
+            title="🛡️ Auto Moderation Triggered",
+            color=discord.Color.red(),
+            timestamp=utc_now()
+        )
+        embed.add_field(name="User", value=f"{member.mention}\n`{member.id}`", inline=True)
+        embed.add_field(name="Channel", value=message.channel.mention, inline=True)
+        embed.add_field(name="Reason", value=reason, inline=False)
+        if extra:
+            embed.add_field(name="Extra", value=extra, inline=False)
+        embed.add_field(
+            name="Action",
+            value=f"{'Timed out' if timeout_applied else 'Message removed only'} for {SPAM_TIMEOUT_MINUTES} minute(s)",
+            inline=False
+        )
+        if timeout_error:
+            embed.add_field(name="Timeout Error", value=timeout_error[:1000], inline=False)
+        embed.set_footer(text="DIFF Meets • Auto Mod")
+
+        await self.log_embed(embed)
+
+        try:
+            dm = discord.Embed(
+                title="🛡️ Auto Moderation Notice",
+                description=(
+                    f"You triggered the server auto moderation system in **{member.guild.name}**.\n\n"
+                    f"**Reason:** {reason}\n"
+                    f"{f'**Extra:** {extra}\n' if extra else ''}"
+                    f"**Action:** {'Timeout applied' if timeout_applied else 'Message removed'}"
+                ),
+                color=discord.Color.red()
+            )
+            await member.send(embed=dm)
+        except Exception:
+            pass
+
+    async def backup_member_roles(self, member: discord.Member):
+        data = load_json(ROLE_BACKUP_FILE, {})
+        guild_data = data.setdefault(str(member.guild.id), {})
+        guild_data[str(member.id)] = [
+            role.id
+            for role in member.roles
+            if role.name != "@everyone"
+            and not role.managed
+            and role.id != MEMBER_AUTO_ROLE_ID
+        ]
+        save_json(ROLE_BACKUP_FILE, data)
+
+    async def restore_member_roles(self, member: discord.Member):
+        data = load_json(ROLE_BACKUP_FILE, {})
+        guild_data = data.get(str(member.guild.id), {})
+        saved_role_ids = guild_data.get(str(member.id), [])
+
+        roles_to_add = []
+        for role_id in saved_role_ids:
+            role = member.guild.get_role(role_id)
+            if role:
+                roles_to_add.append(role)
+
+        auto_role = member.guild.get_role(MEMBER_AUTO_ROLE_ID)
+        if auto_role and auto_role not in roles_to_add:
+            roles_to_add.append(auto_role)
+
+        if roles_to_add:
+            try:
+                await member.add_roles(*roles_to_add, reason="Restoring saved roles on rejoin")
+            except Exception:
+                pass
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        await self.restore_member_roles(member)
+
+        if MEMBER_AUTO_ROLE_ID:
+            auto_role = member.guild.get_role(MEMBER_AUTO_ROLE_ID)
+            if auto_role and auto_role not in member.roles:
+                try:
+                    await member.add_roles(auto_role, reason="Auto role on join")
+                except Exception:
+                    pass
+
+        channel = self.bot.get_channel(JOIN_LEAVE_LOG_CHANNEL_ID)
+        if isinstance(channel, discord.TextChannel):
+            embed = discord.Embed(
+                title="🟢 Member Joined",
+                color=discord.Color.green(),
+                timestamp=utc_now()
+            )
+            embed.add_field(name="User", value=f"{member.mention}\n`{member.id}`", inline=True)
+            embed.add_field(name="Account Created", value=discord.utils.format_dt(member.created_at, style="R"), inline=True)
+            embed.add_field(name="Server", value=member.guild.name, inline=True)
+            embed.set_footer(text="DIFF Meets • Join Logs")
+            await channel.send(embed=embed)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        await self.backup_member_roles(member)
+
+        channel = self.bot.get_channel(JOIN_LEAVE_LOG_CHANNEL_ID)
+        if isinstance(channel, discord.TextChannel):
+            role_mentions = [role.mention for role in member.roles if role.name != "@everyone"]
+            roles_text = ", ".join(role_mentions[:20]) if role_mentions else "No roles"
+
+            embed = discord.Embed(
+                title="🔴 Member Left",
+                color=discord.Color.dark_red(),
+                timestamp=utc_now()
+            )
+            embed.add_field(name="User", value=f"`{member}`\n`{member.id}`", inline=True)
+            embed.add_field(name="Joined Server", value=discord.utils.format_dt(member.joined_at, style="R") if member.joined_at else "Unknown", inline=True)
+            embed.add_field(name="Roles", value=roles_text[:1024], inline=False)
+            embed.set_footer(text="DIFF Meets • Leave Logs")
+            await channel.send(embed=embed)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.guild:
+            return
+
+        if message.guild.id != GUILD_ID:
+            return
+
+        if not isinstance(message.author, discord.Member):
+            return
+
+        if is_staff(message.author):
+            return
+
+        content = message.content or ""
+
+        # Bad word filter
+        if BLOCK_BAD_WORDS:
+            found_word = contains_bad_word(content)
+            if found_word:
+                await self.apply_automod_action(
+                    message,
+                    "Blocked bad word",
+                    extra=f"Matched word: `{found_word}`"
+                )
+                return
+
+        # Invite filter
+        if BLOCK_INVITES and contains_invite(content):
+            await self.apply_automod_action(
+                message,
+                "Blocked Discord invite link"
+            )
+            return
+
+        # Mass mention filter
+        if len(message.mentions) >= MASS_MENTION_LIMIT:
+            await self.apply_automod_action(
+                message,
+                "Mass mention spam",
+                extra=f"Mentions: {len(message.mentions)}"
+            )
+            return
+
+        now = utc_now()
+
+        # Message rate spam
+        times = self.user_message_times[message.author.id]
+        times.append(now)
+        while times and (now - times[0]).total_seconds() > SPAM_WINDOW_SECONDS:
+            times.popleft()
+
+        if len(times) >= SPAM_MESSAGE_COUNT:
+            await self.apply_automod_action(
+                message,
+                "Message spam detected",
+                extra=f"{len(times)} messages in {SPAM_WINDOW_SECONDS} seconds"
+            )
+            times.clear()
+            self.user_message_texts[message.author.id].clear()
+            return
+
+        # Duplicate spam
+        texts = self.user_message_texts[message.author.id]
+        normalized = clean_content_for_compare(content)
+        texts.append((normalized, now))
+
+        while texts and (now - texts[0][1]).total_seconds() > DUPLICATE_WINDOW_SECONDS:
+            texts.popleft()
+
+        duplicates = [t for t, ts in texts if t == normalized and t]
+        if normalized and len(duplicates) >= DUPLICATE_MESSAGE_COUNT:
+            await self.apply_automod_action(
+                message,
+                "Duplicate message spam detected",
+                extra=f"Repeated {len(duplicates)} times in {DUPLICATE_WINDOW_SECONDS} seconds"
+            )
+            texts.clear()
+            times.clear()
+            return
+
+        await self.bot.process_commands(message)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(AutoModCog(bot))

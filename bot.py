@@ -234,6 +234,7 @@ async def _setup_hook():
     await bot.load_extension("cogs.diff_attendance")
     await bot.load_extension("cogs.diff_announcement_panels")
     await bot.load_extension("cogs.diff_upcoming_meet_panel")
+    await bot.load_extension("cogs.diff_mod_hub")
 
 bot.setup_hook = _setup_hook
 
