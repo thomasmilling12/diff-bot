@@ -309,6 +309,11 @@ def _panel_embed() -> discord.Embed:
             "━━━━━━━━━━━━━━━━━━━━━━"
         ),
     )
+    embed.add_field(
+        name="📋 Staff Commands",
+        value="`!refresh_appeal_panel` — Refresh this panel",
+        inline=False,
+    )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text=PANEL_TAG)
     return embed

@@ -106,6 +106,11 @@ class ServerStatsCog(commands.Cog):
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
 
+        embed.add_field(
+            name="📋 Staff Commands",
+            value="`!refresh_server_stats` — Refresh this panel (auto-refreshes every 5 min)",
+            inline=False,
+        )
         embed.set_footer(text=PANEL_TAG)
         return embed
 

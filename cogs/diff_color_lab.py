@@ -518,6 +518,11 @@ class ColorLabCog(commands.Cog):
             value="This panel refreshes the same post instead of creating duplicates.",
             inline=False,
         )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value="`!refresh_color_lab` — Refresh this panel",
+            inline=False,
+        )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text=f"DIFF Color Lab • Advanced Private Request System • {PANEL_TAG}")
         return embed

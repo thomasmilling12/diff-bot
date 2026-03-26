@@ -432,6 +432,18 @@ class StaffDashboardSystem(commands.Cog, name="StaffDashboardSystem"):
             value = "This dashboard surfaces high-risk members and declining hosts automatically via `!smartinsights`.",
             inline= False,
         )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value=(
+                "`!poststaffdashboard` — Post / refresh this dashboard\n"
+                "`!flaggedhosts` — List hosts currently under review\n"
+                "`!smartinsights` — Run AI-style moderation insight scan\n"
+                "`!appealhistory @user` — View a member's full appeal history\n"
+                "`!appealstats` — Show server-wide appeal statistics\n"
+                "`!dashboardhelp` — View all staff dashboard commands"
+            ),
+            inline=False,
+        )
         embed.set_footer(text="Different Meets • Staff Dashboard")
         return embed
 

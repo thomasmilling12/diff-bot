@@ -53,6 +53,11 @@ class DiffMemesPanel(commands.Cog):
             ),
             color=EMBED_COLOR,
         )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value="`!postmemespanel` — Post / refresh this panel",
+            inline=False,
+        )
         embed.set_image(url=DIFF_LOGO_URL)
         embed.set_footer(text=PANEL_TAG)
         return embed

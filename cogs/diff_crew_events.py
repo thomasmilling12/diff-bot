@@ -683,6 +683,11 @@ class CrewEventsCog(commands.Cog):
         embed.add_field(name="RSVP Tracking",
                         value="Counts update live and are saved for staff review.",
                         inline=False)
+        embed.add_field(
+            name="📋 Staff Commands",
+            value="`!refresh_crew_events_panel` — Refresh this panel",
+            inline=False,
+        )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text=f"DIFF Crew Events System • {PANEL_TAG}")
         return embed

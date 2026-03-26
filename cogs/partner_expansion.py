@@ -287,6 +287,18 @@ class PartnerExpansion(commands.Cog):
                 ),
                 color=EMBED_COLOR,
             )
+            header_embed.add_field(
+                name="📋 Staff Commands",
+                value=(
+                    "`!postpartnerdirectory` — Post / refresh this directory\n"
+                    "`!importacceptedpartners` — Import all approved partners\n"
+                    "`!partneradmin refresh` — Manually refresh the directory panel\n"
+                    "`!partneradmin activity` — View partner activity log\n"
+                    "`!partneradmin add <name>` — Add a partner to the directory\n"
+                    "`!partneradmin remove <name>` — Remove a partner from the directory"
+                ),
+                inline=False,
+            )
             header_embed.set_footer(text="Different Meets • Official Partner Network")
 
             content_embeds = []

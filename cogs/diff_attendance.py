@@ -171,6 +171,14 @@ def _panel_embed() -> discord.Embed:
         value="Use this when a meet actually starts so RSVPs become real attendance data.",
         inline=False,
     )
+    embed.add_field(
+        name="📋 Staff Commands",
+        value=(
+            "Attendance sessions are managed through the buttons on this panel.\n"
+            "No additional prefix commands are required."
+        ),
+        inline=False,
+    )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text=PANEL_TAG)
     return embed

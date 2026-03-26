@@ -383,6 +383,15 @@ class PartnerRequestSystem(commands.Cog):
             value="Clear descriptions, valid invite links, and professional server details.",
             inline=False,
         )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value=(
+                "`!postpartnerrequests` — Post / refresh this panel\n"
+                "`!partnerrequestspending` — View all pending partner requests\n"
+                "`!partnerrequeststlist` — View the full partner requests list"
+            ),
+            inline=False,
+        )
         embed.set_footer(text=FOOTER_TEXT)
         if LOGO_URL:
             embed.set_thumbnail(url=LOGO_URL)

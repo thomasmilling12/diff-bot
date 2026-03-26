@@ -149,6 +149,14 @@ def _panel_embed() -> discord.Embed:
             "━━━━━━━━━━━━━━━━━━━━━━"
         ),
     )
+    embed.add_field(
+        name="📋 Staff Commands",
+        value=(
+            "`!remove_warning @user` — Remove the most recent warning from a member\n"
+            "`!refresh_smart_punishment` — Refresh this panel"
+        ),
+        inline=False,
+    )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text=PANEL_TAG)
     return embed

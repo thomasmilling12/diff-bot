@@ -166,6 +166,11 @@ class UnverifiedPanelCog(commands.Cog):
             ),
             inline=False,
         )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value="`!refresh_unverified_panel` — Refresh this panel",
+            inline=False,
+        )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text=f"{FOOTER_TEXT} • {PANEL_TAG}")
         return embed

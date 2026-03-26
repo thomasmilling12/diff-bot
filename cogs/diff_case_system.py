@@ -345,6 +345,16 @@ class CaseSystem(commands.Cog):
             ),
             inline=False,
         )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value=(
+                "`!postcasepanel` — Post / refresh this panel\n"
+                "`!caseinfo <CASE-0001>` — View full details of a case\n"
+                "`!opencases` — List all currently open cases\n"
+                "`!casehistory <CASE-0001>` — View archived case history"
+            ),
+            inline=False,
+        )
         embed.set_footer(text=PANEL_TAG)
         return embed
 

@@ -400,6 +400,11 @@ class AnnouncementPanelsCog(commands.Cog):
                 "━━━━━━━━━━━━━━━━━━━━━━"
             ),
         )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value="`!refresh_crew_announce_panel` — Refresh this panel",
+            inline=False,
+        )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text=CREW_PANEL_TAG)
         return embed
@@ -420,6 +425,11 @@ class AnnouncementPanelsCog(commands.Cog):
                 "Staff use only\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             ),
+        )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value="`!refresh_general_announce_panel` — Refresh this panel",
+            inline=False,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text=GENERAL_PANEL_TAG)

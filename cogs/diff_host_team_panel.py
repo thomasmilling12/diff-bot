@@ -104,6 +104,11 @@ class HostTeamPanelCog(commands.Cog):
             ),
             color=discord.Color.gold(),
         )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value="`!refresh_host_panel` — Refresh this panel",
+            inline=False,
+        )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text=f"DIFF Meets • Host System • {PANEL_TAG}")
         return embed

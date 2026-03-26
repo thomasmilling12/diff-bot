@@ -603,6 +603,23 @@ class ManagerHubSystem(commands.Cog, name="ManagerHubSystem"):
             value="Select from the first dropdown to open a section or log activity. Select from the second dropdown to view crew logos.",
             inline=False,
         )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value=(
+                "`!refreshmanagerhub` — Refresh this panel\n"
+                "`!managerboard` — View the manager leaderboard\n"
+                "`!managerprofile @user` — View a manager's performance profile\n"
+                "`!manageradd @user <field> <amount>` — Add stats to a manager\n"
+                "`!managerremove @user <field> <amount>` — Remove stats from a manager\n"
+                "`!managerreset @user` — Reset a single manager's profile\n"
+                "`!managerresetall` — Reset all manager profiles\n"
+                "`!addcrewlogo <crew> <url>` — Add a crew logo to the gallery\n"
+                "`!removecrewlogo <crew>` — Remove a crew logo\n"
+                "`!listcrewlogos` — List all saved crew logos\n"
+                "`!managerhelp` — View all manager commands"
+            ),
+            inline=False,
+        )
         embed.set_footer(text=FOOTER_TEXT)
         return embed
 

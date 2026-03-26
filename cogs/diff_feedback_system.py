@@ -240,6 +240,16 @@ class FeedbackSystem(commands.Cog):
             "☐ Comment on the host's performance\n"
             "☐ Share suggestions for next time"
         ), inline=False)
+        embed.add_field(
+            name="📋 Staff Commands",
+            value=(
+                "`!postfeedbackpanel` — Post / refresh this panel\n"
+                "`!feedbackleaderboard` — View top-rated hosts by feedback score\n"
+                "`!hostfeedback @host` — View all feedback for a specific host\n"
+                "`!feedbackstats` — Show server-wide feedback statistics"
+            ),
+            inline=False,
+        )
         embed.set_footer(text="Different Meets • Meet Feedback • All responses are appreciated")
         await ctx.send(embed=embed, view=FeedbackView(self))
         try:

@@ -294,6 +294,15 @@ class MarketplaceSystem(commands.Cog):
             value="Item • Details • Price • Contact • Tags",
             inline=False,
         )
+        embed.add_field(
+            name="📋 Staff Commands",
+            value=(
+                "`!postmarketpanel` — Post / refresh this panel\n"
+                "`!marketcleanup` — Remove expired / old listings\n"
+                "`!marketlistings` — View all active marketplace listings"
+            ),
+            inline=False,
+        )
         embed.set_footer(text=PANEL_TAG_TEXT)
         return embed
 
