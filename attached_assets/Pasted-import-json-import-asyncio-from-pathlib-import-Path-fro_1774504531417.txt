@@ -1,0 +1,445 @@
+import json
+import asyncio
+from pathlib import Path
+from datetime import datetime, timezone
+
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# =========================================================
+# DIFF Appeal System + Staff Review Panel
+# ---------------------------------------------------------
+# FEATURES
+# - Auto-posts an appeal panel
+# - Anti-dupe startup refresh
+# - Users submit appeals through a modal
+# - Appeals are posted to a staff review channel
+# - Staff can Accept / Deny / Request More Info
+# - Decision is logged automatically
+# - User gets a DM when staff makes a decision
+# - Simple JSON storage for appeal records
+#
+# CHANGE THESE IDS BEFORE USING
+# =========================================================
+
+APPEAL_PANEL_CHANNEL_ID = 1156363575150002226   # Change if you want the public appeal panel elsewhere
+APPEAL_REVIEW_CHANNEL_ID = 1486598266211664003  # Staff review channel
+APPEAL_LOG_CHANNEL_ID = 1486598266211664003     # Appeal decision logs
+STAFF_ROLE_ID = 123456789012345678              # Change this
+
+PANEL_TITLE = "🧾 DIFF Appeal Center"
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+APPEALS_FILE = DATA_DIR / "appeals.json"
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def load_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def save_json(path: Path, data):
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def is_staff(member: discord.abc.User) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    return member.guild_permissions.administrator or any(role.id == STAFF_ROLE_ID for role in member.roles)
+
+
+def next_appeal_id() -> int:
+    data = load_json(APPEALS_FILE, {"last_id": 0, "appeals": {}})
+    data["last_id"] += 1
+    save_json(APPEALS_FILE, data)
+    return data["last_id"]
+
+
+def save_appeal_record(appeal_id: int, record: dict):
+    data = load_json(APPEALS_FILE, {"last_id": 0, "appeals": {}})
+    data.setdefault("appeals", {})
+    data["appeals"][str(appeal_id)] = record
+    save_json(APPEALS_FILE, data)
+
+
+def get_appeal_record(appeal_id: int) -> dict | None:
+    data = load_json(APPEALS_FILE, {"last_id": 0, "appeals": {}})
+    return data.get("appeals", {}).get(str(appeal_id))
+
+
+def update_appeal_record(appeal_id: int, **updates):
+    data = load_json(APPEALS_FILE, {"last_id": 0, "appeals": {}})
+    appeal = data.get("appeals", {}).get(str(appeal_id))
+    if not appeal:
+        return
+    appeal.update(updates)
+    data["appeals"][str(appeal_id)] = appeal
+    save_json(APPEALS_FILE, data)
+
+
+class AppealModal(discord.ui.Modal, title="Submit an Appeal"):
+    punishment_type = discord.ui.TextInput(
+        label="What are you appealing?",
+        placeholder="Example: warning, timeout, kick, ban",
+        max_length=100,
+        required=True,
+    )
+    punishment_reason = discord.ui.TextInput(
+        label="Why were you punished?",
+        placeholder="What reason were you given?",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+        required=True,
+    )
+    appeal_reason = discord.ui.TextInput(
+        label="Why should this be reviewed?",
+        placeholder="Explain your side clearly and respectfully.",
+        style=discord.TextStyle.paragraph,
+        max_length=1200,
+        required=True,
+    )
+
+    def __init__(self, cog: "AppealSystemCog"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        appeal_id = next_appeal_id()
+        created_at = utc_now().isoformat()
+
+        record = {
+            "appeal_id": appeal_id,
+            "guild_id": interaction.guild.id if interaction.guild else None,
+            "user_id": interaction.user.id,
+            "username": str(interaction.user),
+            "punishment_type": str(self.punishment_type).strip(),
+            "punishment_reason": str(self.punishment_reason).strip(),
+            "appeal_reason": str(self.appeal_reason).strip(),
+            "status": "pending",
+            "created_at": created_at,
+            "reviewed_by": None,
+            "reviewed_at": None,
+            "decision_note": None,
+            "review_message_id": None,
+        }
+        save_appeal_record(appeal_id, record)
+
+        review_channel = interaction.client.get_channel(APPEAL_REVIEW_CHANNEL_ID)
+        if review_channel is None or not isinstance(review_channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Your appeal could not be sent because the staff review channel was not found.",
+                ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"🧾 Appeal Submission #{appeal_id}",
+            color=discord.Color.orange(),
+            timestamp=utc_now()
+        )
+        embed.add_field(name="User", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
+        embed.add_field(name="Punishment Type", value=record["punishment_type"], inline=True)
+        embed.add_field(name="Status", value="Pending Review", inline=True)
+        embed.add_field(name="Punishment Reason", value=record["punishment_reason"], inline=False)
+        embed.add_field(name="Appeal Reason", value=record["appeal_reason"], inline=False)
+        embed.set_footer(text="DIFF Meets • Appeal Review")
+
+        review_message = await review_channel.send(
+            content=f"<@&{STAFF_ROLE_ID}>",
+            embed=embed,
+            view=AppealReviewView(self.cog, appeal_id),
+            allowed_mentions=discord.AllowedMentions(roles=True)
+        )
+
+        update_appeal_record(appeal_id, review_message_id=review_message.id)
+
+        await interaction.response.send_message(
+            f"Your appeal has been submitted successfully. Appeal ID: `#{appeal_id}`",
+            ephemeral=True
+        )
+
+
+class AppealPanelView(discord.ui.View):
+    def __init__(self, cog: "AppealSystemCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Submit Appeal",
+        style=discord.ButtonStyle.primary,
+        emoji="🧾",
+        custom_id="diff:appeal:submit"
+    )
+    async def submit_appeal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AppealModal(self.cog))
+
+
+class DecisionNoteModal(discord.ui.Modal, title="Appeal Decision Note"):
+    note = discord.ui.TextInput(
+        label="Decision Note",
+        placeholder="Explain why this appeal was accepted, denied, or needs more info.",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+        required=True,
+    )
+
+    def __init__(self, cog: "AppealSystemCog", appeal_id: int, action: str):
+        super().__init__()
+        self.cog = cog
+        self.appeal_id = appeal_id
+        self.action = action
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can review appeals.", ephemeral=True)
+            return
+        await self.cog.process_appeal_decision(
+            interaction=interaction,
+            appeal_id=self.appeal_id,
+            action=self.action,
+            note=str(self.note).strip()
+        )
+
+
+class AppealReviewView(discord.ui.View):
+    def __init__(self, cog: "AppealSystemCog", appeal_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.appeal_id = appeal_id
+
+    @discord.ui.button(
+        label="Accept",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+        custom_id="diff:appeal:accept"
+    )
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can review appeals.", ephemeral=True)
+            return
+        await interaction.response.send_modal(DecisionNoteModal(self.cog, self.appeal_id, "accepted"))
+
+    @discord.ui.button(
+        label="Deny",
+        style=discord.ButtonStyle.danger,
+        emoji="❌",
+        custom_id="diff:appeal:deny"
+    )
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can review appeals.", ephemeral=True)
+            return
+        await interaction.response.send_modal(DecisionNoteModal(self.cog, self.appeal_id, "denied"))
+
+    @discord.ui.button(
+        label="Need More Info",
+        style=discord.ButtonStyle.secondary,
+        emoji="📨",
+        custom_id="diff:appeal:moreinfo"
+    )
+    async def more_info(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can review appeals.", ephemeral=True)
+            return
+        await interaction.response.send_modal(DecisionNoteModal(self.cog, self.appeal_id, "needs_more_info"))
+
+
+class AppealSystemCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.panel_view = AppealPanelView(self)
+
+    async def post_or_refresh_panel(self):
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(2)
+
+        channel = self.bot.get_channel(APPEAL_PANEL_CHANNEL_ID)
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            print("Appeal panel channel not found.")
+            return
+
+        try:
+            async for msg in channel.history(limit=50):
+                if msg.author.id != self.bot.user.id:
+                    continue
+
+                panel_match = False
+                if msg.embeds:
+                    for emb in msg.embeds:
+                        if emb.title == PANEL_TITLE:
+                            panel_match = True
+                            break
+
+                custom_ids = []
+                for row in msg.components:
+                    for component in row.children:
+                        custom_ids.append(getattr(component, "custom_id", None))
+
+                if panel_match or "diff:appeal:submit" in custom_ids:
+                    await msg.delete()
+        except Exception as e:
+            print(f"Failed cleaning old appeal panels: {e}")
+
+        embed = discord.Embed(
+            title=PANEL_TITLE,
+            description=(
+                "**Appeal Information**\n\n"
+                "Use this panel if you want staff to review a punishment decision.\n\n"
+                "**Before submitting:**\n"
+                "• Be respectful\n"
+                "• Explain your side clearly\n"
+                "• Do not spam multiple appeals\n"
+                "• False or troll appeals may be ignored\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Press the button below to submit an appeal.\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.blurple()
+        )
+        embed.set_footer(text="DIFF Meets • Appeal System")
+
+        await channel.send(embed=embed, view=self.panel_view)
+
+    async def process_appeal_decision(self, interaction: discord.Interaction, appeal_id: int, action: str, note: str):
+        appeal = get_appeal_record(appeal_id)
+        if not appeal:
+            await interaction.response.send_message("That appeal record could not be found.", ephemeral=True)
+            return
+
+        if appeal.get("status") in {"accepted", "denied"}:
+            await interaction.response.send_message("That appeal has already been fully reviewed.", ephemeral=True)
+            return
+
+        user = interaction.client.get_user(appeal["user_id"])
+        if user is None:
+            try:
+                user = await interaction.client.fetch_user(appeal["user_id"])
+            except Exception:
+                user = None
+
+        status_label = {
+            "accepted": "Accepted",
+            "denied": "Denied",
+            "needs_more_info": "Needs More Info"
+        }.get(action, action)
+
+        update_appeal_record(
+            appeal_id,
+            status=action,
+            reviewed_by=interaction.user.id,
+            reviewed_at=utc_now().isoformat(),
+            decision_note=note
+        )
+
+        # Update the original review message if possible
+        try:
+            embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed(title=f"Appeal #{appeal_id}")
+            embed.color = {
+                "accepted": discord.Color.green(),
+                "denied": discord.Color.red(),
+                "needs_more_info": discord.Color.gold(),
+            }.get(action, discord.Color.blurple())
+            # remove existing status field by rebuilding lightly
+            new_embed = discord.Embed(
+                title=embed.title or f"🧾 Appeal Submission #{appeal_id}",
+                color=embed.color,
+                timestamp=utc_now()
+            )
+            new_embed.add_field(name="User", value=f"<@{appeal['user_id']}>\n`{appeal['user_id']}`", inline=True)
+            new_embed.add_field(name="Punishment Type", value=appeal["punishment_type"], inline=True)
+            new_embed.add_field(name="Status", value=status_label, inline=True)
+            new_embed.add_field(name="Punishment Reason", value=appeal["punishment_reason"], inline=False)
+            new_embed.add_field(name="Appeal Reason", value=appeal["appeal_reason"], inline=False)
+            new_embed.add_field(name="Reviewed By", value=interaction.user.mention, inline=True)
+            new_embed.add_field(name="Decision Note", value=note, inline=False)
+            new_embed.set_footer(text="DIFF Meets • Appeal Review")
+            await interaction.message.edit(embed=new_embed, view=None)
+        except Exception:
+            pass
+
+        # Log the decision
+        log_channel = interaction.client.get_channel(APPEAL_LOG_CHANNEL_ID)
+        if log_channel and isinstance(log_channel, discord.TextChannel):
+            log_embed = discord.Embed(
+                title=f"🧾 Appeal {status_label}",
+                color={
+                    "accepted": discord.Color.green(),
+                    "denied": discord.Color.red(),
+                    "needs_more_info": discord.Color.gold(),
+                }.get(action, discord.Color.blurple()),
+                timestamp=utc_now()
+            )
+            log_embed.add_field(name="Appeal ID", value=f"`#{appeal_id}`", inline=True)
+            log_embed.add_field(name="User", value=f"<@{appeal['user_id']}>\n`{appeal['user_id']}`", inline=True)
+            log_embed.add_field(name="Reviewer", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
+            log_embed.add_field(name="Punishment Type", value=appeal["punishment_type"], inline=False)
+            log_embed.add_field(name="Decision Note", value=note, inline=False)
+            log_embed.set_footer(text="DIFF Meets • Appeal Logs")
+            await log_channel.send(embed=log_embed)
+
+        # DM the user
+        if user:
+            try:
+                dm_embed = discord.Embed(
+                    title=f"🧾 Your Appeal Was {status_label}",
+                    description=(
+                        f"Your appeal in **{interaction.guild.name if interaction.guild else 'the server'}** has been reviewed.\n\n"
+                        f"**Appeal ID:** #{appeal_id}\n"
+                        f"**Status:** {status_label}\n"
+                        f"**Note:** {note}"
+                    ),
+                    color={
+                        "accepted": discord.Color.green(),
+                        "denied": discord.Color.red(),
+                        "needs_more_info": discord.Color.gold(),
+                    }.get(action, discord.Color.blurple())
+                )
+                await user.send(embed=dm_embed)
+            except Exception:
+                pass
+
+        await interaction.response.send_message(
+            f"Appeal `#{appeal_id}` marked as **{status_label}**.",
+            ephemeral=True
+        )
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        self.bot.add_view(self.panel_view)
+
+        # restore persistent views for pending appeals
+        data = load_json(APPEALS_FILE, {"last_id": 0, "appeals": {}})
+        for appeal_id, appeal in data.get("appeals", {}).items():
+            if appeal.get("status") in {"pending", "needs_more_info"}:
+                try:
+                    self.bot.add_view(AppealReviewView(self, int(appeal_id)))
+                except Exception:
+                    pass
+
+        try:
+            await self.post_or_refresh_panel()
+        except Exception as e:
+            print(f"Failed to refresh appeal panel: {e}")
+
+    @app_commands.command(name="refresh_appeal_panel", description="Refresh the appeal panel.")
+    async def refresh_appeal_panel(self, interaction: discord.Interaction):
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("Only staff can refresh this panel.", ephemeral=True)
+            return
+
+        await self.post_or_refresh_panel()
+        await interaction.response.send_message("Appeal panel refreshed.", ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(AppealSystemCog(bot))

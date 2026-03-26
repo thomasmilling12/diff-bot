@@ -11,6 +11,7 @@ from discord.ext import commands, tasks
 # CONFIG
 # =========================================================
 TARGET_CHANNEL_ID = 1485273802391814224
+PANEL_TAG  = "DIFF_SERVER_STATS_V1"
 
 DATA_DIR   = "diff_data"
 PANEL_FILE = os.path.join(DATA_DIR, "server_stats_panel.json")
@@ -105,10 +106,7 @@ class ServerStatsCog(commands.Cog):
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
 
-        embed.set_footer(
-            text="DIFF Meets • Server Stats",
-            icon_url=DIFF_LOGO_URL,
-        )
+        embed.set_footer(text=PANEL_TAG)
         return embed
 
     async def ensure_panel(self, guild: discord.Guild) -> None:
@@ -119,17 +117,45 @@ class ServerStatsCog(commands.Cog):
         embed    = self._build_embed(guild)
         saved_id = _get_msg_id(guild.id)
 
-        if saved_id:
-            try:
-                msg = await channel.fetch_message(saved_id)
-                await msg.edit(embed=embed, content=None)
-                return
-            except discord.NotFound:
-                _clear_msg_id(guild.id)
-            except Exception:
-                return
+        # Collect all existing stats panels in the channel
+        existing: list[discord.Message] = []
+        try:
+            async for msg in channel.history(limit=50):
+                if (
+                    msg.author == self.bot.user
+                    and msg.embeds
+                    and msg.embeds[0].footer.text == PANEL_TAG
+                ):
+                    existing.append(msg)
+        except Exception:
+            pass
 
-        # Post fresh panel
+        # If we have a saved ID, edit that message and delete all others
+        if saved_id:
+            target = next((m for m in existing if m.id == saved_id), None)
+            if target:
+                try:
+                    await target.edit(embed=embed, content=None)
+                    # Delete any duplicates that aren't the one we just edited
+                    for m in existing:
+                        if m.id != saved_id:
+                            try:
+                                await m.delete()
+                            except Exception:
+                                pass
+                    return
+                except Exception:
+                    pass
+            # Saved ID no longer valid
+            _clear_msg_id(guild.id)
+
+        # No valid saved message — delete all stale panels, then post fresh
+        for m in existing:
+            try:
+                await m.delete()
+            except Exception:
+                pass
+
         try:
             new_msg = await channel.send(embed=embed)
             _set_msg_id(guild.id, new_msg.id)
@@ -144,11 +170,6 @@ class ServerStatsCog(commands.Cog):
     @_updater.before_loop
     async def _before_updater(self):
         await self.bot.wait_until_ready()
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        for guild in self.bot.guilds:
-            await self.ensure_panel(guild)
         print("[ServerStats] Cog ready.")
 
     @commands.command(name="refresh_server_stats")
