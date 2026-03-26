@@ -91,8 +91,9 @@ STAFF_ROLE_IDS = {
     990011447193006101,   # Manager
 }
 
-COLLAB_REVIEW_ROLE_ID = 0   # <-- role pinged in collab tickets
-COLLAB_CATEGORY_ID    = 0   # <-- category where collab tickets are created
+COLLAB_REVIEW_ROLE_ID  = 0                  # <-- role pinged in collab tickets
+COLLAB_CATEGORY_ID     = 0                  # <-- category where collab tickets are created
+CREW_MEMBER_ROLE_ID    = 886702076552441927  # pinged when a new crew event is posted
 
 DATA_DIR        = "diff_data"
 DATA_FILE       = os.path.join(DATA_DIR, "crew_events_panel.json")
