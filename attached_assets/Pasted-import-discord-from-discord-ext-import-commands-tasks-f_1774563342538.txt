@@ -1,0 +1,115 @@
+import discord
+from discord.ext import commands, tasks
+from discord.ui import View, Button
+import asyncio
+
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+COLOR_CHANNEL_ID = 123456789012345678
+COLOR_ROLE_ID = 123456789012345678
+
+responses = {
+    "available": set(),
+    "not_available": set()
+}
+
+panel_message_id = None
+
+
+class AvailabilityView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="✅ Available", style=discord.ButtonStyle.success)
+    async def available(self, interaction: discord.Interaction, button: Button):
+        user_id = interaction.user.id
+        responses["available"].add(user_id)
+        responses["not_available"].discard(user_id)
+        await update_panel(interaction)
+        await interaction.response.send_message("Marked as AVAILABLE ✅", ephemeral=True)
+
+    @discord.ui.button(label="❌ Not Available", style=discord.ButtonStyle.danger)
+    async def not_available(self, interaction: discord.Interaction, button: Button):
+        user_id = interaction.user.id
+        responses["not_available"].add(user_id)
+        responses["available"].discard(user_id)
+        await update_panel(interaction)
+        await interaction.response.send_message("Marked as NOT AVAILABLE ❌", ephemeral=True)
+
+
+async def update_panel(interaction):
+    global panel_message_id
+
+    channel = bot.get_channel(COLOR_CHANNEL_ID)
+
+    available_list = "\n".join([f"<@{uid}>" for uid in responses["available"]]) or "None"
+    not_available_list = "\n".join([f"<@{uid}>" for uid in responses["not_available"]]) or "None"
+
+    embed = discord.Embed(
+        title="🎨 DIFF Color Team Availability",
+        description="Click a button below to mark your availability.",
+        color=discord.Color.blue()
+    )
+
+    embed.add_field(name="✅ Available", value=available_list, inline=False)
+    embed.add_field(name="❌ Not Available", value=not_available_list, inline=False)
+
+    if panel_message_id:
+        msg = await channel.fetch_message(panel_message_id)
+        await msg.edit(embed=embed, view=AvailabilityView())
+
+
+@bot.command()
+async def colorcheck(ctx):
+    global panel_message_id, responses
+
+    responses = {
+        "available": set(),
+        "not_available": set()
+    }
+
+    channel = bot.get_channel(COLOR_CHANNEL_ID)
+
+    embed = discord.Embed(
+        title="🎨 DIFF Color Team Check-In",
+        description=(
+            "We’ve made updates to the system, layout, and improvements.\n\n"
+            "Click below to mark your availability for the walkthrough session.\n\n"
+            "Let’s keep DIFF colors clean and organized 💯"
+        ),
+        color=discord.Color.blue()
+    )
+
+    embed.add_field(name="✅ Available", value="None", inline=False)
+    embed.add_field(name="❌ Not Available", value="None", inline=False)
+
+    msg = await channel.send(
+        content=f"<@&{COLOR_ROLE_ID}>",
+        embed=embed,
+        view=AvailabilityView()
+    )
+
+    panel_message_id = msg.id
+
+    await ctx.send("Color Team panel posted ✅", delete_after=5)
+
+    # ⏱️ Reminder system
+    await asyncio.sleep(3600)  # 1 hour
+
+    guild = ctx.guild
+    role = guild.get_role(COLOR_ROLE_ID)
+
+    not_responded = [
+        member.mention for member in role.members
+        if member.id not in responses["available"]
+        and member.id not in responses["not_available"]
+    ]
+
+    if not_responded:
+        await channel.send(
+            f"⏰ Reminder: {', '.join(not_responded)} please respond to the availability check."
+        )
+
+
+bot.run("YOUR_BOT_TOKEN")

@@ -1,0 +1,436 @@
+
+    import asyncio
+    from dataclasses import dataclass, field
+    from typing import Dict, Optional, Set, List
+
+    import discord
+    from discord.ext import commands
+
+
+    # ============================================================
+    # DIFF Color Team Availability + Time Voting Add-On
+    # ------------------------------------------------------------
+    # Drop this file into your bot project and load it as an extension,
+    # OR copy the cog into your current bot file.
+    #
+    # Features:
+    # - Available / Not Available buttons
+    # - Time-slot voting dropdown
+    # - Smart scheduling (auto-picks best time)
+    # - DM reminders for members who have not responded
+    # - No-dupe panel refresh behavior
+    # - DIFF-style embed formatting
+    #
+    # Requires:
+    # - discord.py 2.x
+    #
+    # Load with:
+    #   await bot.load_extension("diff_color_team_scheduler")
+    #
+    # Then use:
+    #   !colorcheck
+    #   /colorcheck
+    # ============================================================
+
+
+    # -------------------------
+    # CONFIG
+    # -------------------------
+    COLOR_CHANNEL_ID = 123456789012345678      # Replace with your color team channel ID
+    COLOR_ROLE_ID = 123456789012345678         # Replace with your color team role ID
+    MANAGER_ROLE_IDS = {
+        123456789012345678,                    # Optional manager/staff role IDs
+    }
+
+    TIME_SLOTS = [
+        "Tonight - 8:00 PM EST",
+        "Tomorrow - 7:00 PM EST",
+        "Tomorrow - 9:00 PM EST",
+        "This Weekend - 8:00 PM EST",
+    ]
+
+    REMINDER_DELAY_MINUTES = 60                # When to DM inactive members
+    VOTING_CLOSE_MINUTES = 180                 # When auto-pick runs
+    PANEL_TITLE = "DIFF Color Team Update"
+    PANEL_FOOTER = "DIFF Color Team"
+    EMBED_COLOR = 0x2F6BFF                     # DIFF blue
+
+
+    @dataclass
+    class SessionState:
+        panel_message_id: Optional[int] = None
+        available: Set[int] = field(default_factory=set)
+        not_available: Set[int] = field(default_factory=set)
+        time_votes: Dict[int, str] = field(default_factory=dict)
+        reminder_task: Optional[asyncio.Task] = None
+        finalize_task: Optional[asyncio.Task] = None
+        is_closed: bool = False
+        chosen_time: Optional[str] = None
+
+
+    class TimeVoteSelect(discord.ui.Select):
+        def __init__(self, cog: "ColorTeamSchedulerCog"):
+            self.cog = cog
+            options = [
+                discord.SelectOption(label=slot, description=f"Vote for {slot}")
+                for slot in TIME_SLOTS[:25]
+            ]
+            super().__init__(
+                placeholder="Pick your best session time...",
+                min_values=1,
+                max_values=1,
+                options=options,
+                custom_id="diff_color_team_time_vote_select",
+            )
+
+        async def callback(self, interaction: discord.Interaction):
+            state = self.cog.state
+
+            if state.is_closed:
+                await interaction.response.send_message(
+                    "This availability check has already been closed.",
+                    ephemeral=True,
+                )
+                return
+
+            user_id = interaction.user.id
+            selected = self.values[0]
+            state.time_votes[user_id] = selected
+
+            # If they vote for a time and haven't marked availability yet,
+            # auto-mark them as available to keep the flow clean.
+            state.available.add(user_id)
+            state.not_available.discard(user_id)
+
+            await self.cog.refresh_panel(interaction.client)
+            await interaction.response.send_message(
+                f"Your time vote has been saved: **{selected}**",
+                ephemeral=True,
+            )
+
+
+    class AvailabilityView(discord.ui.View):
+        def __init__(self, cog: "ColorTeamSchedulerCog"):
+            super().__init__(timeout=None)
+            self.cog = cog
+            self.add_item(TimeVoteSelect(cog))
+
+        @discord.ui.button(
+            label="Available",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+            custom_id="diff_color_team_available_btn",
+        )
+        async def available_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+            state = self.cog.state
+
+            if state.is_closed:
+                await interaction.response.send_message(
+                    "This availability check has already been closed.",
+                    ephemeral=True,
+                )
+                return
+
+            user_id = interaction.user.id
+            state.available.add(user_id)
+            state.not_available.discard(user_id)
+
+            await self.cog.refresh_panel(interaction.client)
+            await interaction.response.send_message(
+                "You are marked as **Available**.",
+                ephemeral=True,
+            )
+
+        @discord.ui.button(
+            label="Not Available",
+            style=discord.ButtonStyle.danger,
+            emoji="❌",
+            custom_id="diff_color_team_not_available_btn",
+        )
+        async def not_available_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+            state = self.cog.state
+
+            if state.is_closed:
+                await interaction.response.send_message(
+                    "This availability check has already been closed.",
+                    ephemeral=True,
+                )
+                return
+
+            user_id = interaction.user.id
+            state.not_available.add(user_id)
+            state.available.discard(user_id)
+            state.time_votes.pop(user_id, None)
+
+            await self.cog.refresh_panel(interaction.client)
+            await interaction.response.send_message(
+                "You are marked as **Not Available**.",
+                ephemeral=True,
+            )
+
+        @discord.ui.button(
+            label="Close & Pick Best Time",
+            style=discord.ButtonStyle.primary,
+            emoji="📊",
+            custom_id="diff_color_team_close_btn",
+        )
+        async def close_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+            if not self.cog.user_is_manager(interaction.user):
+                await interaction.response.send_message(
+                    "Only managers can close this check-in.",
+                    ephemeral=True,
+                )
+                return
+
+            await self.cog.finalize_best_time(interaction.client, manual=True)
+            await interaction.response.send_message(
+                "Availability check closed and best time selected.",
+                ephemeral=True,
+            )
+
+
+    class ColorTeamSchedulerCog(commands.Cog):
+        def __init__(self, bot: commands.Bot):
+            self.bot = bot
+            self.state = SessionState()
+            self.bot.add_view(AvailabilityView(self))
+
+        def user_is_manager(self, member: discord.abc.User) -> bool:
+            if not isinstance(member, discord.Member):
+                return False
+            if member.guild_permissions.manage_guild or member.guild_permissions.administrator:
+                return True
+            return any(role.id in MANAGER_ROLE_IDS for role in member.roles)
+
+        def build_embed(self, guild: discord.Guild) -> discord.Embed:
+            state = self.state
+            role = guild.get_role(COLOR_ROLE_ID)
+
+            available_mentions = [guild.get_member(uid).mention for uid in state.available if guild.get_member(uid)]
+            not_available_mentions = [guild.get_member(uid).mention for uid in state.not_available if guild.get_member(uid)]
+
+            vote_counts: Dict[str, int] = {slot: 0 for slot in TIME_SLOTS}
+            for uid, slot in state.time_votes.items():
+                if uid in state.available and slot in vote_counts:
+                    vote_counts[slot] += 1
+
+            best_time = self.calculate_best_time()
+            best_time_text = best_time if best_time else "No winning time yet"
+
+            waiting_on: List[str] = []
+            if role:
+                for member in role.members:
+                    if member.bot:
+                        continue
+                    if member.id not in state.available and member.id not in state.not_available:
+                        waiting_on.append(member.mention)
+
+            description = (
+                "We’ve made updates to the system, layout, and workflow.
+
+"
+                "Please mark your availability and vote for the best walkthrough time below."
+            )
+            if state.is_closed and state.chosen_time:
+                description += f"\n\n**Chosen session time:** {state.chosen_time}"
+
+            embed = discord.Embed(
+                title=f"🎨 {PANEL_TITLE}",
+                description=description,
+                color=EMBED_COLOR,
+            )
+
+            embed.add_field(
+                name="✅ Available",
+                value="\n".join(available_mentions) if available_mentions else "No responses yet",
+                inline=False,
+            )
+            embed.add_field(
+                name="❌ Not Available",
+                value="\n".join(not_available_mentions) if not_available_mentions else "No responses yet",
+                inline=False,
+            )
+
+            vote_lines = [f"**{slot}** — {vote_counts[slot]} vote(s)" for slot in TIME_SLOTS]
+            embed.add_field(
+                name="📊 Time Voting",
+                value="\n".join(vote_lines),
+                inline=False,
+            )
+
+            embed.add_field(
+                name="🧠 Current Best Time",
+                value=best_time_text,
+                inline=False,
+            )
+
+            embed.add_field(
+                name="⏳ Waiting On",
+                value="\n".join(waiting_on[:20]) if waiting_on else "Everyone has responded",
+                inline=False,
+            )
+
+            embed.set_footer(text=PANEL_FOOTER)
+            return embed
+
+        def calculate_best_time(self) -> Optional[str]:
+            state = self.state
+            vote_counts: Dict[str, int] = {slot: 0 for slot in TIME_SLOTS}
+
+            for uid, slot in state.time_votes.items():
+                if uid in state.available and slot in vote_counts:
+                    vote_counts[slot] += 1
+
+            highest = max(vote_counts.values(), default=0)
+            if highest <= 0:
+                return None
+
+            for slot in TIME_SLOTS:
+                if vote_counts[slot] == highest:
+                    return slot
+            return None
+
+        async def refresh_panel(self, client: discord.Client):
+            channel = client.get_channel(COLOR_CHANNEL_ID)
+            if channel is None:
+                return
+
+            if not isinstance(channel, discord.TextChannel):
+                return
+
+            if not self.state.panel_message_id:
+                return
+
+            try:
+                msg = await channel.fetch_message(self.state.panel_message_id)
+            except discord.NotFound:
+                return
+
+            embed = self.build_embed(channel.guild)
+            view = None if self.state.is_closed else AvailabilityView(self)
+            await msg.edit(embed=embed, view=view)
+
+        async def send_dm_reminders(self):
+            await asyncio.sleep(REMINDER_DELAY_MINUTES * 60)
+
+            channel = self.bot.get_channel(COLOR_CHANNEL_ID)
+            if channel is None or not isinstance(channel, discord.TextChannel):
+                return
+
+            guild = channel.guild
+            role = guild.get_role(COLOR_ROLE_ID)
+            if role is None:
+                return
+
+            for member in role.members:
+                if member.bot:
+                    continue
+                if member.id in self.state.available or member.id in self.state.not_available:
+                    continue
+                try:
+                    await member.send(
+                        f"Hey {member.display_name}, DIFF Color Team is checking availability for the new system walkthrough. "
+                        f"Please respond in **#{channel.name}** when you can."
+                    )
+                except discord.Forbidden:
+                    pass
+
+        async def finalize_after_timer(self):
+            await asyncio.sleep(VOTING_CLOSE_MINUTES * 60)
+            await self.finalize_best_time(self.bot, manual=False)
+
+        async def finalize_best_time(self, client: discord.Client, manual: bool = False):
+            if self.state.is_closed:
+                return
+
+            self.state.is_closed = True
+            self.state.chosen_time = self.calculate_best_time()
+
+            channel = client.get_channel(COLOR_CHANNEL_ID)
+            if channel is None or not isinstance(channel, discord.TextChannel):
+                return
+
+            await self.refresh_panel(client)
+
+            if self.state.chosen_time:
+                text = (
+                    f"📅 **Best session time selected:** **{self.state.chosen_time}**\n"
+                    f"Thanks to everyone who responded."
+                )
+            else:
+                text = (
+                    "📅 The availability check has been closed, but there were not enough time votes to auto-pick a session time."
+                )
+
+            if manual:
+                text = "✅ " + text
+
+            await channel.send(text)
+
+        async def post_or_refresh_panel(self, ctx_or_interaction):
+            channel = self.bot.get_channel(COLOR_CHANNEL_ID)
+            if channel is None or not isinstance(channel, discord.TextChannel):
+                raise RuntimeError("Color team channel not found. Check COLOR_CHANNEL_ID.")
+
+            # Cancel previous timers if a new session is started
+            if self.state.reminder_task and not self.state.reminder_task.done():
+                self.state.reminder_task.cancel()
+            if self.state.finalize_task and not self.state.finalize_task.done():
+                self.state.finalize_task.cancel()
+
+            # Reset session state
+            self.state = SessionState()
+
+            # Delete previous panel if it still exists to avoid dupes
+            async for msg in channel.history(limit=25):
+                if msg.author.id == self.bot.user.id and msg.embeds:
+                    title = msg.embeds[0].title or ""
+                    if PANEL_TITLE in title:
+                        try:
+                            await msg.delete()
+                        except discord.HTTPException:
+                            pass
+                        break
+
+            embed = self.build_embed(channel.guild)
+            view = AvailabilityView(self)
+
+            panel_message = await channel.send(
+                content=f"<@&{COLOR_ROLE_ID}>",
+                embed=embed,
+                view=view,
+            )
+            self.state.panel_message_id = panel_message.id
+
+            self.state.reminder_task = asyncio.create_task(self.send_dm_reminders())
+            self.state.finalize_task = asyncio.create_task(self.finalize_after_timer())
+
+            return panel_message
+
+        @commands.hybrid_command(name="colorcheck", description="Post the DIFF color team availability panel.")
+        @commands.guild_only()
+        async def colorcheck(self, ctx: commands.Context):
+            author = ctx.author
+            if isinstance(author, discord.Member):
+                allowed = self.user_is_manager(author)
+            else:
+                allowed = False
+
+            if not allowed:
+                await ctx.reply("Only managers can post this panel.", mention_author=False)
+                return
+
+            try:
+                await self.post_or_refresh_panel(ctx)
+            except Exception as e:
+                await ctx.reply(f"Could not post the panel: {e}", mention_author=False)
+                return
+
+            if ctx.interaction:
+                await ctx.interaction.followup.send("Color team panel posted.", ephemeral=True)
+            else:
+                await ctx.reply("Color team panel posted.", mention_author=False, delete_after=8)
+
+
+    async def setup(bot: commands.Bot):
+        await bot.add_cog(ColorTeamSchedulerCog(bot))
