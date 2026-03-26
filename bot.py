@@ -5326,28 +5326,31 @@ class RulesAcceptView(discord.ui.View):
         custom_id="diff_rules_accept_button",
     )
     async def accept_rules(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Defer immediately so Discord never times out the interaction
+        await interaction.response.defer(ephemeral=True)
+
         if interaction.guild is None:
-            await interaction.response.send_message("Use this in the server.", ephemeral=True)
+            await interaction.followup.send("Use this in the server.", ephemeral=True)
             return
 
         role = interaction.guild.get_role(VERIFIED_ROLE_ID)
         if role is None:
-            await interaction.response.send_message("Verified role not found.", ephemeral=True)
+            await interaction.followup.send("Verified role not found.", ephemeral=True)
             return
 
         member = interaction.guild.get_member(interaction.user.id)
         if member is None:
-            await interaction.response.send_message("Member not found.", ephemeral=True)
+            await interaction.followup.send("Member not found.", ephemeral=True)
             return
 
         if role in member.roles:
-            await interaction.response.send_message("You already accepted the rules.", ephemeral=True)
+            await interaction.followup.send("You already accepted the rules.", ephemeral=True)
             return
 
         try:
             await member.add_roles(role, reason="Accepted DIFF rules")
         except discord.Forbidden:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "I couldn't assign the Verified role. Make sure my bot role is above it and I have Manage Roles.",
                 ephemeral=True,
             )
@@ -5360,7 +5363,7 @@ class RulesAcceptView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "✅ You accepted the rules and got the Verified role. Welcome to DIFF Meets.",
             ephemeral=True,
         )
