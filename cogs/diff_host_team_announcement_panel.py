@@ -1,0 +1,230 @@
+import json
+from pathlib import Path
+from typing import Optional
+
+import discord
+from discord.ext import commands
+
+HOST_TEAM_CHANNEL_ID = 1486228191243669646
+
+MANAGER_ROLE_IDS: list[int] = []
+
+DATA_FILE = Path("diff_data/host_team_announcement_panel.json")
+
+
+def load_data() -> dict:
+    if DATA_FILE.exists():
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_data(data: dict) -> None:
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def user_is_manager(member: discord.Member) -> bool:
+    if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
+        return True
+    if MANAGER_ROLE_IDS:
+        user_role_ids = {role.id for role in member.roles}
+        return any(role_id in user_role_ids for role_id in MANAGER_ROLE_IDS)
+    return False
+
+
+class HostAnnouncementModal(discord.ui.Modal, title="Create Host Announcement"):
+    ping_text = discord.ui.TextInput(
+        label="Who should be pinged?",
+        placeholder="Example: @Host Team or @Meet Host",
+        required=True,
+        max_length=200,
+    )
+    title_text = discord.ui.TextInput(
+        label="Announcement title",
+        placeholder="Example: Host Team Update",
+        required=True,
+        max_length=100,
+    )
+    body_text = discord.ui.TextInput(
+        label="Announcement message",
+        placeholder="Write the full announcement here...",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=2000,
+    )
+    footer_text = discord.ui.TextInput(
+        label="Footer / extra note (optional)",
+        placeholder="Example: DIFF Management",
+        required=False,
+        max_length=100,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "This can only be used inside the server.", ephemeral=True
+            )
+            return
+
+        if not user_is_manager(interaction.user):
+            await interaction.response.send_message(
+                "You do not have permission to use this panel.", ephemeral=True
+            )
+            return
+
+        channel = interaction.guild.get_channel(HOST_TEAM_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "I could not find the host team channel.", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"📣 {self.title_text.value}",
+            description=self.body_text.value,
+            color=discord.Color.orange(),
+        )
+        embed.set_author(
+            name=f"Sent by {interaction.user.display_name}",
+            icon_url=interaction.user.display_avatar.url,
+        )
+        embed.set_footer(
+            text=self.footer_text.value if self.footer_text.value else "DIFF Host Team Announcement"
+        )
+
+        await channel.send(
+            content=self.ping_text.value,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(everyone=True, roles=True, users=True),
+        )
+
+        await interaction.response.send_message("✅ Host announcement sent.", ephemeral=True)
+
+
+class HostAnnouncementPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Make Host Announcement",
+        style=discord.ButtonStyle.blurple,
+        emoji="📢",
+        custom_id="diff_host_team_make_announcement",
+    )
+    async def make_announcement(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "This can only be used inside the server.", ephemeral=True
+            )
+            return
+
+        if not user_is_manager(interaction.user):
+            await interaction.response.send_message(
+                "You do not have permission to use this panel.", ephemeral=True
+            )
+            return
+
+        await interaction.response.send_modal(HostAnnouncementModal())
+
+
+def build_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📢 DIFF Host Team Announcement Panel",
+        description=(
+            "Managers can use the button below to quickly send host team announcements.\n\n"
+            "**What this panel is for**\n"
+            "• Ping hosts when updates need to be made\n"
+            "• Send reminders for hosting duties\n"
+            "• Post team notices fast without typing commands\n"
+            "• Keep announcements clean and consistent\n\n"
+            "**How it works**\n"
+            "Press the button below → fill out the form → the announcement sends automatically.\n\n"
+            "📋 **Staff Commands**\n"
+            "`!hostannouncepanel` — Refresh this panel"
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Permissions",
+        value="Only managers / authorized staff can use this panel.",
+        inline=False,
+    )
+    embed.set_footer(text="DIFF Host Team System")
+    return embed
+
+
+async def ensure_single_panel(bot: commands.Bot) -> None:
+    channel = bot.get_channel(HOST_TEAM_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await bot.fetch_channel(HOST_TEAM_CHANNEL_ID)
+        except Exception as e:
+            print(f"[HostTeamAnnouncementPanel] Channel not found: {e}")
+            return
+
+    data = load_data()
+    panel_message_id = data.get("panel_message_id")
+    embed = build_panel_embed()
+    view = HostAnnouncementPanelView()
+
+    if panel_message_id:
+        try:
+            msg = await channel.fetch_message(panel_message_id)
+            await msg.edit(content=None, embed=embed, view=view)
+            print("[HostTeamAnnouncementPanel] Existing panel refreshed.")
+            return
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            print(f"[HostTeamAnnouncementPanel] Could not edit saved panel: {e}")
+
+    try:
+        async for msg in channel.history(limit=50):
+            if (
+                msg.author == bot.user
+                and msg.embeds
+                and msg.embeds[0].title == "📢 DIFF Host Team Announcement Panel"
+            ):
+                await msg.edit(content=None, embed=embed, view=view)
+                data["panel_message_id"] = msg.id
+                save_data(data)
+                print("[HostTeamAnnouncementPanel] Found old panel and refreshed it.")
+                return
+    except Exception as e:
+        print(f"[HostTeamAnnouncementPanel] History scan failed: {e}")
+
+    new_msg = await channel.send(embed=embed, view=view)
+    data["panel_message_id"] = new_msg.id
+    save_data(data)
+    print("[HostTeamAnnouncementPanel] New panel posted.")
+
+
+class HostTeamAnnouncementPanel(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.bot.add_view(HostAnnouncementPanelView())
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if getattr(self.bot, "_host_team_announcement_panel_ready", False):
+            return
+        self.bot._host_team_announcement_panel_ready = True
+        await ensure_single_panel(self.bot)
+        print("[HostTeamAnnouncementPanel] Cog ready.")
+
+    @commands.command(name="hostannouncepanel")
+    @commands.has_permissions(manage_guild=True)
+    async def hostannouncepanel(self, ctx: commands.Context):
+        await ensure_single_panel(self.bot)
+        await ctx.send("✅ Host team announcement panel refreshed.", delete_after=10)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(HostTeamAnnouncementPanel(bot))
