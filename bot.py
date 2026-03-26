@@ -239,6 +239,7 @@ async def _setup_hook():
     await bot.load_extension("cogs.diff_server_stats")
     await bot.load_extension("cogs.diff_security")
     await bot.load_extension("cogs.diff_smart_punishment")
+    await bot.load_extension("cogs.diff_appeal_system")
 
 bot.setup_hook = _setup_hook
 
