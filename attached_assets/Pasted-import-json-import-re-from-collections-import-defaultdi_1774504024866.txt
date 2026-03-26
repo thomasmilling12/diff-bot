@@ -1,0 +1,331 @@
+import json
+import re
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+import discord
+from discord.ext import commands, tasks
+
+# =========================================================
+# DIFF Media-Only + Link Whitelist + Anti-Raid Protection
+# ---------------------------------------------------------
+# FEATURES
+# - Media-only channels
+# - Link whitelist system
+# - Anti-raid join protection
+# - Suspicious account age detection
+# - Burst join detection
+# - Auto-timeout / auto-kick options
+# - Staff bypass
+# - Mod logs
+#
+# CHANGE THESE IDS / SETTINGS BEFORE USING
+# =========================================================
+
+GUILD_ID = 850386896509337710
+MOD_LOG_CHANNEL_ID = 1486598266211664003
+STAFF_ROLE_ID = 123456789012345678  # CHANGE THIS
+
+# Media-only channels
+MEDIA_ONLY_CHANNEL_IDS = {
+    1266933655486332999,  # example
+    1047335715270316079,  # example
+}
+
+# Allowed domains for links
+ALLOWED_LINK_DOMAINS = {
+    "discord.com",
+    "discord.gg",
+    "youtube.com",
+    "www.youtube.com",
+    "youtu.be",
+    "instagram.com",
+    "www.instagram.com",
+    "tiktok.com",
+    "www.tiktok.com",
+    "x.com",
+    "twitter.com",
+    "imgur.com",
+    "tenor.com",
+}
+
+# Link filter settings
+BLOCK_NON_WHITELISTED_LINKS = True
+
+# Anti-raid settings
+MIN_ACCOUNT_AGE_DAYS = 3
+RAID_JOIN_THRESHOLD = 6          # joins in time window
+RAID_JOIN_WINDOW_SECONDS = 20
+RAID_MODE_TIMEOUT_MINUTES = 30
+RAID_ACTION = "timeout"          # "timeout" or "kick"
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+RAID_STATE_FILE = DATA_DIR / "raid_state.json"
+
+
+URL_REGEX = re.compile(r"(https?://[^\s]+|www\.[^\s]+)", re.IGNORECASE)
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def is_staff(member: discord.Member) -> bool:
+    return member.guild_permissions.administrator or any(role.id == STAFF_ROLE_ID for role in member.roles)
+
+
+def extract_urls(content: str) -> list[str]:
+    return URL_REGEX.findall(content or "")
+
+
+def normalize_domain(url: str) -> str | None:
+    if not url:
+        return None
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower().strip()
+        if domain.startswith("www."):
+            return domain
+        return domain
+    except Exception:
+        return None
+
+
+def is_domain_allowed(domain: str) -> bool:
+    if not domain:
+        return False
+    if domain in ALLOWED_LINK_DOMAINS:
+        return True
+    # Allow subdomains of whitelisted domains
+    for allowed in ALLOWED_LINK_DOMAINS:
+        if domain.endswith("." + allowed):
+            return True
+    return False
+
+
+class SecurityCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.recent_joins = deque()
+        self.cleanup_task.start()
+
+    def cog_unload(self):
+        self.cleanup_task.cancel()
+
+    @tasks.loop(minutes=2)
+    async def cleanup_task(self):
+        now = utc_now()
+        while self.recent_joins and (now - self.recent_joins[0]).total_seconds() > RAID_JOIN_WINDOW_SECONDS:
+            self.recent_joins.popleft()
+
+    @cleanup_task.before_loop
+    async def before_cleanup(self):
+        await self.bot.wait_until_ready()
+
+    async def send_log(self, embed: discord.Embed):
+        channel = self.bot.get_channel(MOD_LOG_CHANNEL_ID)
+        if isinstance(channel, discord.TextChannel):
+            await channel.send(embed=embed)
+
+    async def punish_member_for_raid(self, member: discord.Member, reason: str, raid_burst: bool = False):
+        action_taken = "none"
+        error_text = None
+
+        if RAID_ACTION == "kick":
+            try:
+                await member.kick(reason=reason)
+                action_taken = "kick"
+            except Exception as e:
+                error_text = str(e)
+        else:
+            try:
+                await member.timeout(utc_now() + timedelta(minutes=RAID_MODE_TIMEOUT_MINUTES), reason=reason)
+                action_taken = "timeout"
+            except Exception as e:
+                error_text = str(e)
+
+        embed = discord.Embed(
+            title="🚨 Anti-Raid Triggered",
+            color=discord.Color.dark_red(),
+            timestamp=utc_now()
+        )
+        embed.add_field(name="User", value=f"{member.mention}\n`{member.id}`", inline=True)
+        embed.add_field(name="Action", value=action_taken, inline=True)
+        embed.add_field(name="Reason", value=reason, inline=False)
+        if raid_burst:
+            embed.add_field(
+                name="Raid Burst",
+                value=f"{len(self.recent_joins)} joins in {RAID_JOIN_WINDOW_SECONDS} seconds",
+                inline=False
+            )
+        if error_text:
+            embed.add_field(name="Error", value=error_text[:1000], inline=False)
+        embed.set_footer(text="DIFF Meets • Anti-Raid")
+
+        await self.send_log(embed)
+
+        try:
+            dm = discord.Embed(
+                title="Security Action Applied",
+                description=(
+                    f"You triggered the server anti-raid protection in **{member.guild.name}**.\n\n"
+                    f"**Action:** {action_taken}\n"
+                    f"**Reason:** {reason}"
+                ),
+                color=discord.Color.red()
+            )
+            await member.send(embed=dm)
+        except Exception:
+            pass
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        if member.guild.id != GUILD_ID:
+            return
+
+        now = utc_now()
+        self.recent_joins.append(now)
+        while self.recent_joins and (now - self.recent_joins[0]).total_seconds() > RAID_JOIN_WINDOW_SECONDS:
+            self.recent_joins.popleft()
+
+        account_age = now - member.created_at
+
+        suspicious_new_account = account_age < timedelta(days=MIN_ACCOUNT_AGE_DAYS)
+        raid_burst = len(self.recent_joins) >= RAID_JOIN_THRESHOLD
+
+        join_embed = discord.Embed(
+            title="🟢 Member Joined",
+            color=discord.Color.green(),
+            timestamp=now
+        )
+        join_embed.add_field(name="User", value=f"{member.mention}\n`{member.id}`", inline=True)
+        join_embed.add_field(name="Account Created", value=discord.utils.format_dt(member.created_at, style="R"), inline=True)
+        join_embed.add_field(name="Flags", value=(
+            f"New Account: {'Yes' if suspicious_new_account else 'No'}\n"
+            f"Raid Burst: {'Yes' if raid_burst else 'No'}"
+        ), inline=True)
+        join_embed.set_footer(text="DIFF Meets • Security Join Monitor")
+        await self.send_log(join_embed)
+
+        if suspicious_new_account or raid_burst:
+            reason_parts = []
+            if suspicious_new_account:
+                reason_parts.append(f"Account younger than {MIN_ACCOUNT_AGE_DAYS} day(s)")
+            if raid_burst:
+                reason_parts.append("Join burst detected")
+            await self.punish_member_for_raid(member, " | ".join(reason_parts), raid_burst=raid_burst)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.guild:
+            return
+
+        if message.guild.id != GUILD_ID:
+            return
+
+        if not isinstance(message.author, discord.Member):
+            return
+
+        if is_staff(message.author):
+            await self.bot.process_commands(message)
+            return
+
+        content = message.content or ""
+        attachments = message.attachments
+        embeds = message.embeds
+        channel_id = message.channel.id
+
+        # Media-only channels
+        if channel_id in MEDIA_ONLY_CHANNEL_IDS:
+            has_media_attachment = any(
+                (attachment.content_type and attachment.content_type.startswith(("image/", "video/")))
+                or attachment.filename.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".avi", ".mkv"))
+                for attachment in attachments
+            )
+            has_media_embed = any(embed.image or embed.thumbnail or embed.video for embed in embeds)
+            has_link = bool(extract_urls(content))
+
+            if not has_media_attachment and not has_media_embed and not has_link:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+
+                embed = discord.Embed(
+                    title="🖼️ Media-Only Channel Enforcement",
+                    description=(
+                        f"{message.author.mention}, this channel only allows media posts.\n"
+                        "Please send an image, video, or approved media link."
+                    ),
+                    color=discord.Color.orange()
+                )
+                try:
+                    warning = await message.channel.send(embed=embed)
+                    await warning.delete(delay=8)
+                except Exception:
+                    pass
+
+                log = discord.Embed(
+                    title="🗑️ Media-Only Message Removed",
+                    color=discord.Color.orange(),
+                    timestamp=utc_now()
+                )
+                log.add_field(name="User", value=f"{message.author.mention}\n`{message.author.id}`", inline=True)
+                log.add_field(name="Channel", value=message.channel.mention, inline=True)
+                log.add_field(name="Reason", value="Non-media message in media-only channel", inline=False)
+                log.set_footer(text="DIFF Meets • Media Channel Guard")
+                await self.send_log(log)
+                return
+
+        # Link whitelist
+        if BLOCK_NON_WHITELISTED_LINKS:
+            urls = extract_urls(content)
+            blocked_domains = []
+
+            for url in urls:
+                domain = normalize_domain(url)
+                if domain and not is_domain_allowed(domain):
+                    blocked_domains.append(domain)
+
+            if blocked_domains:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+
+                embed = discord.Embed(
+                    title="🔗 Link Blocked",
+                    description=(
+                        f"{message.author.mention}, that link is not allowed here.\n"
+                        "Only approved domains can be posted."
+                    ),
+                    color=discord.Color.red()
+                )
+                try:
+                    notice = await message.channel.send(embed=embed)
+                    await notice.delete(delay=8)
+                except Exception:
+                    pass
+
+                log = discord.Embed(
+                    title="🚫 Non-Whitelisted Link Removed",
+                    color=discord.Color.red(),
+                    timestamp=utc_now()
+                )
+                log.add_field(name="User", value=f"{message.author.mention}\n`{message.author.id}`", inline=True)
+                log.add_field(name="Channel", value=message.channel.mention, inline=True)
+                log.add_field(name="Blocked Domains", value=", ".join(sorted(set(blocked_domains)))[:1024], inline=False)
+                log.set_footer(text="DIFF Meets • Link Whitelist")
+                await self.send_log(log)
+                return
+
+        await self.bot.process_commands(message)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(SecurityCog(bot))
