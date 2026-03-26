@@ -305,9 +305,17 @@ class DiffWelcomeJoinSystem(commands.Cog):
                 except discord.Forbidden:
                     pass
 
-        ch = self.bot.get_channel(WELCOME_POST_CHANNEL_ID)
+        ch = member.guild.get_channel(WELCOME_POST_CHANNEL_ID)
+        if ch is None:
+            try:
+                ch = await self.bot.fetch_channel(WELCOME_POST_CHANNEL_ID)
+            except Exception as e:
+                print(f"[DiffWelcomeJoinSystem] Could not fetch welcome channel: {e}")
+                ch = None
         if isinstance(ch, discord.TextChannel):
             await self._send_checkin_panel(ch, member)
+        else:
+            print(f"[DiffWelcomeJoinSystem] Welcome channel {WELCOME_POST_CHANNEL_ID} not found for {member}")
 
         await self._log(
             member.guild,
