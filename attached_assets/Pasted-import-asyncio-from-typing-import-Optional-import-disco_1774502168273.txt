@@ -1,0 +1,220 @@
+import asyncio
+from typing import Optional
+
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# =========================================================
+# DIFF General Announcement Panel
+# ---------------------------------------------------------
+# What this file does:
+# - Auto-posts a single announcement panel in your target channel
+# - Deletes old bot-made copies first (anti-dupe)
+# - Lets staff press a button to open a modal
+# - Sends the general announcement in the same channel
+#
+# How to use:
+# 1) Add this file to your bot project
+# 2) Change the STAFF_ROLE_ID below
+# 3) Make sure your bot has:
+#    - Send Messages
+#    - Manage Messages
+#    - Use Slash Commands
+# =========================================================
+
+GENERAL_ANNOUNCEMENT_CHANNEL_ID = 1047166622235893911
+
+# CHANGE THIS:
+STAFF_ROLE_ID = 123456789012345678  # Staff role allowed to use the button
+
+PANEL_TITLE = "📢 DIFF General Announcement Center"
+PANEL_DESCRIPTION = (
+    "**Staff General Announcement Panel**\n\n"
+    "Use the button below to create and send a general server announcement.\n\n"
+    "This panel is for **staff use only**.\n"
+    "When an announcement is submitted, the bot will post it here automatically.\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━\n"
+    "• Keep announcements clear and professional\n"
+    "• Use short titles when possible\n"
+    "• Avoid duplicate or spam posts\n"
+    "━━━━━━━━━━━━━━━━━━━━━━"
+)
+
+
+class GeneralAnnouncementModal(discord.ui.Modal, title="Create General Announcement"):
+    title_input = discord.ui.TextInput(
+        label="Announcement Title",
+        placeholder="Example: Server Update",
+        max_length=100,
+        required=True,
+    )
+
+    message_input = discord.ui.TextInput(
+        label="Announcement Message",
+        placeholder="Type the full announcement here...",
+        style=discord.TextStyle.paragraph,
+        max_length=2000,
+        required=True,
+    )
+
+    footer_input = discord.ui.TextInput(
+        label="Footer Text (optional)",
+        placeholder="Example: DIFF Staff Team",
+        max_length=100,
+        required=False,
+    )
+
+    def __init__(self, cog: "GeneralAnnouncementPanelCog"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        member = interaction.user
+        if not self.cog.user_is_staff(member):
+            await interaction.response.send_message(
+                "You do not have permission to use this panel.",
+                ephemeral=True,
+            )
+            return
+
+        channel = interaction.client.get_channel(GENERAL_ANNOUNCEMENT_CHANNEL_ID)
+        if channel is None:
+            await interaction.response.send_message(
+                "I could not find the general announcement channel.",
+                ephemeral=True,
+            )
+            return
+
+        embed = discord.Embed(
+            title=str(self.title_input),
+            description=str(self.message_input),
+            color=discord.Color.blurple(),
+        )
+        embed.set_author(
+            name=f"Posted by {member.display_name}",
+            icon_url=member.display_avatar.url if member.display_avatar else None,
+        )
+
+        footer_text = str(self.footer_input).strip() or "DIFF General Announcement System"
+        embed.set_footer(text=footer_text)
+
+        await channel.send(embed=embed)
+
+        await interaction.response.send_message(
+            "General announcement posted successfully.",
+            ephemeral=True,
+        )
+
+
+class GeneralAnnouncementPanelView(discord.ui.View):
+    def __init__(self, cog: "GeneralAnnouncementPanelCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Make General Announcement",
+        style=discord.ButtonStyle.blurple,
+        emoji="📣",
+        custom_id="diff:general_announcement:create",
+    )
+    async def make_announcement(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if not self.cog.user_is_staff(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can use this button.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_modal(GeneralAnnouncementModal(self.cog))
+
+
+class GeneralAnnouncementPanelCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.panel_view = GeneralAnnouncementPanelView(self)
+
+    def user_is_staff(self, user: discord.abc.User) -> bool:
+        if not isinstance(user, discord.Member):
+            return False
+        return any(role.id == STAFF_ROLE_ID for role in user.roles) or user.guild_permissions.administrator
+
+    async def post_or_refresh_panel(self) -> None:
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(2)
+
+        channel = self.bot.get_channel(GENERAL_ANNOUNCEMENT_CHANNEL_ID)
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            print("General announcement panel channel not found.")
+            return
+
+        # Delete older bot-made panel messages so only one stays up.
+        try:
+            async for msg in channel.history(limit=50):
+                if msg.author.id != self.bot.user.id:
+                    continue
+
+                has_panel_embed = False
+                if msg.embeds:
+                    for emb in msg.embeds:
+                        if emb.title == PANEL_TITLE:
+                            has_panel_embed = True
+                            break
+
+                has_panel_button = False
+                for row in msg.components:
+                    for component in row.children:
+                        if getattr(component, "custom_id", None) == "diff:general_announcement:create":
+                            has_panel_button = True
+                            break
+
+                if has_panel_embed or has_panel_button:
+                    await msg.delete()
+        except discord.Forbidden:
+            print("Missing permission to manage/delete old panel messages.")
+        except Exception as e:
+            print(f"Error cleaning old general announcement panels: {e}")
+
+        embed = discord.Embed(
+            title=PANEL_TITLE,
+            description=PANEL_DESCRIPTION,
+            color=discord.Color.dark_blue(),
+        )
+        embed.set_footer(text="DIFF Meets • General Announcement System")
+
+        await channel.send(embed=embed, view=self.panel_view)
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        self.bot.add_view(self.panel_view)
+
+        try:
+            await self.post_or_refresh_panel()
+        except Exception as e:
+            print(f"Failed to refresh general announcement panel: {e}")
+
+    @app_commands.command(
+        name="refresh_general_announcement_panel",
+        description="Refresh the general announcement panel."
+    )
+    async def refresh_general_announcement_panel(self, interaction: discord.Interaction) -> None:
+        if not self.user_is_staff(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can refresh this panel.",
+                ephemeral=True,
+            )
+            return
+
+        await self.post_or_refresh_panel()
+        await interaction.response.send_message(
+            "General announcement panel refreshed.",
+            ephemeral=True,
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(GeneralAnnouncementPanelCog(bot))

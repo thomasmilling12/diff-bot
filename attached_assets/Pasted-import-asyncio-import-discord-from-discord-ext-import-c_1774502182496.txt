@@ -1,0 +1,91 @@
+import asyncio
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+GENERAL_ANNOUNCEMENT_CHANNEL_ID = 1047166622235893911
+STAFF_ROLE_ID = 123456789012345678  # CHANGE THIS
+
+class GeneralAnnouncementModal(discord.ui.Modal, title="Create General Announcement"):
+    title_input = discord.ui.TextInput(
+        label="Announcement Title",
+        max_length=100
+    )
+    message_input = discord.ui.TextInput(
+        label="Message",
+        style=discord.TextStyle.paragraph,
+        max_length=2000
+    )
+
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not self.cog.is_staff(interaction.user):
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+
+        channel = interaction.client.get_channel(GENERAL_ANNOUNCEMENT_CHANNEL_ID)
+
+        embed = discord.Embed(
+            title=self.title_input.value,
+            description=self.message_input.value,
+            color=discord.Color.blue()
+        )
+
+        # 🔥 THIS IS THE KEY PART (PING EVERYONE)
+        await channel.send(
+            content="@everyone",
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(everyone=True)
+        )
+
+        await interaction.response.send_message("Announcement sent.", ephemeral=True)
+
+
+class PanelView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Make Announcement", style=discord.ButtonStyle.primary, custom_id="general_announce")
+    async def announce(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.cog.is_staff(interaction.user):
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+
+        await interaction.response.send_modal(GeneralAnnouncementModal(self.cog))
+
+
+class GeneralAnnouncementCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.view = PanelView(self)
+
+    def is_staff(self, user):
+        return any(r.id == STAFF_ROLE_ID for r in getattr(user, "roles", [])) or user.guild_permissions.administrator
+
+    async def setup_panel(self):
+        await self.bot.wait_until_ready()
+        channel = self.bot.get_channel(GENERAL_ANNOUNCEMENT_CHANNEL_ID)
+
+        # delete old panels
+        async for msg in channel.history(limit=50):
+            if msg.author == self.bot.user:
+                await msg.delete()
+
+        embed = discord.Embed(
+            title="📢 DIFF General Announcement Center",
+            description="Staff panel to send announcements.\n\nPress the button below.",
+            color=discord.Color.dark_blue()
+        )
+
+        await channel.send(embed=embed, view=self.view)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        self.bot.add_view(self.view)
+        await self.setup_panel()
+
+
+async def setup(bot):
+    await bot.add_cog(GeneralAnnouncementCog(bot))
