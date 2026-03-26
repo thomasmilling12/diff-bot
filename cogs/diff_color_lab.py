@@ -19,7 +19,7 @@ TARGET_CHANNEL_ID   = 1177449010949259355
 GUILD_ID            = 850386896509337710
 LOG_CHANNEL_ID      = 1485265848099799163   # staff-logs
 
-COLOR_TEAM_ROLE_ID  = 0   # <-- fill in your Color Team role ID
+COLOR_TEAM_ROLE_ID  = 1115495008670330902
 TICKET_CATEGORY_ID  = 0   # <-- active tickets category ID
 ARCHIVE_CATEGORY_ID = 0   # <-- archived tickets category ID
 

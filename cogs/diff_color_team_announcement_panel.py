@@ -9,7 +9,7 @@ from discord.ext import commands
 # =========================================================
 
 COLOR_TEAM_CHANNEL_ID = 1485453653916520549
-COLOR_TEAM_ROLE_ID    = 0
+COLOR_TEAM_ROLE_ID    = 1115495008670330902
 URGENT_PING_ROLE_ID   = 0
 
 MANAGER_ROLE_IDS: list[int] = []
