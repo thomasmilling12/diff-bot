@@ -26,6 +26,7 @@ PANEL_TAG = "DIFF_APPEAL_PANEL_V1"
 DATA_DIR     = "diff_data"
 APPEALS_FILE = os.path.join(DATA_DIR, "appeals.json")
 PANEL_FILE   = os.path.join(DATA_DIR, "appeal_panel.json")
+WARN_FILE    = os.path.join(DATA_DIR, "mod_warnings.json")   # shared with mod hub + smart punishment
 
 DIFF_LOGO_URL = (
     "https://media.discordapp.net/attachments/1107375326625005719/"
@@ -109,6 +110,19 @@ def _update_appeal(appeal_id: int, **updates) -> None:
         _dump(APPEALS_FILE, data)
 
 
+# ── Warning reversal helper ───────────────────────────────
+def _remove_latest_warning(guild_id: int, user_id: int) -> tuple[bool, str]:
+    data = _load(WARN_FILE)
+    gk, uk = str(guild_id), str(user_id)
+    warnings = data.get(gk, {}).get(uk, [])
+    if not warnings:
+        return False, "No warning record found for this user."
+    removed = warnings.pop()
+    data.setdefault(gk, {})[uk] = warnings
+    _dump(WARN_FILE, data)
+    return True, f"Latest warning removed (Case #{removed.get('case_id', '?')})"
+
+
 # =========================================================
 # MODALS
 # =========================================================
@@ -149,6 +163,7 @@ class AppealModal(discord.ui.Modal, title="Submit an Appeal"):
             "reviewed_at":     None,
             "decision_note":   None,
             "review_message_id": None,
+            "reversal_result": None,
         }
         _save_appeal(appeal_id, record)
 
@@ -285,6 +300,11 @@ def _panel_embed() -> discord.Embed:
             "• Do not submit multiple appeals for the same issue\n"
             "• Troll or false appeals may be denied without review\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "**Accepted appeals can automatically reverse:**\n"
+            "• ⚠️ Warning → latest warning removed\n"
+            "• ⏰ Timeout → cleared immediately\n"
+            "• 🔨 Ban → user unbanned automatically\n"
+            "• 👢 Kick → reviewed manually (Discord cannot reverse kicks)\n\n"
             "Press the button below to submit your appeal.\n"
             "━━━━━━━━━━━━━━━━━━━━━━"
         ),
@@ -302,6 +322,52 @@ class AppealSystemCog(commands.Cog):
         self.bot        = bot
         self.panel_view = AppealPanelView(self)
         self.bot.add_view(self.panel_view)
+
+    # ── Punishment reversal ───────────────────────────────
+    async def reverse_punishment(
+        self,
+        guild: Optional[discord.Guild],
+        user_id: int,
+        punishment_type: str,
+    ) -> str:
+        pt = (punishment_type or "").lower().strip()
+
+        if pt in {"warning", "warn"}:
+            if guild is None:
+                return "Warning reversal skipped: guild not found."
+            ok, msg = _remove_latest_warning(guild.id, user_id)
+            return msg
+
+        if pt in {"timeout", "mute"}:
+            if guild is None:
+                return "Timeout reversal skipped: guild not found."
+            member = guild.get_member(user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except Exception:
+                    member = None
+            if member is None:
+                return "Timeout reversal skipped: member is no longer in the server."
+            try:
+                await member.timeout(None, reason="Accepted appeal — timeout cleared")
+                return "Timeout cleared automatically."
+            except Exception as e:
+                return f"Timeout reversal failed: {str(e)[:500]}"
+
+        if pt == "ban":
+            if guild is None:
+                return "Ban reversal skipped: guild not found."
+            try:
+                await guild.unban(discord.Object(id=user_id), reason="Accepted appeal — ban removed")
+                return "User unbanned automatically."
+            except Exception as e:
+                return f"Ban reversal failed: {str(e)[:500]}"
+
+        if pt == "kick":
+            return "Kick cannot be reversed automatically. Manual reinvite required."
+
+        return f"No automatic reversal configured for `{pt}`."
 
     # ── Log helper ────────────────────────────────────────
     async def _log(self, channel_id: int, **kwargs) -> None:
@@ -343,13 +409,25 @@ class AppealSystemCog(commands.Cog):
         status_label = label_map.get(action, action)
         color        = color_map.get(action, discord.Color.blurple())
 
+        # Auto-reverse punishment when accepted
+        reversal_result: Optional[str] = None
+        if action == "accepted":
+            reversal_result = await self.reverse_punishment(
+                guild=interaction.guild,
+                user_id=appeal["user_id"],
+                punishment_type=appeal.get("punishment_type", ""),
+            )
+
         _update_appeal(
             appeal_id,
             status=action,
             reviewed_by=interaction.user.id,
             reviewed_at=_utcnow().isoformat(),
             decision_note=note,
+            reversal_result=reversal_result,
         )
+
+        status_icon = "✅" if action == "accepted" else "❌" if action == "denied" else "📨"
 
         # Edit the review message embed
         try:
@@ -358,13 +436,15 @@ class AppealSystemCog(commands.Cog):
                 color=color,
                 timestamp=_utcnow(),
             )
-            updated.add_field(name="User",             value=f"<@{appeal['user_id']}>\n`{appeal['user_id']}`", inline=True)
-            updated.add_field(name="Punishment Type",  value=appeal["punishment_type"],                         inline=True)
-            updated.add_field(name="Status",           value=f"{'✅' if action=='accepted' else '❌' if action=='denied' else '📨'} {status_label}", inline=True)
-            updated.add_field(name="Punishment Reason", value=appeal["punishment_reason"],                      inline=False)
-            updated.add_field(name="Appeal Reason",    value=appeal["appeal_reason"],                           inline=False)
-            updated.add_field(name="Reviewed By",      value=interaction.user.mention,                          inline=True)
-            updated.add_field(name="Decision Note",    value=note,                                              inline=False)
+            updated.add_field(name="User",              value=f"<@{appeal['user_id']}>\n`{appeal['user_id']}`", inline=True)
+            updated.add_field(name="Punishment Type",   value=appeal["punishment_type"],                         inline=True)
+            updated.add_field(name="Status",            value=f"{status_icon} {status_label}",                   inline=True)
+            updated.add_field(name="Punishment Reason", value=appeal["punishment_reason"],                        inline=False)
+            updated.add_field(name="Appeal Reason",     value=appeal["appeal_reason"],                            inline=False)
+            updated.add_field(name="Reviewed By",       value=interaction.user.mention,                           inline=True)
+            updated.add_field(name="Decision Note",     value=note,                                               inline=False)
+            if reversal_result:
+                updated.add_field(name="⚙️ Punishment Reversal", value=reversal_result, inline=False)
             updated.set_thumbnail(url=DIFF_LOGO_URL)
             updated.set_footer(text="DIFF Meets • Appeal Review")
             await interaction.message.edit(embed=updated, view=None)
@@ -377,11 +457,13 @@ class AppealSystemCog(commands.Cog):
             color=color,
             timestamp=_utcnow(),
         )
-        log_embed.add_field(name="Appeal ID",       value=f"`#{appeal_id}`",                                    inline=True)
-        log_embed.add_field(name="User",             value=f"<@{appeal['user_id']}>\n`{appeal['user_id']}`",    inline=True)
+        log_embed.add_field(name="Appeal ID",       value=f"`#{appeal_id}`",                                       inline=True)
+        log_embed.add_field(name="User",             value=f"<@{appeal['user_id']}>\n`{appeal['user_id']}`",       inline=True)
         log_embed.add_field(name="Reviewer",         value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
-        log_embed.add_field(name="Punishment Type",  value=appeal["punishment_type"],                            inline=False)
-        log_embed.add_field(name="Decision Note",    value=note,                                                 inline=False)
+        log_embed.add_field(name="Punishment Type",  value=appeal["punishment_type"],                               inline=False)
+        log_embed.add_field(name="Decision Note",    value=note,                                                    inline=False)
+        if reversal_result:
+            log_embed.add_field(name="⚙️ Punishment Reversal", value=reversal_result, inline=False)
         log_embed.set_thumbnail(url=DIFF_LOGO_URL)
         log_embed.set_footer(text="DIFF Meets • Appeal Logs")
         await self._log(APPEAL_LOG_CHANNEL_ID, embed=log_embed)
@@ -400,15 +482,18 @@ class AppealSystemCog(commands.Cog):
                 ),
                 color=color,
             )
+            if reversal_result:
+                dm.add_field(name="⚙️ Punishment Reversal", value=reversal_result, inline=False)
             dm.set_thumbnail(url=DIFF_LOGO_URL)
             dm.set_footer(text="DIFF Meets • Appeal System")
             await user.send(embed=dm)
         except Exception:
             pass
 
-        await interaction.response.send_message(
-            f"Appeal `#{appeal_id}` marked as **{status_label}**.", ephemeral=True
-        )
+        confirm = f"Appeal `#{appeal_id}` marked as **{status_label}**."
+        if reversal_result:
+            confirm += f"\n⚙️ Reversal: **{reversal_result}**"
+        await interaction.response.send_message(confirm, ephemeral=True)
 
     # ── Panel management ──────────────────────────────────
     async def ensure_panel(self) -> None:
