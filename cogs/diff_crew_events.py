@@ -282,7 +282,16 @@ class CreateEventModal(discord.ui.Modal, title="Create Crew Event"):
 
         view  = EventRSVPView(self.cog, event_id)
         embed = _event_embed(event_id, events["events"][event_id])
-        await interaction.response.send_message(embed=embed, view=view)
+
+        crew_role = interaction.guild.get_role(CREW_MEMBER_ROLE_ID) if interaction.guild else None
+        ping_content = crew_role.mention if crew_role else None
+
+        await interaction.response.send_message(
+            content=ping_content,
+            embed=embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
 
         sent = await interaction.original_response()
         events = _load_events()

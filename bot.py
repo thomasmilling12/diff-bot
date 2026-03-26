@@ -231,6 +231,7 @@ async def _setup_hook():
     await bot.load_extension("cogs.diff_color_lab")
     await bot.load_extension("cogs.diff_host_team_panel")
     await bot.load_extension("cogs.diff_crew_events")
+    await bot.load_extension("cogs.diff_attendance")
 
 bot.setup_hook = _setup_hook
 
