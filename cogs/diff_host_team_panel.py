@@ -30,6 +30,7 @@ CHANNEL_LINKS = {
     "🚫 Blacklist / Reports":   "https://discord.com/channels/850386896509337710/1057016810261712938",
     "📊 Staff Logs":            "https://discord.com/channels/850386896509337710/1485265848099799163",
     "🛠️ Host Tools":            "https://discord.com/channels/850386896509337710/1485840926612918383",
+    "💬 Host Team Chat":        "https://discord.com/channels/850386896509337710/1485830232270307410",
 }
 
 
