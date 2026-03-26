@@ -400,6 +400,18 @@ class CrewEventsPanelView(discord.ui.View):
     def __init__(self, cog: "CrewEventsCog"):
         super().__init__(timeout=None)
         self.cog = cog
+        self.add_item(discord.ui.Button(
+            label="Crew Control Hub",
+            emoji="🏁",
+            url="https://discord.com/channels/850386896509337710/1486589047232135309",
+            style=discord.ButtonStyle.link,
+        ))
+        self.add_item(discord.ui.Button(
+            label="Color Lab",
+            emoji="🎨",
+            url="https://discord.com/channels/850386896509337710/1177449010949259355",
+            style=discord.ButtonStyle.link,
+        ))
 
     @discord.ui.button(label="Create Event", emoji="📅", style=discord.ButtonStyle.primary,
                        custom_id="crew_events_create_event_v1")
