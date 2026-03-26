@@ -18,7 +18,12 @@
           "timestamp": "2026-03-26T21:15:12.914597+00:00"
         }
       },
-      "log_message_id": 1486835663482654800
+      "log_message_id": 1486835663482654800,
+      "missing_host_ids_current": [],
+      "escalation_sent": true,
+      "escalation_sent_at": "2026-03-26T21:44:43.452689+00:00",
+      "closed": true,
+      "missing_host_ids_final": []
     }
   },
   "announcement_panel_message_id": 1486831019205202081,
