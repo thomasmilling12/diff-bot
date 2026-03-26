@@ -1,0 +1,397 @@
+"""
+DIFF Color Lab System
+Replit-ready discord.py extension/module
+
+What this file does:
+- Auto-posts a Color Lab panel in your target channel
+- Refreshes the same panel without making duplicates
+- Adds interactive buttons for:
+    1) Submit Color Request
+    2) Post Color Result
+    3) Refresh Panel
+- Uses modals so requests/results stay clean and structured
+- Staff/Color Team only for posting color results
+- Saves the panel message ID locally so it can edit instead of reposting
+
+How to use:
+1) Put this file in your Replit project
+2) Fill in the role IDs below
+3) Load the extension in your main bot file:
+       await bot.load_extension("color_lab_system")
+
+Requirements:
+- discord.py 2.x
+"""
+
+import json
+import os
+from typing import Optional
+
+import discord
+from discord.ext import commands
+
+# =========================================================
+# CONFIG
+# =========================================================
+TARGET_CHANNEL_ID = 1177449010949259355
+
+# Put your actual role IDs here
+COLOR_TEAM_ROLE_ID = 0        # Staff/Color Team role that can post official color results
+COLOR_REQUESTER_PING_ROLE_ID = 0  # Optional: role to ping on panel refresh, leave 0 to disable
+
+DATA_FILE = "color_lab_panel_data.json"
+
+EMBED_COLOR = 0x8F7CFF
+SUCCESS_COLOR = 0x57F287
+WARNING_COLOR = 0xFEE75C
+ERROR_COLOR = 0xED4245
+
+THUMBNAIL_URL = ""   # Optional DIFF logo URL
+BANNER_IMAGE_URL = ""  # Optional banner image URL
+
+
+# =========================================================
+# STORAGE HELPERS
+# =========================================================
+def load_data() -> dict:
+    if not os.path.exists(DATA_FILE):
+        return {}
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_data(data: dict) -> None:
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+
+def get_saved_message_id() -> Optional[int]:
+    data = load_data()
+    value = data.get("panel_message_id")
+    return int(value) if value else None
+
+
+def save_message_id(message_id: int) -> None:
+    data = load_data()
+    data["panel_message_id"] = message_id
+    save_data(data)
+
+
+# =========================================================
+# MODALS
+# =========================================================
+class ColorRequestModal(discord.ui.Modal, title="DIFF Color Request"):
+    reference = discord.ui.TextInput(
+        label="Reference Image Link or Short Description",
+        placeholder="Paste image link or describe the color/build",
+        required=True,
+        max_length=300,
+        style=discord.TextStyle.paragraph,
+    )
+    hex_code = discord.ui.TextInput(
+        label="Hex Code",
+        placeholder="#A9E3D6 or type Unknown",
+        required=True,
+        max_length=20,
+    )
+    car_name = discord.ui.TextInput(
+        label="Car Name",
+        placeholder="Example: Vorschlaghammer",
+        required=True,
+        max_length=100,
+    )
+    finish = discord.ui.TextInput(
+        label="Finish",
+        placeholder="Metallic / Pearlescent / Matte / Unknown",
+        required=True,
+        max_length=100,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🎨 New Color Request",
+            color=EMBED_COLOR,
+            description=(
+                "A new structured color request has been submitted.\n"
+                "Color Team can reply using the **Post Color Result** button."
+            ),
+        )
+        embed.add_field(name="Requested By", value=interaction.user.mention, inline=False)
+        embed.add_field(name="Reference", value=str(self.reference), inline=False)
+        embed.add_field(name="Hex Code", value=f"`{self.hex_code}`", inline=True)
+        embed.add_field(name="Car Name", value=str(self.car_name), inline=True)
+        embed.add_field(name="Finish", value=str(self.finish), inline=True)
+        embed.set_footer(text="DIFF Color Lab • Request Submitted")
+
+        await interaction.response.send_message(embed=embed)
+
+
+class ColorResultModal(discord.ui.Modal, title="Post Official Color Result"):
+    requester = discord.ui.TextInput(
+        label="Requester",
+        placeholder="@user or username",
+        required=True,
+        max_length=100,
+    )
+    base_color = discord.ui.TextInput(
+        label="Base Color",
+        placeholder="Example: #A9E3D6 / Seafoam Blue",
+        required=True,
+        max_length=100,
+    )
+    pearl = discord.ui.TextInput(
+        label="Pearl Color",
+        placeholder="Example: Ice White / Diamond Blue / None",
+        required=True,
+        max_length=100,
+    )
+    finish = discord.ui.TextInput(
+        label="Finish",
+        placeholder="Metallic / Pearlescent / Matte / Worn",
+        required=True,
+        max_length=100,
+    )
+    notes = discord.ui.TextInput(
+        label="Extra Notes",
+        placeholder="Any extra GTA color notes, lighting notes, or tips",
+        required=False,
+        max_length=400,
+        style=discord.TextStyle.paragraph,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if member is None:
+            return await interaction.response.send_message(
+                "I couldn't verify your permissions.",
+                ephemeral=True,
+            )
+
+        allowed = (
+            member.guild_permissions.manage_messages
+            or member.guild_permissions.administrator
+            or (COLOR_TEAM_ROLE_ID and any(role.id == COLOR_TEAM_ROLE_ID for role in member.roles))
+        )
+
+        if not allowed:
+            return await interaction.response.send_message(
+                "Only staff or the Color Team can post official color results.",
+                ephemeral=True,
+            )
+
+        embed = discord.Embed(
+            title="✅ Official Color Result",
+            color=SUCCESS_COLOR,
+            description=(
+                "A Color Team member has posted an official result.\n"
+                "Use these values as your best DIFF match."
+            ),
+        )
+        embed.add_field(name="Requester", value=str(self.requester), inline=False)
+        embed.add_field(name="Base Color", value=str(self.base_color), inline=True)
+        embed.add_field(name="Pearl", value=str(self.pearl), inline=True)
+        embed.add_field(name="Finish", value=str(self.finish), inline=True)
+
+        if str(self.notes).strip():
+            embed.add_field(name="Notes", value=str(self.notes), inline=False)
+
+        embed.set_footer(text=f"Posted by {interaction.user.display_name} • DIFF Color Lab")
+        await interaction.response.send_message(embed=embed)
+
+
+# =========================================================
+# VIEW
+# =========================================================
+class ColorLabView(discord.ui.View):
+    def __init__(self, cog: "ColorLabCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Submit Color Request",
+        emoji="🎨",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_color_lab_submit_request_v1",
+    )
+    async def submit_request(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ColorRequestModal())
+
+    @discord.ui.button(
+        label="Post Color Result",
+        emoji="✅",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_color_lab_post_result_v1",
+    )
+    async def post_result(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ColorResultModal())
+
+    @discord.ui.button(
+        label="Refresh Panel",
+        emoji="♻️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_color_lab_refresh_panel_v1",
+    )
+    async def refresh_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if member is None:
+            return await interaction.response.send_message(
+                "I couldn't verify your permissions.",
+                ephemeral=True,
+            )
+
+        allowed = (
+            member.guild_permissions.manage_messages
+            or member.guild_permissions.manage_channels
+            or member.guild_permissions.administrator
+            or (COLOR_TEAM_ROLE_ID and any(role.id == COLOR_TEAM_ROLE_ID for role in member.roles))
+        )
+
+        if not allowed:
+            return await interaction.response.send_message(
+                "Only staff or the Color Team can refresh this panel.",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+        await self.cog.ensure_panel()
+        await interaction.followup.send("Color Lab panel refreshed.", ephemeral=True)
+
+
+# =========================================================
+# COG
+# =========================================================
+class ColorLabCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.view = ColorLabView(self)
+        self.bot.add_view(self.view)
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="🎨 DIFF Color Lab",
+            description=(
+                "Welcome to the official **DIFF Color Lab**.\n\n"
+                "Use this channel to request custom GTA colors, get help recreating builds, "
+                "and receive official Color Team results.\n\n"
+                "**How this works:**\n"
+                "• Press **Submit Color Request** to post a clean request\n"
+                "• Include your reference image, hex code, car name, and finish\n"
+                "• Color Team replies using **Post Color Result**\n\n"
+                "**Channel Standards:**\n"
+                "• Keep requests clean and specific\n"
+                "• No random chatting or spam\n"
+                "• Official results should come from staff / Color Team only"
+            ),
+            color=EMBED_COLOR,
+        )
+
+        embed.add_field(
+            name="Best Request Format",
+            value=(
+                "• Reference image or link\n"
+                "• Hex code if available\n"
+                "• Car name\n"
+                "• Metallic / Matte / Pearlescent finish"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Why use this system",
+            value=(
+                "This keeps the channel clean, makes requests easier to find, "
+                "and lets the Color Team respond in a professional format."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Auto Refresh / Anti-Dupe",
+            value=(
+                "This panel tracks its own message ID and refreshes the same post "
+                "instead of sending duplicates."
+            ),
+            inline=False,
+        )
+
+        if THUMBNAIL_URL:
+            embed.set_thumbnail(url=THUMBNAIL_URL)
+        if BANNER_IMAGE_URL:
+            embed.set_image(url=BANNER_IMAGE_URL)
+
+        embed.set_footer(text="DIFF Color Lab System")
+        return embed
+
+    async def get_target_channel(self) -> Optional[discord.TextChannel]:
+        channel = self.bot.get_channel(TARGET_CHANNEL_ID)
+        if channel is None:
+            try:
+                fetched = await self.bot.fetch_channel(TARGET_CHANNEL_ID)
+                if isinstance(fetched, discord.TextChannel):
+                    return fetched
+                return None
+            except Exception:
+                return None
+        return channel if isinstance(channel, discord.TextChannel) else None
+
+    async def ensure_panel(self) -> None:
+        channel = await self.get_target_channel()
+        if channel is None:
+            print(f"[ColorLab] Could not find channel: {TARGET_CHANNEL_ID}")
+            return
+
+        embed = self.build_embed()
+        saved_message_id = get_saved_message_id()
+
+        if saved_message_id:
+            try:
+                msg = await channel.fetch_message(saved_message_id)
+                await msg.edit(embed=embed, view=self.view)
+                print("[ColorLab] Existing panel refreshed.")
+                return
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"[ColorLab] Failed to edit saved panel: {e}")
+
+        # Remove older duplicate bot panels if found
+        try:
+            async for msg in channel.history(limit=40):
+                if (
+                    msg.author == self.bot.user
+                    and msg.embeds
+                    and msg.embeds[0].title == "🎨 DIFF Color Lab"
+                ):
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[ColorLab] Duplicate cleanup issue: {e}")
+
+        try:
+            new_msg = await channel.send(embed=embed, view=self.view)
+            save_message_id(new_msg.id)
+            print(f"[ColorLab] New panel posted: {new_msg.id}")
+        except Exception as e:
+            print(f"[ColorLab] Failed to post panel: {e}")
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        await self.ensure_panel()
+
+    @commands.command(name="refresh_color_lab")
+    @commands.has_permissions(manage_guild=True)
+    async def refresh_color_lab(self, ctx: commands.Context):
+        await self.ensure_panel()
+        await ctx.send("Color Lab panel refreshed.", delete_after=10)
+
+
+# =========================================================
+# EXTENSION SETUP
+# =========================================================
+async def setup(bot: commands.Bot):
+    await bot.add_cog(ColorLabCog(bot))

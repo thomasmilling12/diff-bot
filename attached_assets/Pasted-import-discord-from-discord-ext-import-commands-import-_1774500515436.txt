@@ -1,0 +1,78 @@
+import discord
+from discord.ext import commands
+import asyncio
+
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+TOKEN = "YOUR_BOT_TOKEN"
+
+# 🔁 CHANNEL TO POST PANEL
+CHANNEL_ID = 1486228191243669646
+
+# 🔔 HOST ROLE (CHANGE THIS)
+HOST_ROLE_ID = 123456789012345678
+
+# 🧠 BUTTON LINKS
+CHANNEL_LINKS = {
+    "📅 Schedule / Planning": "https://discord.com/channels/850386896509337710/1089579004517953546",
+    "📍 Meet Coordination": "https://discord.com/channels/850386896509337710/1091157191895023626",
+    "🚫 Blacklist / Reports": "https://discord.com/channels/850386896509337710/1057016810261712938",
+    "📊 Staff Logs": "https://discord.com/channels/850386896509337710/1057016810261712938",
+    "🛠️ Host Tools": "https://discord.com/channels/850386896509337710/1485840926612918383"
+}
+
+class HostPanel(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+        for label, link in CHANNEL_LINKS.items():
+            self.add_item(discord.ui.Button(
+                label=label,
+                url=link,
+                style=discord.ButtonStyle.link
+            ))
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user}")
+
+    await asyncio.sleep(2)
+
+    channel = bot.get_channel(CHANNEL_ID)
+
+    if not channel:
+        print("Channel not found.")
+        return
+
+    # 🔁 DELETE OLD PANELS (ANTI-DUPE SYSTEM)
+    async for msg in channel.history(limit=50):
+        if msg.author == bot.user:
+            await msg.delete()
+
+    # 🧾 EMBED PANEL
+    embed = discord.Embed(
+        title="🏁 DIFF HOST TEAM CHAT",
+        description=(
+            "**Host Coordination Hub**\n\n"
+            "Use this space to communicate, plan, and execute meets.\n\n"
+            "🚨 **IMPORTANT:**\n"
+            "• Stay active and communicate clearly\n"
+            "• Coordinate locations, themes, and timing\n"
+            "• Check blacklist before hosting\n"
+            "• Keep everything organized + professional\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**Quick Access Tools Below** 👇"
+        ),
+        color=discord.Color.gold()
+    )
+
+    embed.set_footer(text="DIFF Meets • Host System")
+
+    # 🔔 PING HOST ROLE
+    content = f"<@&{HOST_ROLE_ID}>"
+
+    # 🚀 SEND PANEL
+    await channel.send(content=content, embed=embed, view=HostPanel())
+
+bot.run(TOKEN)

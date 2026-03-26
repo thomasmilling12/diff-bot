@@ -1,0 +1,574 @@
+"""
+DIFF Color Lab Ticket System
+Replit-ready discord.py extension/module
+
+What this file does:
+- Auto-posts a Color Lab panel in your target channel
+- Refreshes the same panel without making duplicates
+- Creates PRIVATE color request tickets
+- Ticket is only visible to:
+    • requester
+    • Color Team role
+    • admins / bot
+- Includes buttons to:
+    • Open private request
+    • Post official color result
+    • Close ticket
+    • Refresh panel
+- Re-registers persistent buttons after restart
+
+How to use:
+1) Put this file in your Replit project
+2) Fill in the IDs below
+3) Load the extension in your main bot file:
+       await bot.load_extension("color_lab_ticket_system")
+
+Requirements:
+- discord.py 2.x
+"""
+
+import json
+import os
+import re
+from typing import Optional
+
+import discord
+from discord.ext import commands
+
+# =========================================================
+# CONFIG
+# =========================================================
+TARGET_CHANNEL_ID = 1177449010949259355
+GUILD_ID = 850386896509337710
+
+COLOR_TEAM_ROLE_ID = 0          # REQUIRED
+TICKET_CATEGORY_ID = 0          # REQUIRED - category where private color tickets will be created
+LOG_CHANNEL_ID = 0              # OPTIONAL - staff log channel, leave 0 to disable
+
+DATA_FILE = "color_lab_ticket_panel_data.json"
+
+EMBED_COLOR = 0x8F7CFF
+SUCCESS_COLOR = 0x57F287
+ERROR_COLOR = 0xED4245
+WARNING_COLOR = 0xFEE75C
+
+THUMBNAIL_URL = ""      # Optional logo URL
+BANNER_IMAGE_URL = ""   # Optional banner URL
+
+
+# =========================================================
+# STORAGE HELPERS
+# =========================================================
+def load_data() -> dict:
+    if not os.path.exists(DATA_FILE):
+        return {}
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_data(data: dict) -> None:
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+
+def get_saved_message_id() -> Optional[int]:
+    data = load_data()
+    value = data.get("panel_message_id")
+    return int(value) if value else None
+
+
+def save_message_id(message_id: int) -> None:
+    data = load_data()
+    data["panel_message_id"] = message_id
+    save_data(data)
+
+
+def clean_name(text: str) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"[^a-z0-9-]+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip("-")
+    return text[:25] if text else "request"
+
+
+# =========================================================
+# MODALS
+# =========================================================
+class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Request"):
+    reference = discord.ui.TextInput(
+        label="Reference Image Link or Description",
+        placeholder="Paste image link or describe the exact color/build",
+        required=True,
+        max_length=300,
+        style=discord.TextStyle.paragraph,
+    )
+    hex_code = discord.ui.TextInput(
+        label="Hex Code",
+        placeholder="#A9E3D6 or Unknown",
+        required=True,
+        max_length=30,
+    )
+    car_name = discord.ui.TextInput(
+        label="Car Name",
+        placeholder="Example: Vorschlaghammer",
+        required=True,
+        max_length=100,
+    )
+    finish = discord.ui.TextInput(
+        label="Finish",
+        placeholder="Metallic / Pearlescent / Matte / Unknown",
+        required=True,
+        max_length=100,
+    )
+    extra_notes = discord.ui.TextInput(
+        label="Extra Notes",
+        placeholder="Anything else the Color Team should know",
+        required=False,
+        max_length=400,
+        style=discord.TextStyle.paragraph,
+    )
+
+    def __init__(self, cog: "ColorLabTicketCog"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.response.send_message(
+                "This can only be used inside the server.",
+                ephemeral=True,
+            )
+
+        if COLOR_TEAM_ROLE_ID == 0 or TICKET_CATEGORY_ID == 0:
+            return await interaction.response.send_message(
+                "This system is not fully configured yet. Add COLOR_TEAM_ROLE_ID and TICKET_CATEGORY_ID first.",
+                ephemeral=True,
+            )
+
+        color_team_role = guild.get_role(COLOR_TEAM_ROLE_ID)
+        category = guild.get_channel(TICKET_CATEGORY_ID)
+
+        if color_team_role is None:
+            return await interaction.response.send_message(
+                "I could not find the Color Team role. Check the role ID.",
+                ephemeral=True,
+            )
+
+        if not isinstance(category, discord.CategoryChannel):
+            return await interaction.response.send_message(
+                "I could not find the ticket category. Check TICKET_CATEGORY_ID.",
+                ephemeral=True,
+            )
+
+        requester = interaction.user
+        requester_name = clean_name(requester.display_name)
+        channel_name = f"color-{requester_name}"
+
+        # Prevent duplicate open ticket for same user
+        for ch in category.text_channels:
+            if ch.topic and f"color_request_user_id:{requester.id}" in ch.topic:
+                return await interaction.response.send_message(
+                    f"You already have an open color request ticket: {ch.mention}",
+                    ephemeral=True,
+                )
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            requester: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True,
+            ),
+            color_team_role: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_messages=True,
+                attach_files=True,
+                embed_links=True,
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                manage_messages=True,
+                read_message_history=True,
+            ),
+        }
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                topic=f"Private DIFF Color Lab ticket | color_request_user_id:{requester.id}",
+                reason=f"Color request ticket for {requester}",
+            )
+        except Exception as e:
+            return await interaction.followup.send(
+                f"Failed to create ticket channel: {e}",
+                ephemeral=True,
+            )
+
+        ticket_embed = discord.Embed(
+            title="🎨 Private Color Request",
+            description=(
+                f"{requester.mention}, your private Color Lab ticket has been opened.\n\n"
+                f"{color_team_role.mention} can review your request and reply in this channel."
+            ),
+            color=EMBED_COLOR,
+        )
+        ticket_embed.add_field(name="Reference", value=str(self.reference), inline=False)
+        ticket_embed.add_field(name="Hex Code", value=f"`{self.hex_code}`", inline=True)
+        ticket_embed.add_field(name="Car Name", value=str(self.car_name), inline=True)
+        ticket_embed.add_field(name="Finish", value=str(self.finish), inline=True)
+        if str(self.extra_notes).strip():
+            ticket_embed.add_field(name="Extra Notes", value=str(self.extra_notes), inline=False)
+        ticket_embed.set_footer(text="DIFF Color Lab • Private Ticket")
+
+        await ticket_channel.send(
+            content=f"{requester.mention} {color_team_role.mention}",
+            embed=ticket_embed,
+            view=ColorTicketControlsView(self.cog),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True),
+        )
+
+        await interaction.followup.send(
+            f"Your private color request ticket has been created: {ticket_channel.mention}",
+            ephemeral=True,
+        )
+
+        await self.cog.log_action(
+            guild,
+            f"🎨 Opened color ticket {ticket_channel.mention} for {requester.mention}"
+        )
+
+
+class ColorResultModal(discord.ui.Modal, title="Post Official Color Result"):
+    requester = discord.ui.TextInput(
+        label="Requester",
+        placeholder="@user or username",
+        required=True,
+        max_length=100,
+    )
+    base_color = discord.ui.TextInput(
+        label="Base Color",
+        placeholder="Example: #A9E3D6 / Seafoam Blue",
+        required=True,
+        max_length=100,
+    )
+    pearl = discord.ui.TextInput(
+        label="Pearl Color",
+        placeholder="Example: Ice White / Diamond Blue / None",
+        required=True,
+        max_length=100,
+    )
+    finish = discord.ui.TextInput(
+        label="Finish",
+        placeholder="Metallic / Pearlescent / Matte / Worn",
+        required=True,
+        max_length=100,
+    )
+    notes = discord.ui.TextInput(
+        label="Extra Notes",
+        placeholder="Any GTA notes, lighting notes, or tips",
+        required=False,
+        max_length=400,
+        style=discord.TextStyle.paragraph,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if member is None:
+            return await interaction.response.send_message(
+                "I couldn't verify your permissions.",
+                ephemeral=True,
+            )
+
+        allowed = (
+            member.guild_permissions.manage_messages
+            or member.guild_permissions.administrator
+            or (COLOR_TEAM_ROLE_ID and any(role.id == COLOR_TEAM_ROLE_ID for role in member.roles))
+        )
+
+        if not allowed:
+            return await interaction.response.send_message(
+                "Only staff or the Color Team can post official color results.",
+                ephemeral=True,
+            )
+
+        embed = discord.Embed(
+            title="✅ Official Color Result",
+            color=SUCCESS_COLOR,
+            description="A Color Team member has posted the official result for this request.",
+        )
+        embed.add_field(name="Requester", value=str(self.requester), inline=False)
+        embed.add_field(name="Base Color", value=str(self.base_color), inline=True)
+        embed.add_field(name="Pearl", value=str(self.pearl), inline=True)
+        embed.add_field(name="Finish", value=str(self.finish), inline=True)
+
+        if str(self.notes).strip():
+            embed.add_field(name="Notes", value=str(self.notes), inline=False)
+
+        embed.set_footer(text=f"Posted by {interaction.user.display_name} • DIFF Color Lab")
+        await interaction.response.send_message(embed=embed)
+
+
+# =========================================================
+# VIEWS
+# =========================================================
+class ColorLabPanelView(discord.ui.View):
+    def __init__(self, cog: "ColorLabTicketCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Open Private Request",
+        emoji="🎫",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_color_lab_open_private_request_v1",
+    )
+    async def open_private_request(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ColorTicketRequestModal(self.cog))
+
+    @discord.ui.button(
+        label="Refresh Panel",
+        emoji="♻️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_color_lab_refresh_private_panel_v1",
+    )
+    async def refresh_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if member is None:
+            return await interaction.response.send_message(
+                "I couldn't verify your permissions.",
+                ephemeral=True,
+            )
+
+        allowed = (
+            member.guild_permissions.manage_messages
+            or member.guild_permissions.manage_channels
+            or member.guild_permissions.administrator
+            or (COLOR_TEAM_ROLE_ID and any(role.id == COLOR_TEAM_ROLE_ID for role in member.roles))
+        )
+
+        if not allowed:
+            return await interaction.response.send_message(
+                "Only staff or the Color Team can refresh this panel.",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+        await self.cog.ensure_panel()
+        await interaction.followup.send("Color Lab panel refreshed.", ephemeral=True)
+
+
+class ColorTicketControlsView(discord.ui.View):
+    def __init__(self, cog: "ColorLabTicketCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Post Official Result",
+        emoji="✅",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_color_lab_ticket_post_result_v1",
+    )
+    async def post_result(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ColorResultModal())
+
+    @discord.ui.button(
+        label="Close Ticket",
+        emoji="🔒",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_color_lab_ticket_close_v1",
+    )
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if member is None:
+            return await interaction.response.send_message(
+                "I couldn't verify your permissions.",
+                ephemeral=True,
+            )
+
+        allowed = (
+            member.guild_permissions.manage_channels
+            or member.guild_permissions.administrator
+            or (COLOR_TEAM_ROLE_ID and any(role.id == COLOR_TEAM_ROLE_ID for role in member.roles))
+        )
+
+        if not allowed:
+            return await interaction.response.send_message(
+                "Only staff or the Color Team can close tickets.",
+                ephemeral=True,
+            )
+
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return await interaction.response.send_message(
+                "This button only works inside a ticket channel.",
+                ephemeral=True,
+            )
+
+        await interaction.response.send_message("Closing ticket in 5 seconds...")
+        await self.cog.log_action(
+            interaction.guild,
+            f"🔒 Closed color ticket #{channel.name} by {interaction.user.mention}"
+        )
+        import asyncio
+        await asyncio.sleep(5)
+        await channel.delete(reason=f"Closed by {interaction.user}")
+
+
+# =========================================================
+# COG
+# =========================================================
+class ColorLabTicketCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.panel_view = ColorLabPanelView(self)
+        self.ticket_view = ColorTicketControlsView(self)
+        self.bot.add_view(self.panel_view)
+        self.bot.add_view(self.ticket_view)
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="🎨 DIFF Color Lab",
+            description=(
+                "Welcome to the official **DIFF Color Lab**.\n\n"
+                "Need help recreating a custom GTA color? Use the button below to open a "
+                "**private request ticket** that only you and the **Color Team** can see.\n\n"
+                "**How it works:**\n"
+                "• Press **Open Private Request**\n"
+                "• Submit your reference image, hex code, car name, and finish\n"
+                "• A private ticket is created for you\n"
+                "• Color Team responds directly inside your ticket\n\n"
+                "**Why this is better:**\n"
+                "• Keeps the public channel clean\n"
+                "• Makes requests easier to track\n"
+                "• Gives members private one-on-one help"
+            ),
+            color=EMBED_COLOR,
+        )
+
+        embed.add_field(
+            name="What to include",
+            value=(
+                "• Reference image or image link\n"
+                "• Hex code if you have one\n"
+                "• Car name\n"
+                "• Finish type"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Private Ticket Access",
+            value=(
+                "Only the requester, Color Team, and admins can see the ticket."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Anti-Dupe System",
+            value=(
+                "This panel refreshes the same post instead of creating duplicates."
+            ),
+            inline=False,
+        )
+
+        if THUMBNAIL_URL:
+            embed.set_thumbnail(url=THUMBNAIL_URL)
+        if BANNER_IMAGE_URL:
+            embed.set_image(url=BANNER_IMAGE_URL)
+
+        embed.set_footer(text="DIFF Color Lab • Private Request System")
+        return embed
+
+    async def get_target_channel(self) -> Optional[discord.TextChannel]:
+        channel = self.bot.get_channel(TARGET_CHANNEL_ID)
+        if channel is None:
+            try:
+                fetched = await self.bot.fetch_channel(TARGET_CHANNEL_ID)
+                if isinstance(fetched, discord.TextChannel):
+                    return fetched
+                return None
+            except Exception:
+                return None
+        return channel if isinstance(channel, discord.TextChannel) else None
+
+    async def log_action(self, guild: Optional[discord.Guild], message: str) -> None:
+        if guild is None or LOG_CHANNEL_ID == 0:
+            return
+        channel = guild.get_channel(LOG_CHANNEL_ID)
+        if channel and isinstance(channel, discord.TextChannel):
+            try:
+                await channel.send(message)
+            except Exception:
+                pass
+
+    async def ensure_panel(self) -> None:
+        channel = await self.get_target_channel()
+        if channel is None:
+            print(f"[ColorLabTicket] Could not find channel: {TARGET_CHANNEL_ID}")
+            return
+
+        embed = self.build_embed()
+        saved_message_id = get_saved_message_id()
+
+        if saved_message_id:
+            try:
+                msg = await channel.fetch_message(saved_message_id)
+                await msg.edit(embed=embed, view=self.panel_view)
+                print("[ColorLabTicket] Existing panel refreshed.")
+                return
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"[ColorLabTicket] Failed to edit saved panel: {e}")
+
+        try:
+            async for msg in channel.history(limit=40):
+                if (
+                    msg.author == self.bot.user
+                    and msg.embeds
+                    and msg.embeds[0].title == "🎨 DIFF Color Lab"
+                ):
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[ColorLabTicket] Duplicate cleanup issue: {e}")
+
+        try:
+            new_msg = await channel.send(embed=embed, view=self.panel_view)
+            save_message_id(new_msg.id)
+            print(f"[ColorLabTicket] New panel posted: {new_msg.id}")
+        except Exception as e:
+            print(f"[ColorLabTicket] Failed to post panel: {e}")
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        await self.ensure_panel()
+
+    @commands.command(name="refresh_color_lab_tickets")
+    @commands.has_permissions(manage_guild=True)
+    async def refresh_color_lab_tickets(self, ctx: commands.Context):
+        await self.ensure_panel()
+        await ctx.send("Color Lab ticket panel refreshed.", delete_after=10)
+
+
+# =========================================================
+# EXTENSION SETUP
+# =========================================================
+async def setup(bot: commands.Bot):
+    await bot.add_cog(ColorLabTicketCog(bot))
