@@ -1,26 +1,66 @@
+"""
+DIFF Host Team Announcement Panel - Header Edition
+--------------------------------------------------
+Adds:
+- ONE panel only / no dupes
+- DIFF-style custom header image support in the panel
+- DIFF-style custom banner image support in sent announcements
+- Optional DIFF logo thumbnail
+- Dropdown categories
+- Color-coded announcement types
+- Manager-only urgent mode
+- Auto host-role ping
+- Clean branded embeds
+
+Channel:
+1486228191243669646
+"""
+
 import json
 from pathlib import Path
 
 import discord
 from discord.ext import commands
 
-HOST_TEAM_CHANNEL_ID  = 1486228191243669646
-HOST_ROLE_ID          = 1055823929358430248
-URGENT_PING_ROLE_ID   = 0
+# =========================================================
+# CONFIG
+# =========================================================
 
-MANAGER_ROLE_IDS: list[int] = []
+HOST_TEAM_CHANNEL_ID = 1486228191243669646
 
-PANEL_HEADER_URL       = ""
-ANNOUNCEMENT_BANNER_URL = ""
-DIFF_LOGO_URL          = ""
+# Put your real role IDs here
+HOST_ROLE_ID = 0
+URGENT_PING_ROLE_ID = 0
 
-DATA_FILE = Path("diff_data/host_team_announcement_panel.json")
+# Optional manager role IDs
+MANAGER_ROLE_IDS = [
+    # 123456789012345678,
+]
 
-PANEL_TITLES = {
-    "🏁 DIFF Host Team Announcement Center",
-    "📢 DIFF Host Team Announcement Panel",
-}
+# -------------------------
+# BRANDING IMAGES
+# -------------------------
+# PANEL_HEADER_URL:
+#   Large image shown inside the main panel embed.
+#
+# ANNOUNCEMENT_BANNER_URL:
+#   Large image shown inside sent announcement embeds.
+#
+# DIFF_LOGO_URL:
+#   Small thumbnail logo shown on embeds.
+#
+# You can use Discord CDN links or any direct image link.
 
+PANEL_HEADER_URL = ""          # Example: "https://cdn.discordapp.com/attachments/.../diff_panel_header.png"
+ANNOUNCEMENT_BANNER_URL = ""   # Example: "https://cdn.discordapp.com/attachments/.../diff_announcement_banner.png"
+DIFF_LOGO_URL = ""             # Example: "https://cdn.discordapp.com/attachments/.../diff_logo.png"
+
+DATA_FILE = Path("host_team_announcement_panel_data.json")
+
+
+# =========================================================
+# STORAGE
+# =========================================================
 
 def load_data() -> dict:
     if DATA_FILE.exists():
@@ -32,30 +72,49 @@ def load_data() -> dict:
 
 
 def save_data(data: dict) -> None:
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     DATA_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
+
+# =========================================================
+# HELPERS
+# =========================================================
 
 def user_is_manager(member: discord.Member) -> bool:
     if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
         return True
+
     if MANAGER_ROLE_IDS:
-        role_ids = {role.id for role in member.roles}
-        return any(rid in role_ids for rid in MANAGER_ROLE_IDS)
+        user_role_ids = {role.id for role in member.roles}
+        return any(role_id in user_role_ids for role_id in MANAGER_ROLE_IDS)
+
     return False
 
 
+def can_use_urgent_mode(member: discord.Member) -> bool:
+    return user_is_manager(member)
+
+
 def get_host_ping() -> str:
-    return f"<@&{HOST_ROLE_ID}>"
+    return f"<@&{HOST_ROLE_ID}>" if HOST_ROLE_ID else "@Host Role"
 
 
 def get_urgent_ping() -> str:
     return f"<@&{URGENT_PING_ROLE_ID}>" if URGENT_PING_ROLE_ID else ""
 
 
-def can_use_urgent_mode(member: discord.Member) -> bool:
-    return user_is_manager(member)
+def maybe_set_image(embed: discord.Embed, url: str) -> None:
+    if url and url.strip():
+        embed.set_image(url=url.strip())
 
+
+def maybe_set_thumbnail(embed: discord.Embed, url: str) -> None:
+    if url and url.strip():
+        embed.set_thumbnail(url=url.strip())
+
+
+# =========================================================
+# ANNOUNCEMENT TYPES
+# =========================================================
 
 ANNOUNCEMENT_TYPES = {
     "general_update": {
@@ -105,10 +164,14 @@ ANNOUNCEMENT_TYPES = {
 DEFAULT_TYPE = "general_update"
 
 
+# =========================================================
+# STATE
+# =========================================================
+
 class AnnouncementState:
     def __init__(self):
-        self.selection_by_user: dict[int, str] = {}
-        self.urgent_by_user: dict[int, bool] = {}
+        self.selection_by_user = {}
+        self.urgent_by_user = {}
 
     def set_selection(self, user_id: int, key: str) -> None:
         self.selection_by_user[user_id] = key
@@ -126,37 +189,27 @@ class AnnouncementState:
 STATE = AnnouncementState()
 
 
-def maybe_set_image(embed: discord.Embed, url: str) -> None:
-    if url and url.strip():
-        embed.set_image(url=url.strip())
-
-
-def maybe_set_thumbnail(embed: discord.Embed, url: str) -> None:
-    if url and url.strip():
-        embed.set_thumbnail(url=url.strip())
-
+# =========================================================
+# EMBEDS
+# =========================================================
 
 def build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🏁 DIFF Host Team Announcement Center",
         description=(
-            "Managers can send clean branded host announcements from one control panel.\n\n"
-            "**Features**\n"
+            "Managers can send branded host announcements from one control panel.\n\n"
+            "**Panel Features**\n"
             "• DIFF custom graphic header\n"
-            "• Category dropdown with 6 announcement types\n"
-            "• DIFF color-coded per type\n"
-            "• Auto host-role ping\n"
-            "• Manager-only urgent mode with extra ping\n"
-            "• One single auto-refresh panel\n\n"
-            "📋 **Staff Commands**\n"
-            "`!hostannouncepanel` — Refresh this panel\n"
-            "`!sethostrole @role` — Set the host role to ping\n"
-            "`!seturgentrole @role` — Set the urgent ping role"
+            "• dropdown announcement categories\n"
+            "• auto host ping\n"
+            "• manager-only urgent mode\n"
+            "• one clean no-dupe panel"
         ),
         color=0xF59E0B,
     )
+
     embed.add_field(
-        name="How It Works",
+        name="How To Use",
         value=(
             "1. Select the announcement type\n"
             "2. Toggle urgent mode if needed\n"
@@ -165,16 +218,19 @@ def build_panel_embed() -> discord.Embed:
         ),
         inline=False,
     )
+
     embed.add_field(
         name="Access",
         value="Managers / authorized staff only.",
         inline=False,
     )
+
     embed.add_field(
         name="Branding",
-        value="Attach a custom DIFF header, announcement banner, and logo through the config section.",
+        value="You can attach a custom DIFF header, announcement banner, and logo through the config section.",
         inline=False,
     )
+
     maybe_set_image(embed, PANEL_HEADER_URL)
     maybe_set_thumbnail(embed, DIFF_LOGO_URL)
     embed.set_footer(text="DIFF • Host Team System")
@@ -191,6 +247,7 @@ def build_sent_embed(
 ) -> discord.Embed:
     info = ANNOUNCEMENT_TYPES[announcement_type]
     final_title = title_text.strip() if title_text.strip() else info["title_prefix"]
+
     if urgent_mode:
         final_title = f"URGENT • {final_title}"
 
@@ -199,28 +256,44 @@ def build_sent_embed(
         description=body,
         color=info["color"],
     )
+
     embed.set_author(
         name=f"DIFF Management • {member.display_name}",
-        icon_url=member.display_avatar.url,
+        icon_url=member.display_avatar.url
     )
-    embed.add_field(name="Type",     value=info["label"],    inline=True)
-    embed.add_field(name="Sent By",  value=member.mention,   inline=True)
-    embed.add_field(name="Target",   value=get_host_ping(),  inline=True)
+
+    embed.add_field(name="Type", value=info["label"], inline=True)
+    embed.add_field(name="Sent By", value=member.mention, inline=True)
+    embed.add_field(name="Target", value=get_host_ping(), inline=True)
 
     if urgent_mode:
-        embed.add_field(name="Priority", value="Manager Urgent Mode Enabled", inline=False)
+        embed.add_field(
+            name="Priority",
+            value="Manager Urgent Mode Enabled",
+            inline=False,
+        )
 
     maybe_set_image(embed, ANNOUNCEMENT_BANNER_URL)
     maybe_set_thumbnail(embed, DIFF_LOGO_URL)
-    embed.set_footer(text=footer_text.strip() if footer_text.strip() else "DIFF Host Team")
+
+    if footer_text.strip():
+        embed.set_footer(text=footer_text.strip())
+    else:
+        embed.set_footer(text="DIFF Host Team")
+
     return embed
 
+
+# =========================================================
+# MODAL
+# =========================================================
 
 class HostAnnouncementModal(discord.ui.Modal):
     def __init__(self, announcement_type: str, urgent_mode: bool):
         self.announcement_type = announcement_type
         self.urgent_mode = urgent_mode
         info = ANNOUNCEMENT_TYPES[announcement_type]
+
         super().__init__(title=f"{info['label']} Announcement")
 
         self.custom_title = discord.ui.TextInput(
@@ -242,6 +315,7 @@ class HostAnnouncementModal(discord.ui.Modal):
             required=False,
             max_length=100,
         )
+
         self.add_item(self.custom_title)
         self.add_item(self.body_text)
         self.add_item(self.footer_text)
@@ -261,9 +335,11 @@ class HostAnnouncementModal(discord.ui.Modal):
             return
 
         urgent_mode = self.urgent_mode and can_use_urgent_mode(interaction.user)
+
         pings = [get_host_ping()]
         if urgent_mode and get_urgent_ping():
             pings.append(get_urgent_ping())
+
         content = " ".join(x for x in pings if x).strip()
 
         embed = build_sent_embed(
@@ -280,8 +356,13 @@ class HostAnnouncementModal(discord.ui.Modal):
             embed=embed,
             allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
         )
+
         await interaction.response.send_message("✅ Announcement sent.", ephemeral=True)
 
+
+# =========================================================
+# VIEW
+# =========================================================
 
 class AnnouncementTypeSelect(discord.ui.Select):
     def __init__(self):
@@ -294,6 +375,7 @@ class AnnouncementTypeSelect(discord.ui.Select):
             )
             for k, v in ANNOUNCEMENT_TYPES.items()
         ]
+
         super().__init__(
             placeholder="Choose announcement type...",
             min_values=1,
@@ -303,7 +385,7 @@ class AnnouncementTypeSelect(discord.ui.Select):
             row=0,
         )
 
-    async def callback(self, interaction: discord.Interaction) -> None:
+    async def callback(self, interaction: discord.Interaction):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
             return
@@ -315,8 +397,10 @@ class AnnouncementTypeSelect(discord.ui.Select):
         selected = self.values[0]
         STATE.set_selection(interaction.user.id, selected)
         info = ANNOUNCEMENT_TYPES[selected]
+
         await interaction.response.send_message(
-            f"Selected **{info['label']}** {info['emoji']}.", ephemeral=True
+            f"Selected **{info['label']}** {info['emoji']}.",
+            ephemeral=True,
         )
 
 
@@ -326,15 +410,13 @@ class HostAnnouncementPanelView(discord.ui.View):
         self.add_item(AnnouncementTypeSelect())
 
     @discord.ui.button(
-        label="Urgent Mode: OFF",
+        label="Urgent Mode",
         emoji="🚨",
         style=discord.ButtonStyle.red,
         custom_id="diff_host_team_toggle_urgent_mode",
         row=1,
     )
-    async def toggle_urgent(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def toggle_urgent(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
             return
@@ -346,8 +428,11 @@ class HostAnnouncementPanelView(discord.ui.View):
         current = STATE.get_urgent(interaction.user.id)
         new_value = not current
         STATE.set_urgent(interaction.user.id, new_value)
-        note = "enabled" if new_value else "disabled"
-        await interaction.response.send_message(f"🚨 Urgent mode {note}.", ephemeral=True)
+
+        await interaction.response.send_message(
+            f"🚨 Urgent mode {'enabled' if new_value else 'disabled'}.",
+            ephemeral=True,
+        )
 
     @discord.ui.button(
         label="Open Announcement Form",
@@ -356,9 +441,7 @@ class HostAnnouncementPanelView(discord.ui.View):
         custom_id="diff_host_team_open_announcement_form",
         row=1,
     )
-    async def open_form(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def open_form(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
             return
@@ -369,7 +452,10 @@ class HostAnnouncementPanelView(discord.ui.View):
 
         selected = STATE.get_selection(interaction.user.id)
         urgent_mode = STATE.get_urgent(interaction.user.id)
-        await interaction.response.send_modal(HostAnnouncementModal(selected, urgent_mode))
+
+        await interaction.response.send_modal(
+            HostAnnouncementModal(selected, urgent_mode)
+        )
 
     @discord.ui.button(
         label="Refresh Panel",
@@ -378,9 +464,7 @@ class HostAnnouncementPanelView(discord.ui.View):
         custom_id="diff_host_team_refresh_announcement_panel",
         row=1,
     )
-    async def refresh_panel(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def refresh_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
             return
@@ -393,17 +477,19 @@ class HostAnnouncementPanelView(discord.ui.View):
         await interaction.response.send_message("✅ Panel refreshed.", ephemeral=True)
 
 
+# =========================================================
+# PANEL MANAGEMENT
+# =========================================================
+
 async def ensure_single_panel(bot: commands.Bot) -> None:
     channel = bot.get_channel(HOST_TEAM_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
-        try:
-            channel = await bot.fetch_channel(HOST_TEAM_CHANNEL_ID)
-        except Exception as e:
-            print(f"[HostTeamAnnouncementPanel] Channel not found: {e}")
-            return
+        print(f"[HostAnnouncementPanel] Channel {HOST_TEAM_CHANNEL_ID} not found.")
+        return
 
     data = load_data()
     panel_message_id = data.get("panel_message_id")
+
     embed = build_panel_embed()
     view = HostAnnouncementPanelView()
 
@@ -411,42 +497,50 @@ async def ensure_single_panel(bot: commands.Bot) -> None:
         try:
             msg = await channel.fetch_message(panel_message_id)
             await msg.edit(content=None, embed=embed, view=view)
-            print("[HostTeamAnnouncementPanel] Existing panel refreshed.")
+            print("[HostAnnouncementPanel] Existing panel refreshed.")
             return
         except discord.NotFound:
             pass
         except Exception as e:
-            print(f"[HostTeamAnnouncementPanel] Could not edit saved panel: {e}")
+            print(f"[HostAnnouncementPanel] Could not edit saved panel: {e}")
 
     try:
         async for msg in channel.history(limit=50):
-            if msg.author == bot.user and msg.embeds and msg.embeds[0].title in PANEL_TITLES:
+            if (
+                msg.author == bot.user
+                and msg.embeds
+                and msg.embeds[0].title == "🏁 DIFF Host Team Announcement Center"
+            ):
                 await msg.edit(content=None, embed=embed, view=view)
                 data["panel_message_id"] = msg.id
                 save_data(data)
-                print("[HostTeamAnnouncementPanel] Found old panel and refreshed it.")
+                print("[HostAnnouncementPanel] Found old panel and refreshed it.")
                 return
     except Exception as e:
-        print(f"[HostTeamAnnouncementPanel] History scan failed: {e}")
+        print(f"[HostAnnouncementPanel] History scan failed: {e}")
 
     new_msg = await channel.send(embed=embed, view=view)
     data["panel_message_id"] = new_msg.id
     save_data(data)
-    print("[HostTeamAnnouncementPanel] New panel posted.")
+    print("[HostAnnouncementPanel] New panel posted.")
 
 
-class HostTeamAnnouncementPanel(commands.Cog):
+# =========================================================
+# COG
+# =========================================================
+
+class HostTeamAnnouncementPanelHeaderEdition(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.bot.add_view(HostAnnouncementPanelView())
 
     @commands.Cog.listener()
     async def on_ready(self):
-        if getattr(self.bot, "_diff_host_team_announcement_panel_ready", False):
+        if getattr(self.bot, "_diff_host_team_announcement_panel_header_ready", False):
             return
-        self.bot._diff_host_team_announcement_panel_ready = True
+
+        self.bot._diff_host_team_announcement_panel_header_ready = True
         await ensure_single_panel(self.bot)
-        print("[HostTeamAnnouncementPanel] Cog ready.")
 
     @commands.command(name="hostannouncepanel")
     @commands.has_permissions(manage_guild=True)
@@ -473,4 +567,4 @@ class HostTeamAnnouncementPanel(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(HostTeamAnnouncementPanel(bot))
+    await bot.add_cog(HostTeamAnnouncementPanelHeaderEdition(bot))
