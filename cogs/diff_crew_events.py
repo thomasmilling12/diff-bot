@@ -4,11 +4,78 @@ import asyncio
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import discord
 from discord.ext import commands
+
+# Common timezone abbreviation → UTC offset (minutes)
+_TZ_OFFSETS: dict[str, int] = {
+    "UTC": 0, "GMT": 0,
+    "EST": -300, "EDT": -240,
+    "CST": -360, "CDT": -300,
+    "MST": -420, "MDT": -360,
+    "PST": -480, "PDT": -420,
+    "AST": -240, "ADT": -180,
+    "HST": -600, "AKST": -540, "AKDT": -480,
+    "BST": 60,   "CET": 60,    "CEST": 120,
+    "EET": 120,  "EEST": 180,
+    "IST": 330,  "JST": 540,   "AEST": 600, "AEDT": 660,
+}
+
+_DATE_FORMATS = [
+    "%B %d %Y %I:%M %p",
+    "%B %d %Y %I%p",
+    "%B %d, %Y %I:%M %p",
+    "%B %d, %Y %I%p",
+    "%m/%d/%Y %I:%M %p",
+    "%m/%d/%Y %I%p",
+    "%m/%d/%Y %H:%M",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%d %I:%M %p",
+    "%B %d %I:%M %p",
+    "%B %d %I%p",
+]
+
+
+def _parse_datetime(text: str) -> Optional[int]:
+    """
+    Parse a human-readable date string typed by the host into a UTC unix timestamp.
+    Supports timezone abbreviations (EST, PST, UTC, etc.) at the end of the string.
+    Returns the unix timestamp on success, None on failure.
+    """
+    text = text.strip()
+
+    # Pull timezone abbreviation off the end if present
+    tz_offset_minutes = 0   # default to UTC
+    tz_found = False
+    parts = text.rsplit(None, 1)
+    if len(parts) == 2 and parts[-1].upper() in _TZ_OFFSETS:
+        tz_offset_minutes = _TZ_OFFSETS[parts[-1].upper()]
+        text = parts[0].strip()
+        tz_found = True
+
+    # Normalise AM/PM spacing so "9PM" → "9 PM"
+    text = re.sub(r"(\d)(AM|PM|am|pm)", r"\1 \2", text, flags=re.IGNORECASE)
+    # Collapse extra spaces
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # If no year in the string, inject current year
+    if not re.search(r"\b(202\d|203\d)\b", text):
+        text = text + f" {datetime.now(timezone.utc).year}"
+
+    for fmt in _DATE_FORMATS:
+        try:
+            naive = datetime.strptime(text, fmt)
+            # Apply the timezone offset
+            tz = timezone(timedelta(minutes=tz_offset_minutes))
+            aware = naive.replace(tzinfo=tz)
+            return int(aware.timestamp())
+        except ValueError:
+            continue
+
+    return None
 
 # =========================================================
 # CONFIG
@@ -156,8 +223,9 @@ class CreateEventModal(discord.ui.Modal, title="Create Crew Event"):
         required=True, max_length=100,
     )
     timestamp_input = discord.ui.TextInput(
-        label="Unix Timestamp", placeholder="Example: 1775342400",
-        required=True, max_length=20,
+        label="Date & Time",
+        placeholder="Example: March 28 9:00 PM EST  or  03/28 9PM PST",
+        required=True, max_length=50,
     )
     host_input = discord.ui.TextInput(
         label="Host", placeholder="@Host or Host Name",
@@ -183,11 +251,15 @@ class CreateEventModal(discord.ui.Modal, title="Create Crew Event"):
                 "Only staff can create official crew events.", ephemeral=True
             )
 
-        try:
-            ts = int(str(self.timestamp_input).strip())
-        except ValueError:
+        ts = _parse_datetime(str(self.timestamp_input))
+        if ts is None:
             return await interaction.response.send_message(
-                "The timestamp must be a valid Unix timestamp (e.g. 1775342400).", ephemeral=True
+                "❌ Couldn't read that date/time. Try one of these formats:\n"
+                "• `March 28 9:00 PM EST`\n"
+                "• `03/28/2026 9PM PST`\n"
+                "• `2026-03-28 21:00 UTC`\n\n"
+                "Supported zones: EST, EDT, CST, CDT, MST, MDT, PST, PDT, UTC, GMT, and more.",
+                ephemeral=True,
             )
 
         event_id = _make_event_id()
