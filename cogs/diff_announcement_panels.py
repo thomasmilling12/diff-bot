@@ -234,7 +234,7 @@ class CrewAnnouncePanelView(discord.ui.View):
 
 
 # =========================================================
-# GENERAL ANNOUNCEMENT MODAL + VIEW
+# GENERAL ANNOUNCEMENT MODAL + SMART-PING VIEW
 # =========================================================
 class GeneralAnnouncementModal(discord.ui.Modal, title="Create General Announcement"):
     title_input = discord.ui.TextInput(
@@ -253,9 +253,10 @@ class GeneralAnnouncementModal(discord.ui.Modal, title="Create General Announcem
         max_length=100, required=False,
     )
 
-    def __init__(self, cog: "AnnouncementPanelsCog"):
+    def __init__(self, cog: "AnnouncementPanelsCog", ping_mode: str):
         super().__init__()
-        self.cog = cog
+        self.cog       = cog
+        self.ping_mode = ping_mode   # "everyone" | "here" | "crew" | "none"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         member = interaction.user
@@ -284,17 +285,62 @@ class GeneralAnnouncementModal(discord.ui.Modal, title="Create General Announcem
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text=footer)
 
-        await channel.send(
-            content="@everyone",
-            embed=embed,
-            allowed_mentions=discord.AllowedMentions(everyone=True),
-        )
+        # Resolve ping content and allowed_mentions based on chosen mode
+        if self.ping_mode == "everyone":
+            content          = "@everyone"
+            allowed_mentions = discord.AllowedMentions(everyone=True)
+        elif self.ping_mode == "here":
+            content          = "@here"
+            allowed_mentions = discord.AllowedMentions(everyone=True)
+        elif self.ping_mode == "crew":
+            crew_role        = interaction.guild.get_role(CREW_ROLE_ID) if interaction.guild else None
+            content          = crew_role.mention if crew_role else None
+            allowed_mentions = discord.AllowedMentions(roles=True)
+        else:  # "none"
+            content          = None
+            allowed_mentions = discord.AllowedMentions.none()
+
+        await channel.send(content=content, embed=embed, allowed_mentions=allowed_mentions)
         await interaction.response.send_message(
-            "General announcement posted successfully.", ephemeral=True
+            f"General announcement posted with **{self.ping_mode}** ping.", ephemeral=True
         )
         await self.cog.log_action(
             interaction.guild,
-            f"📢 General announcement `{str(self.title_input)}` posted by {member.mention}"
+            f"📢 General announcement `{str(self.title_input)}` "
+            f"(ping: {self.ping_mode}) posted by {member.mention}"
+        )
+
+
+class _PingSelect(discord.ui.Select):
+    """Dropdown that asks which ping type to use, then opens the modal."""
+
+    def __init__(self, cog: "AnnouncementPanelsCog"):
+        super().__init__(
+            placeholder="Choose ping type then post announcement…",
+            min_values=1,
+            max_values=1,
+            custom_id="diff_general_announce_ping_select_v1",
+            options=[
+                discord.SelectOption(label="Ping @everyone",  value="everyone", emoji="📣",
+                                     description="Notify all server members"),
+                discord.SelectOption(label="Ping @here",      value="here",     emoji="📍",
+                                     description="Notify online members only"),
+                discord.SelectOption(label="Ping Crew Role",  value="crew",     emoji="👥",
+                                     description="Notify crew members"),
+                discord.SelectOption(label="No Ping",         value="none",     emoji="🔕",
+                                     description="Post without any ping"),
+            ],
+        )
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not _is_staff(member):
+            return await interaction.response.send_message(
+                "Only staff can use this panel.", ephemeral=True
+            )
+        await interaction.response.send_modal(
+            GeneralAnnouncementModal(self.cog, self.values[0])
         )
 
 
@@ -302,17 +348,7 @@ class GeneralAnnouncePanelView(discord.ui.View):
     def __init__(self, cog: "AnnouncementPanelsCog"):
         super().__init__(timeout=None)
         self.cog = cog
-
-    @discord.ui.button(label="Make General Announcement", emoji="📣",
-                       style=discord.ButtonStyle.blurple,
-                       custom_id="diff_general_announce_create_v1")
-    async def make_general_announcement(self, interaction: discord.Interaction, button: discord.ui.Button):
-        member = interaction.user
-        if not isinstance(member, discord.Member) or not _is_staff(member):
-            return await interaction.response.send_message(
-                "Only staff can use this button.", ephemeral=True
-            )
-        await interaction.response.send_modal(GeneralAnnouncementModal(self.cog))
+        self.add_item(_PingSelect(cog))
 
     @discord.ui.button(label="Refresh Panel", emoji="♻️",
                        style=discord.ButtonStyle.secondary,
@@ -374,12 +410,14 @@ class AnnouncementPanelsCog(commands.Cog):
             color=discord.Color.dark_blue(),
             description=(
                 "**Staff General Announcement Panel**\n\n"
-                "Use the button below to post a server-wide announcement.\n"
-                "The bot will ping **@everyone** automatically.\n\n"
+                "Use the dropdown below to choose a ping type, then fill in your announcement.\n\n"
+                "**Ping Options:**\n"
+                "📣 **Ping @everyone** — notify all server members\n"
+                "📍 **Ping @here** — notify online members only\n"
+                "👥 **Ping Crew Role** — notify crew members\n"
+                "🔕 **No Ping** — post without any ping\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "• Keep announcements clear and professional\n"
-                "• Use short titles when possible\n"
-                "• Avoid duplicate or spam posts\n"
+                "Staff use only\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             ),
         )

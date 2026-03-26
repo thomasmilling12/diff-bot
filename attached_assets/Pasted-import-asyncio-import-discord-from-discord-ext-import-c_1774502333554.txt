@@ -1,0 +1,204 @@
+import asyncio
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+GENERAL_ANNOUNCEMENT_CHANNEL_ID = 1047166622235893911
+STAFF_ROLE_ID = 123456789012345678  # CHANGE THIS
+CREW_ROLE_ID = 123456789012345678   # OPTIONAL: set if you want a crew ping option too
+
+PANEL_TITLE = "📢 DIFF General Announcement Center"
+PANEL_DESCRIPTION = (
+    "**Staff General Announcement Panel**\n\n"
+    "Press the button below to create a server announcement.\n"
+    "You can choose how the bot pings people before posting:\n\n"
+    "• Everyone\n"
+    "• Here\n"
+    "• Crew Role\n"
+    "• No Ping\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━\n"
+    "Staff use only\n"
+    "━━━━━━━━━━━━━━━━━━━━━━"
+)
+
+
+def is_staff_member(user: discord.abc.User) -> bool:
+    if not isinstance(user, discord.Member):
+        return False
+    return any(role.id == STAFF_ROLE_ID for role in user.roles) or user.guild_permissions.administrator
+
+
+class AnnouncementModal(discord.ui.Modal, title="Create General Announcement"):
+    title_input = discord.ui.TextInput(
+        label="Announcement Title",
+        placeholder="Example: Server Update",
+        max_length=100,
+        required=True,
+    )
+
+    message_input = discord.ui.TextInput(
+        label="Announcement Message",
+        placeholder="Type your announcement here...",
+        style=discord.TextStyle.paragraph,
+        max_length=2000,
+        required=True,
+    )
+
+    footer_input = discord.ui.TextInput(
+        label="Footer Text (optional)",
+        placeholder="Example: DIFF Staff Team",
+        max_length=100,
+        required=False,
+    )
+
+    def __init__(self, cog: "GeneralAnnouncementSmartPingCog", ping_mode: str):
+        super().__init__()
+        self.cog = cog
+        self.ping_mode = ping_mode
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not is_staff_member(interaction.user):
+            await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
+            return
+
+        channel = interaction.client.get_channel(GENERAL_ANNOUNCEMENT_CHANNEL_ID)
+        if channel is None:
+            await interaction.response.send_message("Announcement channel not found.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title=str(self.title_input),
+            description=str(self.message_input),
+            color=discord.Color.blurple(),
+        )
+        embed.set_author(
+            name=f"Posted by {interaction.user.display_name}",
+            icon_url=interaction.user.display_avatar.url
+        )
+        footer_text = str(self.footer_input).strip() or "DIFF General Announcement System"
+        embed.set_footer(text=footer_text)
+
+        content = None
+        allowed_mentions = discord.AllowedMentions.none()
+
+        if self.ping_mode == "everyone":
+            content = "@everyone"
+            allowed_mentions = discord.AllowedMentions(everyone=True)
+        elif self.ping_mode == "here":
+            content = "@here"
+            allowed_mentions = discord.AllowedMentions(everyone=True)
+        elif self.ping_mode == "crew":
+            content = f"<@&{CREW_ROLE_ID}>"
+            allowed_mentions = discord.AllowedMentions(roles=True)
+        elif self.ping_mode == "none":
+            content = None
+            allowed_mentions = discord.AllowedMentions.none()
+
+        await channel.send(content=content, embed=embed, allowed_mentions=allowed_mentions)
+        await interaction.response.send_message(f"Announcement posted with **{self.ping_mode}** ping.", ephemeral=True)
+
+
+class PingSelect(discord.ui.Select):
+    def __init__(self, cog: "GeneralAnnouncementSmartPingCog"):
+        options = [
+            discord.SelectOption(label="Ping Everyone", value="everyone", emoji="📣", description="Ping @everyone"),
+            discord.SelectOption(label="Ping Here", value="here", emoji="📍", description="Ping @here"),
+            discord.SelectOption(label="Ping Crew Role", value="crew", emoji="👥", description="Ping the crew role"),
+            discord.SelectOption(label="No Ping", value="none", emoji="🔕", description="Post without a ping"),
+        ]
+        super().__init__(
+            placeholder="Choose how to ping people...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="diff:general_announcement:ping_select"
+        )
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not is_staff_member(interaction.user):
+            await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
+            return
+
+        ping_mode = self.values[0]
+        await interaction.response.send_modal(AnnouncementModal(self.cog, ping_mode))
+
+
+class SmartPingPanelView(discord.ui.View):
+    def __init__(self, cog: "GeneralAnnouncementSmartPingCog"):
+        super().__init__(timeout=None)
+        self.add_item(PingSelect(cog))
+
+
+class GeneralAnnouncementSmartPingCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.view = SmartPingPanelView(self)
+
+    async def post_or_refresh_panel(self):
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(2)
+
+        channel = self.bot.get_channel(GENERAL_ANNOUNCEMENT_CHANNEL_ID)
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            print("General announcement channel not found.")
+            return
+
+        try:
+            async for msg in channel.history(limit=50):
+                if msg.author.id != self.bot.user.id:
+                    continue
+
+                panel_match = False
+                if msg.embeds:
+                    for emb in msg.embeds:
+                        if emb.title == PANEL_TITLE:
+                            panel_match = True
+                            break
+
+                select_match = False
+                for row in msg.components:
+                    for component in row.children:
+                        if getattr(component, "custom_id", None) == "diff:general_announcement:ping_select":
+                            select_match = True
+                            break
+
+                if panel_match or select_match:
+                    await msg.delete()
+        except discord.Forbidden:
+            print("Missing permissions to delete old panel messages.")
+        except Exception as e:
+            print(f"Error cleaning old smart ping panels: {e}")
+
+        embed = discord.Embed(
+            title=PANEL_TITLE,
+            description=PANEL_DESCRIPTION,
+            color=discord.Color.dark_blue(),
+        )
+        embed.set_footer(text="DIFF Meets • Smart Ping Announcement System")
+
+        await channel.send(embed=embed, view=self.view)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        self.bot.add_view(self.view)
+        try:
+            await self.post_or_refresh_panel()
+        except Exception as e:
+            print(f"Failed to post smart ping panel: {e}")
+
+    @app_commands.command(
+        name="refresh_general_announcement_panel",
+        description="Refresh the general announcement smart ping panel."
+    )
+    async def refresh_general_announcement_panel(self, interaction: discord.Interaction):
+        if not is_staff_member(interaction.user):
+            await interaction.response.send_message("Only staff can refresh this panel.", ephemeral=True)
+            return
+
+        await self.post_or_refresh_panel()
+        await interaction.response.send_message("General smart ping panel refreshed.", ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(GeneralAnnouncementSmartPingCog(bot))
