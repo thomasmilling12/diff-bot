@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import html as html_lib
+import io
 import json
 import os
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
 import discord
@@ -12,14 +15,18 @@ from discord.ext import commands
 # =========================================================
 # CONFIG
 # =========================================================
-TARGET_CHANNEL_ID  = 1177449010949259355
-GUILD_ID           = 850386896509337710
-LOG_CHANNEL_ID     = 1485265848099799163   # staff-logs
+TARGET_CHANNEL_ID   = 1177449010949259355
+GUILD_ID            = 850386896509337710
+LOG_CHANNEL_ID      = 1485265848099799163   # staff-logs
 
-COLOR_TEAM_ROLE_ID = 0   # <-- fill in your Color Team role ID
-TICKET_CATEGORY_ID = 0   # <-- fill in the category ID where tickets should be created
+COLOR_TEAM_ROLE_ID  = 0   # <-- fill in your Color Team role ID
+TICKET_CATEGORY_ID  = 0   # <-- active tickets category ID
+ARCHIVE_CATEGORY_ID = 0   # <-- archived tickets category ID
 
-DATA_FILE = os.path.join("diff_data", "color_lab_panel.json")
+DATA_DIR         = "diff_data"
+DATA_FILE        = os.path.join(DATA_DIR, "color_lab_panel.json")
+OPEN_TICKETS_FILE = os.path.join(DATA_DIR, "color_lab_open_tickets.json")
+TRANSCRIPTS_DIR  = os.path.join(DATA_DIR, "color_lab_transcripts")
 
 DIFF_LOGO_URL = (
     "https://media.discordapp.net/attachments/1107375326625005719/"
@@ -30,38 +37,52 @@ DIFF_LOGO_URL = (
 
 EMBED_COLOR   = 0x8F7CFF
 SUCCESS_COLOR = 0x57F287
+WARNING_COLOR = 0xFEE75C
 ERROR_COLOR   = 0xED4245
 PANEL_TAG     = "DIFF_COLOR_LAB_PANEL"
 
 
 # =========================================================
-# STORAGE HELPERS
+# FILE HELPERS
 # =========================================================
-def _load() -> dict:
-    if not os.path.exists(DATA_FILE):
+def _ensure_dirs() -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
+
+
+def _load(path: str) -> dict:
+    if not os.path.exists(path):
         return {}
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
 
 
-def _save(data: dict) -> None:
-    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
+def _save(path: str, data: dict) -> None:
+    _ensure_dirs()
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
 
 def _get_msg_id() -> Optional[int]:
-    v = _load().get("panel_message_id")
+    v = _load(DATA_FILE).get("panel_message_id")
     return int(v) if v else None
 
 
 def _set_msg_id(mid: int) -> None:
-    d = _load()
+    d = _load(DATA_FILE)
     d["panel_message_id"] = mid
-    _save(d)
+    _save(DATA_FILE, d)
+
+
+def _load_tickets() -> dict:
+    return _load(OPEN_TICKETS_FILE)
+
+
+def _save_tickets(data: dict) -> None:
+    _save(OPEN_TICKETS_FILE, data)
 
 
 def _clean_name(text: str) -> str:
@@ -71,6 +92,71 @@ def _clean_name(text: str) -> str:
     return text[:25] if text else "request"
 
 
+def _ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_UTC")
+
+
+# =========================================================
+# TRANSCRIPT BUILDER
+# =========================================================
+async def _build_transcript(channel: discord.TextChannel) -> str:
+    messages = [m async for m in channel.history(limit=None, oldest_first=True)]
+
+    rows = []
+    for m in messages:
+        created = m.created_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        author  = html_lib.escape(f"{m.author} ({m.author.id})")
+        content = html_lib.escape(m.content or "")
+
+        embed_parts = []
+        for emb in m.embeds:
+            title  = html_lib.escape(emb.title or "")
+            desc   = html_lib.escape(emb.description or "")
+            fields = "".join(
+                f"<div class='field'><b>{html_lib.escape(f.name)}:</b><br>{html_lib.escape(f.value)}</div>"
+                for f in emb.fields
+            )
+            embed_parts.append(
+                f"<div class='embed'><div><b>{title}</b></div><div>{desc}</div>{fields}</div>"
+            )
+
+        attachments = "".join(
+            f"<div class='attachment'><a href='{html_lib.escape(a.url)}'>{html_lib.escape(a.filename)}</a></div>"
+            for a in m.attachments
+        )
+
+        rows.append(f"""
+        <div class="message">
+            <div class="meta">
+                <span class="author">{author}</span>
+                <span class="time">{created}</span>
+            </div>
+            <div class="content">{content.replace(chr(10), "<br>")}</div>
+            {"".join(embed_parts)}{attachments}
+        </div>""")
+
+    title_esc = html_lib.escape(f"Transcript — #{channel.name}")
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{title_esc}</title>
+<style>
+body{{background:#1e1f22;color:#e3e5e8;font-family:Arial,sans-serif;padding:20px}}
+h1{{color:#fff;border-bottom:1px solid #3f4147;padding-bottom:10px}}
+.message{{background:#2b2d31;border:1px solid #3f4147;border-radius:10px;padding:12px;margin-bottom:12px}}
+.meta{{margin-bottom:8px;font-size:13px}}
+.author{{font-weight:bold;color:#fff}}
+.time{{color:#b5bac1;margin-left:10px}}
+.content{{white-space:normal;line-height:1.5}}
+.embed{{background:#232428;border-left:4px solid #8F7CFF;padding:10px;margin-top:10px;border-radius:8px}}
+.field{{margin-top:8px}}
+.attachment{{margin-top:8px}}
+a{{color:#7ab8ff;text-decoration:none}}
+</style></head><body>
+<h1>{title_esc}</h1>
+<div>Generated: {_ts()}</div>
+<div style="margin-top:20px">{"".join(rows)}</div>
+</body></html>"""
+
+
 # =========================================================
 # MODALS
 # =========================================================
@@ -78,33 +164,24 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
     reference = discord.ui.TextInput(
         label="Reference Image Link or Description",
         placeholder="Paste image link or describe the exact color/build",
-        required=True,
-        max_length=300,
+        required=True, max_length=300,
         style=discord.TextStyle.paragraph,
     )
     hex_code = discord.ui.TextInput(
-        label="Hex Code",
-        placeholder="#A9E3D6 or Unknown",
-        required=True,
-        max_length=30,
+        label="Hex Code", placeholder="#A9E3D6 or Unknown",
+        required=True, max_length=30,
     )
     car_name = discord.ui.TextInput(
-        label="Car Name",
-        placeholder="Example: Vorschlaghammer",
-        required=True,
-        max_length=100,
+        label="Car Name", placeholder="Example: Vorschlaghammer",
+        required=True, max_length=100,
     )
     finish = discord.ui.TextInput(
-        label="Finish",
-        placeholder="Metallic / Pearlescent / Matte / Unknown",
-        required=True,
-        max_length=100,
+        label="Finish", placeholder="Metallic / Pearlescent / Matte / Unknown",
+        required=True, max_length=100,
     )
     extra_notes = discord.ui.TextInput(
-        label="Extra Notes",
-        placeholder="Anything else the Color Team should know",
-        required=False,
-        max_length=400,
+        label="Extra Notes", placeholder="Anything else the Color Team should know",
+        required=False, max_length=400,
         style=discord.TextStyle.paragraph,
     )
 
@@ -119,15 +196,15 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
                 "This can only be used inside the server.", ephemeral=True
             )
 
-        if COLOR_TEAM_ROLE_ID == 0 or TICKET_CATEGORY_ID == 0:
+        if COLOR_TEAM_ROLE_ID == 0 or TICKET_CATEGORY_ID == 0 or ARCHIVE_CATEGORY_ID == 0:
             return await interaction.response.send_message(
                 "The Color Lab ticket system is not fully configured yet. "
-                "Please ask staff to set the Color Team role and ticket category.",
+                "Please ask staff to set the Color Team role and ticket categories.",
                 ephemeral=True,
             )
 
         color_team_role = guild.get_role(COLOR_TEAM_ROLE_ID)
-        category = guild.get_channel(TICKET_CATEGORY_ID)
+        category        = guild.get_channel(TICKET_CATEGORY_ID)
 
         if color_team_role is None:
             return await interaction.response.send_message(
@@ -138,14 +215,18 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
                 "Could not find the ticket category. Please contact staff.", ephemeral=True
             )
 
-        requester = interaction.user
+        requester    = interaction.user
+        open_tickets = _load_tickets()
+        existing_id  = open_tickets.get(str(requester.id))
 
-        # Prevent duplicate open tickets for the same user
-        for ch in category.text_channels:
-            if ch.topic and f"color_user:{requester.id}" in ch.topic:
+        if existing_id:
+            existing_ch = guild.get_channel(int(existing_id))
+            if existing_ch:
                 return await interaction.response.send_message(
-                    f"You already have an open color ticket: {ch.mention}", ephemeral=True
+                    f"You already have an open color ticket: {existing_ch.mention}", ephemeral=True
                 )
+            open_tickets.pop(str(requester.id), None)
+            _save_tickets(open_tickets)
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -155,11 +236,11 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
             ),
             color_team_role: discord.PermissionOverwrite(
                 view_channel=True, send_messages=True, read_message_history=True,
-                manage_messages=True, attach_files=True, embed_links=True,
+                manage_messages=True, attach_files=True, embed_links=True, manage_channels=True,
             ),
             guild.me: discord.PermissionOverwrite(
-                view_channel=True, send_messages=True,
-                manage_channels=True, manage_messages=True, read_message_history=True,
+                view_channel=True, send_messages=True, manage_channels=True,
+                manage_messages=True, read_message_history=True,
             ),
         }
 
@@ -170,13 +251,16 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
                 name=f"color-{_clean_name(requester.display_name)}",
                 category=category,
                 overwrites=overwrites,
-                topic=f"DIFF Color Lab private ticket | color_user:{requester.id}",
+                topic=f"DIFF Color Lab | color_request_user_id:{requester.id} | status:open",
                 reason=f"Color request ticket for {requester}",
             )
         except Exception as e:
             return await interaction.followup.send(
                 f"Failed to create ticket channel: {e}", ephemeral=True
             )
+
+        open_tickets[str(requester.id)] = ticket_ch.id
+        _save_tickets(open_tickets)
 
         ticket_embed = discord.Embed(
             title="🎨 Private Color Request",
@@ -187,9 +271,9 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
             color=EMBED_COLOR,
         )
         ticket_embed.add_field(name="Reference", value=str(self.reference), inline=False)
-        ticket_embed.add_field(name="Hex Code", value=f"`{self.hex_code}`", inline=True)
-        ticket_embed.add_field(name="Car Name", value=str(self.car_name), inline=True)
-        ticket_embed.add_field(name="Finish", value=str(self.finish), inline=True)
+        ticket_embed.add_field(name="Hex Code",  value=f"`{self.hex_code}`", inline=True)
+        ticket_embed.add_field(name="Car Name",  value=str(self.car_name),  inline=True)
+        ticket_embed.add_field(name="Finish",    value=str(self.finish),    inline=True)
         if str(self.extra_notes).strip():
             ticket_embed.add_field(name="Extra Notes", value=str(self.extra_notes), inline=False)
         ticket_embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -211,44 +295,17 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
 
 
 class ColorResultModal(discord.ui.Modal, title="Post Official Color Result"):
-    requester = discord.ui.TextInput(
-        label="Requester",
-        placeholder="@user or username",
-        required=True,
-        max_length=100,
-    )
-    base_color = discord.ui.TextInput(
-        label="Base Color",
-        placeholder="Example: #A9E3D6 / Seafoam Blue",
-        required=True,
-        max_length=100,
-    )
-    pearl = discord.ui.TextInput(
-        label="Pearl Color",
-        placeholder="Example: Ice White / Diamond Blue / None",
-        required=True,
-        max_length=100,
-    )
-    finish = discord.ui.TextInput(
-        label="Finish",
-        placeholder="Metallic / Pearlescent / Matte / Worn",
-        required=True,
-        max_length=100,
-    )
-    notes = discord.ui.TextInput(
-        label="Extra Notes",
-        placeholder="Any GTA notes, lighting notes, or tips",
-        required=False,
-        max_length=400,
-        style=discord.TextStyle.paragraph,
-    )
+    requester  = discord.ui.TextInput(label="Requester", placeholder="@user or username", required=True, max_length=100)
+    base_color = discord.ui.TextInput(label="Base Color", placeholder="#A9E3D6 / Seafoam Blue", required=True, max_length=100)
+    pearl      = discord.ui.TextInput(label="Pearl Color", placeholder="Ice White / Diamond Blue / None", required=True, max_length=100)
+    finish     = discord.ui.TextInput(label="Finish", placeholder="Metallic / Pearlescent / Matte / Worn", required=True, max_length=100)
+    notes      = discord.ui.TextInput(label="Extra Notes", placeholder="Any GTA notes, lighting notes, or tips",
+                                       required=False, max_length=400, style=discord.TextStyle.paragraph)
 
     async def on_submit(self, interaction: discord.Interaction):
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if member is None:
-            return await interaction.response.send_message(
-                "Could not verify your permissions.", ephemeral=True
-            )
+            return await interaction.response.send_message("Could not verify your permissions.", ephemeral=True)
 
         allowed = (
             member.guild_permissions.manage_messages
@@ -284,27 +341,19 @@ class ColorLabPanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(
-        label="Open Private Request",
-        emoji="🎫",
-        style=discord.ButtonStyle.primary,
-        custom_id="diff_color_lab_open_private_request_v1",
-    )
+    @discord.ui.button(label="Open Private Request", emoji="🎫",
+                       style=discord.ButtonStyle.primary,
+                       custom_id="diff_color_lab_open_private_request_v2")
     async def open_private_request(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ColorTicketRequestModal(self.cog))
 
-    @discord.ui.button(
-        label="Refresh Panel",
-        emoji="♻️",
-        style=discord.ButtonStyle.secondary,
-        custom_id="diff_color_lab_refresh_private_panel_v1",
-    )
+    @discord.ui.button(label="Refresh Panel", emoji="♻️",
+                       style=discord.ButtonStyle.secondary,
+                       custom_id="diff_color_lab_refresh_private_panel_v2")
     async def refresh_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if member is None:
-            return await interaction.response.send_message(
-                "Could not verify your permissions.", ephemeral=True
-            )
+            return await interaction.response.send_message("Could not verify your permissions.", ephemeral=True)
         allowed = (
             member.guild_permissions.manage_messages
             or member.guild_permissions.manage_channels
@@ -325,27 +374,20 @@ class ColorTicketControlsView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(
-        label="Post Official Result",
-        emoji="✅",
-        style=discord.ButtonStyle.success,
-        custom_id="diff_color_lab_ticket_post_result_v1",
-    )
+    @discord.ui.button(label="Post Official Result", emoji="✅",
+                       style=discord.ButtonStyle.success,
+                       custom_id="diff_color_lab_ticket_post_result_v2")
     async def post_result(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ColorResultModal())
 
-    @discord.ui.button(
-        label="Close Ticket",
-        emoji="🔒",
-        style=discord.ButtonStyle.danger,
-        custom_id="diff_color_lab_ticket_close_v1",
-    )
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Archive Ticket", emoji="📦",
+                       style=discord.ButtonStyle.danger,
+                       custom_id="diff_color_lab_ticket_archive_v2")
+    async def archive_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if member is None:
-            return await interaction.response.send_message(
-                "Could not verify your permissions.", ephemeral=True
-            )
+            return await interaction.response.send_message("Could not verify your permissions.", ephemeral=True)
+
         allowed = (
             member.guild_permissions.manage_channels
             or member.guild_permissions.administrator
@@ -353,22 +395,83 @@ class ColorTicketControlsView(discord.ui.View):
         )
         if not allowed:
             return await interaction.response.send_message(
-                "Only staff or the Color Team can close tickets.", ephemeral=True
+                "Only staff or the Color Team can archive tickets.", ephemeral=True
             )
 
         channel = interaction.channel
-        if not isinstance(channel, discord.TextChannel):
+        guild   = interaction.guild
+        if not isinstance(channel, discord.TextChannel) or guild is None:
             return await interaction.response.send_message(
                 "This button only works inside a ticket channel.", ephemeral=True
             )
 
-        await interaction.response.send_message("Closing ticket in 5 seconds…")
-        await self.cog.log_action(
-            interaction.guild,
-            f"🔒 Closed color ticket `#{channel.name}` by {interaction.user.mention}"
+        archive_cat = guild.get_channel(ARCHIVE_CATEGORY_ID)
+        if not isinstance(archive_cat, discord.CategoryChannel):
+            return await interaction.response.send_message(
+                "Archive category not found. Check ARCHIVE_CATEGORY_ID.", ephemeral=True
+            )
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Build and save HTML transcript
+        transcript_html  = await _build_transcript(channel)
+        _ensure_dirs()
+        transcript_path  = os.path.join(TRANSCRIPTS_DIR, f"{channel.name}_{_ts()}.html")
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            f.write(transcript_html)
+
+        # Clear user from open-tickets tracker
+        if channel.topic and "color_request_user_id:" in channel.topic:
+            try:
+                uid = channel.topic.split("color_request_user_id:")[1].split("|")[0].strip()
+                tickets = _load_tickets()
+                if tickets.get(str(uid)) == channel.id:
+                    tickets.pop(str(uid), None)
+                    _save_tickets(tickets)
+            except Exception:
+                pass
+
+        color_team_role = guild.get_role(COLOR_TEAM_ROLE_ID)
+        new_overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True,
+                manage_channels=True, manage_messages=True, read_message_history=True,
+            ),
+        }
+        if color_team_role:
+            new_overwrites[color_team_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=False,
+                read_message_history=True, manage_messages=True, manage_channels=True,
+            )
+
+        try:
+            await channel.edit(
+                name=f"archived-{channel.name}"[:100],
+                category=archive_cat,
+                topic=(channel.topic or "") + " | status:archived",
+                overwrites=new_overwrites,
+                reason=f"Archived by {interaction.user}",
+            )
+        except Exception as e:
+            return await interaction.followup.send(f"Failed to archive ticket: {e}", ephemeral=True)
+
+        archive_embed = discord.Embed(
+            title="📦 Ticket Archived",
+            description="This ticket has been archived. A transcript was saved for staff records.",
+            color=WARNING_COLOR,
         )
-        await asyncio.sleep(5)
-        await channel.delete(reason=f"Closed by {interaction.user}")
+        archive_embed.set_thumbnail(url=DIFF_LOGO_URL)
+        archive_embed.set_footer(text=f"Archived by {interaction.user.display_name}")
+        await channel.send(embed=archive_embed)
+
+        transcript_file = discord.File(transcript_path, filename=os.path.basename(transcript_path))
+        await self.cog.log_action(
+            guild,
+            f"📦 Archived color ticket `#{channel.name}` by {interaction.user.mention}",
+            file=transcript_file,
+        )
+        await interaction.followup.send("Ticket archived and transcript saved to staff logs.", ephemeral=True)
 
 
 # =========================================================
@@ -376,7 +479,8 @@ class ColorTicketControlsView(discord.ui.View):
 # =========================================================
 class ColorLabCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
-        self.bot = bot
+        _ensure_dirs()
+        self.bot          = bot
         self._panel_view  = ColorLabPanelView(self)
         self._ticket_view = ColorTicketControlsView(self)
         bot.add_view(self._panel_view)
@@ -390,31 +494,23 @@ class ColorLabCog(commands.Cog):
                 "Welcome to the official **DIFF Color Lab**.\n\n"
                 "Need help recreating a custom GTA color? Press the button below to open a "
                 "**private ticket** that only you and the **Color Team** can see.\n\n"
-                "**How it works:**\n"
-                "• Press **Open Private Request**\n"
-                "• Fill in your reference image, hex code, car name, and finish\n"
-                "• A private ticket is created just for you\n"
-                "• Color Team responds directly inside your ticket\n\n"
-                "**Why tickets:**\n"
-                "• Keeps this channel clean\n"
-                "• Requests are easier to track and follow up\n"
-                "• Private one-on-one help from the Color Team"
+                "**System Features:**\n"
+                "• One open ticket per user\n"
+                "• Private one-on-one help from the Color Team\n"
+                "• Official result posted inside your ticket\n"
+                "• Full transcript saved on archive\n"
+                "• Archived tickets kept for staff records"
             ),
             color=EMBED_COLOR,
         )
         embed.add_field(
             name="What to include",
-            value=(
-                "• Reference image or image link\n"
-                "• Hex code if you have one\n"
-                "• Car name\n"
-                "• Finish type (Metallic / Matte / Pearlescent)"
-            ),
+            value="• Reference image or image link\n• Hex code if you have one\n• Car name\n• Finish type",
             inline=False,
         )
         embed.add_field(
             name="Ticket Access",
-            value="Only the requester, Color Team, and admins can see the ticket.",
+            value="Only the requester, Color Team, and admins can see your ticket.",
             inline=False,
         )
         embed.add_field(
@@ -423,7 +519,7 @@ class ColorLabCog(commands.Cog):
             inline=False,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-        embed.set_footer(text=f"DIFF Color Lab • Private Request System • {PANEL_TAG}")
+        embed.set_footer(text=f"DIFF Color Lab • Advanced Private Request System • {PANEL_TAG}")
         return embed
 
     # ------------------------------------------------------------------
@@ -437,13 +533,21 @@ class ColorLabCog(commands.Cog):
         return ch if isinstance(ch, discord.TextChannel) else None
 
     # ------------------------------------------------------------------
-    async def log_action(self, guild: Optional[discord.Guild], message: str) -> None:
+    async def log_action(
+        self,
+        guild: Optional[discord.Guild],
+        message: str,
+        file: Optional[discord.File] = None,
+    ) -> None:
         if guild is None:
             return
         ch = guild.get_channel(LOG_CHANNEL_ID)
         if isinstance(ch, discord.TextChannel):
             try:
-                await ch.send(message)
+                if file:
+                    await ch.send(message, file=file)
+                else:
+                    await ch.send(message)
             except Exception:
                 pass
 
@@ -454,7 +558,7 @@ class ColorLabCog(commands.Cog):
             print(f"[ColorLab] Channel not found: {TARGET_CHANNEL_ID}")
             return
 
-        embed = self._build_embed()
+        embed    = self._build_embed()
         saved_id = _get_msg_id()
 
         if saved_id:
