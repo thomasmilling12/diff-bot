@@ -2050,6 +2050,14 @@ def _photo_hashes_save(data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
+_join_photo_locks: dict[int, asyncio.Lock] = {}
+
+def _join_photo_lock(channel_id: int) -> asyncio.Lock:
+    if channel_id not in _join_photo_locks:
+        _join_photo_locks[channel_id] = asyncio.Lock()
+    return _join_photo_locks[channel_id]
+
+
 def _crew_pinged_load() -> set:
     try:
         if os.path.exists(CREW_PINGED_FILE):
@@ -14458,92 +14466,100 @@ async def on_message(message: discord.Message) -> None:
     if join_user_id and str(message.author.id) == join_user_id:
         raw_images = [a for a in message.attachments if a.content_type and a.content_type.startswith("image/")]
         if raw_images:
-            spam_ignored = max(0, len(raw_images) - 5)
-            candidates = raw_images[:5]
+            async with _join_photo_lock(message.channel.id):
+                spam_ignored = max(0, len(raw_images) - 5)
+                candidates = raw_images[:5]
 
-            photo_hashes = _photo_hashes_load()
-            user_hashes: list = photo_hashes.setdefault(join_user_id, [])
-            accepted = 0
-            dupes = 0
-            for att in candidates:
-                h = _attachment_hash(att)
-                if h in user_hashes:
-                    dupes += 1
-                else:
-                    user_hashes.append(h)
-                    accepted += 1
-            _photo_hashes_save(photo_hashes)
+                photo_hashes = _photo_hashes_load()
+                user_hashes: list = photo_hashes.setdefault(join_user_id, [])
+                accepted = 0
+                dupes = 0
+                for att in candidates:
+                    h = _attachment_hash(att)
+                    if h in user_hashes:
+                        dupes += 1
+                    else:
+                        user_hashes.append(h)
+                        accepted += 1
+                _photo_hashes_save(photo_hashes)
 
-            history = [m async for m in message.channel.history(limit=200)]
-            total_images = sum(
-                len([a for a in m.attachments if a.content_type and a.content_type.startswith("image/")])
-                for m in history
-                if m.author.id == message.author.id
-            )
-            prev_total = total_images - len(raw_images)
-            capped = min(total_images, MIN_GARAGE_PHOTOS)
-
-            filled   = min(capped, MIN_GARAGE_PHOTOS)
-            empty    = MIN_GARAGE_PHOTOS - filled
-            bar      = "🟦" * filled + "⬛" * empty
-            complete = capped >= MIN_GARAGE_PHOTOS
-            progress_color = discord.Color.green() if complete else discord.Color.blue()
-
-            progress_embed = discord.Embed(
-                title = "📸 Photo Progress",
-                color = progress_color,
-                timestamp = utc_now(),
-            )
-            progress_embed.add_field(
-                name  = f"Progress  {capped}/{MIN_GARAGE_PHOTOS}",
-                value = bar,
-                inline= False,
-            )
-            if accepted:
-                progress_embed.add_field(name="✅ Accepted", value=str(accepted), inline=True)
-            if dupes:
-                progress_embed.add_field(name="🔁 Duplicates Ignored", value=str(dupes), inline=True)
-            if spam_ignored:
-                progress_embed.add_field(name="⚠️ Extra Images (Anti-Spam)", value=str(spam_ignored), inline=True)
-            progress_embed.set_footer(text="Different Meets • Photo Review System")
-            await message.channel.send(embed=progress_embed)
-
-            if prev_total < MIN_GARAGE_PHOTOS <= total_images:
-                leader_role = message.guild.get_role(LEADER_ROLE_ID)
-                co_role = message.guild.get_role(CO_LEADER_ROLE_ID)
-                mgr_role = message.guild.get_role(MANAGER_ROLE_ID)
-                mentions = " ".join(r.mention for r in [leader_role, co_role, mgr_role] if r)
-
-                review_embed = discord.Embed(
-                    title       = "✅ Application Ready for Review",
-                    description = f"{message.author.mention} has submitted all **{MIN_GARAGE_PHOTOS}** required photos and is ready to be reviewed.",
-                    color       = discord.Color.green(),
-                    timestamp   = utc_now(),
+                history = [m async for m in message.channel.history(limit=200)]
+                total_images = sum(
+                    len([a for a in m.attachments if a.content_type and a.content_type.startswith("image/")])
+                    for m in history
+                    if m.author.id == message.author.id
                 )
-                review_embed.add_field(name="📸 Valid Photos",  value=f"{capped}/{MIN_GARAGE_PHOTOS}", inline=True)
-                review_embed.add_field(name="📋 Channel",       value=message.channel.mention,        inline=True)
-                review_embed.set_thumbnail(url=message.author.display_avatar.url)
-                review_embed.set_footer(text="Different Meets • Application System")
-                await message.channel.send(
-                    content=mentions if mentions else None,
-                    embed=review_embed,
-                    allowed_mentions=discord.AllowedMentions(roles=True),
+                prev_total = total_images - len(raw_images)
+                capped = min(total_images, MIN_GARAGE_PHOTOS)
+
+                filled   = min(capped, MIN_GARAGE_PHOTOS)
+                empty    = MIN_GARAGE_PHOTOS - filled
+                bar      = "🟦" * filled + "⬛" * empty
+                complete = capped >= MIN_GARAGE_PHOTOS
+                progress_color = discord.Color.green() if complete else discord.Color.blue()
+
+                progress_embed = discord.Embed(
+                    title = "📸 Photo Progress",
+                    color = progress_color,
+                    timestamp = utc_now(),
                 )
-                log_ch = message.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-                if isinstance(log_ch, discord.TextChannel):
-                    try:
-                        await log_ch.send(embed=discord.Embed(
-                            title="✅ Application Ready For Review",
-                            description="\n".join([
-                                f"**User:** <@{join_user_id}>",
-                                f"**Channel:** {message.channel.mention}",
-                                f"**Valid Photos:** {capped}/{MIN_GARAGE_PHOTOS}",
-                            ]),
-                            color=discord.Color.green(),
-                            timestamp=utc_now(),
-                        ))
-                    except Exception:
-                        pass
+                progress_embed.add_field(
+                    name  = f"Progress  {capped}/{MIN_GARAGE_PHOTOS}",
+                    value = bar,
+                    inline= False,
+                )
+                if accepted:
+                    progress_embed.add_field(name="✅ Accepted", value=str(accepted), inline=True)
+                if dupes:
+                    progress_embed.add_field(name="🔁 Duplicates Ignored", value=str(dupes), inline=True)
+                if spam_ignored:
+                    progress_embed.add_field(name="⚠️ Extra Images (Anti-Spam)", value=str(spam_ignored), inline=True)
+                progress_embed.set_footer(text="Different Meets • Photo Review System")
+                await message.channel.send(embed=progress_embed)
+
+                already_notified = any(
+                    m.author.id == bot.user.id
+                    and m.embeds
+                    and m.embeds[0].title == "✅ Application Ready for Review"
+                    for m in history
+                )
+
+                if not already_notified and prev_total < MIN_GARAGE_PHOTOS <= total_images:
+                    leader_role = message.guild.get_role(LEADER_ROLE_ID)
+                    co_role = message.guild.get_role(CO_LEADER_ROLE_ID)
+                    mgr_role = message.guild.get_role(MANAGER_ROLE_ID)
+                    mentions = " ".join(r.mention for r in [leader_role, co_role, mgr_role] if r)
+
+                    review_embed = discord.Embed(
+                        title       = "✅ Application Ready for Review",
+                        description = f"{message.author.mention} has submitted all **{MIN_GARAGE_PHOTOS}** required photos and is ready to be reviewed.",
+                        color       = discord.Color.green(),
+                        timestamp   = utc_now(),
+                    )
+                    review_embed.add_field(name="📸 Valid Photos",  value=f"{capped}/{MIN_GARAGE_PHOTOS}", inline=True)
+                    review_embed.add_field(name="📋 Channel",       value=message.channel.mention,        inline=True)
+                    review_embed.set_thumbnail(url=message.author.display_avatar.url)
+                    review_embed.set_footer(text="Different Meets • Application System")
+                    await message.channel.send(
+                        content=mentions if mentions else None,
+                        embed=review_embed,
+                        allowed_mentions=discord.AllowedMentions(roles=True),
+                    )
+                    log_ch = message.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+                    if isinstance(log_ch, discord.TextChannel):
+                        try:
+                            await log_ch.send(embed=discord.Embed(
+                                title="✅ Application Ready For Review",
+                                description="\n".join([
+                                    f"**User:** <@{join_user_id}>",
+                                    f"**Channel:** {message.channel.mention}",
+                                    f"**Valid Photos:** {capped}/{MIN_GARAGE_PHOTOS}",
+                                ]),
+                                color=discord.Color.green(),
+                                timestamp=utc_now(),
+                            ))
+                        except Exception:
+                            pass
         return
 
     # --- Staff ticket message tracking ---
