@@ -176,24 +176,22 @@ FUS_TICKET_KEYWORDS = ("ticket", "application", "app", "apply")
 
 DIFF_LOGO = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
 DIFF_BANNER = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png"
-LEADER_JACKET = "https://media.discordapp.net/attachments/1124435756774084659/1339471600092975126/IMG_1521.jpg"
+LEADER_JACKET = "diff_data/jackets/jacket_leader.jpeg"
 CREW_JACKETS = [
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471609328832572/IMG_1520.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471616152834068/IMG_1519.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471775314088050/IMG_1518.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471807610097766/IMG_1517.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471812328947775/IMG_1516.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471817601187933/IMG_1515.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471823922003978/IMG_1514.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471829911208006/IMG_1513.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471835426717747/IMG_1512.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471845308497960/IMG_1511.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471868553465926/IMG_1510.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471877910954035/IMG_1509.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471885280346205/IMG_1508.jpg",
-    "https://media.discordapp.net/attachments/1124435756774084659/1339471893563965473/IMG_1507.jpg",
+    "diff_data/jackets/jacket_1.jpeg",
+    "diff_data/jackets/jacket_2.jpeg",
+    "diff_data/jackets/jacket_3.jpeg",
+    "diff_data/jackets/jacket_4.jpeg",
+    "diff_data/jackets/jacket_5.jpeg",
+    "diff_data/jackets/jacket_6.jpeg",
+    "diff_data/jackets/jacket_7.jpeg",
+    "diff_data/jackets/jacket_8.jpeg",
+    "diff_data/jackets/jacket_9.jpeg",
+    "diff_data/jackets/jacket_10.jpeg",
+    "diff_data/jackets/jacket_11.jpeg",
+    "diff_data/jackets/jacket_12.jpeg",
 ]
-ALT_JACKET = "https://media.discordapp.net/attachments/1124435756774084659/1346631821521195008/IMG_8887.png"
+ALT_JACKET = "diff_data/jackets/jacket_alt.jpeg"
 ROLL_CALL_URL = f"https://discord.com/channels/{GUILD_ID}/1047338695352664165"
 COLOR_CHANNEL_URL = f"https://discord.com/channels/{GUILD_ID}/1108181679308283965"
 
@@ -5879,19 +5877,25 @@ class DiffPanel(discord.ui.View):
             ),
             color=discord.Color.blue(),
         )
-        first.set_image(url=LEADER_JACKET)
-        await interaction.response.send_message(embed=first, ephemeral=True)
-        for index, url in enumerate(CREW_JACKETS, start=1):
+        leader_fname = os.path.basename(LEADER_JACKET)
+        leader_file = discord.File(LEADER_JACKET, filename=leader_fname)
+        first.set_image(url=f"attachment://{leader_fname}")
+        await interaction.response.send_message(embed=first, file=leader_file, ephemeral=True)
+        for index, path in enumerate(CREW_JACKETS, start=1):
+            fname = os.path.basename(path)
+            f = discord.File(path, filename=fname)
             jacket_embed = discord.Embed(title=f"🧥 Crew Member Jacket {index}", color=discord.Color.blue())
-            jacket_embed.set_image(url=url)
-            await interaction.followup.send(embed=jacket_embed, ephemeral=True)
+            jacket_embed.set_image(url=f"attachment://{fname}")
+            await interaction.followup.send(embed=jacket_embed, file=f, ephemeral=True)
+        alt_fname = os.path.basename(ALT_JACKET)
+        alt_file = discord.File(ALT_JACKET, filename=alt_fname)
         alt_embed = discord.Embed(
             title="🧥 Alternate Crew Jacket",
             description="Use this jacket only if the crew emblem cannot be placed on the new jackets.",
             color=discord.Color.blue(),
         )
-        alt_embed.set_image(url=ALT_JACKET)
-        await interaction.followup.send(embed=alt_embed, ephemeral=True)
+        alt_embed.set_image(url=f"attachment://{alt_fname}")
+        await interaction.followup.send(embed=alt_embed, file=alt_file, ephemeral=True)
 
     @discord.ui.button(label="📈 My Stats", style=discord.ButtonStyle.success, custom_id="diff_panel_member_stats", row=2)
     async def member_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
