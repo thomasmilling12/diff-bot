@@ -8608,6 +8608,8 @@ async def on_ready():
     bot.add_view(_PshipStaffView())
     bot.add_view(_RsvpView())
     bot.add_view(_IgDropView())
+    bot.add_view(JoinPlatformView())
+    bot.add_view(JoinTicketView())
     for _g in bot.guilds:
         try:
             await _wh_post_or_refresh(_g)
