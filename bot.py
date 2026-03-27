@@ -44,8 +44,8 @@ def keep_alive():
 # =========================
 # LOAD ENV
 # =========================
-load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
+load_dotenv(override=False)
+TOKEN = os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN")
 
 # =========================
 # CONFIG
