@@ -8621,6 +8621,7 @@ async def on_ready():
     bot.add_view(SocialMediaLinksView())
     bot.add_view(_PshipPanelView())
     bot.add_view(_PshipStaffView())
+    bot.add_view(_PartnerPanelView(_pp_get_partners()))
     bot.add_view(_RsvpView())
     bot.add_view(_IgDropView())
     bot.add_view(JoinPlatformView())
