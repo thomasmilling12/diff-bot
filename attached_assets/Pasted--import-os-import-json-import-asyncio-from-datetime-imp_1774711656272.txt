@@ -1,0 +1,456 @@
+
+import os
+import json
+import asyncio
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Any, Optional
+
+import discord
+from discord.ext import commands
+from discord import app_commands
+
+# ============================================================
+# DIFF Announcement Panel System
+# ------------------------------------------------------------
+# What this file does:
+# - Lets admins create an announcement from a modal
+# - Posts an embed with buttons:
+#     ✅ Acknowledge
+#     ⏰ Remind Me
+#     📍 View Updates
+#     🔥 Interested
+# - Tracks button clicks in a JSON file
+# - Sends DM reminders to users who click "Remind Me"
+# - Logs activity + summary to a manager log channel
+#
+# Requirements:
+#   pip install -U discord.py
+#
+# Setup:
+# 1) Put your bot token in your environment as DISCORD_TOKEN
+# 2) Make sure your bot has:
+#    - Send Messages
+#    - Embed Links
+#    - Use Application Commands
+#    - View Channel
+#    - Send Messages in Threads (optional)
+#    - Read Message History
+# 3) Run the bot and use:
+#    /post_announcement
+#
+# Notes:
+# - "Everyone" tracking here means everyone in the server who is not a bot.
+# - DM reminders are only sent to people who click "Remind Me".
+# - The bot logs response counts and pending counts to the manager log channel.
+# ============================================================
+
+# =========================
+# CONFIG
+# =========================
+GUILD_ID = 850386896509337710
+ANNOUNCEMENT_CHANNEL_ID = 990097152044855326
+MANAGER_LOG_CHANNEL_ID = 1485265848099799163
+
+# Where the announcement embed button "View Updates" will jump
+VIEW_UPDATES_CHANNEL_ID = ANNOUNCEMENT_CHANNEL_ID
+
+# How long after a user clicks "Remind Me" the bot should DM them
+REMINDER_DELAY_MINUTES = 15
+
+# JSON file for tracking announcement data
+DATA_FILE = "announcement_tracking_data.json"
+
+# Sync slash commands only to your guild for faster updates while testing
+SYNC_TO_GUILD_ONLY = True
+
+
+# =========================
+# BOT SETUP
+# =========================
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.messages = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def ensure_data_file() -> None:
+    if not os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"announcements": {}}, f, indent=2)
+
+
+def load_data() -> Dict[str, Any]:
+    ensure_data_file()
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_data(data: Dict[str, Any]) -> None:
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def get_announcement_record(message_id: int) -> Optional[Dict[str, Any]]:
+    data = load_data()
+    return data["announcements"].get(str(message_id))
+
+
+def upsert_announcement_record(message_id: int, record: Dict[str, Any]) -> None:
+    data = load_data()
+    data["announcements"][str(message_id)] = record
+    save_data(data)
+
+
+async def send_manager_log(guild: discord.Guild, content: Optional[str] = None, embed: Optional[discord.Embed] = None) -> None:
+    channel = guild.get_channel(MANAGER_LOG_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    try:
+        await channel.send(content=content, embed=embed)
+    except discord.HTTPException:
+        pass
+
+
+def build_stats_embed(guild: discord.Guild, message_id: int, record: Dict[str, Any]) -> discord.Embed:
+    acknowledged = len(record.get("acknowledged", {}))
+    interested = len(record.get("interested", {}))
+    reminder_requests = len(record.get("remind_me", {}))
+    total_members = sum(1 for m in guild.members if not m.bot)
+    pending = max(total_members - acknowledged, 0)
+
+    embed = discord.Embed(
+        title="DIFF Announcement Tracking",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+        description=f"Tracking summary for announcement message ID `{message_id}`",
+    )
+    embed.add_field(name="Seen / Acknowledged", value=str(acknowledged), inline=True)
+    embed.add_field(name="Interested", value=str(interested), inline=True)
+    embed.add_field(name="Remind Me", value=str(reminder_requests), inline=True)
+    embed.add_field(name="Pending (server members)", value=str(pending), inline=True)
+    embed.add_field(name="Announcement Title", value=record.get("title", "Untitled"), inline=False)
+    embed.set_footer(text="DIFF Announcement System")
+    return embed
+
+
+async def schedule_dm_reminder(user: discord.User | discord.Member, guild: discord.Guild, title: str, source_message_url: str) -> None:
+    await asyncio.sleep(REMINDER_DELAY_MINUTES * 60)
+    try:
+        embed = discord.Embed(
+            title="DIFF Reminder",
+            description=(
+                f"You asked to be reminded about **{title}**.\n\n"
+                f"Check the latest DIFF update here:\n{source_message_url}"
+            ),
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text="Stay ready... or miss out 🏁")
+        await user.send(embed=embed)
+        await send_manager_log(
+            guild,
+            content=f"⏰ Sent reminder DM to {user.mention} for **{title}**."
+        )
+    except discord.Forbidden:
+        await send_manager_log(
+            guild,
+            content=f"⚠️ Could not DM {user.mention} for reminder on **{title}** (DMs likely closed)."
+        )
+    except discord.HTTPException:
+        pass
+
+
+class AnnouncementButtons(discord.ui.View):
+    def __init__(self, message_link: str = ""):
+        super().__init__(timeout=None)
+        self.message_link = message_link
+
+        # Update the link button URL if available
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id == "diff_view_updates_placeholder":
+                item.url = message_link or f"https://discord.com/channels/{GUILD_ID}/{VIEW_UPDATES_CHANNEL_ID}"
+
+    @discord.ui.button(
+        label="Acknowledge",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_announce_acknowledge"
+    )
+    async def acknowledge(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not interaction.message:
+            return
+
+        record = get_announcement_record(interaction.message.id)
+        if not record:
+            await interaction.response.send_message("This announcement is not tracked yet.", ephemeral=True)
+            return
+
+        user_id = str(interaction.user.id)
+        if user_id not in record["acknowledged"]:
+            record["acknowledged"][user_id] = utc_now_iso()
+            upsert_announcement_record(interaction.message.id, record)
+            await send_manager_log(
+                interaction.guild,
+                content=f"✅ {interaction.user.mention} acknowledged **{record['title']}**."
+            )
+
+        await interaction.response.send_message("✅ You have acknowledged this announcement.", ephemeral=True)
+
+    @discord.ui.button(
+        label="Remind Me",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_announce_remind"
+    )
+    async def remind_me(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not interaction.message:
+            return
+
+        record = get_announcement_record(interaction.message.id)
+        if not record:
+            await interaction.response.send_message("This announcement is not tracked yet.", ephemeral=True)
+            return
+
+        user_id = str(interaction.user.id)
+        record["remind_me"][user_id] = utc_now_iso()
+        upsert_announcement_record(interaction.message.id, record)
+
+        asyncio.create_task(
+            schedule_dm_reminder(
+                interaction.user,
+                interaction.guild,
+                record["title"],
+                interaction.message.jump_url,
+            )
+        )
+
+        await send_manager_log(
+            interaction.guild,
+            content=f"⏰ {interaction.user.mention} clicked Remind Me for **{record['title']}**."
+        )
+        await interaction.response.send_message(
+            f"⏰ Reminder set. I will DM you in about {REMINDER_DELAY_MINUTES} minutes.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Interested",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_announce_interested"
+    )
+    async def interested(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not interaction.message:
+            return
+
+        record = get_announcement_record(interaction.message.id)
+        if not record:
+            await interaction.response.send_message("This announcement is not tracked yet.", ephemeral=True)
+            return
+
+        user_id = str(interaction.user.id)
+        if user_id not in record["interested"]:
+            record["interested"][user_id] = utc_now_iso()
+            upsert_announcement_record(interaction.message.id, record)
+            await send_manager_log(
+                interaction.guild,
+                content=f"🔥 {interaction.user.mention} marked Interested on **{record['title']}**."
+            )
+
+        await interaction.response.send_message("🔥 Marked as interested.", ephemeral=True)
+
+    @discord.ui.button(
+        label="View Updates",
+        style=discord.ButtonStyle.link,
+        url=f"https://discord.com/channels/{GUILD_ID}/{VIEW_UPDATES_CHANNEL_ID}",
+        custom_id="diff_view_updates_placeholder"
+    )
+    async def view_updates(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Link buttons do not call back.
+        pass
+
+
+class AnnouncementModal(discord.ui.Modal, title="Create General Announcement"):
+    announcement_title = discord.ui.TextInput(
+        label="Announcement Title",
+        placeholder="Example: DIFF MEETS UPDATE",
+        required=True,
+        max_length=100
+    )
+    announcement_message = discord.ui.TextInput(
+        label="Announcement Message",
+        placeholder="Type the full announcement here...",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=2000
+    )
+    footer_text = discord.ui.TextInput(
+        label="Footer Text (optional)",
+        placeholder="Example: DIFF Staff Team",
+        required=False,
+        max_length=100
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+            return
+
+        channel = interaction.guild.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("Announcement channel not found.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title=f"🏁 {self.announcement_title.value}",
+            description=self.announcement_message.value,
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="Quick Actions",
+            value="Use the buttons below to acknowledge, get a reminder, or mark interest.",
+            inline=False
+        )
+        embed.set_author(name="DIFF Announcement Panel")
+        if self.footer_text.value:
+            embed.set_footer(text=self.footer_text.value)
+        else:
+            embed.set_footer(text="DIFF Staff Team")
+
+        # Send first so we can store jump_url / message_id
+        view = AnnouncementButtons()
+        msg = await channel.send(embed=embed, view=view)
+
+        record = {
+            "title": self.announcement_title.value,
+            "description": self.announcement_message.value,
+            "footer": self.footer_text.value or "DIFF Staff Team",
+            "channel_id": channel.id,
+            "message_id": msg.id,
+            "message_url": msg.jump_url,
+            "created_by": interaction.user.id,
+            "created_at": utc_now_iso(),
+            "acknowledged": {},
+            "remind_me": {},
+            "interested": {},
+        }
+        upsert_announcement_record(msg.id, record)
+
+        # Update persistent view registration and log summary
+        stats_embed = build_stats_embed(interaction.guild, msg.id, record)
+        await send_manager_log(
+            interaction.guild,
+            content=f"📢 New announcement posted by {interaction.user.mention}: **{self.announcement_title.value}**\n{msg.jump_url}",
+            embed=stats_embed
+        )
+
+        await interaction.response.send_message(
+            f"✅ Announcement posted in {channel.mention}.",
+            ephemeral=True
+        )
+
+
+class LaunchAnnouncementModalButton(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Create General Announcement",
+        style=discord.ButtonStyle.primary,
+        emoji="📢",
+        custom_id="diff_launch_announcement_modal"
+    )
+    async def launch_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AnnouncementModal())
+
+
+@bot.event
+async def on_ready():
+    ensure_data_file()
+
+    # Persistent views
+    bot.add_view(LaunchAnnouncementModalButton())
+    bot.add_view(AnnouncementButtons())
+
+    try:
+        if SYNC_TO_GUILD_ONLY:
+            guild_obj = discord.Object(id=GUILD_ID)
+            bot.tree.copy_global_to(guild=guild_obj)
+            synced = await bot.tree.sync(guild=guild_obj)
+            print(f"Synced {len(synced)} guild command(s).")
+        else:
+            synced = await bot.tree.sync()
+            print(f"Synced {len(synced)} global command(s).")
+    except Exception as e:
+        print(f"Command sync failed: {e}")
+
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+
+@bot.tree.command(name="post_announcement_creator", description="Post the announcement creator panel.")
+async def post_announcement_creator(interaction: discord.Interaction):
+    if not interaction.guild or interaction.guild.id != GUILD_ID:
+        await interaction.response.send_message("This command is only for the DIFF server.", ephemeral=True)
+        return
+
+    view = LaunchAnnouncementModalButton()
+    embed = discord.Embed(
+        title="DIFF Announcement Creator",
+        description=(
+            "Use the button below to create a **General Announcement**.\n\n"
+            "The posted announcement will include buttons for:\n"
+            "✅ Acknowledge\n"
+            "⏰ Remind Me\n"
+            "🔥 Interested\n"
+            "📍 View Updates"
+        ),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="DIFF Staff Tools")
+
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+
+
+@bot.tree.command(name="announcement_stats", description="Show tracking stats for an announcement message ID.")
+@app_commands.describe(message_id="The message ID of the posted announcement")
+async def announcement_stats(interaction: discord.Interaction, message_id: str):
+    if not interaction.guild:
+        await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+        return
+
+    record = get_announcement_record(int(message_id))
+    if not record:
+        await interaction.response.send_message("No tracked announcement found for that message ID.", ephemeral=True)
+        return
+
+    embed = build_stats_embed(interaction.guild, int(message_id), record)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="refresh_announcement_stats", description="Send a fresh stats summary to the manager log channel.")
+@app_commands.describe(message_id="The message ID of the posted announcement")
+async def refresh_announcement_stats(interaction: discord.Interaction, message_id: str):
+    if not interaction.guild:
+        await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+        return
+
+    record = get_announcement_record(int(message_id))
+    if not record:
+        await interaction.response.send_message("No tracked announcement found for that message ID.", ephemeral=True)
+        return
+
+    embed = build_stats_embed(interaction.guild, int(message_id), record)
+    await send_manager_log(interaction.guild, content="📊 Refreshed DIFF announcement stats.", embed=embed)
+    await interaction.response.send_message("✅ Sent refreshed stats to the manager log channel.", ephemeral=True)
+
+
+if __name__ == "__main__":
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        raise RuntimeError("Missing DISCORD_TOKEN environment variable.")
+    bot.run(token)

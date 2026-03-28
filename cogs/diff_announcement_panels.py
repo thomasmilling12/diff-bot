@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 import discord
@@ -11,31 +13,34 @@ from discord.ext import commands
 # CONFIG — Crew Announcement
 # =========================================================
 CREW_ANNOUNCE_CHANNEL_ID = 990097152044855326
-CREW_ROLE_ID             = 886702076552441927   # @Crew Members ping
+CREW_ROLE_ID             = 886702076552441927
 
 # =========================================================
 # CONFIG — General Announcement
 # =========================================================
 GENERAL_ANNOUNCE_CHANNEL_ID = 1047166622235893911
-# General announcements ping @everyone
+VIEW_UPDATES_CHANNEL_ID     = GENERAL_ANNOUNCE_CHANNEL_ID
+GUILD_ID                    = 850386896509337710
 
 # =========================================================
 # CONFIG — Shared
 # =========================================================
 LOG_CHANNEL_ID = 1485265848099799163
+REMINDER_DELAY_MINUTES = 15
 
 STAFF_ROLE_IDS: set[int] = {
-    850391095845584937,   # Leader
-    850391378559238235,   # Co-Leader
-    990011447193006101,   # Manager
+    850391095845584937,
+    850391378559238235,
+    990011447193006101,
 }
 
 CREW_PANEL_TAG    = "DIFF_CREW_ANNOUNCE_PANEL_V1"
 GENERAL_PANEL_TAG = "DIFF_GENERAL_ANNOUNCE_PANEL_V1"
 
-DATA_DIR         = "diff_data"
-CREW_PANEL_FILE    = os.path.join(DATA_DIR, "crew_announce_panel.json")
-GENERAL_PANEL_FILE = os.path.join(DATA_DIR, "general_announce_panel.json")
+DATA_DIR              = "diff_data"
+CREW_PANEL_FILE       = os.path.join(DATA_DIR, "crew_announce_panel.json")
+GENERAL_PANEL_FILE    = os.path.join(DATA_DIR, "general_announce_panel.json")
+TRACKING_FILE         = os.path.join(DATA_DIR, "announcement_tracking.json")
 
 DIFF_LOGO_URL = (
     "https://media.discordapp.net/attachments/1107375326625005719/"
@@ -46,7 +51,7 @@ DIFF_LOGO_URL = (
 
 
 # =========================================================
-# HELPERS
+# HELPERS — General
 # =========================================================
 def _load_json(path: str) -> dict:
     if not os.path.exists(path):
@@ -81,6 +86,81 @@ def _is_staff(member: discord.Member) -> bool:
     return any(r.id in STAFF_ROLE_IDS for r in member.roles)
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# =========================================================
+# HELPERS — Tracking
+# =========================================================
+def _load_tracking() -> dict:
+    data = _load_json(TRACKING_FILE)
+    if "announcements" not in data:
+        data["announcements"] = {}
+    return data
+
+
+def _get_record(message_id: int) -> Optional[dict]:
+    return _load_tracking()["announcements"].get(str(message_id))
+
+
+def _upsert_record(message_id: int, record: dict) -> None:
+    data = _load_tracking()
+    data["announcements"][str(message_id)] = record
+    _save_json(TRACKING_FILE, data)
+
+
+def _build_stats_embed(guild: discord.Guild, message_id: int, record: dict) -> discord.Embed:
+    acknowledged = len(record.get("acknowledged", {}))
+    interested   = len(record.get("interested", {}))
+    reminders    = len(record.get("remind_me", {}))
+    total        = sum(1 for m in guild.members if not m.bot)
+    pending      = max(total - acknowledged, 0)
+
+    embed = discord.Embed(
+        title="📊 DIFF Announcement Tracking",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+        description=f"Stats for: **{record.get('title', 'Untitled')}**",
+    )
+    embed.add_field(name="✅ Acknowledged", value=str(acknowledged), inline=True)
+    embed.add_field(name="🔥 Interested",   value=str(interested),   inline=True)
+    embed.add_field(name="⏰ Remind Me",    value=str(reminders),    inline=True)
+    embed.add_field(name="⏳ Pending",      value=str(pending),      inline=True)
+    embed.set_footer(text="DIFF Announcement System")
+    return embed
+
+
+async def _schedule_dm_reminder(
+    user: discord.User | discord.Member,
+    guild: discord.Guild,
+    title: str,
+    jump_url: str,
+    log_channel_id: int,
+) -> None:
+    await asyncio.sleep(REMINDER_DELAY_MINUTES * 60)
+    ch = guild.get_channel(log_channel_id)
+    try:
+        embed = discord.Embed(
+            title="⏰ DIFF Reminder",
+            description=(
+                f"You asked to be reminded about **{title}**.\n\n"
+                f"Check the latest update here:\n{jump_url}"
+            ),
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text="DIFF Announcement System")
+        await user.send(embed=embed)
+        if isinstance(ch, discord.TextChannel):
+            await ch.send(f"⏰ Sent reminder DM to {user.mention} for **{title}**.")
+    except discord.Forbidden:
+        if isinstance(ch, discord.TextChannel):
+            await ch.send(f"⚠️ Could not DM {user.mention} (DMs closed) for **{title}**.")
+    except discord.HTTPException:
+        pass
+
+
 async def _ensure_panel(
     bot: commands.Bot,
     channel_id: int,
@@ -112,7 +192,6 @@ async def _ensure_panel(
         except Exception as e:
             print(f"[AnnouncePanels] {label} edit failed: {e}")
 
-    # Fallback — scan and delete stale panel by footer tag
     try:
         async for msg in channel.history(limit=50):
             if (
@@ -133,6 +212,123 @@ async def _ensure_panel(
         print(f"[AnnouncePanels] {label} panel posted: {new_msg.id}")
     except Exception as e:
         print(f"[AnnouncePanels] {label} post failed: {e}")
+
+
+# =========================================================
+# ANNOUNCEMENT TRACKING BUTTONS (attached to posted announcements)
+# =========================================================
+class AnnouncementButtons(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Acknowledge",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+        custom_id="diff_announce_acknowledge_v1",
+    )
+    async def acknowledge(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not interaction.message:
+            return
+        record = _get_record(interaction.message.id)
+        if not record:
+            return await interaction.response.send_message(
+                "This announcement is not tracked.", ephemeral=True
+            )
+        uid = str(interaction.user.id)
+        if uid not in record["acknowledged"]:
+            record["acknowledged"][uid] = _utc_now()
+            _upsert_record(interaction.message.id, record)
+            log_ch = interaction.guild.get_channel(LOG_CHANNEL_ID)
+            if isinstance(log_ch, discord.TextChannel):
+                try:
+                    await log_ch.send(
+                        f"✅ {interaction.user.mention} acknowledged **{record['title']}**."
+                    )
+                except Exception:
+                    pass
+        await interaction.response.send_message(
+            "✅ You have acknowledged this announcement.", ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Remind Me",
+        style=discord.ButtonStyle.secondary,
+        emoji="⏰",
+        custom_id="diff_announce_remind_v1",
+    )
+    async def remind_me(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not interaction.message:
+            return
+        record = _get_record(interaction.message.id)
+        if not record:
+            return await interaction.response.send_message(
+                "This announcement is not tracked.", ephemeral=True
+            )
+        uid = str(interaction.user.id)
+        record["remind_me"][uid] = _utc_now()
+        _upsert_record(interaction.message.id, record)
+
+        asyncio.create_task(
+            _schedule_dm_reminder(
+                interaction.user,
+                interaction.guild,
+                record["title"],
+                interaction.message.jump_url,
+                LOG_CHANNEL_ID,
+            )
+        )
+
+        log_ch = interaction.guild.get_channel(LOG_CHANNEL_ID)
+        if isinstance(log_ch, discord.TextChannel):
+            try:
+                await log_ch.send(
+                    f"⏰ {interaction.user.mention} set a reminder for **{record['title']}**."
+                )
+            except Exception:
+                pass
+
+        await interaction.response.send_message(
+            f"⏰ Got it — I'll DM you a reminder in **{REMINDER_DELAY_MINUTES} minutes**.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Interested",
+        style=discord.ButtonStyle.primary,
+        emoji="🔥",
+        custom_id="diff_announce_interested_v1",
+    )
+    async def interested(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not interaction.message:
+            return
+        record = _get_record(interaction.message.id)
+        if not record:
+            return await interaction.response.send_message(
+                "This announcement is not tracked.", ephemeral=True
+            )
+        uid = str(interaction.user.id)
+        if uid not in record["interested"]:
+            record["interested"][uid] = _utc_now()
+            _upsert_record(interaction.message.id, record)
+            log_ch = interaction.guild.get_channel(LOG_CHANNEL_ID)
+            if isinstance(log_ch, discord.TextChannel):
+                try:
+                    await log_ch.send(
+                        f"🔥 {interaction.user.mention} marked Interested on **{record['title']}**."
+                    )
+                except Exception:
+                    pass
+        await interaction.response.send_message("🔥 Marked as interested.", ephemeral=True)
+
+    @discord.ui.button(
+        label="View Updates",
+        style=discord.ButtonStyle.link,
+        url=f"https://discord.com/channels/{GUILD_ID}/{VIEW_UPDATES_CHANNEL_ID}",
+        emoji="📍",
+    )
+    async def view_updates(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
 
 
 # =========================================================
@@ -256,7 +452,7 @@ class GeneralAnnouncementModal(discord.ui.Modal, title="Create General Announcem
     def __init__(self, cog: "AnnouncementPanelsCog", ping_mode: str):
         super().__init__()
         self.cog       = cog
-        self.ping_mode = ping_mode   # "everyone" | "here" | "crew" | "none"
+        self.ping_mode = ping_mode
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         member = interaction.user
@@ -272,20 +468,26 @@ class GeneralAnnouncementModal(discord.ui.Modal, title="Create General Announcem
             )
 
         footer = str(self.footer_input).strip() or "DIFF General Announcement System"
+        title  = str(self.title_input)
 
         embed = discord.Embed(
-            title=str(self.title_input),
+            title=title,
             description=str(self.message_input),
             color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc),
         )
         embed.set_author(
             name=f"Posted by {member.display_name}",
             icon_url=member.display_avatar.url if member.display_avatar else None,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.add_field(
+            name="Quick Actions",
+            value="Use the buttons below to acknowledge, get a reminder, or mark interest.",
+            inline=False,
+        )
         embed.set_footer(text=footer)
 
-        # Resolve ping content and allowed_mentions based on chosen mode
         if self.ping_mode == "everyone":
             content          = "@everyone"
             allowed_mentions = discord.AllowedMentions(everyone=True)
@@ -296,24 +498,49 @@ class GeneralAnnouncementModal(discord.ui.Modal, title="Create General Announcem
             crew_role        = interaction.guild.get_role(CREW_ROLE_ID) if interaction.guild else None
             content          = crew_role.mention if crew_role else None
             allowed_mentions = discord.AllowedMentions(roles=True)
-        else:  # "none"
+        else:
             content          = None
             allowed_mentions = discord.AllowedMentions.none()
 
-        await channel.send(content=content, embed=embed, allowed_mentions=allowed_mentions)
-        await interaction.response.send_message(
-            f"General announcement posted with **{self.ping_mode}** ping.", ephemeral=True
+        tracking_view = AnnouncementButtons()
+        msg = await channel.send(
+            content=content,
+            embed=embed,
+            view=tracking_view,
+            allowed_mentions=allowed_mentions,
         )
-        await self.cog.log_action(
-            interaction.guild,
-            f"📢 General announcement `{str(self.title_input)}` "
-            f"(ping: {self.ping_mode}) posted by {member.mention}"
+
+        record = {
+            "title":       title,
+            "channel_id":  channel.id,
+            "message_id":  msg.id,
+            "message_url": msg.jump_url,
+            "created_by":  interaction.user.id,
+            "created_at":  _utc_now(),
+            "acknowledged": {},
+            "remind_me":    {},
+            "interested":   {},
+        }
+        _upsert_record(msg.id, record)
+
+        stats_embed = _build_stats_embed(interaction.guild, msg.id, record)
+        log_ch = interaction.guild.get_channel(LOG_CHANNEL_ID) if interaction.guild else None
+        if isinstance(log_ch, discord.TextChannel):
+            try:
+                await log_ch.send(
+                    content=f"📢 General announcement **{title}** posted by {member.mention} (ping: {self.ping_mode})\n{msg.jump_url}",
+                    embed=stats_embed,
+                )
+            except Exception:
+                pass
+
+        await interaction.response.send_message(
+            f"✅ Announcement posted in {channel.mention} with **{self.ping_mode}** ping.",
+            ephemeral=True,
         )
 
 
 class _PingSelect(discord.ui.Select):
-    """Dropdown that asks which ping type to use, then opens the modal."""
-
     def __init__(self, cog: "AnnouncementPanelsCog"):
         super().__init__(
             placeholder="Choose ping type then post announcement…",
@@ -369,14 +596,15 @@ class GeneralAnnouncePanelView(discord.ui.View):
 # =========================================================
 class AnnouncementPanelsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
-        self.bot              = bot
-        self.crew_view        = CrewAnnouncePanelView(self)
-        self.general_view     = GeneralAnnouncePanelView(self)
+        self.bot          = bot
+        self.crew_view    = CrewAnnouncePanelView(self)
+        self.general_view = GeneralAnnouncePanelView(self)
         self.bot.add_view(self.crew_view)
         self.bot.add_view(self.general_view)
+        self.bot.add_view(AnnouncementButtons())
 
     async def log_action(self, guild: Optional[discord.Guild], message: str) -> None:
-        if not guild or not LOG_CHANNEL_ID:
+        if not guild:
             return
         ch = guild.get_channel(LOG_CHANNEL_ID)
         if isinstance(ch, discord.TextChannel):
@@ -421,6 +649,8 @@ class AnnouncementPanelsCog(commands.Cog):
                 "📍 **Ping @here** — notify online members only\n"
                 "👥 **Ping Crew Role** — notify crew members\n"
                 "🔕 **No Ping** — post without any ping\n\n"
+                "**Each announcement includes tracking buttons:**\n"
+                "✅ Acknowledge  ⏰ Remind Me  🔥 Interested  📍 View Updates\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 "Staff use only\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
@@ -428,7 +658,11 @@ class AnnouncementPanelsCog(commands.Cog):
         )
         embed.add_field(
             name="📋 Staff Commands",
-            value="`!refresh_general_announce_panel` — Refresh this panel",
+            value=(
+                "`!refresh_general_announce_panel` — Refresh this panel\n"
+                "`!announcement_stats <message_id>` — View tracking stats\n"
+                "`!refresh_announcement_stats <message_id>` — Post stats to log"
+            ),
             inline=False,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -437,24 +671,14 @@ class AnnouncementPanelsCog(commands.Cog):
 
     async def ensure_crew_panel(self) -> None:
         await _ensure_panel(
-            self.bot,
-            CREW_ANNOUNCE_CHANNEL_ID,
-            CREW_PANEL_FILE,
-            CREW_PANEL_TAG,
-            self._crew_panel_embed(),
-            self.crew_view,
-            "Crew Announce",
+            self.bot, CREW_ANNOUNCE_CHANNEL_ID, CREW_PANEL_FILE,
+            CREW_PANEL_TAG, self._crew_panel_embed(), self.crew_view, "Crew Announce",
         )
 
     async def ensure_general_panel(self) -> None:
         await _ensure_panel(
-            self.bot,
-            GENERAL_ANNOUNCE_CHANNEL_ID,
-            GENERAL_PANEL_FILE,
-            GENERAL_PANEL_TAG,
-            self._general_panel_embed(),
-            self.general_view,
-            "General Announce",
+            self.bot, GENERAL_ANNOUNCE_CHANNEL_ID, GENERAL_PANEL_FILE,
+            GENERAL_PANEL_TAG, self._general_panel_embed(), self.general_view, "General Announce",
         )
 
     @commands.Cog.listener()
@@ -474,6 +698,27 @@ class AnnouncementPanelsCog(commands.Cog):
     async def cmd_refresh_general(self, ctx: commands.Context):
         await self.ensure_general_panel()
         await ctx.send("General announcement panel refreshed.", delete_after=8)
+
+    @commands.command(name="announcement_stats")
+    @commands.has_permissions(manage_guild=True)
+    async def cmd_announcement_stats(self, ctx: commands.Context, message_id: int):
+        record = _get_record(message_id)
+        if not record:
+            return await ctx.send("No tracked announcement found for that message ID.", delete_after=10)
+        embed = _build_stats_embed(ctx.guild, message_id, record)
+        await ctx.send(embed=embed)
+
+    @commands.command(name="refresh_announcement_stats")
+    @commands.has_permissions(manage_guild=True)
+    async def cmd_refresh_stats(self, ctx: commands.Context, message_id: int):
+        record = _get_record(message_id)
+        if not record:
+            return await ctx.send("No tracked announcement found for that message ID.", delete_after=10)
+        embed = _build_stats_embed(ctx.guild, message_id, record)
+        log_ch = ctx.guild.get_channel(LOG_CHANNEL_ID)
+        if isinstance(log_ch, discord.TextChannel):
+            await log_ch.send(content="📊 Refreshed announcement stats:", embed=embed)
+        await ctx.send("✅ Stats sent to the log channel.", delete_after=8)
 
 
 # =========================================================
