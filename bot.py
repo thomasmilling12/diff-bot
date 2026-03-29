@@ -14728,30 +14728,65 @@ async def on_message(message: discord.Message) -> None:
                 prev_total = total_images - len(raw_images)
                 capped = min(total_images, MIN_GARAGE_PHOTOS)
 
-                filled   = min(capped, MIN_GARAGE_PHOTOS)
-                empty    = MIN_GARAGE_PHOTOS - filled
-                bar      = "🟦" * filled + "⬛" * empty
-                complete = capped >= MIN_GARAGE_PHOTOS
+                total_unique   = len(user_hashes)
+                remaining      = max(0, MIN_GARAGE_PHOTOS - capped)
+                complete       = capped >= MIN_GARAGE_PHOTOS
                 progress_color = discord.Color.green() if complete else discord.Color.blue()
 
+                bar = "🟦" * capped + "⬛" * remaining
+
+                title = (
+                    "📸 Photo Progress — ✅ Complete!"
+                    if complete
+                    else f"📸 Photo Progress — {capped}/{MIN_GARAGE_PHOTOS}"
+                )
+                desc_parts = [f"**{message.author.mention}** is submitting their garage photos."]
+                if complete:
+                    desc_parts.append("🎉 All required photos have been received!")
+
                 progress_embed = discord.Embed(
-                    title = "📸 Photo Progress",
-                    color = progress_color,
-                    timestamp = utc_now(),
+                    title       = title,
+                    description = "\n".join(desc_parts),
+                    color       = progress_color,
+                    timestamp   = utc_now(),
                 )
+                progress_embed.set_thumbnail(url=message.author.display_avatar.url)
+
                 progress_embed.add_field(
-                    name  = f"Progress  {capped}/{MIN_GARAGE_PHOTOS}",
+                    name  = f"📊 {capped}/{MIN_GARAGE_PHOTOS} submitted",
                     value = bar,
-                    inline= False,
+                    inline=False,
                 )
+
                 if accepted:
-                    progress_embed.add_field(name="✅ Accepted", value=str(accepted), inline=True)
+                    progress_embed.add_field(name="✅ New This Batch",   value=str(accepted),     inline=True)
                 if dupes:
-                    progress_embed.add_field(name="🔁 Duplicates Ignored", value=str(dupes), inline=True)
+                    progress_embed.add_field(name="🔁 Duplicates",       value=str(dupes),        inline=True)
                 if spam_ignored:
-                    progress_embed.add_field(name="⚠️ Extra Images (Anti-Spam)", value=str(spam_ignored), inline=True)
+                    progress_embed.add_field(name="⚠️ Over Limit",       value=str(spam_ignored), inline=True)
+
+                if total_unique > accepted or total_images > len(raw_images):
+                    progress_embed.add_field(name="📸 Total Unique",     value=str(total_unique), inline=True)
+
+                if not complete:
+                    progress_embed.add_field(name="📌 Still Needed",     value=f"{remaining} more photo{'s' if remaining != 1 else ''}", inline=True)
+
                 progress_embed.set_footer(text="Different Meets • Photo Review System")
-                await message.channel.send(embed=progress_embed)
+
+                prev_progress = next(
+                    (m for m in history
+                     if m.author.id == bot.user.id
+                     and m.embeds
+                     and "Photo Progress" in (m.embeds[0].title or "")),
+                    None,
+                )
+                if prev_progress:
+                    try:
+                        await prev_progress.edit(embed=progress_embed)
+                    except Exception:
+                        await message.channel.send(embed=progress_embed)
+                else:
+                    await message.channel.send(embed=progress_embed)
 
                 already_notified = any(
                     m.author.id == bot.user.id
