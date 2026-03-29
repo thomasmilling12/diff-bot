@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 import discord
@@ -106,17 +107,26 @@ class UnverifiedPingView(discord.ui.View):
                 "I couldn't send the ping in this channel.", ephemeral=True
             )
 
+        STAFF_ROLE_IDS = {850391095845584937, 850391378559238235, 990011447193006101, 1055823929358430248}
+        role_label = ""
+        for r in reversed(member.roles):
+            if r.id in STAFF_ROLE_IDS:
+                role_label = f" ({r.name})"
+                break
+
         ping_embed = discord.Embed(
             title="📌 Verification Reminder",
             description=(
-                f"{role.mention}\n\n"
-                "Please complete the server verification process to unlock full access.\n"
-                "Read the required channels and follow the verification steps posted by staff."
+                "Please complete the server verification process to unlock full access.\n\n"
+                "• Read the **rules** and **verification** channels\n"
+                "• Follow the steps posted by staff\n"
+                "• Your access will be unlocked once verification is complete"
             ),
             color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
         )
         ping_embed.set_thumbnail(url=DIFF_LOGO_URL)
-        ping_embed.set_footer(text=f"Sent by {member.display_name} • DIFF Verification System")
+        ping_embed.set_footer(text=f"Sent by {member.display_name}{role_label}  •  DIFF Verification System")
 
         await channel.send(
             content=role.mention,
@@ -139,40 +149,39 @@ class UnverifiedPanelCog(commands.Cog):
     # ------------------------------------------------------------------
     def _build_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="📍 DIFF Unverified Announcement Panel",
+            title="📍 DIFF Unverified Members",
             description=(
-                "Welcome to the **unverified** area.\n\n"
-                "This panel is used by staff to send a quick reminder to all members "
-                "who still need to complete verification.\n\n"
-                "**What happens when staff press the button:**\n"
-                "• The unverified role gets pinged\n"
-                "• A reminder message is posted in this channel\n"
-                "• Members are directed to complete verification steps\n\n"
-                "**For members:**\n"
-                "Please follow the server verification process so you can gain full access."
+                "If you're seeing this channel, you haven't completed server verification yet.\n"
+                "Follow the steps below to unlock full access to DIFF."
             ),
-            color=EMBED_COLOR,
-        )
-        embed.add_field(
-            name="Staff Use",
-            value="Press the button below to remind unverified members to finish verification.",
-            inline=False,
-        )
-        embed.add_field(
-            name="Anti-Dupe System",
-            value=(
-                "This panel is tracked by message ID and will refresh the same post "
-                "instead of creating duplicates."
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="📋 Staff Commands",
-            value="`!refresh_unverified_panel` — Refresh this panel",
-            inline=False,
+            color=0xED4245,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-        embed.set_footer(text=f"{FOOTER_TEXT} • {PANEL_TAG}")
+        embed.add_field(
+            name="✅ How to Get Verified",
+            value=(
+                "• Read the **rules** and **verification** channels\n"
+                "• Follow any steps posted by staff\n"
+                "• Once complete, your access will be unlocked"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="⚙️ What Happens When Staff Ping",
+            value=(
+                "• The **Unverified** role is pinged\n"
+                "• A reminder is posted here\n"
+                "• Members are directed to finish verification"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔔 Staff Action",
+            value="Press the button below to send a verification reminder to all unverified members.",
+            inline=False,
+        )
+        embed.set_footer(text=f"DIFF Verification System  |  {PANEL_TAG}")
+        embed.timestamp = datetime.now(timezone.utc)
         return embed
 
     # ------------------------------------------------------------------
