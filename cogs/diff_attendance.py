@@ -145,42 +145,40 @@ def _session_embed(session_id: str, session: dict) -> discord.Embed:
 
 def _panel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🧠 DIFF Real Attendance System",
-        color=EMBED_COLOR,
+        title="📋 DIFF Meet Attendance",
         description=(
-            "This system tracks **real attendance**, not just RSVPs.\n\n"
-            "**Use it to:**\n"
-            "• Open a check-in session when the meet starts\n"
-            "• Let members check in with a button\n"
-            "• Auto track who actually showed up\n"
-            "• Flag no-shows when the session closes"
+            "Track who actually showed up at each DIFF meet — not just who RSVPed.\n"
+            "Open a session when the meet starts, members check in, and staff reviews no-shows when it closes."
         ),
-    )
-    embed.add_field(
-        name="Staff Flow",
-        value=(
-            "1. Press **Create Attendance Session**\n"
-            "2. Enter event title, host, theme, and optional RSVP list\n"
-            "3. Members press **Check In** on the session post\n"
-            "4. Staff closes session and reviews no-shows"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Best Use",
-        value="Use this when a meet actually starts so RSVPs become real attendance data.",
-        inline=False,
-    )
-    embed.add_field(
-        name="📋 Staff Commands",
-        value=(
-            "Attendance sessions are managed through the buttons on this panel.\n"
-            "No additional prefix commands are required."
-        ),
-        inline=False,
+        color=EMBED_COLOR,
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text=PANEL_TAG)
+    embed.add_field(
+        name="📌 How It Works",
+        value=(
+            "› **1.** Press **Create Attendance Session** and fill in the meet details\n"
+            "› **2.** The bot posts a live check-in message in this channel\n"
+            "› **3.** Members press **Check In** when they join the meet\n"
+            "› **4.** Staff closes the session — no-shows are flagged automatically"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📊 What Gets Recorded",
+        value=(
+            "› Host name & meet title\n"
+            "› Theme / event type\n"
+            "› Every member who checked in (with timestamp)\n"
+            "› No-shows from the expected RSVP list"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="💡 Tip",
+        value="Use **View Open Sessions** to see any currently active check-ins.",
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Attendance System  |  Staff-only panel")
     return embed
 
 
@@ -530,13 +528,21 @@ class AttendanceCog(commands.Cog):
             except Exception as e:
                 print(f"[Attendance] Edit failed: {e}")
 
-        # Fallback: scan and delete any stale panel by tag
+        # Fallback: scan and delete any stale panel by tag or known titles
+        _old_titles = {
+            "🧠 DIFF Real Attendance System",
+            "📋 DIFF Meet Attendance",
+            "DIFF Meet Attendance System",
+        }
         try:
             async for msg in channel.history(limit=50):
                 if (
                     msg.author == self.bot.user
                     and msg.embeds
-                    and msg.embeds[0].footer.text == PANEL_TAG
+                    and (
+                        msg.embeds[0].footer.text == PANEL_TAG
+                        or msg.embeds[0].title in _old_titles
+                    )
                 ):
                     try:
                         await msg.delete()
@@ -551,6 +557,19 @@ class AttendanceCog(commands.Cog):
             print(f"[Attendance] Panel posted: {new_msg.id}")
         except Exception as e:
             print(f"[Attendance] Failed to post panel: {e}")
+
+    @commands.command(name="refreshattendancepanel")
+    async def refresh_panel_cmd(self, ctx: commands.Context):
+        member = ctx.author if isinstance(ctx.author, discord.Member) else None
+        if member is None or not _is_staff(member):
+            return
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+        _save_panel_msg_id(None)
+        await self.ensure_panel()
+        await ctx.send("✅ Attendance panel refreshed.", delete_after=6)
 
     @commands.Cog.listener()
     async def on_ready(self):
