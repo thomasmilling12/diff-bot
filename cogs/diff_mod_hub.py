@@ -98,30 +98,33 @@ def _is_staff(member: discord.Member) -> bool:
 def _panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🛡️ DIFF Moderation Hub",
-        color=discord.Color.dark_red(),
         description=(
-            "**Staff Moderation Control Center**\n\n"
-            "Use the buttons below to manage members and track moderation actions.\n\n"
-            "**Included Systems:**\n"
-            "• ⚠️ Warning System\n"
-            "• ⏳ Timeout System\n"
-            "• 👢 Kick\n"
-            "• 🔨 Ban\n"
-            "• 📋 Warning Count Checker\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "All actions are staff-only and logged automatically.\n"
-            "━━━━━━━━━━━━━━━━━━━━━━"
+            "Staff moderation control centre for **Different Meets**.\n"
+            "Use the buttons below to take action on members — all actions are logged automatically."
         ),
+        color=0xED4245,
     )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.add_field(
-        name="📋 Staff Commands",
+        name="⚠️ Available Actions",
         value=(
-            "`!refresh_mod_hub` — Refresh this panel"
+            "› **Warn Member** — issue an official warning\n"
+            "› **Timeout Member** — temporarily restrict access\n"
+            "› **Kick Member** — remove from the server\n"
+            "› **Ban Member** — permanently remove from the server\n"
+            "› **Check Warnings** — view a member's warning history"
         ),
         inline=False,
     )
-    embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text=PANEL_TAG)
+    embed.add_field(
+        name="📌 Notes",
+        value=(
+            "All actions require a target user and reason.\n"
+            "Every action is logged to #mod-logs with full details."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Moderation Hub  |  Staff-only actions")
     return embed
 
 
@@ -592,7 +595,7 @@ class ModHubCog(commands.Cog):
                 if (
                     msg.author == self.bot.user
                     and msg.embeds
-                    and msg.embeds[0].footer.text == PANEL_TAG
+                    and msg.embeds[0].title == "🛡️ DIFF Moderation Hub"
                 ):
                     try:
                         await msg.delete()

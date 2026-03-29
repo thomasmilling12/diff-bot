@@ -123,8 +123,9 @@ def _has_media_embed(embeds: list[discord.Embed]) -> bool:
 # =========================================================
 class SecurityCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
-        self.bot          = bot
+        self.bot                  = bot
         self.recent_joins: deque[datetime] = deque()
+        self._punished_ids: set[int] = set()
         self._cleanup.start()
 
     def cog_unload(self):
@@ -211,6 +212,9 @@ class SecurityCog(commands.Cog):
     async def on_member_join(self, member: discord.Member):
         if member.guild.id != GUILD_ID:
             return
+        if member.id in self._punished_ids:
+            return
+        self._punished_ids.add(member.id)
 
         now = _utcnow()
         self.recent_joins.append(now)
@@ -228,6 +232,8 @@ class SecurityCog(commands.Cog):
             if raid_burst:
                 parts.append("Rapid join burst detected")
             await self._punish_raider(member, " | ".join(parts), burst=raid_burst)
+
+        self.bot.loop.call_later(30, lambda: self._punished_ids.discard(member.id))
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
