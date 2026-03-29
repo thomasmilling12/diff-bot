@@ -10280,19 +10280,22 @@ class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
             embed_color = discord.Color.from_str(hex_val)
         except Exception:
             embed_color = discord.Color.blurple()
+        member = interaction.user
         embed = discord.Embed(
-            title="🎨 DIFF Color Submission",
-            description=(
-                "A new crew color has been submitted by the Color Team.\n\n"
-                f"**Color Name:** {color_name_val}\n"
-                f"**HEX Code:** `{hex_val}`\n"
-                "**Status:** **Pending Review**\n\n"
-                "Use this post to review the submission."
-            ),
+            title="🎨 New Color Submission",
+            description="A new crew color has been submitted for review.",
             color=embed_color,
+            timestamp=datetime.now(timezone.utc),
         )
+        embed.set_author(
+            name=f"{member.display_name}",
+            icon_url=member.display_avatar.url if member.display_avatar else None,
+        )
+        embed.add_field(name="🎨 Color Name", value=color_name_val, inline=True)
+        embed.add_field(name="🖌️ HEX Code", value=f"`{hex_val}`", inline=True)
+        embed.add_field(name="📋 Status", value="⏳ Pending Review", inline=True)
         embed.set_image(url=image_val)
-        embed.set_footer(text=f"Submitted by {interaction.user.display_name}")
+        embed.set_footer(text="DIFF Color Team  •  React to vote: ✅ Yes  ❌ No  🤔 Maybe")
         msg = await submit_channel.send(embed=embed, view=SubmissionActionView())
         for emoji in ("✅", "❌", "🤔"):
             try:
@@ -10371,25 +10374,38 @@ class SubmissionActionView(discord.ui.View):
 def _cs_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🎨 DIFF Color Submission Panel",
-        description=(
-            "**Color Team Guide**\n\n"
-            "Use the button below to submit a new crew color for review.\n\n"
-            "**What to include:**\n"
-            "• Color name\n• HEX code\n• Image link for the preview car\n\n"
-            "**Before submitting:**\n"
-            "• Keep the color clean and realistic\n• Double-check the HEX code\n"
-            "• Use a clear image that shows the color well\n• Make sure the submission is meet-ready\n\n"
-            "**How it works:**\n"
+        description="Submit a new crew color for leadership review using the button below.",
+        color=discord.Color.from_str("#7B2FBE"),
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.add_field(
+        name="📝 What to Include",
+        value="• Color name\n• HEX code (e.g. `#FF9742`)\n• Image link of the preview car",
+        inline=False,
+    )
+    embed.add_field(
+        name="✅ Before Submitting",
+        value=(
+            "• Keep the color clean and realistic\n"
+            "• Double-check the HEX code\n"
+            "• Use a clear image that shows the color well\n"
+            "• Make sure the submission is meet-ready"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="⚙️ How It Works",
+        value=(
             "• Press **Submit Color** and fill out the form\n"
             "• Your submission posts to the review channel automatically\n"
             "• Leadership can approve or lock submissions\n"
-            "• Weekly vote auto-posts Tuesday ~12 PM EST\n"
-            "• Winner auto-announces Monday ~12 PM EST\n\n"
-            "Press **Submit Color** below to begin."
+            "• Weekly vote auto-posts **Tuesday ~12 PM EST**\n"
+            "• Winner auto-announces **Monday ~12 PM EST**"
         ),
-        color=discord.Color.blurple(),
+        inline=False,
     )
-    embed.set_footer(text="DIFF • Advanced Color Team System")
+    embed.set_footer(text="DIFF • Color Team System")
+    embed.timestamp = datetime.now(timezone.utc)
     return embed
 
 
