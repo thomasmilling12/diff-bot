@@ -13517,7 +13517,7 @@ SUPPORT_PANEL_CHANNEL_ID = SUPPORT_TICKETS_CHANNEL_ID
 SUPPORT_TICKET_CATEGORY_ID: int = 1328457973583839282
 JOIN_PANEL_CHANNEL_ID = 1277084633858576406
 JOIN_TICKET_CATEGORY_ID = 1328457973583839282
-_SUPPORT_BRAND = "DIFF Support Center"
+_SUPPORT_BRAND = "🎟️ DIFF Support Center"
 _SUPP_APPROVED_STAFF_ROLE_ID = HOST_ROLE_ID
 
 _SUPP_APPLICATION_QUESTIONS = [
@@ -13653,7 +13653,7 @@ def _supp_brand_embed(embed: discord.Embed) -> discord.Embed:
 
 def _supp_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🎟️ DIFF Support Center",
+        title=_SUPPORT_BRAND,
         description=(
             "Use the dropdown below to open a private ticket with the right team. "
             "Select the option that best matches your situation and staff will be notified right away.\n\n"
@@ -14280,6 +14280,26 @@ async def post_support_panel(interaction: discord.Interaction) -> None:
     await interaction.followup.send(f"Support panel posted in {channel.mention}.", ephemeral=True)
 
 
+@bot.command(name="refreshsupportpanel")
+async def _refresh_support_panel_cmd(ctx: commands.Context):
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    channel = ctx.guild.get_channel(SUPPORT_PANEL_CHANNEL_ID) if ctx.guild else None
+    if not isinstance(channel, discord.TextChannel):
+        await ctx.send("Support panel channel not found.", delete_after=8)
+        return
+    async for msg in channel.history(limit=50):
+        if msg.author.id == bot.user.id and any(e.title == _SUPPORT_BRAND for e in msg.embeds):
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+    await channel.send(embed=_supp_build_panel_embed(), view=SupportDropdownView())
+    await ctx.send(f"✅ Support panel refreshed in {channel.mention}.", delete_after=8)
 
 
 # =========================
