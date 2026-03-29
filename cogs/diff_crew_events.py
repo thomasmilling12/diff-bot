@@ -495,64 +495,124 @@ class CrewEventsPanelView(discord.ui.View):
             style=discord.ButtonStyle.link,
         ))
 
-    @discord.ui.button(label="Create Event", emoji="📅", style=discord.ButtonStyle.primary,
-                       custom_id="crew_events_create_event_v1")
-    async def create_event(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.select(
+        placeholder="⚡ Select an action...",
+        custom_id="crew_events_combined_select_v1",
+        options=[
+            discord.SelectOption(
+                label="Create Event", value="create_event", emoji="📅",
+                description="Post a new crew event (staff only)",
+            ),
+            discord.SelectOption(
+                label="View Upcoming Events", value="view_upcoming", emoji="📌",
+                description="See all scheduled events with RSVP counts",
+            ),
+            discord.SelectOption(
+                label="Request Collab", value="request_collab", emoji="🤝",
+                description="Submit a private crew collab request",
+            ),
+            discord.SelectOption(
+                label="Start Attendance Session", value="attendance_create", emoji="🧠",
+                description="Open a live check-in for an active meet (staff only)",
+            ),
+            discord.SelectOption(
+                label="View Open Check-ins", value="attendance_view", emoji="📋",
+                description="See any currently active attendance sessions",
+            ),
+            discord.SelectOption(
+                label="Refresh Panel", value="refresh_panel", emoji="♻️",
+                description="Re-post this panel (staff only)",
+            ),
+        ],
+    )
+    async def combined_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        val = self.values[0]
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
-        if member is None or not _is_staff(member):
-            return await interaction.response.send_message(
-                "Only staff can create official crew events.", ephemeral=True
+
+        if val == "create_event":
+            if member is None or not _is_staff(member):
+                return await interaction.response.send_message(
+                    "Only staff can create official crew events.", ephemeral=True
+                )
+            await interaction.response.send_modal(CreateEventModal(self.cog))
+
+        elif val == "view_upcoming":
+            events  = _load_events().get("events", {})
+            current = _now_ts()
+            upcoming = sorted(
+                [(int(e.get("timestamp", 0)), eid, e)
+                 for eid, e in events.items() if int(e.get("timestamp", 0)) >= current],
+                key=lambda x: x[0],
             )
-        await interaction.response.send_modal(CreateEventModal(self.cog))
+            if not upcoming:
+                return await interaction.response.send_message(
+                    "There are no upcoming crew events right now.", ephemeral=True
+                )
+            embed = discord.Embed(title="📌 Upcoming Crew Events", color=EMBED_COLOR,
+                                  description="Here are the next scheduled crew events.")
+            for ts, eid, e in upcoming[:10]:
+                c = e.get("counts", {})
+                embed.add_field(
+                    name=f"{e.get('title', 'Untitled')} • `{eid}`",
+                    value=(
+                        f"Date: <t:{ts}:F>\n"
+                        f"Host: {e.get('host', 'Not set')}\n"
+                        f"Theme: {e.get('theme', 'Not set')}\n"
+                        f"RSVPs: ✅ {c.get('attending', 0)} | ❓ {c.get('maybe', 0)} | ❌ {c.get('not_attending', 0)}"
+                    ),
+                    inline=False,
+                )
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="View Upcoming Events", emoji="📌", style=discord.ButtonStyle.secondary,
-                       custom_id="crew_events_view_upcoming_v1")
-    async def view_upcoming(self, interaction: discord.Interaction, button: discord.ui.Button):
-        events  = _load_events().get("events", {})
-        current = _now_ts()
-        upcoming = sorted(
-            [(int(e.get("timestamp", 0)), eid, e) for eid, e in events.items() if int(e.get("timestamp", 0)) >= current],
-            key=lambda x: x[0],
-        )
+        elif val == "request_collab":
+            await interaction.response.send_modal(CollabRequestModal(self.cog))
 
-        if not upcoming:
-            return await interaction.response.send_message(
-                "There are no upcoming crew events right now.", ephemeral=True
+        elif val == "attendance_create":
+            if member is None or not _is_staff(member):
+                return await interaction.response.send_message(
+                    "Only staff can start attendance sessions.", ephemeral=True
+                )
+            att_cog = interaction.client.cogs.get("AttendanceCog")
+            if att_cog is None:
+                return await interaction.response.send_message(
+                    "Attendance system not loaded.", ephemeral=True
+                )
+            from cogs.diff_attendance import CreateAttendanceModal as AttModal
+            await interaction.response.send_modal(AttModal(att_cog))
+
+        elif val == "attendance_view":
+            from cogs.diff_attendance import _load_sessions
+            sessions = _load_sessions().get("sessions", {})
+            open_list = sorted(
+                [(s.get("created_at", 0), sid, s)
+                 for sid, s in sessions.items() if s.get("status") == "open"],
+                key=lambda x: x[0], reverse=True,
             )
+            if not open_list:
+                return await interaction.response.send_message(
+                    "There are no open check-in sessions right now.", ephemeral=True
+                )
+            embed = discord.Embed(title="📋 Open Check-in Sessions", color=EMBED_COLOR,
+                                  description="Currently active attendance sessions:")
+            for _, sid, s in open_list[:10]:
+                checkins = s.get("checkins", {})
+                embed.add_field(
+                    name=f"{s.get('title', 'Untitled Meet')} • `{sid}`",
+                    value=f"Host: {s.get('host', 'N/A')}\nChecked in: **{len(checkins)}**",
+                    inline=False,
+                )
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        embed = discord.Embed(title="📌 Upcoming Crew Events", color=EMBED_COLOR,
-                              description="Here are the next scheduled crew events.")
-        for ts, eid, e in upcoming[:10]:
-            c = e.get("counts", {})
-            embed.add_field(
-                name=f"{e.get('title', 'Untitled')} • `{eid}`",
-                value=(
-                    f"Date: <t:{ts}:F>\n"
-                    f"Host: {e.get('host', 'Not set')}\n"
-                    f"Theme: {e.get('theme', 'Not set')}\n"
-                    f"RSVPs: ✅ {c.get('attending',0)} | ❓ {c.get('maybe',0)} | ❌ {c.get('not_attending',0)}"
-                ),
-                inline=False,
-            )
-        embed.set_thumbnail(url=DIFF_LOGO_URL)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="Request Collab", emoji="🤝", style=discord.ButtonStyle.success,
-                       custom_id="crew_events_request_collab_v1")
-    async def request_collab(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(CollabRequestModal(self.cog))
-
-    @discord.ui.button(label="Refresh Panel", emoji="♻️", style=discord.ButtonStyle.secondary,
-                       custom_id="crew_events_refresh_panel_v1")
-    async def refresh_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        member = interaction.user if isinstance(interaction.user, discord.Member) else None
-        if member is None or not _is_staff(member):
-            return await interaction.response.send_message(
-                "Only staff can refresh this panel.", ephemeral=True
-            )
-        await interaction.response.defer(ephemeral=True)
-        await self.cog.ensure_panel()
-        await interaction.followup.send("Crew Events panel refreshed.", ephemeral=True)
+        elif val == "refresh_panel":
+            if member is None or not _is_staff(member):
+                return await interaction.response.send_message(
+                    "Only staff can refresh the panel.", ephemeral=True
+                )
+            await interaction.response.defer(ephemeral=True)
+            await self.cog.ensure_panel()
+            await interaction.followup.send("✅ Panel refreshed.", ephemeral=True)
 
 
 class CollabTicketView(discord.ui.View):
@@ -659,37 +719,34 @@ class CrewEventsCog(commands.Cog):
     # ------------------------------------------------------------------
     def _build_panel_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="🚨 DIFF Crew Events Command Center",
+            title="🎮 DIFF Crew Events & Attendance",
             description=(
-                "Stay updated with all official crew events, collabs, and attendance tracking.\n\n"
-                "**Use the buttons below to:**\n"
-                "• Create official events *(staff only)*\n"
-                "• RSVP to upcoming events\n"
-                "• View the upcoming event list\n"
-                "• Request crew collabs\n\n"
-                "**System Highlights:**\n"
-                "• Clean event posts with button-based RSVP\n"
-                "• Private collab request tickets\n"
-                "• Anti-dupe panel refresh system"
+                "Your hub for crew events, collabs, and meet attendance tracking.\n"
+                "Select an action from the dropdown — responses are **only visible to you**."
             ),
             color=EMBED_COLOR,
         )
-        embed.add_field(name="Event Flow",
-                        value="Staff create events using a structured modal. Members RSVP with buttons.",
-                        inline=False)
-        embed.add_field(name="Collab Flow",
-                        value="Anyone can request a crew collab through a private ticket.",
-                        inline=False)
-        embed.add_field(name="RSVP Tracking",
-                        value="Counts update live and are saved for staff review.",
-                        inline=False)
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.add_field(
-            name="📋 Staff Commands",
-            value="`!refresh_crew_events_panel` — Refresh this panel",
+            name="📅 Crew Events",
+            value=(
+                "› **Create Event** — post a new scheduled crew event *(staff only)*\n"
+                "› **View Upcoming Events** — see all events with RSVP counts\n"
+                "› **Request Collab** — submit a private crew collab request\n"
+                "› Events are posted here with RSVP buttons for members"
+            ),
             inline=False,
         )
-        embed.set_thumbnail(url=DIFF_LOGO_URL)
-        embed.set_footer(text=f"DIFF Crew Events System • {PANEL_TAG}")
+        embed.add_field(
+            name="🧠 Meet Attendance",
+            value=(
+                "› **Start Attendance Session** — open a live check-in when a meet begins *(staff only)*\n"
+                "› **View Open Check-ins** — see any currently active sessions\n"
+                "› Tracks who actually showed up vs. who RSVPed"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Crew Events & Attendance  |  Responses are private")
         return embed
 
     # ------------------------------------------------------------------
@@ -723,18 +780,23 @@ class CrewEventsCog(commands.Cog):
             except Exception as e:
                 print(f"[CrewEvents] Edit failed: {e}")
 
-        # Remove stale duplicates by footer tag
+        # Remove stale duplicates — match by tag OR known old titles
+        _stale_titles = {
+            "🚨 DIFF Crew Events Command Center",
+            "🎮 DIFF Crew Events & Attendance",
+            "📋 DIFF Meet Attendance",
+            "🧠 DIFF Real Attendance System",
+            "DIFF Meet Attendance System",
+        }
         try:
             async for msg in channel.history(limit=50):
-                if (
-                    msg.author == self.bot.user
-                    and msg.embeds
-                    and PANEL_TAG in (msg.embeds[0].footer.text or "")
-                ):
-                    try:
-                        await msg.delete()
-                    except Exception:
-                        pass
+                if msg.author == self.bot.user and msg.embeds:
+                    e0 = msg.embeds[0]
+                    if PANEL_TAG in (e0.footer.text or "") or e0.title in _stale_titles:
+                        try:
+                            await msg.delete()
+                        except Exception:
+                            pass
         except Exception:
             pass
 

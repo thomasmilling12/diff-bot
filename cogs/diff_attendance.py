@@ -573,7 +573,6 @@ class AttendanceCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        await self.ensure_panel()
         await self._rebuild_session_views()
         print("[Attendance] Cog ready.")
 
