@@ -7324,27 +7324,108 @@ class _RcAdminView(discord.ui.View):
     async def fin3(self, i, b): await self._finalize(i, 3)
 
 
+def _rc_classify_msg(msg: discord.Message, bot_id: int) -> str | None:
+    """Returns 'rollcall', 'admin', or None based on button custom IDs."""
+    if msg.author.id != bot_id:
+        return None
+    for row in msg.components:
+        for child in row.children:
+            cid = getattr(child, "custom_id", "") or ""
+            if cid.startswith("diff_rollcall:"):
+                return "rollcall"
+            if cid.startswith("diff_rollcall_finalize:"):
+                return "admin"
+    return None
+
+
+async def _rc_scan_and_recover(channel: discord.TextChannel, guild_id: int, bot_id: int) -> tuple:
+    """Scan channel history for roll call panel messages.
+    Deletes duplicate copies, keeps the newest, saves recovered IDs to DB.
+    Returns (rc_msg_id, admin_msg_id) — either may be None if not found."""
+    rc_msgs: list[discord.Message] = []
+    admin_msgs: list[discord.Message] = []
+    try:
+        async for msg in channel.history(limit=60):
+            kind = _rc_classify_msg(msg, bot_id)
+            if kind == "rollcall":
+                rc_msgs.append(msg)
+            elif kind == "admin":
+                admin_msgs.append(msg)
+    except Exception:
+        return None, None
+
+    # Delete duplicates — keep the newest (index 0, history is newest-first)
+    for m in rc_msgs[1:]:
+        try:
+            await m.delete()
+        except Exception:
+            pass
+    for m in admin_msgs[1:]:
+        try:
+            await m.delete()
+        except Exception:
+            pass
+
+    rc_msg_id = rc_msgs[0].id if rc_msgs else None
+    admin_msg_id = admin_msgs[0].id if admin_msgs else None
+
+    if rc_msg_id and admin_msg_id:
+        _rc_db.upsert_panel(guild_id, channel.id, rc_msg_id, admin_msg_id)
+
+    return rc_msg_id, admin_msg_id
+
+
 async def _rc_refresh_panel(guild: discord.Guild):
     panel = _rc_db.get_panel(guild.id)
     channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         return
-    if not panel:
-        await _rc_post_new_panel(guild, ping_roles=True)
-        return
-    try:
-        msg = await channel.fetch_message(panel["message_id"])
-        await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
-    except discord.NotFound:
-        await _rc_post_new_panel(guild, ping_roles=True)
-    except Exception:
-        pass
+
+    # --- try stored ID first ---
+    if panel:
+        try:
+            msg = await channel.fetch_message(panel["message_id"])
+            await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
+            return
+        except discord.NotFound:
+            pass
+        except Exception:
+            return
+
+    # --- stored ID stale: scan channel and recover ---
+    rc_msg_id, admin_msg_id = await _rc_scan_and_recover(channel, guild.id, guild.me.id)
+    if rc_msg_id:
+        try:
+            msg = await channel.fetch_message(rc_msg_id)
+            await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
+            return
+        except Exception:
+            pass
+
+    # --- nothing found: post fresh ---
+    await _rc_post_new_panel(guild, ping_roles=False)
 
 
 async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
     channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         return
+
+    # Delete any existing roll call / admin panel messages before posting fresh
+    bot_id = guild.me.id if guild.me else None
+    if bot_id:
+        try:
+            async for msg in channel.history(limit=60):
+                if _rc_classify_msg(msg, bot_id) in ("rollcall", "admin"):
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    _rc_db.clear_panel(guild.id)
+
     ping_text = None
     if ping_roles:
         parts = []
@@ -7374,6 +7455,8 @@ async def _rc_ensure_panel(guild: discord.Guild):
     channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         return
+
+    # Try stored ID
     if panel:
         try:
             await channel.fetch_message(panel["message_id"])
@@ -7382,6 +7465,14 @@ async def _rc_ensure_panel(guild: discord.Guild):
             pass
         except Exception:
             return
+
+    # Stored ID stale — scan to recover or clean up before posting
+    bot_id = guild.me.id if guild.me else None
+    if bot_id:
+        rc_msg_id, _ = await _rc_scan_and_recover(channel, guild.id, bot_id)
+        if rc_msg_id:
+            return  # recovered successfully, no need to post
+
     await _rc_post_new_panel(guild, ping_roles=True)
 
 
