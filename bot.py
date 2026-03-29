@@ -5804,9 +5804,285 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
         )
 
 
+def _build_crew_topic_embed(topic: str) -> discord.Embed:
+    if topic == "requirements":
+        embed = discord.Embed(
+            title="📋 DIFF Crew Requirements",
+            description=(
+                "Read every requirement carefully. Failing to meet any of these will result in an automatic denial.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.blue(),
+        )
+        embed.add_field(
+            name="🔞 Age",
+            value="Must be **18 or older** — no exceptions.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🚗 Car Standards",
+            value=(
+                "Clean and realistic builds **only**.\n"
+                "No modded, riced, or unrealistic cars. "
+                "DIFF is a realism-first community."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎮 Activity",
+            value=(
+                "Must be active on **Discord** and in **GTA**.\n"
+                "You're expected to respond to weekly roll calls and crew color announcements."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎧 Headset",
+            value="A working headset is **required**. You must be able to speak during meets and events.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🏁 Meet Attendance",
+            value=(
+                "Attend **at least 1 meet per week**. You must join 30 minutes early.\n"
+                "If you can't attend, notify Management in advance."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🏷️ Crew Tag",
+            value=(
+                "Set **DIFF as active** at all meets you attend.\n"
+                "Wear the crew jacket to all DIFF meets and events.\n"
+                "Failure to wear the tag will result in a strike."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Crew Requirements")
+
+    elif topic == "process":
+        embed = discord.Embed(
+            title="🔄 DIFF Application Process",
+            description=(
+                "Here's exactly what happens from start to finish.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="1️⃣ Attend Meets First",
+            value="Show up to **3–5 DIFF meets** before applying. We want to see you in action.",
+            inline=False,
+        )
+        embed.add_field(
+            name="2️⃣ Submit Your Application",
+            value="Press **Apply to DIFF** on this panel. Fill out the form — be honest and detailed.",
+            inline=False,
+        )
+        embed.add_field(
+            name="3️⃣ Staff Review",
+            value="Management reviews your application, meet history, and car quality.",
+            inline=False,
+        )
+        embed.add_field(
+            name="4️⃣ Interview Invite",
+            value="If shortlisted, you'll be contacted for a **Discord voice interview**.",
+            inline=False,
+        )
+        embed.add_field(
+            name="5️⃣ Final Decision",
+            value=(
+                "Management gives their final decision. If accepted — welcome to DIFF! 🎉\n"
+                "If not accepted, you're welcome to reapply after 30 days."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="⚠️ Important",
+            value="Interviews are held in **Discord VC**. You must be 18+ to apply.",
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Application Process")
+
+    elif topic == "positions":
+        embed = discord.Embed(
+            title="📌 Crew Positions",
+            description=(
+                "Once you're a member, you can try out for these positions. "
+                "Contact the **Leader or Co-Leader** to express interest.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.purple(),
+        )
+        embed.add_field(
+            name="🌈 Color Team",
+            value="Manage weekly crew color operations and voting.",
+            inline=True,
+        )
+        embed.add_field(
+            name="🏁 Meet Host",
+            value="Plan and run DIFF meets. Requires **30 days** as a member first.",
+            inline=True,
+        )
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        embed.add_field(
+            name="🎨 Designer Team",
+            value="Handle crew graphics, logos, and branding.",
+            inline=True,
+        )
+        embed.add_field(
+            name="🎥 Content Creators",
+            value="Capture and share crew content across platforms.",
+            inline=True,
+        )
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        embed.add_field(
+            name="📋 Crew Managers",
+            value="Help run server operations and support management.",
+            inline=True,
+        )
+        embed.set_footer(text="Different Meets • Crew Positions")
+
+    elif topic == "offers":
+        embed = discord.Embed(
+            title="🌟 What DIFF Offers",
+            description=(
+                "DIFF isn't just a crew — it's a full community.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.gold(),
+        )
+        embed.add_field(
+            name="🌈 Weekly Crew Colors",
+            value="A fresh crew color every week, voted on by the community.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🏁 Regular Meets",
+            value="Weekly crew meets with structured hosting and quality standards.",
+            inline=False,
+        )
+        embed.add_field(
+            name="📅 Monthly Meetings",
+            value="Mandatory crew-wide meetings held on Discord to keep everyone aligned.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🤝 Crew Collaborations",
+            value="Joint events with other crews in the GTA car meet community.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🎮 Other Game Events",
+            value="Community-requested events on other games beyond GTA.",
+            inline=False,
+        )
+        embed.add_field(
+            name="📈 Crew Growth",
+            value="A structured environment where active members are recognized and promoted.",
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • What DIFF Offers")
+
+    elif topic == "faq":
+        embed = discord.Embed(
+            title="❓ Frequently Asked Questions",
+            description="━━━━━━━━━━━━━━━━━━━━━━",
+            color=discord.Color.teal(),
+        )
+        embed.add_field(
+            name="Can I apply if I've never been to a meet?",
+            value="We recommend attending **3–5 meets** first. It makes a big difference in your application.",
+            inline=False,
+        )
+        embed.add_field(
+            name="What platform is DIFF on?",
+            value="DIFF operates on **PlayStation 5** (PS5) in GTA Online.",
+            inline=False,
+        )
+        embed.add_field(
+            name="How long does the review process take?",
+            value="Typically **a few days to a week** depending on management availability.",
+            inline=False,
+        )
+        embed.add_field(
+            name="Can I reapply if I'm denied?",
+            value="Yes — you may reapply after **30 days**.",
+            inline=False,
+        )
+        embed.add_field(
+            name="Is a mic required?",
+            value="Yes. A working headset is **mandatory** for interviews and meets.",
+            inline=False,
+        )
+        embed.add_field(
+            name="What happens after I'm accepted?",
+            value=(
+                "You'll receive the Crew Member role, be onboarded by staff, "
+                "and introduced to how DIFF operates internally."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • FAQ")
+
+    else:
+        embed = discord.Embed(title="Unknown topic", color=discord.Color.red())
+
+    embed.timestamp = datetime.now(timezone.utc)
+    return embed
+
+
+class CrewInfoSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            custom_id="diff_crew_info_select_v2",
+            placeholder="📖 Learn about DIFF — choose a topic...",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="Crew Requirements",
+                    value="requirements",
+                    emoji="📋",
+                    description="Age, car standards, activity, and what's expected.",
+                ),
+                discord.SelectOption(
+                    label="Application Process",
+                    value="process",
+                    emoji="🔄",
+                    description="Step-by-step — from first meet to final decision.",
+                ),
+                discord.SelectOption(
+                    label="Crew Positions",
+                    value="positions",
+                    emoji="📌",
+                    description="Roles you can work toward once you're a member.",
+                ),
+                discord.SelectOption(
+                    label="What DIFF Offers",
+                    value="offers",
+                    emoji="🌟",
+                    description="Meets, events, colors, and community perks.",
+                ),
+                discord.SelectOption(
+                    label="FAQ",
+                    value="faq",
+                    emoji="❓",
+                    description="Common questions about applying and joining.",
+                ),
+            ],
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        embed = _build_crew_topic_embed(self.values[0])
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class CrewPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        self.add_item(CrewInfoSelect())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
@@ -5818,54 +6094,13 @@ class CrewPanelView(discord.ui.View):
         except Exception:
             pass
 
-    @discord.ui.button(label="Crew Requirements", emoji="📋", style=discord.ButtonStyle.primary, custom_id="crew_requirements_btn")
-    async def crew_requirements(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="📋 DIFF Crew Requirements",
-            description=(
-                "ALL MEMBERS MUST BE 18+ BEFORE JOINING DIFF\n\n"
-                "■ Clean & realistic builds only (no modded/riced cars)\n"
-                "■ Must have interest in cars\n"
-                "■ Must know Discord & stay active\n"
-                "■ Working headset required\n"
-                "■ Must rep DIFF at meets\n"
-                "■ Attend at least 1 meet per weekend\n\n"
-                "If you do not meet these requirements your application will be denied.\n\n"
-                "**What DIFF Offers:**\n"
-                "■ Weekly crew colors\n"
-                "■ Monthly meetings\n"
-                "■ Events on other games\n"
-                "■ Crew collaborations\n\n"
-                "**Crew Positions:**\n"
-                "■ Color Team\n"
-                "■ Meet Host (30 days required)\n"
-                "■ Designer Team\n"
-                "■ Content Creators\n"
-                "■ Crew Managers"
-            ),
-            color=discord.Color.blue()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="Crew Process", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="crew_process_btn")
-    async def crew_process(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="🔄 DIFF Crew Process",
-            description=(
-                "Step 1: Attend 3–5 meets before applying\n"
-                "Step 2: Submit your application\n"
-                "Step 3: Staff reviews your application\n"
-                "Step 4: If selected, you will be contacted for a Discord interview\n"
-                "Step 5: Final decision from management\n\n"
-                "**IMPORTANT:**\n"
-                "■ Interviews are done via Discord VC\n"
-                "■ Must be 18+ to apply"
-            ),
-            color=discord.Color.blurple()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="Crew Application", emoji="📝", style=discord.ButtonStyle.success, custom_id="crew_application_btn")
+    @discord.ui.button(
+        label="Apply to DIFF",
+        emoji="📝",
+        style=discord.ButtonStyle.success,
+        custom_id="crew_application_btn",
+        row=1,
+    )
     async def crew_application(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(CrewAppStep1Modal())
 
@@ -5876,13 +6111,52 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
         return False, "Crew panel channel not found."
 
     embed = discord.Embed(
-        title="🏁 How to Join DIFF",
+        title="🏁 Join DIFF — Different Meets",
         description=(
-            "Welcome to Different Meets (DIFF) — a structured and community-driven car meet crew focused on realism, quality builds, and consistency.\n\n"
-            "We're looking for dedicated members who are passionate about cars, understand proper meet etiquette, and want to be part of an organized and growing community."
+            "**Different Meets (DIFF)** is a structured, community-driven PS5 GTA car meet crew built "
+            "on realism, quality builds, and consistency.\n\n"
+            "We're looking for dedicated members who love cars, understand proper meet etiquette, "
+            "and want to be part of a serious and growing community.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
         ),
-        color=discord.Color.blue()
+        color=discord.Color.blue(),
+        timestamp=datetime.now(timezone.utc),
     )
+    embed.add_field(
+        name="✅ Requirements at a Glance",
+        value=(
+            "• 18+ only\n"
+            "• Clean & realistic builds\n"
+            "• Active on Discord & GTA\n"
+            "• Working headset\n"
+            "• Attend at least 1 meet per week"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="🔄 The Process",
+        value=(
+            "1. Attend 3–5 meets\n"
+            "2. Submit your application\n"
+            "3. Staff review\n"
+            "4. Discord VC interview\n"
+            "5. Final decision"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="📖 Want to Learn More?",
+        value=(
+            "Use the **dropdown below** to read about:\n"
+            "• Crew requirements\n"
+            "• Application process\n"
+            "• Crew positions\n"
+            "• What DIFF offers\n"
+            "• FAQ"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Crew Recruitment")
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_image(url=DIFF_BANNER_URL)
 
@@ -5897,7 +6171,7 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
 
     if target_message is None:
         async for msg in channel.history(limit=20):
-            if msg.author == guild.me and msg.embeds and msg.embeds[0].title in ("🏁 DIFF Crew Recruitment", "🏁 How to Join DIFF"):
+            if msg.author == guild.me and msg.embeds and msg.embeds[0].title in ("🏁 DIFF Crew Recruitment", "🏁 How to Join DIFF", "🏁 Join DIFF — Different Meets"):
                 target_message = msg
                 break
 
