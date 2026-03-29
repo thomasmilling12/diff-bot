@@ -4722,33 +4722,33 @@ def sort_members_for_hierarchy(members):
     )
 
 
-def format_role_member_lines(role: discord.Role) -> str:
+def format_role_member_field(role: discord.Role, label: str) -> tuple:
+    """Returns (field_name, field_value) for a role in the hierarchy panel."""
     members = sort_members_for_hierarchy(role.members)
-    header = role.mention
 
     if not members:
-        return f"{header}\nNo members assigned yet."
+        return label, "*No members assigned yet.*"
 
-    lines = [f"{get_member_status_emoji(member)} {member.mention}" for member in members]
-    value = header + "\n" + "\n".join(lines)
+    lines = [f"{get_member_status_emoji(m)} {m.mention}" for m in members]
 
-    if len(value) <= 1024:
-        return value
-
-    trimmed_lines = []
-    current_len = 0
+    # Trim to Discord's 1024-char field limit
+    trimmed: list[str] = []
+    length = 0
     for line in lines:
-        extra = len(line) + (1 if trimmed_lines else 0)
-        if current_len + extra > 990:
+        cost = len(line) + (1 if trimmed else 0)
+        if length + cost > 950:
+            trimmed.append(f"*…and {len(lines) - len(trimmed)} more*")
             break
-        trimmed_lines.append(line)
-        current_len += extra
+        trimmed.append(line)
+        length += cost
 
-    remaining = len(lines) - len(trimmed_lines)
-    if remaining > 0:
-        trimmed_lines.append(f"…and {remaining} more")
+    return label, "\n".join(trimmed)
 
-    return header + "\n" + "\n".join(trimmed_lines)
+
+def format_role_member_lines(role: discord.Role) -> str:
+    """Legacy wrapper — kept for any callers outside build_hierarchy_embeds."""
+    _, value = format_role_member_field(role, role.mention)
+    return role.mention + "\n" + value
 
 
 def _count_hierarchy_statuses(guild: discord.Guild) -> dict:
@@ -4779,80 +4779,97 @@ def _count_hierarchy_statuses(guild: discord.Guild) -> dict:
 
 def build_hierarchy_embeds(guild: discord.Guild):
     role_sections = [
-        ("👑 Leadership", [
-            (LEADER_ROLE_ID, "👑 Leader"),
-            (CO_LEADER_ROLE_ID, "🛡️ Co-Leader"),
-            (MANAGER_ROLE_ID, "🔴 Managers"),
-        ]),
-        ("🏁 Meet Operations", [
-            (HOST_ROLE_ID, "🏁 Meet Hosts"),
-        ]),
-        ("🎨 Creative Teams", [
-            (DESIGNER_TEAM_ROLE_ID, "🎨 Designer Team"),
-            (CONTENT_TEAM_ROLE_ID, "📸 Content Team"),
-            (COLOR_TEAM_ROLE_ID, "🌈 Color Team"),
-        ]),
-    ]
-
-    panel_descriptions = [
-        "Server staff.",
-        "Live member list.",
-        f"Need help? Open <#{SUPPORT_TICKETS_CHANNEL_ID}>.",
+        (
+            "👑 DIFF Leadership",
+            "Server leadership & management team.",
+            [
+                (LEADER_ROLE_ID,     "👑 Leader"),
+                (CO_LEADER_ROLE_ID,  "🛡️ Co-Leader"),
+                (MANAGER_ROLE_ID,    "🔴 Manager"),
+            ],
+        ),
+        (
+            "🏁 Meet Operations",
+            "Host team & meet coordinators.",
+            [
+                (HOST_ROLE_ID, "🏁 Meet Host"),
+            ],
+        ),
+        (
+            "🎨 Creative Teams",
+            f"Design, content, and color crew.\nNeed help? Open <#{SUPPORT_TICKETS_CHANNEL_ID}>.",
+            [
+                (DESIGNER_TEAM_ROLE_ID, "🎨 Designer"),
+                (CONTENT_TEAM_ROLE_ID,  "📸 Content Creator"),
+                (COLOR_TEAM_ROLE_ID,    "🌈 Color Team"),
+            ],
+        ),
     ]
 
     status_counts = _count_hierarchy_statuses(guild)
+    status_bar = (
+        f"🟢 **{status_counts['online']}** online\u2003"
+        f"🌙 **{status_counts['idle']}** idle\u2003"
+        f"⛔ **{status_counts['dnd']}** DND\u2003"
+        f"⚫ **{status_counts['offline']}** offline"
+    )
 
     embeds = []
-    for index, (section_title, entries) in enumerate(role_sections):
+    for index, (title, desc, entries) in enumerate(role_sections):
+        description = (
+            f"{desc}\n━━━━━━━━━━━━━━━━━━━━━━\n{status_bar}"
+            if index == 0
+            else desc
+        )
         embed = discord.Embed(
-            title="🏆 DIFF SERVER HIERARCHY",
-            description=panel_descriptions[index] if index < len(panel_descriptions) else "Server staff and teams.",
+            title=title,
+            description=description,
             color=0xC9A227,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-        embed.set_image(url=DIFF_BANNER_URL)
-
-        if index == 0:
-            embed.add_field(
-                name="📊 Staff Status",
-                value=(
-                    f"🟢 Online: **{status_counts['online']}**\u2003"
-                    f"🌙 Idle: **{status_counts['idle']}**\u2003"
-                    f"⛔ DND: **{status_counts['dnd']}**\u2003"
-                    f"⚫ Offline: **{status_counts['offline']}**"
-                ),
-                inline=False,
-            )
-
-        embed.add_field(
-            name=section_title,
-            value="━━━━━━━━━━━━━━━━━━━━",
-            inline=False,
-        )
+        if index == 0 and DIFF_BANNER_URL:
+            embed.set_image(url=DIFF_BANNER_URL)
 
         for role_id, label in entries:
             role = guild.get_role(role_id)
             if role is None:
-                embed.add_field(name=label, value="Role not found.", inline=False)
+                embed.add_field(name=label, value="*Role not found.*", inline=False)
                 continue
-            embed.add_field(name="\u200b", value=format_role_member_lines(role), inline=False)
+            field_name, field_value = format_role_member_field(role, label)
+            embed.add_field(name=field_name, value=field_value, inline=False)
 
-        embed.set_footer(
-            text=f"DIFF Meets • Last updated {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
-        )
+        embed.set_footer(text="DIFF Meets • Hierarchy Panel")
+        embed.timestamp = datetime.utcnow()
         embeds.append(embed)
 
     return embeds
 
 
+_HIERARCHY_OLD_TITLE = "🏆 DIFF SERVER HIERARCHY"
+_HIERARCHY_FOOTER    = "DIFF Meets • Hierarchy Panel"
+_HIERARCHY_NEW_TITLES = {"👑 DIFF Leadership", "🏁 Meet Operations", "🎨 Creative Teams"}
+
+
+def _is_hierarchy_msg(msg: discord.Message, bot_user) -> bool:
+    if msg.author != bot_user:
+        return False
+    if not msg.embeds:
+        return False
+    e = msg.embeds[0]
+    footer_text = e.footer.text if e.footer else ""
+    return (
+        footer_text == _HIERARCHY_FOOTER
+        or e.title == _HIERARCHY_OLD_TITLE
+        or e.title in _HIERARCHY_NEW_TITLES
+    )
+
+
 async def cleanup_extra_hierarchy_messages(channel: discord.TextChannel, keep_ids: list[int]):
     try:
         async for msg in channel.history(limit=50):
-            if msg.author != bot.user:
-                continue
             if msg.id in keep_ids:
                 continue
-            if msg.embeds and any(embed.title == "🏆 DIFF SERVER HIERARCHY" for embed in msg.embeds):
+            if _is_hierarchy_msg(msg, bot.user):
                 try:
                     await msg.delete()
                 except Exception:
@@ -4870,9 +4887,7 @@ async def find_existing_hierarchy_messages(channel: discord.TextChannel, expecte
     found = []
     try:
         async for msg in channel.history(limit=50, oldest_first=True):
-            if msg.author != bot.user:
-                continue
-            if msg.embeds and any(embed.title == "🏆 DIFF SERVER HIERARCHY" for embed in msg.embeds):
+            if _is_hierarchy_msg(msg, bot.user):
                 found.append(msg)
                 if len(found) == expected_count:
                     break
