@@ -7438,11 +7438,16 @@ class _RcRollCallView(discord.ui.View):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Server only.", ephemeral=True)
             return
-        previous = _rc_db.set_response(interaction.guild.id, interaction.user.id, meet_number, status)
-        await _rc_refresh_panel(interaction.guild)
-        await _rc_log_rsvp(interaction.guild, interaction.user, meet_number, previous, status)
+        try:
+            previous = _rc_db.set_response(interaction.guild.id, interaction.user.id, meet_number, status)
+        except Exception:
+            previous = None
         labels = {"yes": "✅ marked as attending", "maybe": "❓ marked as maybe", "no": "❌ marked as not attending"}
-        await interaction.response.send_message(f"You are {labels[status]} for **Meet {meet_number}**.", ephemeral=True)
+        await interaction.response.send_message(
+            f"You are {labels.get(status, status)} for **Meet {meet_number}**.", ephemeral=True
+        )
+        asyncio.create_task(_rc_refresh_panel(interaction.guild))
+        await _rc_log_rsvp(interaction.guild, interaction.user, meet_number, previous or "none", status)
 
     @discord.ui.button(label="Meet 1 ✅", style=discord.ButtonStyle.success, custom_id="diff_rollcall:1:yes", row=0)
     async def m1_yes(self, i, b): await self._handle(i, 1, "yes")
@@ -15699,43 +15704,69 @@ class JoinPlatformSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
-
-        platform = self.values[0]
-
-        if platform in ("xbox", "pc"):
-            label = "Xbox Series X|S" if platform == "xbox" else "PC"
-            embed = discord.Embed(
-                title="🟢 Xbox Join Info" if platform == "xbox" else "💻 PC Join Info",
-                description="\n".join([
-                    f"Your {label} car meets are handled via our partner **MMI Meets**.",
-                    "",
-                    "**Join their server for more information:**",
-                    _JOIN_MMI_INVITE,
-                    "",
-                    "Then go to **#join-car-meet**.",
-                ]),
-                color=discord.Color.from_str("#111111"),
-            )
-            if DIFF_LOGO_URL:
-                embed.set_thumbnail(url=DIFF_LOGO_URL)
-            embed.set_footer(text="Different Meets • GTA Car Meets")
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        category = interaction.guild.get_channel(JOIN_TICKET_CATEGORY_ID)
-        if not isinstance(category, discord.CategoryChannel):
-            return await interaction.response.send_message(
-                "Join ticket category is not configured. Please contact staff.", ephemeral=True
-            )
-
-        for ch in category.text_channels:
-            if ch.topic and f"JOIN_USER:{interaction.user.id}" in ch.topic:
+        try:
+            if not interaction.guild or not isinstance(interaction.user, discord.Member):
                 return await interaction.response.send_message(
-                    f"You already have an open join ticket: {ch.mention}", ephemeral=True
+                    "This can only be used inside the server.", ephemeral=True
                 )
 
-        await interaction.response.send_modal(JoinPsnModal())
+            platform = self.values[0]
+
+            if platform in ("xbox", "pc"):
+                label = "Xbox Series X|S" if platform == "xbox" else "PC"
+                embed = discord.Embed(
+                    title="🟢 Xbox Join Info" if platform == "xbox" else "💻 PC Join Info",
+                    description="\n".join([
+                        f"Your {label} car meets are handled via our partner **MMI Meets**.",
+                        "",
+                        "**Join their server for more information:**",
+                        _JOIN_MMI_INVITE,
+                        "",
+                        "Then go to **#join-car-meet**.",
+                    ]),
+                    color=discord.Color.from_str("#111111"),
+                )
+                if DIFF_LOGO_URL:
+                    embed.set_thumbnail(url=DIFF_LOGO_URL)
+                embed.set_footer(text="Different Meets • GTA Car Meets")
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+            category = interaction.guild.get_channel(JOIN_TICKET_CATEGORY_ID)
+            if not isinstance(category, discord.CategoryChannel):
+                try:
+                    category = await interaction.guild.fetch_channel(JOIN_TICKET_CATEGORY_ID)
+                except Exception:
+                    category = None
+            if not isinstance(category, discord.CategoryChannel):
+                return await interaction.response.send_message(
+                    "Join ticket category is not configured. Please contact staff.", ephemeral=True
+                )
+
+            for ch in category.text_channels:
+                topic = ch.topic or ""
+                if f"JOIN_USER:{interaction.user.id}" in topic:
+                    return await interaction.response.send_message(
+                        f"You already have an open join ticket: {ch.mention}", ephemeral=True
+                    )
+
+            await interaction.response.send_modal(JoinPsnModal())
+
+        except Exception as _e:
+            import traceback as _tb
+            print(f"[JoinPlatformSelect] Error: {_e}\n{_tb.format_exc()}")
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "Something went wrong opening your join ticket. Please try again or contact staff.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.followup.send(
+                        "Something went wrong. Please try again or contact staff.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                pass
 
 
 class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
