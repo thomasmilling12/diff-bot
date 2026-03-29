@@ -462,35 +462,45 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
 
     async def refresh_rc_admin(self) -> None:
         """Find the roll call admin message and edit it with the new dropdown view."""
-        import bot as _bot
+        GUILD_ID_RC = 850386896509337710
+
+        # --- resolve channel ---
         ch = self.bot.get_channel(ROLL_CALL_CHANNEL_ID)
         if not isinstance(ch, discord.TextChannel):
             try:
                 ch = await self.bot.fetch_channel(ROLL_CALL_CHANNEL_ID)
-            except Exception:
-                print("[MeetInfoPatch] Could not fetch roll call channel.")
+            except Exception as e:
+                print(f"[MeetInfoPatch] RC admin: cannot fetch channel: {e}")
                 return
 
-        # Try stored admin message ID from SQLite DB first
-        try:
-            panel = _bot._rc_db.get_panel(ch.guild.id if hasattr(ch, 'guild') else 0)
-            if panel and panel.get("admin_message_id"):
-                try:
-                    msg = await ch.fetch_message(panel["admin_message_id"])
-                    await msg.edit(embed=_rc_admin_embed(), view=self.rc_admin)
-                    print("[MeetInfoPatch] RC admin panel updated via DB ID.")
-                    return
-                except discord.NotFound:
-                    pass
-        except Exception as e:
-            print(f"[MeetInfoPatch] DB lookup failed: {e}")
-
-        # Fallback: scan channel for messages with old finalize buttons
         bot_id = self.bot.user.id if self.bot.user else None
         if not bot_id:
+            print("[MeetInfoPatch] RC admin: bot user not ready yet.")
             return
+
+        # --- try DB admin_message_id first ---
         try:
-            async for msg in ch.history(limit=60):
+            import bot as _bot
+            panel = _bot._rc_db.get_panel(GUILD_ID_RC)
+            if panel:
+                admin_id = panel["admin_message_id"]
+                if admin_id:
+                    try:
+                        msg = await ch.fetch_message(int(admin_id))
+                        await msg.edit(embed=_rc_admin_embed(), view=self.rc_admin)
+                        print("[MeetInfoPatch] RC admin panel updated via DB ID.")
+                        return
+                    except discord.NotFound:
+                        print("[MeetInfoPatch] RC admin: DB message not found, falling back to scan.")
+                    except Exception as e:
+                        print(f"[MeetInfoPatch] RC admin: DB edit failed: {e}")
+        except Exception as e:
+            print(f"[MeetInfoPatch] RC admin: DB lookup failed: {e}")
+
+        # --- fallback: scan channel history ---
+        print("[MeetInfoPatch] RC admin: scanning channel history…")
+        try:
+            async for msg in ch.history(limit=80):
                 if msg.author.id != bot_id:
                     continue
                 for row in msg.components:
@@ -498,12 +508,12 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
                         cid = getattr(child, "custom_id", "") or ""
                         if cid.startswith("diff_rollcall_finalize:"):
                             await msg.edit(embed=_rc_admin_embed(), view=self.rc_admin)
-                            print("[MeetInfoPatch] RC admin panel updated via channel scan.")
+                            print(f"[MeetInfoPatch] RC admin panel updated via scan (msg {msg.id}).")
                             return
         except Exception as e:
             print(f"[MeetInfoPatch] RC admin scan failed: {e}")
 
-        print("[MeetInfoPatch] RC admin panel not found — skipping.")
+        print("[MeetInfoPatch] RC admin panel not found in channel — run !patch_rc_admin to retry.")
 
     def _monkey_patch_bot(self) -> None:
         """Replace bot._rc_post_new_panel so fresh resets also use the new view."""
@@ -532,7 +542,7 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
     @commands.Cog.listener()
     async def on_ready(self):
         import asyncio
-        await asyncio.sleep(5)   # let bot.py on_ready finish first
+        await asyncio.sleep(8)   # let bot.py on_ready fully settle
         await self.refresh_panel()
         await self.refresh_rc_admin()
         self._monkey_patch_bot()
