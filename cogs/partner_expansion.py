@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 GUILD_ID = 850386896509337710
 
@@ -23,7 +23,6 @@ PARTNER_DATA_FILE = os.path.join(DATA_DIR, "partners_directory.json")
 PARTNERSHIP_APPLICATIONS_FILE = os.path.join(DATA_DIR, "partnership_applications.json")
 
 INACTIVITY_DAYS = 14
-REFRESH_MINUTES = 30
 
 EMBED_COLOR = 0x1F6FEB
 SUCCESS_COLOR = 0x2ECC71
@@ -94,10 +93,11 @@ class PartnerInviteView(discord.ui.View):
 class PartnerExpansion(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.refresh_loop.start()
+        # Auto-refresh loop is intentionally disabled — sync only fires on
+        # partner changes or manual !partneradmin refresh / !postpartnerdirectory.
 
     def cog_unload(self):
-        self.refresh_loop.cancel()
+        pass
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -111,15 +111,6 @@ class PartnerExpansion(commands.Cog):
             return
         if any(role.id == COLLAB_PARTNER_ROLE_ID for role in getattr(message.author, "roles", [])):
             await self.update_partner_activity_by_owner(message.author.id)
-
-    @tasks.loop(minutes=REFRESH_MINUTES)
-    async def refresh_loop(self):
-        await self.sync_directory_panel()
-        await self.flag_inactive_partners()
-
-    @refresh_loop.before_loop
-    async def before_refresh(self):
-        await self.bot.wait_until_ready()
 
     def get_partner_records(self) -> Dict[str, Dict[str, Any]]:
         return load_json(PARTNER_DATA_FILE, {})
