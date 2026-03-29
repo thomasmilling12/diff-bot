@@ -20,7 +20,7 @@ MEET_MEDIA_CHANNEL_ID    = 1266933655486332999
 LOG_CHANNEL_ID           = 1485265848099799163
 GUILD_ID                 = 850386896509337710
 
-CARMEET_ROLE_ID = 1138691141009674260   # Car Meet / Notify role
+CARMEET_ROLE_ID = 1138691141009674260
 
 STAFF_ROLE_IDS: set[int] = {
     850391095845584937,   # Leader
@@ -41,7 +41,7 @@ DIFF_LOGO_URL = (
 )
 
 # =========================================================
-# DATE / TIME PARSER  (same logic as diff_crew_events)
+# DATE / TIME PARSER
 # =========================================================
 _TZ_OFFSETS: dict[str, int] = {
     "UTC": 0,   "GMT": 0,
@@ -159,35 +159,57 @@ def _hub_embed() -> discord.Embed:
     current = state.get("current_meet")
 
     if current:
-        is_live = current.get("live", False)
+        is_live    = current.get("live", False)
         is_official = current["meet_type"] == "official"
-        ch_id = OFFICIAL_MEET_CHANNEL_ID if is_official else POPUP_MEET_CHANNEL_ID
-        mtype = "🏁 Official Meet" if is_official else "⚡ Pop-Up Meet"
+        ch_id  = OFFICIAL_MEET_CHANNEL_ID if is_official else POPUP_MEET_CHANNEL_ID
+        mtype  = "🏁 Official Meet" if is_official else "⚡ Pop-Up Meet"
 
         if is_live:
-            color = discord.Color.red()
-            title = "🔴 DIFF Meet — LIVE NOW"
-            desc  = f"**A DIFF meet is happening right now!**\nHead to <#{ch_id}> for the official post and details."
+            embed = discord.Embed(
+                title="🔴 DIFF Meet — LIVE NOW",
+                description=(
+                    "**A DIFF meet is happening right now!**\n"
+                    f"Head over to <#{ch_id}> for the official post and all live details.\n\n"
+                    f"📣 Use <#{MEET_CHAT_CHANNEL_ID}> to communicate during the meet.\n"
+                    f"📸 Drop your clips and photos in <#{MEET_MEDIA_CHANNEL_ID}>."
+                ),
+                color=discord.Color.red(),
+            )
+            embed.add_field(name="🎭 Theme",     value=current["theme"], inline=True)
+            embed.add_field(name="👤 Host",      value=current["host"],  inline=True)
+            embed.add_field(name="🏷️ Type",      value=mtype,            inline=True)
+            embed.add_field(
+                name="🔗 Meet Status",
+                value=f"🟢 **Live** — <#{ch_id}>",
+                inline=False,
+            )
         else:
-            color = discord.Color.gold()
-            title = "📅 DIFF Upcoming Meet Hub"
-            desc  = "An upcoming meet has been scheduled. Stay ready — details are below."
+            embed = discord.Embed(
+                title="📅 DIFF Upcoming Meet Hub",
+                description=(
+                    "A meet has been scheduled — details are locked in below.\n"
+                    "Stay ready and check back for any updates."
+                ),
+                color=discord.Color.gold(),
+            )
+            embed.add_field(name="🎭 Theme",       value=current["theme"],              inline=True)
+            embed.add_field(name="👤 Host",        value=current["host"],               inline=True)
+            embed.add_field(name="🏷️ Type",        value=mtype,                         inline=True)
+            embed.add_field(name="📅 Date & Time", value=f"<t:{current['timestamp']}:F>", inline=True)
+            embed.add_field(name="⏱️ Countdown",   value=f"<t:{current['timestamp']}:R>", inline=True)
+            embed.add_field(name="📢 Full Post",   value=f"<#{ch_id}>",                inline=True)
 
-        embed = discord.Embed(title=title, description=desc, color=color)
+            notes = current.get("notes", "").strip()
+            if notes:
+                embed.add_field(name="📝 Notes", value=notes, inline=False)
+
+            embed.add_field(
+                name="🔗 Meet Status",
+                value="🟡 **Scheduled** — not yet live",
+                inline=False,
+            )
+
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-
-        embed.add_field(name="🎭 Theme",       value=current["theme"],                   inline=True)
-        embed.add_field(name="👤 Host",        value=current["host"],                    inline=True)
-        embed.add_field(name="\u200b",         value="\u200b",                           inline=True)
-        embed.add_field(name="📅 Date & Time", value=f"<t:{current['timestamp']}:F>",   inline=True)
-        embed.add_field(name="⏱️ Countdown",   value=f"<t:{current['timestamp']}:R>",   inline=True)
-        embed.add_field(name="\u200b",         value="\u200b",                           inline=True)
-        embed.add_field(name="🏁 Meet Type",   value=mtype,                              inline=True)
-        embed.add_field(name="📢 Post",        value=f"<#{ch_id}>",                     inline=True)
-
-        notes = current.get("notes", "").strip()
-        if notes:
-            embed.add_field(name="📝 Notes", value=notes, inline=False)
 
     else:
         embed = discord.Embed(
@@ -207,6 +229,21 @@ def _hub_embed() -> discord.Embed:
                 "• Stay ready for public or pop-up meet drops\n"
                 "• Know where to go once a meet goes live"
             ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔗 Quick Access",
+            value=(
+                f"🏁 Official posts → <#{OFFICIAL_MEET_CHANNEL_ID}>\n"
+                f"⚡ Pop-up posts → <#{POPUP_MEET_CHANNEL_ID}>\n"
+                f"💬 Meet chat → <#{MEET_CHAT_CHANNEL_ID}>\n"
+                f"📸 Meet media → <#{MEET_MEDIA_CHANNEL_ID}>"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔗 Meet Status",
+            value="⚫ **No active meet**",
             inline=False,
         )
 
@@ -278,8 +315,6 @@ class CreateMeetModal(discord.ui.Modal, title="Create Upcoming Meet"):
 # INTERMEDIATE VIEWS  (ephemeral, not persistent)
 # =========================================================
 class PingModeView(discord.ui.View):
-    """Step 2 of the create flow — choose ping type, then open modal."""
-
     def __init__(self, cog: "UpcomingMeetCog", meet_type: str):
         super().__init__(timeout=120)
         self.cog       = cog
@@ -308,8 +343,6 @@ class PingModeView(discord.ui.View):
 
 
 class MeetTypeView(discord.ui.View):
-    """Step 1 of the create flow — choose Official or Pop-Up."""
-
     def __init__(self, cog: "UpcomingMeetCog"):
         super().__init__(timeout=120)
         self.cog = cog
@@ -330,6 +363,75 @@ class MeetTypeView(discord.ui.View):
 
 
 # =========================================================
+# STAFF ACTION SELECT  (dropdown)
+# =========================================================
+class StaffActionsSelect(discord.ui.Select):
+    def __init__(self, cog: "UpcomingMeetCog"):
+        self.cog = cog
+        super().__init__(
+            custom_id="diff_upcoming_staff_actions_v2",
+            placeholder="🛠️ Staff Actions — choose an action...",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="Create Meet Post",
+                    value="create",
+                    emoji="📝",
+                    description="Schedule an upcoming official or pop-up meet.",
+                ),
+                discord.SelectOption(
+                    label="Mark Meet Live",
+                    value="live",
+                    emoji="🚨",
+                    description="Mark the current scheduled meet as live now.",
+                ),
+                discord.SelectOption(
+                    label="Clear Current Meet",
+                    value="clear",
+                    emoji="🗑️",
+                    description="Remove the active meet and reset the hub panel.",
+                ),
+                discord.SelectOption(
+                    label="Refresh Panel",
+                    value="refresh",
+                    emoji="♻️",
+                    description="Force-refresh the hub embed with latest data.",
+                ),
+            ],
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not _is_staff(member):
+            return await interaction.response.send_message(
+                "Only staff can use these actions.", ephemeral=True
+            )
+
+        selected = self.values[0]
+
+        if selected == "create":
+            await interaction.response.send_message(
+                "**Step 1 — Choose meet type:**",
+                view=MeetTypeView(self.cog),
+                ephemeral=True,
+            )
+
+        elif selected == "live":
+            await self.cog.mark_meet_live(interaction)
+
+        elif selected == "clear":
+            await self.cog.clear_meet(interaction)
+
+        elif selected == "refresh":
+            await self.cog.ensure_panel()
+            await interaction.response.send_message(
+                "♻️ Hub panel refreshed.", ephemeral=True
+            )
+
+
+# =========================================================
 # MAIN PANEL VIEW  (persistent)
 # =========================================================
 class UpcomingMeetHubView(discord.ui.View):
@@ -337,7 +439,7 @@ class UpcomingMeetHubView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-        # Row 0 — link buttons
+        # Row 0 — quick-link buttons
         for label, ch_id in [
             ("🏁 Official Meet Posts", OFFICIAL_MEET_CHANNEL_ID),
             ("⚡ Pop-Up Meets",        POPUP_MEET_CHANNEL_ID),
@@ -351,43 +453,8 @@ class UpcomingMeetHubView(discord.ui.View):
                 row=0,
             ))
 
-    # Row 1 — interactive staff buttons
-    @discord.ui.button(label="Create Upcoming Meet Post", emoji="📝",
-                       style=discord.ButtonStyle.success,
-                       custom_id="diff_upcoming_create_v1", row=1)
-    async def create_post(self, interaction: discord.Interaction, button: discord.ui.Button):
-        member = interaction.user
-        if not isinstance(member, discord.Member) or not _is_staff(member):
-            return await interaction.response.send_message(
-                "Only staff can use this button.", ephemeral=True
-            )
-        await interaction.response.send_message(
-            "**Step 1 — Choose meet type:**",
-            view=MeetTypeView(self.cog),
-            ephemeral=True,
-        )
-
-    @discord.ui.button(label="Mark Meet Live", emoji="🚨",
-                       style=discord.ButtonStyle.primary,
-                       custom_id="diff_upcoming_live_v1", row=1)
-    async def mark_live(self, interaction: discord.Interaction, button: discord.ui.Button):
-        member = interaction.user
-        if not isinstance(member, discord.Member) or not _is_staff(member):
-            return await interaction.response.send_message(
-                "Only staff can use this button.", ephemeral=True
-            )
-        await self.cog.mark_meet_live(interaction)
-
-    @discord.ui.button(label="Clear Current Meet", emoji="🗑️",
-                       style=discord.ButtonStyle.danger,
-                       custom_id="diff_upcoming_clear_v1", row=1)
-    async def clear_meet(self, interaction: discord.Interaction, button: discord.ui.Button):
-        member = interaction.user
-        if not isinstance(member, discord.Member) or not _is_staff(member):
-            return await interaction.response.send_message(
-                "Only staff can use this button.", ephemeral=True
-            )
-        await self.cog.clear_meet(interaction)
+        # Row 1 — staff dropdown
+        self.add_item(StaffActionsSelect(cog))
 
 
 # =========================================================
@@ -441,7 +508,7 @@ class UpcomingMeetCog(commands.Cog):
             except Exception as e:
                 print(f"[UpcomingMeetPanel] Edit failed: {e}")
 
-        # Fallback: scan by tag and remove stale panel
+        # Fallback: scan by tag and remove stale panels
         try:
             async for msg in channel.history(limit=50):
                 if (
@@ -527,7 +594,7 @@ class UpcomingMeetCog(commands.Cog):
 
         await self.ensure_panel()
         await interaction.response.send_message(
-            f"{'Official' if meet_type == 'official' else 'Pop-up'} meet posted and hub updated.",
+            f"✅ {'Official' if meet_type == 'official' else 'Pop-up'} meet posted and hub updated.",
             ephemeral=True,
         )
         await self.log_action(
@@ -568,7 +635,7 @@ class UpcomingMeetCog(commands.Cog):
         current["live"] = True
         _save_state(state)
         await self.ensure_panel()
-        await interaction.response.send_message("Meet marked as live.", ephemeral=True)
+        await interaction.response.send_message("🚨 Meet marked as live.", ephemeral=True)
         await self.log_action(
             interaction.guild,
             f"🚨 Meet marked live: **{current['theme']}** by {interaction.user.mention}"
@@ -579,7 +646,7 @@ class UpcomingMeetCog(commands.Cog):
         _save_state({})
         await self.ensure_panel()
         await interaction.response.send_message(
-            "Current meet cleared and hub reset.", ephemeral=True
+            "🗑️ Current meet cleared and hub reset.", ephemeral=True
         )
         await self.log_action(
             interaction.guild,
