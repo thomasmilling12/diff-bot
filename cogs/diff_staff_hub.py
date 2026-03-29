@@ -218,7 +218,7 @@ class StaffToolSelect(discord.ui.Select):
                     return await interaction.response.send_message("Staff Dashboard system not loaded.", ephemeral=True)
                 from cogs.diff_staff_dashboard import StaffDashboardView
                 return await interaction.response.send_message(
-                    embed=cog._dashboard_embed(), view=StaffDashboardView(), ephemeral=True
+                    embed=cog._dashboard_embed(), view=StaffDashboardView(cog), ephemeral=True
                 )
 
             if val == "writeups":
@@ -236,7 +236,7 @@ class StaffToolSelect(discord.ui.Select):
                     return await interaction.response.send_message("Case Management system not loaded.", ephemeral=True)
                 from cogs.diff_case_system import CasePanelView
                 return await interaction.response.send_message(
-                    embed=cog.build_case_panel_embed(), view=CasePanelView(), ephemeral=True
+                    embed=cog.build_case_panel_embed(), view=CasePanelView(cog), ephemeral=True
                 )
 
             if val == "managerhub":
