@@ -159,47 +159,59 @@ def _hub_embed() -> discord.Embed:
     current = state.get("current_meet")
 
     if current:
-        mtype = "Official Meet" if current["meet_type"] == "official" else "Pop-Up Meet"
-        ch_id = OFFICIAL_MEET_CHANNEL_ID if current["meet_type"] == "official" else POPUP_MEET_CHANNEL_ID
-        live_tag = "  🔴 **LIVE NOW**" if current.get("live") else ""
-        description = (
-            "**What this channel is used for**\n\n"
-            "This channel shows the **latest upcoming DIFF meet** before it goes live.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"**Current Upcoming Meet**{live_tag}\n"
-            f"• Type: {mtype}\n"
-            f"• Theme: {current['theme']}\n"
-            f"• Host: {current['host']}\n"
-            f"• Starts: <t:{current['timestamp']}:F>\n"
-            f"• Countdown: <t:{current['timestamp']}:R>\n"
-            f"• Post: <#{ch_id}>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Use the buttons below to jump to official posts, pop-ups, meet chat, and meet media."
-        )
+        is_live = current.get("live", False)
+        is_official = current["meet_type"] == "official"
+        ch_id = OFFICIAL_MEET_CHANNEL_ID if is_official else POPUP_MEET_CHANNEL_ID
+        mtype = "🏁 Official Meet" if is_official else "⚡ Pop-Up Meet"
+
+        if is_live:
+            color = discord.Color.red()
+            title = "🔴 DIFF Meet — LIVE NOW"
+            desc  = f"**A DIFF meet is happening right now!**\nHead to <#{ch_id}> for the official post and details."
+        else:
+            color = discord.Color.gold()
+            title = "📅 DIFF Upcoming Meet Hub"
+            desc  = "An upcoming meet has been scheduled. Stay ready — details are below."
+
+        embed = discord.Embed(title=title, description=desc, color=color)
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+        embed.add_field(name="🎭 Theme",       value=current["theme"],                   inline=True)
+        embed.add_field(name="👤 Host",        value=current["host"],                    inline=True)
+        embed.add_field(name="\u200b",         value="\u200b",                           inline=True)
+        embed.add_field(name="📅 Date & Time", value=f"<t:{current['timestamp']}:F>",   inline=True)
+        embed.add_field(name="⏱️ Countdown",   value=f"<t:{current['timestamp']}:R>",   inline=True)
+        embed.add_field(name="\u200b",         value="\u200b",                           inline=True)
+        embed.add_field(name="🏁 Meet Type",   value=mtype,                              inline=True)
+        embed.add_field(name="📢 Post",        value=f"<#{ch_id}>",                     inline=True)
+
+        notes = current.get("notes", "").strip()
+        if notes:
+            embed.add_field(name="📝 Notes", value=notes, inline=False)
+
     else:
-        description = (
-            "**What this channel is used for**\n\n"
-            "This channel keeps members updated on **upcoming DIFF meets** before they begin.\n\n"
-            "You can use this channel to:\n"
-            "• Check what meet is coming up next\n"
-            "• See official meet posts and timing\n"
-            "• Stay ready for future public or pop-up meet drops\n"
-            "• Know where to go once a meet announcement is live\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "**No active upcoming meet is set right now.**\n"
-            "Staff can create one using the panel buttons below.\n"
-            "━━━━━━━━━━━━━━━━━━━━━━"
+        embed = discord.Embed(
+            title="📅 DIFF Upcoming Meet Hub",
+            description=(
+                "No upcoming meet is scheduled right now.\n"
+                "Stay tuned — when the next meet drops, all the details will appear here."
+            ),
+            color=0x2C2F33,
+        )
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.add_field(
+            name="📢 What This Channel Is For",
+            value=(
+                "• Check what meet is coming up next\n"
+                "• See official meet posts and timing\n"
+                "• Stay ready for public or pop-up meet drops\n"
+                "• Know where to go once a meet goes live"
+            ),
+            inline=False,
         )
 
-    embed = discord.Embed(title="📅 DIFF Upcoming Meet Hub", description=description,
-                          color=discord.Color.gold())
-    embed.add_field(
-        name="📋 Staff Commands",
-        value="`!refresh_upcoming_meet_panel` — Refresh this panel",
-        inline=False,
-    )
-    embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text=PANEL_TAG)
+    embed.set_footer(text=f"Different Meets • Upcoming Meet Hub  |  {PANEL_TAG}")
+    embed.timestamp = datetime.now(timezone.utc)
     return embed
 
 
@@ -435,7 +447,7 @@ class UpcomingMeetCog(commands.Cog):
                 if (
                     msg.author == self.bot.user
                     and msg.embeds
-                    and msg.embeds[0].footer.text == PANEL_TAG
+                    and PANEL_TAG in (msg.embeds[0].footer.text or "")
                 ):
                     try:
                         await msg.delete()
