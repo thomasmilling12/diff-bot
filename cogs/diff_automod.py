@@ -251,15 +251,29 @@ class AutoModCog(commands.Cog):
         await self._restore_roles(member)
 
         # Log join
+        now = _utcnow()
+        account_age_days = (now - member.created_at.replace(tzinfo=timezone.utc)).days
+        age_warning = " ⚠️ New Account" if account_age_days < 7 else ""
+        member_count = member.guild.member_count
+
         embed = discord.Embed(
-            title="🟢 Member Joined",
-            color=discord.Color.green(),
-            timestamp=_utcnow(),
+            title=f"📥 Member Joined{age_warning}",
+            color=discord.Color.green() if account_age_days >= 7 else discord.Color.orange(),
+            timestamp=now,
         )
-        embed.add_field(name="User",           value=f"{member.mention}\n`{member.id}`",                        inline=True)
-        embed.add_field(name="Account Created", value=discord.utils.format_dt(member.created_at, style="R"),    inline=True)
-        embed.add_field(name="Server",         value=member.guild.name,                                         inline=True)
-        embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.set_author(name=f"{member.display_name} ({member})", icon_url=member.display_avatar.url)
+        embed.add_field(name="👤 User", value=f"{member.mention}\n`{member.id}`", inline=True)
+        embed.add_field(name="📅 Account Created", value=(
+            f"{discord.utils.format_dt(member.created_at, style='D')}\n"
+            f"{discord.utils.format_dt(member.created_at, style='R')}"
+        ), inline=True)
+        embed.add_field(name="👥 Members", value=f"#{member_count:,}", inline=True)
+        if account_age_days < 7:
+            embed.add_field(
+                name="⚠️ New Account Alert",
+                value=f"Account is only **{account_age_days} day(s)** old — potential alt or new user.",
+                inline=False,
+            )
         embed.set_footer(text="DIFF Meets • Join Logs")
         await self._send_log(embed, JOIN_LEAVE_LOG_CHANNEL_ID)
 
@@ -271,18 +285,42 @@ class AutoModCog(commands.Cog):
         # Back up roles before they're lost
         await self._backup_roles(member)
 
+        now = _utcnow()
         role_list = [r.mention for r in member.roles if r.name != "@everyone"]
-        roles_str = ", ".join(role_list[:20]) if role_list else "No roles"
+        roles_str = " · ".join(role_list[:15]) if role_list else "No roles"
+        member_count = member.guild.member_count
+
+        if member.joined_at:
+            joined_at = member.joined_at.replace(tzinfo=timezone.utc)
+            time_in_server = now - joined_at
+            days = time_in_server.days
+            if days >= 365:
+                duration = f"{days // 365}y {(days % 365) // 30}mo"
+            elif days >= 30:
+                duration = f"{days // 30}mo {days % 30}d"
+            elif days >= 1:
+                duration = f"{days}d"
+            else:
+                hours = time_in_server.seconds // 3600
+                duration = f"{hours}h" if hours else "< 1h"
+            joined_value = (
+                f"{discord.utils.format_dt(member.joined_at, style='D')}\n"
+                f"{discord.utils.format_dt(member.joined_at, style='R')} · stayed **{duration}**"
+            )
+        else:
+            joined_value = "Unknown"
 
         embed = discord.Embed(
-            title="🔴 Member Left",
+            title="📤 Member Left",
             color=discord.Color.dark_red(),
-            timestamp=_utcnow(),
+            timestamp=now,
         )
-        embed.add_field(name="User",         value=f"`{member}`\n`{member.id}`",                                           inline=True)
-        embed.add_field(name="Joined Server", value=discord.utils.format_dt(member.joined_at, style="R") if member.joined_at else "Unknown", inline=True)
-        embed.add_field(name="Roles",        value=roles_str[:1024],                                                        inline=False)
-        embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.set_author(name=f"{member.display_name} ({member})", icon_url=member.display_avatar.url)
+        embed.add_field(name="👤 User", value=f"{member.mention}\n`{member.id}`", inline=True)
+        embed.add_field(name="📅 Joined Server", value=joined_value, inline=True)
+        embed.add_field(name="👥 Members", value=f"#{member_count:,}", inline=True)
+        if roles_str:
+            embed.add_field(name="🏷️ Roles", value=roles_str[:1024], inline=False)
         embed.set_footer(text="DIFF Meets • Leave Logs")
         await self._send_log(embed, JOIN_LEAVE_LOG_CHANNEL_ID)
 

@@ -261,16 +261,29 @@ class DiffWelcomeJoinSystem(commands.Cog):
         except Exception as e:
             print(f"[DiffWelcomeJoinSystem] Failed to send check-in panel: {e}")
 
-    async def _log(self, guild: discord.Guild, text: str, color: Optional[discord.Color] = None):
+    async def _log(
+        self,
+        guild: discord.Guild,
+        text: str,
+        color: Optional[discord.Color] = None,
+        title: str = "📊 DIFF Verification Tracker",
+        member: Optional[discord.Member] = None,
+    ):
         ch = guild.get_channel(VERIFICATION_LOG_CHANNEL_ID)
         if not isinstance(ch, discord.TextChannel):
             return
         embed = discord.Embed(
-            title="📊 DIFF Verification Tracker",
+            title=title,
             description=text,
             color=color or weekly_color(),
             timestamp=utcnow(),
         )
+        if member:
+            embed.set_author(
+                name=f"{member.display_name} ({member})",
+                icon_url=member.display_avatar.url,
+            )
+        embed.set_footer(text="DIFF Meets • Verification Tracker")
         try:
             await ch.send(embed=embed)
         except Exception:
@@ -319,8 +332,12 @@ class DiffWelcomeJoinSystem(commands.Cog):
 
         await self._log(
             member.guild,
-            f"**{member}** joined and entered the DIFF check-in flow.\nJoined: {fmt_ts(utcnow())}",
+            f"{member.mention} entered the DIFF check-in flow.\n"
+            f"Account created: {discord.utils.format_dt(member.created_at, style='D')} "
+            f"({discord.utils.format_dt(member.created_at, style='R')})",
             discord.Color.orange(),
+            title="🚪 Entered Check-in Flow",
+            member=member,
         )
 
     @commands.Cog.listener()
@@ -342,8 +359,10 @@ class DiffWelcomeJoinSystem(commands.Cog):
 
             await self._log(
                 after.guild,
-                f"✅ **{after}** has been verified and cleared to enter.",
+                f"{after.mention} has been **verified** and cleared to enter the server.",
                 discord.Color.green(),
+                title="✅ Member Verified",
+                member=after,
             )
 
             if SEND_VERIFIED_DM:
@@ -365,8 +384,10 @@ class DiffWelcomeJoinSystem(commands.Cog):
             self.db.clear_verified(after.id)
             await self._log(
                 after.guild,
-                f"⚠️ **{after}** lost the Verified role.",
+                f"{after.mention} had the **Verified** role removed.",
                 discord.Color.red(),
+                title="⚠️ Verification Removed",
+                member=after,
             )
 
     @commands.Cog.listener()
@@ -377,10 +398,13 @@ class DiffWelcomeJoinSystem(commands.Cog):
             return
         if message.channel.id == JOIN_MEETS_HUB_CHANNEL_ID:
             self.db.mark_join_hub_post(message.author.id)
+            author = message.author if isinstance(message.author, discord.Member) else None
             await self._log(
                 message.guild,
-                f"📝 **{message.author}** posted in <#{JOIN_MEETS_HUB_CHANNEL_ID}>.",
+                f"{message.author.mention} posted in <#{JOIN_MEETS_HUB_CHANNEL_ID}> — check-in step completed.",
                 discord.Color.blue(),
+                title="📝 Posted in Join Hub",
+                member=author,
             )
 
     @tasks.loop(minutes=REMINDER_CHECK_EVERY_MINUTES)
@@ -412,7 +436,13 @@ class DiffWelcomeJoinSystem(commands.Cog):
                 )
                 await member.send(embed=embed)
                 self.db.mark_reminder_sent(member.id)
-                await self._log(guild, f"📨 Reminder DM sent to **{member}**.", discord.Color.gold())
+                await self._log(
+                    guild,
+                    f"{member.mention} was sent a check-in reminder DM.",
+                    discord.Color.gold(),
+                    title="📨 Reminder DM Sent",
+                    member=member,
+                )
             except discord.Forbidden:
                 self.db.mark_reminder_sent(member.id)
 
