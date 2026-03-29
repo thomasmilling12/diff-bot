@@ -286,6 +286,7 @@ async def _setup_hook():
         "cogs.diff_security",
         "cogs.diff_smart_punishment",
         "cogs.diff_appeal_system",
+        "cogs.diff_staff_hub",
     ]
     for _cog in _cogs:
         try:
