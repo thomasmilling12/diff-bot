@@ -12184,21 +12184,7 @@ async def _startup_refresh_all_panels() -> None:
     except Exception:
         pass
 
-    try:
-        panel_state = _load_diff_json(DIFF_PANEL_STATE_FILE)
-        color_team_msg_id = panel_state.get(COLOR_TEAM_PANEL_STATE_KEY)
-        if color_team_msg_id:
-            guild = bot.guilds[0] if bot.guilds else None
-            if guild:
-                ch = guild.get_channel(COLOR_TEAM_POST_CHANNEL_ID)
-                if isinstance(ch, discord.TextChannel):
-                    try:
-                        msg = await ch.fetch_message(int(color_team_msg_id))
-                        await msg.edit(embed=_build_color_team_embed(), view=ColorTeamPanelView())
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    # Color Team unified panel is managed by UnifiedColorTeamView in the cog
 
     try:
         hub_data = _load_diff_json(ATT_CONTROL_HUB_FILE)
@@ -12864,14 +12850,7 @@ async def _color_ops_refresh_panels() -> None:
             staff_logs, state, "color_ops_stats_panel",
             embed=_build_color_ops_stats_embed(state),
         )
-    if isinstance(color_notice, discord.TextChannel):
-        role = guild.get_role(COLOR_TEAM_ROLE_ID)
-        await _color_ops_upsert_panel(
-            color_notice, state, "color_ops_leaderboard_panel",
-            embed=_build_color_ops_leaderboard_embed(state),
-            view=ColorTeamPanelView(),
-            content=role.mention if role else None,
-        )
+    # Leaderboard panel in #color-team is now part of the unified panel (cog)
     _color_ops_save(state)
 
 
