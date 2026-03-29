@@ -8606,33 +8606,33 @@ def _popup_parse_time(raw: str) -> str:
 
 class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
     theme_field = discord.ui.TextInput(
-        label="Theme (optional)",
-        placeholder="Example: JDM Night / Clean Euros / Under 1M",
+        label="Meet Theme (optional)",
+        placeholder="e.g. JDM Night / Clean Euros / Under 1M  — leave blank for open theme",
         required=False,
         max_length=100,
     )
     location_field = discord.ui.TextInput(
         label="Location",
-        placeholder="Example: LS Car Meet / City / Sandy",
+        placeholder="e.g. LS Car Meet / City / Sandy Shores",
         required=True,
         max_length=100,
     )
     time_field = discord.ui.TextInput(
         label="Time",
-        placeholder="e.g. 8pm EST  or  8:30pm CST  or  20:00 ET",
+        placeholder="e.g. 8pm EST  or  8:30pm CST  or  Now",
         required=True,
         max_length=300,
     )
     notes_field = discord.ui.TextInput(
-        label="Extra notes (optional)",
+        label="Meet Notes (optional)",
         style=discord.TextStyle.paragraph,
-        placeholder="Example: Clean builds only / first come first served",
+        placeholder="e.g. Clean builds only / first come first served / lowered cars only",
         required=False,
         max_length=500,
     )
     ping_field = discord.ui.TextInput(
-        label="Ping roles",
-        placeholder="ps5, carmeet, both, or none",
+        label="Who to Notify",
+        placeholder="both  |  ps5  |  carmeet  |  none",
         required=True,
         max_length=30,
     )
@@ -8678,14 +8678,17 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
             title="⚡ DIFF Pop-Up Meet",
             color=discord.Color.orange(),
             timestamp=datetime.utcnow(),
-            description="A spontaneous meet has just been opened. Pull up quick.",
+            description=f"A spontaneous meet is live. Pull up fast — {user.mention} is hosting.",
         )
-        embed.add_field(name="👤 Host", value=user.mention, inline=False)
-        embed.add_field(name="🎨 Theme", value=theme or "Open theme", inline=True)
-        embed.add_field(name="📍 Location", value=location, inline=True)
-        embed.add_field(name="🕒 Time", value=time_text, inline=False)
-        embed.add_field(name="📝 Notes", value=notes or "No extra notes", inline=False)
-        embed.set_footer(text=f"Pop-Up Meet #{meet_id}")
+        embed.set_thumbnail(url=user.display_avatar.url)
+        embed.add_field(name="🎨 Theme",    value=theme or "Open theme", inline=True)
+        embed.add_field(name="📍 Location", value=location,              inline=True)
+        embed.add_field(name="\u200b",      value="\u200b",              inline=True)
+        embed.add_field(name="🕒 Time",     value=time_text,             inline=True)
+        embed.add_field(name="👤 Host",     value=user.mention,          inline=True)
+        if notes:
+            embed.add_field(name="📝 Notes", value=notes, inline=False)
+        embed.set_footer(text=f"DIFF Pop-Up Meet #{meet_id}")
 
         await panel_ch.send(
             content=ping_text,
@@ -8732,27 +8735,42 @@ class _PopupMeetPanelView(discord.ui.View):
 def _popup_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="⚡ DIFF Pop-Up Meets Hub",
+        description="Spontaneous meets hosted by approved DIFF hosts throughout the week.",
         color=discord.Color.blue(),
-        timestamp=datetime.utcnow(),
-        description=(
-            "*Spontaneous meets hosted throughout the week.*\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🚗 **What are Pop-Up Meets?**\n"
-            "Quick unscheduled meets hosted by approved DIFF hosts.\n\n"
-            "📋 **How It Works**\n"
-            "• Host clicks the button below\n"
-            "• Fills out meet details\n"
-            "• Bot posts a clean pop-up meet embed\n"
-            "• Members pull up and join fast\n\n"
-            "⚠️ **Rules**\n"
-            "• Clean builds only\n"
-            "• No crashing / griefing\n"
-            "• Respect the host\n"
-            "• Be ready to join quickly\n\n"
-            "Only users with the **Host** role can create pop-up meets."
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.add_field(
+        name="🚗 What Are Pop-Up Meets?",
+        value="Quick, unscheduled meets that go live without advance notice — pull up fast when one drops.",
+        inline=False,
+    )
+    embed.add_field(
+        name="📋 How It Works",
+        value=(
+            "• Host clicks **Create Pop-Up Meet** below\n"
+            "• Fills out theme, location, and time\n"
+            "• Bot posts the meet card with role pings\n"
+            "• Members see it and join fast"
         ),
+        inline=False,
+    )
+    embed.add_field(
+        name="⚠️ Rules",
+        value=(
+            "• Clean, realistic builds only\n"
+            "• No crashing or griefing\n"
+            "• Follow host instructions\n"
+            "• Be ready to join when you RSVP"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🔒 Access",
+        value="Only users with the **Host** role can create pop-up meets.",
+        inline=False,
     )
     embed.set_footer(text="DIFF Pop-Up Meet System")
+    embed.timestamp = datetime.now(timezone.utc)
     return embed
 
 
