@@ -4727,7 +4727,7 @@ def format_role_member_field(role: discord.Role, label: str) -> tuple:
     members = sort_members_for_hierarchy(role.members)
 
     if not members:
-        return label, "*No members assigned yet.*"
+        return label, f"{role.mention}\n*No members assigned yet.*"
 
     lines = [f"{get_member_status_emoji(m)} {m.mention}" for m in members]
 
@@ -4736,13 +4736,13 @@ def format_role_member_field(role: discord.Role, label: str) -> tuple:
     length = 0
     for line in lines:
         cost = len(line) + (1 if trimmed else 0)
-        if length + cost > 950:
+        if length + cost > 900:
             trimmed.append(f"*…and {len(lines) - len(trimmed)} more*")
             break
         trimmed.append(line)
         length += cost
 
-    return label, "\n".join(trimmed)
+    return label, role.mention + "\n" + "\n".join(trimmed)
 
 
 def format_role_member_lines(role: discord.Role) -> str:
