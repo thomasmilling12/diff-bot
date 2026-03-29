@@ -11,9 +11,9 @@ from discord.ext import commands
 # =========================================================
 # CONFIG
 # =========================================================
-MOD_HUB_CHANNEL_ID     = 1486598266211664003   # panel lives here
-MOD_LOG_CHANNEL_ID     = 1486598266211664003   # mod action logs
-WARNING_LOG_CHANNEL_ID = 1486599502834958366   # warn-specific logs
+MOD_HUB_CHANNEL_ID     = 1486598266211664003
+MOD_LOG_CHANNEL_ID     = 1486598266211664003
+WARNING_LOG_CHANNEL_ID = 1486599502834958366
 
 STAFF_ROLE_IDS: set[int] = {
     850391095845584937,   # Leader
@@ -21,7 +21,7 @@ STAFF_ROLE_IDS: set[int] = {
     990011447193006101,   # Manager
 }
 
-PANEL_TAG  = "DIFF_MOD_HUB_PANEL_V1"
+PANEL_TAG  = "DIFF_MOD_HUB_PANEL_V2"
 DATA_DIR   = "diff_data"
 PANEL_FILE = os.path.join(DATA_DIR, "mod_hub_panel.json")
 WARN_FILE  = os.path.join(DATA_DIR, "mod_warnings.json")
@@ -81,15 +81,30 @@ def _add_warning(guild_id: int, user_id: int, entry: dict) -> None:
     _save_json(WARN_FILE, data)
 
 
+def _get_warnings(guild_id: int, user_id: int) -> list:
+    return _load_json(WARN_FILE).get(str(guild_id), {}).get(str(user_id), [])
+
+
 def _warn_count(guild_id: int, user_id: int) -> int:
-    data = _load_json(WARN_FILE)
-    return len(data.get(str(guild_id), {}).get(str(user_id), []))
+    return len(_get_warnings(guild_id, user_id))
 
 
 def _is_staff(member: discord.Member) -> bool:
     if member.guild_permissions.administrator:
         return True
     return any(r.id in STAFF_ROLE_IDS for r in member.roles)
+
+
+def _risk_label(count: int) -> str:
+    if count >= 4:
+        return "🔨 Ban threshold"
+    if count == 3:
+        return "👢 Kick threshold"
+    if count == 2:
+        return "⏳ Timeout threshold"
+    if count == 1:
+        return "⚠️ First warning"
+    return "✅ Clean"
 
 
 # =========================================================
@@ -99,32 +114,39 @@ def _panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🛡️ DIFF Moderation Hub",
         description=(
-            "Staff moderation control centre for **Different Meets**.\n"
-            "Use the buttons below to take action on members — all actions are logged automatically."
+            "Staff-only moderation control centre for **Different Meets**.\n"
+            "Use the dropdown for all actions — quick buttons are also available below.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=0xED4245,
+        timestamp=datetime.now(timezone.utc),
     )
-    embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.add_field(
-        name="⚠️ Available Actions",
-        value=(
-            "› **Warn Member** — issue an official warning\n"
-            "› **Timeout Member** — temporarily restrict access\n"
-            "› **Kick Member** — remove from the server\n"
-            "› **Ban Member** — permanently remove from the server\n"
-            "› **Check Warnings** — view a member's warning history"
-        ),
-        inline=False,
+        name="⚠️ Warnings",
+        value="**Warn** — issues a logged warning\n**Check** — view full warning history",
+        inline=True,
+    )
+    embed.add_field(
+        name="⏳ Restrictions",
+        value="**Timeout** — temporarily mute\n**Remove Timeout** — lift an active timeout",
+        inline=True,
+    )
+    embed.add_field(
+        name="🚫 Removals",
+        value="**Kick** — remove (can rejoin)\n**Ban** — permanent removal",
+        inline=True,
     )
     embed.add_field(
         name="📌 Notes",
         value=(
-            "All actions require a target user and reason.\n"
-            "Every action is logged to #mod-logs with full details."
+            "All actions require a target and reason.\n"
+            "Every action is logged here with full case details.\n"
+            "Members receive a DM for warnings, timeouts, kicks, and bans."
         ),
         inline=False,
     )
-    embed.set_footer(text="Different Meets • Moderation Hub  |  Staff-only actions")
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text=PANEL_TAG)
     return embed
 
 
@@ -135,20 +157,72 @@ def _action_log_embed(
     reason: str,
     case_id: int,
     extra: str = "",
+    color: discord.Color = discord.Color.red(),
 ) -> discord.Embed:
     embed = discord.Embed(
-        title=f"🛡️ Moderation Action • {action}",
-        color=discord.Color.red(),
+        title=f"🛡️ {action}",
+        color=color,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(name="User",      value=f"{target.mention}\n`{target.id}`",     inline=True)
+    embed.add_field(name="User",      value=f"{target.mention}\n`{target.id}`",       inline=True)
     embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator.id}`", inline=True)
-    embed.add_field(name="Case",      value=f"`#{case_id}`",                         inline=True)
-    embed.add_field(name="Reason",    value=reason or "No reason provided.",          inline=False)
+    embed.add_field(name="Case",      value=f"`#{case_id}`",                           inline=True)
+    embed.add_field(name="Reason",    value=reason or "No reason provided.",            inline=False)
     if extra:
-        embed.add_field(name="Extra", value=extra, inline=False)
+        embed.add_field(name="Details", value=extra, inline=False)
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text="DIFF Meets • Moderation Logs")
+    return embed
+
+
+def _warning_history_embed(user: discord.Member | discord.User, warnings: list) -> discord.Embed:
+    recent = warnings[-10:]
+    start  = max(1, len(warnings) - 9)
+    lines  = []
+    for i, w in enumerate(recent):
+        ts = w.get("timestamp", "")
+        date_str = ts[:10] if ts else "unknown"
+        lines.append(
+            f"**#{start + i}** — Case `#{w['case_id']}`\n"
+            f"› {w['reason']}\n"
+            f"› {date_str}"
+        )
+    embed = discord.Embed(
+        title=f"📋 Warning History — {user.display_name}",
+        description="\n\n".join(lines) if lines else "No warnings on record.",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Total Warnings", value=str(len(warnings)), inline=True)
+    embed.add_field(name="Risk Level",     value=_risk_label(len(warnings)),          inline=True)
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text="DIFF Meets • Moderation Hub — last 10 shown")
+    return embed
+
+
+def _server_stats_embed(guild_id: int, guild: discord.Guild) -> discord.Embed:
+    all_data = _load_json(WARN_FILE).get(str(guild_id), {})
+    total    = sum(len(v) for v in all_data.values())
+    ranked   = sorted(all_data.items(), key=lambda x: len(x[1]), reverse=True)
+    medals   = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+    lines = []
+    for i, (uid, warns) in enumerate(ranked[:8], 1):
+        m = guild.get_member(int(uid))
+        name = m.mention if m else f"<@{uid}>"
+        prefix = medals.get(i, f"**{i}.**")
+        lines.append(f"{prefix} {name} — **{len(warns)}** warning(s) {_risk_label(len(warns))}")
+
+    embed = discord.Embed(
+        title="📊 Server Moderation Stats",
+        description="\n".join(lines) if lines else "No warnings have been issued yet.",
+        color=0xED4245,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Total Warnings",    value=str(total),          inline=True)
+    embed.add_field(name="Members Warned",    value=str(len(all_data)),  inline=True)
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text="DIFF Meets • Moderation Hub — top 8 shown")
     return embed
 
 
@@ -170,9 +244,7 @@ class WarnModal(discord.ui.Modal, title="Warn Member"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         mod = interaction.user
         if not isinstance(mod, discord.Member) or not _is_staff(mod):
-            return await interaction.response.send_message(
-                "Only staff can use this panel.", ephemeral=True
-            )
+            return await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
 
         case_id    = _next_case()
         reason_txt = str(self.reason).strip()
@@ -193,17 +265,17 @@ class WarnModal(discord.ui.Modal, title="Warn Member"):
         warn_embed.add_field(name="Moderator",      value=mod.mention,    inline=True)
         warn_embed.add_field(name="Case",           value=f"`#{case_id}`", inline=True)
         warn_embed.add_field(name="Reason",         value=reason_txt,      inline=False)
-        warn_embed.add_field(name="Total Warnings", value=str(total),      inline=False)
+        warn_embed.add_field(name="Total Warnings", value=str(total),      inline=True)
+        warn_embed.add_field(name="Risk Level",     value=_risk_label(total), inline=True)
         warn_embed.set_thumbnail(url=DIFF_LOGO_URL)
         warn_embed.set_footer(text="DIFF Meets • Warning System")
 
-        log_embed = _action_log_embed(
-            "Warn", self.member, mod, reason_txt, case_id,
-            extra=f"Total warnings: {total}",
-        )
-
         await self.cog.send_to(WARNING_LOG_CHANNEL_ID, embed=warn_embed)
-        await self.cog.send_to(MOD_LOG_CHANNEL_ID, embed=log_embed)
+        await self.cog.send_to(MOD_LOG_CHANNEL_ID, embed=_action_log_embed(
+            "Warn", self.member, mod, reason_txt, case_id,
+            extra=f"Total warnings: **{total}** — {_risk_label(total)}",
+            color=discord.Color.orange(),
+        ))
 
         try:
             dm = discord.Embed(
@@ -248,9 +320,7 @@ class TimeoutModal(discord.ui.Modal, title="Timeout Member"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         mod = interaction.user
         if not isinstance(mod, discord.Member) or not _is_staff(mod):
-            return await interaction.response.send_message(
-                "Only staff can use this panel.", ephemeral=True
-            )
+            return await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
 
         try:
             minutes = int(str(self.duration_input).strip())
@@ -268,15 +338,13 @@ class TimeoutModal(discord.ui.Modal, title="Timeout Member"):
         try:
             await self.member.timeout(until, reason=reason_txt)
         except Exception as e:
-            return await interaction.response.send_message(
-                f"Failed to timeout member: {e}", ephemeral=True
-            )
+            return await interaction.response.send_message(f"Failed to timeout member: {e}", ephemeral=True)
 
-        log_embed = _action_log_embed(
+        await self.cog.send_to(MOD_LOG_CHANNEL_ID, embed=_action_log_embed(
             "Timeout", self.member, mod, reason_txt, case_id,
             extra=f"Duration: {minutes} minute(s)",
-        )
-        await self.cog.send_to(MOD_LOG_CHANNEL_ID, embed=log_embed)
+            color=discord.Color.blue(),
+        ))
 
         try:
             dm = discord.Embed(
@@ -287,7 +355,7 @@ class TimeoutModal(discord.ui.Modal, title="Timeout Member"):
                     f"**Reason:** {reason_txt}\n"
                     f"**Case:** #{case_id}"
                 ),
-                color=discord.Color.red(),
+                color=discord.Color.blue(),
             )
             dm.set_thumbnail(url=DIFF_LOGO_URL)
             dm.set_footer(text="DIFF Meets • Moderation")
@@ -316,9 +384,7 @@ class KickModal(discord.ui.Modal, title="Kick Member"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         mod = interaction.user
         if not isinstance(mod, discord.Member) or not _is_staff(mod):
-            return await interaction.response.send_message(
-                "Only staff can use this panel.", ephemeral=True
-            )
+            return await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
 
         case_id    = _next_case()
         reason_txt = str(self.reason).strip()
@@ -342,13 +408,11 @@ class KickModal(discord.ui.Modal, title="Kick Member"):
         try:
             await self.member.kick(reason=reason_txt)
         except Exception as e:
-            return await interaction.response.send_message(
-                f"Failed to kick member: {e}", ephemeral=True
-            )
+            return await interaction.response.send_message(f"Failed to kick member: {e}", ephemeral=True)
 
-        log_embed = _action_log_embed("Kick", self.member, mod, reason_txt, case_id)
-        await self.cog.send_to(MOD_LOG_CHANNEL_ID, embed=log_embed)
-
+        await self.cog.send_to(MOD_LOG_CHANNEL_ID, embed=_action_log_embed(
+            "Kick", self.member, mod, reason_txt, case_id, color=discord.Color.red()
+        ))
         await interaction.response.send_message(
             f"Kicked `{self.member}`. Case `#{case_id}`.", ephemeral=True
         )
@@ -369,9 +433,7 @@ class BanModal(discord.ui.Modal, title="Ban Member"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         mod = interaction.user
         if not isinstance(mod, discord.Member) or not _is_staff(mod):
-            return await interaction.response.send_message(
-                "Only staff can use this panel.", ephemeral=True
-            )
+            return await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
 
         case_id    = _next_case()
         reason_txt = str(self.reason).strip()
@@ -395,20 +457,18 @@ class BanModal(discord.ui.Modal, title="Ban Member"):
         try:
             await self.member.ban(reason=reason_txt, delete_message_seconds=0)
         except Exception as e:
-            return await interaction.response.send_message(
-                f"Failed to ban member: {e}", ephemeral=True
-            )
+            return await interaction.response.send_message(f"Failed to ban member: {e}", ephemeral=True)
 
-        log_embed = _action_log_embed("Ban", self.member, mod, reason_txt, case_id)
-        await self.cog.send_to(MOD_LOG_CHANNEL_ID, embed=log_embed)
-
+        await self.cog.send_to(MOD_LOG_CHANNEL_ID, embed=_action_log_embed(
+            "Ban", self.member, mod, reason_txt, case_id, color=discord.Color.dark_red()
+        ))
         await interaction.response.send_message(
             f"Banned `{self.member}`. Case `#{case_id}`.", ephemeral=True
         )
 
 
 # =========================================================
-# MEMBER-SELECT EPHEMERAL VIEWS  (not persistent)
+# EPHEMERAL MEMBER-SELECT VIEWS
 # =========================================================
 class _MemberSelect(discord.ui.UserSelect):
     def __init__(self, cog: "ModHubCog", action: str):
@@ -422,17 +482,13 @@ class _MemberSelect(discord.ui.UserSelect):
     async def callback(self, interaction: discord.Interaction) -> None:
         mod = interaction.user
         if not isinstance(mod, discord.Member) or not _is_staff(mod):
-            return await interaction.response.send_message(
-                "Only staff can use this panel.", ephemeral=True
-            )
+            return await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
 
         user = self.values[0]
         if not isinstance(user, discord.Member):
             user = interaction.guild.get_member(user.id)
         if user is None:
-            return await interaction.response.send_message(
-                "Could not find that member in the server.", ephemeral=True
-            )
+            return await interaction.response.send_message("Could not find that member in the server.", ephemeral=True)
 
         modal_map = {
             "Warn":    WarnModal,
@@ -453,28 +509,17 @@ class _MemberSelectView(discord.ui.View):
 
 class _CheckWarningsSelect(discord.ui.UserSelect):
     def __init__(self):
-        super().__init__(
-            placeholder="Select a member to check warnings…",
-            min_values=1, max_values=1,
-        )
+        super().__init__(placeholder="Select a member to check warnings…", min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         mod = interaction.user
         if not isinstance(mod, discord.Member) or not _is_staff(mod):
-            return await interaction.response.send_message(
-                "Only staff can use this panel.", ephemeral=True
-            )
+            return await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
         user = self.values[0]
         if not isinstance(user, discord.Member):
             user = interaction.guild.get_member(user.id)
-        count = _warn_count(interaction.guild.id, user.id)
-        embed = discord.Embed(
-            title="📋 Warning Count",
-            description=f"{user.mention} currently has **{count} warning(s)**.",
-            color=discord.Color.orange(),
-        )
-        embed.set_thumbnail(url=DIFF_LOGO_URL)
-        embed.set_footer(text="DIFF Meets • Warning System")
+        warnings = _get_warnings(interaction.guild.id, user.id)
+        embed = _warning_history_embed(user, warnings)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -484,6 +529,139 @@ class _CheckWarningsView(discord.ui.View):
         self.add_item(_CheckWarningsSelect())
 
 
+class _RemoveTimeoutSelect(discord.ui.UserSelect):
+    def __init__(self, cog: "ModHubCog"):
+        super().__init__(placeholder="Select a member to remove timeout from…", min_values=1, max_values=1)
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        mod = interaction.user
+        if not isinstance(mod, discord.Member) or not _is_staff(mod):
+            return await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
+        user = self.values[0]
+        if not isinstance(user, discord.Member):
+            user = interaction.guild.get_member(user.id)
+        if user is None:
+            return await interaction.response.send_message("Could not find that member.", ephemeral=True)
+        if not user.is_timed_out():
+            return await interaction.response.send_message(
+                f"{user.mention} is not currently timed out.", ephemeral=True
+            )
+        try:
+            await user.timeout(None, reason=f"Timeout removed by {mod}")
+        except Exception as e:
+            return await interaction.response.send_message(f"Failed to remove timeout: {e}", ephemeral=True)
+
+        case_id = _next_case()
+        await self.cog.send_to(MOD_LOG_CHANNEL_ID, embed=_action_log_embed(
+            "Timeout Removed", user, mod, "Staff manually removed the active timeout.", case_id,
+            color=discord.Color.green(),
+        ))
+        await interaction.response.send_message(
+            f"Timeout removed from {user.mention}. Case `#{case_id}`.", ephemeral=True
+        )
+
+
+class _RemoveTimeoutView(discord.ui.View):
+    def __init__(self, cog: "ModHubCog"):
+        super().__init__(timeout=120)
+        self.add_item(_RemoveTimeoutSelect(cog))
+
+
+# =========================================================
+# DROPDOWN  (row 0)
+# =========================================================
+class _ModHubSelect(discord.ui.Select):
+    def __init__(self, cog: "ModHubCog"):
+        super().__init__(
+            custom_id="diff_mod_hub_select_v2",
+            placeholder="🛡️ Select a moderation action…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="Warn a Member",
+                    value="warn",
+                    emoji="⚠️",
+                    description="Issue an official logged warning.",
+                ),
+                discord.SelectOption(
+                    label="Timeout a Member",
+                    value="timeout",
+                    emoji="⏳",
+                    description="Temporarily restrict a member's access.",
+                ),
+                discord.SelectOption(
+                    label="Remove Timeout",
+                    value="untimeout",
+                    emoji="🔓",
+                    description="Lift an active timeout from a member.",
+                ),
+                discord.SelectOption(
+                    label="Kick a Member",
+                    value="kick",
+                    emoji="👢",
+                    description="Remove a member (they can rejoin).",
+                ),
+                discord.SelectOption(
+                    label="Ban a Member",
+                    value="ban",
+                    emoji="🔨",
+                    description="Permanently ban a member from the server.",
+                ),
+                discord.SelectOption(
+                    label="Check Warnings",
+                    value="check",
+                    emoji="📋",
+                    description="View a member's full warning history.",
+                ),
+                discord.SelectOption(
+                    label="Server Mod Stats",
+                    value="stats",
+                    emoji="📊",
+                    description="View server-wide moderation statistics.",
+                ),
+            ],
+            row=0,
+        )
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member) or not _is_staff(interaction.user):
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
+
+        selected = self.values[0]
+
+        if selected == "warn":
+            await interaction.response.send_message(
+                "Select a member to warn:", view=_MemberSelectView(self.cog, "Warn"), ephemeral=True
+            )
+        elif selected == "timeout":
+            await interaction.response.send_message(
+                "Select a member to timeout:", view=_MemberSelectView(self.cog, "Timeout"), ephemeral=True
+            )
+        elif selected == "untimeout":
+            await interaction.response.send_message(
+                "Select a member to remove the timeout from:",
+                view=_RemoveTimeoutView(self.cog), ephemeral=True
+            )
+        elif selected == "kick":
+            await interaction.response.send_message(
+                "Select a member to kick:", view=_MemberSelectView(self.cog, "Kick"), ephemeral=True
+            )
+        elif selected == "ban":
+            await interaction.response.send_message(
+                "Select a member to ban:", view=_MemberSelectView(self.cog, "Ban"), ephemeral=True
+            )
+        elif selected == "check":
+            await interaction.response.send_message(
+                "Select a member to check:", view=_CheckWarningsView(), ephemeral=True
+            )
+        elif selected == "stats":
+            embed = _server_stats_embed(interaction.guild.id, interaction.guild)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 # =========================================================
 # MAIN HUB VIEW  (persistent)
 # =========================================================
@@ -491,18 +669,20 @@ class ModHubView(discord.ui.View):
     def __init__(self, cog: "ModHubCog"):
         super().__init__(timeout=None)
         self.cog = cog
+        self.add_item(_ModHubSelect(cog))
 
     async def _staff_check(self, interaction: discord.Interaction) -> bool:
         member = interaction.user
         if not isinstance(member, discord.Member) or not _is_staff(member):
-            await interaction.response.send_message(
-                "Only staff can use this panel.", ephemeral=True
-            )
+            await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
             return False
         return True
 
-    @discord.ui.button(label="Warn Member",    emoji="⚠️", style=discord.ButtonStyle.secondary,
-                       custom_id="diff_mod_warn_v1")
+    @discord.ui.button(
+        label="Warn", emoji="⚠️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_mod_warn_v1", row=1,
+    )
     async def warn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_check(interaction):
             return
@@ -510,8 +690,11 @@ class ModHubView(discord.ui.View):
             "Select a member to warn:", view=_MemberSelectView(self.cog, "Warn"), ephemeral=True
         )
 
-    @discord.ui.button(label="Timeout Member", emoji="⏳", style=discord.ButtonStyle.primary,
-                       custom_id="diff_mod_timeout_v1")
+    @discord.ui.button(
+        label="Timeout", emoji="⏳",
+        style=discord.ButtonStyle.primary,
+        custom_id="diff_mod_timeout_v1", row=1,
+    )
     async def timeout_member(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_check(interaction):
             return
@@ -519,8 +702,11 @@ class ModHubView(discord.ui.View):
             "Select a member to timeout:", view=_MemberSelectView(self.cog, "Timeout"), ephemeral=True
         )
 
-    @discord.ui.button(label="Kick Member",    emoji="👢", style=discord.ButtonStyle.danger,
-                       custom_id="diff_mod_kick_v1")
+    @discord.ui.button(
+        label="Kick", emoji="👢",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_mod_kick_v1", row=1,
+    )
     async def kick(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_check(interaction):
             return
@@ -528,8 +714,11 @@ class ModHubView(discord.ui.View):
             "Select a member to kick:", view=_MemberSelectView(self.cog, "Kick"), ephemeral=True
         )
 
-    @discord.ui.button(label="Ban Member",     emoji="🔨", style=discord.ButtonStyle.danger,
-                       custom_id="diff_mod_ban_v1")
+    @discord.ui.button(
+        label="Ban", emoji="🔨",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_mod_ban_v1", row=1,
+    )
     async def ban(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_check(interaction):
             return
@@ -537,8 +726,11 @@ class ModHubView(discord.ui.View):
             "Select a member to ban:", view=_MemberSelectView(self.cog, "Ban"), ephemeral=True
         )
 
-    @discord.ui.button(label="Check Warnings", emoji="📋", style=discord.ButtonStyle.success,
-                       custom_id="diff_mod_checkwarn_v1")
+    @discord.ui.button(
+        label="Check Warnings", emoji="📋",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_mod_checkwarn_v1", row=1,
+    )
     async def check_warnings(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_check(interaction):
             return
@@ -589,7 +781,6 @@ class ModHubCog(commands.Cog):
             except Exception as e:
                 print(f"[ModHub] Edit failed: {e}")
 
-        # Fallback: remove stale by tag
         try:
             async for msg in channel.history(limit=50):
                 if (
@@ -620,7 +811,7 @@ class ModHubCog(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def cmd_refresh(self, ctx: commands.Context):
         await self.ensure_panel()
-        await ctx.send("Moderation hub refreshed.", delete_after=8)
+        await ctx.send("Moderation hub panel refreshed.", delete_after=8)
 
 
 # =========================================================
