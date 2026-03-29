@@ -387,25 +387,35 @@ class _RcAdminSelectV2(discord.ui.Select):
             )
 
 
-class _RcResetConfirmView(discord.ui.View):
+class _RcConfirmBtn(discord.ui.Button):
     def __init__(self):
-        super().__init__(timeout=60)
+        super().__init__(label="Confirm Reset", style=discord.ButtonStyle.danger, emoji="🔄")
 
-    @discord.ui.button(label="Confirm Reset", style=discord.ButtonStyle.danger, emoji="🔄")
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction):
         import bot as _bot
         guild = interaction.guild
         if not guild:
             return await interaction.response.send_message("Server only.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         await _bot._rc_post_new_panel(guild, ping_roles=True)
-        await interaction.followup.send("✅ Roll call has been reset and reposted.", ephemeral=True)
-        self.stop()
+        await interaction.followup.send("Roll call has been reset and reposted.", ephemeral=True)
+        self.view.stop()
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class _RcCancelBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Cancel", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
         await interaction.response.edit_message(content="Reset cancelled.", view=None)
-        self.stop()
+        self.view.stop()
+
+
+class _RcResetConfirmView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.add_item(_RcConfirmBtn())
+        self.add_item(_RcCancelBtn())
 
 
 class _RcAdminViewV2(discord.ui.View):
@@ -666,6 +676,9 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
                 f"If it returns `0`, the old file is still there — re-download and restart.",
                 delete_after=60,
             )
+
+
+print("[MeetInfoPatch] Module loaded OK.")
 
 
 async def setup(bot: commands.Bot):
