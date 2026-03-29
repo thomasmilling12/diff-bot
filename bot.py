@@ -2718,8 +2718,8 @@ def _asched_save(data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
-def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple[str | None, str, str, str]:
-    """Returns (uid, status, time, theme)."""
+def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple:
+    """Returns (uid, status, day_val, time, theme)."""
     day_data = rsvp.get(day, {})
     yes_entries = list(day_data.get("yes", []))
     maybe_hosts = list(day_data.get("maybe", []))
@@ -2728,16 +2728,17 @@ def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple[str 
         chosen = yes_entries[0]
         uid = _hrsvp_uid(chosen)
         assigned_counts[uid] = assigned_counts.get(uid, 0) + 1
+        day_val = chosen.get("day", "TBD") if isinstance(chosen, dict) else "TBD"
         time_val = chosen.get("time", "TBD") if isinstance(chosen, dict) else "TBD"
         theme_val = chosen.get("theme", "TBD") if isinstance(chosen, dict) else "TBD"
-        return uid, "yes", time_val, theme_val
+        return uid, "yes", day_val, time_val, theme_val
     if maybe_hosts:
         maybe_hosts.sort(key=lambda e: assigned_counts.get(_hrsvp_uid(e), 0))
         chosen = maybe_hosts[0]
         uid = _hrsvp_uid(chosen)
         assigned_counts[uid] = assigned_counts.get(uid, 0) + 1
-        return uid, "maybe", "TBD", "TBD"
-    return None, "none", "TBD", "TBD"
+        return uid, "maybe", "TBD", "TBD", "TBD"
+    return None, "none", "TBD", "TBD", "TBD"
 
 
 def _asched_build() -> dict:
@@ -2745,10 +2746,11 @@ def _asched_build() -> dict:
     schedule = _asched_load()
     assigned_counts: dict = {}
     for day in _HRSVP_DAYS:
-        host_id, host_status, time_val, theme_val = _asched_pick_host(day, rsvp, assigned_counts)
+        host_id, host_status, day_val, time_val, theme_val = _asched_pick_host(day, rsvp, assigned_counts)
         slot = schedule["days"].setdefault(day, {})
         slot["host_id"] = int(host_id) if host_id else None
         slot["host_status"] = host_status
+        slot["day"] = day_val
         slot["time"] = time_val
         slot["class"] = theme_val
     schedule["updated_at"] = utc_now().isoformat()
@@ -2894,7 +2896,7 @@ class AutoScheduleView(discord.ui.View):
                     "class_name": entry.get("class", "TBD"),
                     "start_time": entry.get("time", "TBD"),
                     "host_id": entry.get("host_id"),
-                    "date_text": day,
+                    "date_text": entry.get("day", "TBD"),
                     "is_finalized": entry.get("host_id") is not None,
                 })
             await _rc_sync_from_schedule(interaction.guild, rc_meets)
@@ -7184,13 +7186,7 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
     meets = _rc_db.get_meets(guild.id)
     meets_by_num = {row["meet_number"]: row for row in meets}
     counts = _rc_db.get_all_counts(guild.id)
-    embed = discord.Embed(
-        title="📊 DIFF Auto Roll Call",
-        description="Use the buttons below to mark your attendance for each meet.",
-        color=discord.Color.blurple(),
-        timestamp=datetime.utcnow(),
-    )
-    embed.set_author(name="Different Meets")
+    lines = ["*Use the buttons below to mark your attendance for each meet.*", ""]
     for n in (1, 2, 3):
         meet = meets_by_num.get(n)
         c = counts[n]
@@ -7199,24 +7195,25 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
         date_text = meet["date_text"] if meet else "TBD"
         host_id = meet["host_id"] if meet else None
         host_text = f"<@{host_id}>" if host_id else "*No host assigned*"
-        finalized = "✅ Finalized" if meet and meet["is_finalized"] else "⏳ Pending"
-        embed.add_field(
-            name=f"Meet {n}",
-            value=(
-                f"📅 **Date:** {date_text}\n"
-                f"🎮 **Class:** {class_name}\n"
-                f"🕒 **Time:** {start_time}\n"
-                f"👤 **Host:** {host_text}\n"
-                f"📌 **Status:** {finalized}\n\n"
-                f"✅ Attending: **{c['yes']}** | ❓ Maybe: **{c['maybe']}** | ❌ Not Attending: **{c['no']}**"
-            ),
-            inline=False,
-        )
-    embed.add_field(
-        name="Reminders",
-        value="🧥 Wear your crew jacket\n🎙️ Join voice chat if required\n⚠️ Repeated no-shows affect activity tracking",
-        inline=False,
+        is_finalized = meet and meet["is_finalized"]
+        status_icon = "✅" if is_finalized else "⏳"
+        status_label = "Finalized" if is_finalized else "Pending"
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"**Meet {n}** {status_icon} {status_label}")
+        lines.append(f"📅 **Day:** {date_text}  🕒 **Time:** {start_time}")
+        lines.append(f"🎮 **Class:** {class_name}")
+        lines.append(f"👤 **Host:** {host_text}")
+        lines.append(f"✅ `{c['yes']}` Attending  ❓ `{c['maybe']}` Maybe  ❌ `{c['no']}` Not Attending")
+        lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🧥 Wear your crew jacket  •  🎙️ Join voice if required  •  ⚠️ No-shows are tracked")
+    embed = discord.Embed(
+        title="📋 DIFF Auto Roll Call",
+        description="\n".join(lines),
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow(),
     )
+    embed.set_author(name="Different Meets")
     embed.set_footer(text="DIFF • Auto Roll Call System")
     return embed
 
