@@ -136,7 +136,6 @@ class ManagerSeasonSystem(commands.Cog, name="ManagerSeasonSystem"):
     @commands.Cog.listener()
     async def on_ready(self):
         print("[ManagerSeasonSystem] Cog ready.")
-        await self.post_or_refresh_panel()
 
     # ── data helpers ─────────────────────────────────────────
 

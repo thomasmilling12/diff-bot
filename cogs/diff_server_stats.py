@@ -66,7 +66,6 @@ def _clear_msg_id(guild_id: int) -> None:
 class ServerStatsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._updater.start()
 
     def cog_unload(self):
         self._updater.cancel()

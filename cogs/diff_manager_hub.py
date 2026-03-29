@@ -498,7 +498,6 @@ class ManagerHubSystem(commands.Cog, name="ManagerHubSystem"):
     async def on_ready(self):
         print("[ManagerHubSystem] Cog ready.")
         await self._auto_upload_logos()
-        await self.post_or_refresh_panel()
 
     # ── logo CDN management ───────────────────────────────────
 

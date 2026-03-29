@@ -274,7 +274,6 @@ class CaseSystem(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         print("[CaseSystem] Cog ready.")
-        await self._post_or_refresh_panel()
 
     # ------------------------------------------------------------------
     # Data helpers
