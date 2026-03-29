@@ -297,146 +297,13 @@ class MeetInfoViewV2(discord.ui.View):
 
 
 # =========================================================
-# ROLL CALL — STAFF TOOLS V2  (dropdown replacing 3 buttons)
-# =========================================================
-ROLL_CALL_CHANNEL_ID = 1047338695352664165
-
-
-def _rc_admin_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="🛠️ DIFF Roll Call — Staff Tools",
-        description=(
-            "Use the dropdown below to manage this week's roll call.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=discord.Color.dark_teal(),
-    )
-    embed.add_field(
-        name="🏁 Finalize Attendance",
-        value="Select a meet and paste the users who actually attended. Stats update and no-shows are flagged automatically.",
-        inline=False,
-    )
-    embed.add_field(
-        name="📊 View Stats",
-        value="See the current RSVP counts for all three meets.",
-        inline=False,
-    )
-    embed.add_field(
-        name="🔄 Reset Roll Call",
-        value="Clears all responses and reposts a fresh roll call for a new week.",
-        inline=False,
-    )
-    embed.set_footer(text="DIFF Roll Call • Staff Tools V2")
-    return embed
-
-
-class _RcAdminSelectV2(discord.ui.Select):
-    def __init__(self):
-        super().__init__(
-            custom_id="diff_rollcall_finalize:select_v2",
-            placeholder="⚙️ Select a staff action…",
-            min_values=1,
-            max_values=1,
-            options=[
-                discord.SelectOption(label="Finalize Meet 1", value="fin1", emoji="🏁",
-                    description="Mark actual attendees and flag no-shows for Meet 1."),
-                discord.SelectOption(label="Finalize Meet 2", value="fin2", emoji="🏁",
-                    description="Mark actual attendees and flag no-shows for Meet 2."),
-                discord.SelectOption(label="Finalize Meet 3", value="fin3", emoji="🏁",
-                    description="Mark actual attendees and flag no-shows for Meet 3."),
-                discord.SelectOption(label="View Attendance Stats", value="stats", emoji="📊",
-                    description="See current RSVP counts for all three meets."),
-                discord.SelectOption(label="Reset Roll Call", value="reset", emoji="🔄",
-                    description="Clear all responses and post a fresh roll call."),
-            ],
-            row=0,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        import bot as _bot
-
-        member = interaction.user
-        is_admin = (
-            isinstance(member, discord.Member)
-            and any(r.id in _bot._RC_ADMIN_ROLE_IDS for r in member.roles)
-        )
-        if not is_admin:
-            return await interaction.response.send_message("Staff only.", ephemeral=True)
-
-        selected = self.values[0]
-
-        if selected in ("fin1", "fin2", "fin3"):
-            meet_num = int(selected[-1])
-            return await interaction.response.send_modal(_bot._RcFinalizeModal(meet_num))
-
-        if selected == "stats":
-            guild = interaction.guild
-            if not guild:
-                return await interaction.response.send_message("Server only.", ephemeral=True)
-            embed = _bot._rc_build_rollcall_embed(guild)
-            embed.title = "📊 Current Roll Call Stats"
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        if selected == "reset":
-            confirm_view = _RcResetConfirmView()
-            return await interaction.response.send_message(
-                "⚠️ **Reset Roll Call?**\nThis clears all responses and posts a fresh panel.\n"
-                "Click **Confirm** to proceed or **Cancel** to abort.",
-                view=confirm_view,
-                ephemeral=True,
-            )
-
-
-class _RcConfirmBtn(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Confirm Reset", style=discord.ButtonStyle.danger, emoji="🔄")
-
-    async def callback(self, interaction: discord.Interaction):
-        import bot as _bot
-        guild = interaction.guild
-        if not guild:
-            return await interaction.response.send_message("Server only.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
-        await _bot._rc_post_new_panel(guild, ping_roles=True)
-        await interaction.followup.send("Roll call has been reset and reposted.", ephemeral=True)
-        self.view.stop()
-
-
-class _RcCancelBtn(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Cancel", style=discord.ButtonStyle.secondary)
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(content="Reset cancelled.", view=None)
-        self.view.stop()
-
-
-class _RcResetConfirmView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        self.add_item(_RcConfirmBtn())
-        self.add_item(_RcCancelBtn())
-
-
-class _RcAdminViewV2(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(_RcAdminSelectV2())
-
-
-# =========================================================
 # COG
 # =========================================================
 class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
     def __init__(self, bot: commands.Bot):
-        self.bot      = bot
-        self.view     = MeetInfoViewV2()
-        self.rc_admin = None  # built safely in on_ready
-        try:
-            bot.add_view(self.view)
-            print("[MeetInfoPatch] MeetInfoViewV2 registered.")
-        except Exception as e:
-            print(f"[MeetInfoPatch] Failed to register MeetInfoViewV2: {e}")
+        self.bot  = bot
+        self.view = MeetInfoViewV2()
+        bot.add_view(self.view)
 
     def _get_meet_info_msg_id(self) -> Optional[int]:
         cfg = _load_config()
@@ -473,122 +340,11 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
         except Exception as e:
             print(f"[MeetInfoPatch] Edit failed: {e}")
 
-    async def refresh_rc_admin(self) -> None:
-        """Find the roll call admin message and edit it with the new dropdown view."""
-        if self.rc_admin is None:
-            print("[MeetInfoPatch] RC admin view not ready — skipping refresh.")
-            return
-
-        GUILD_ID_RC = 850386896509337710
-
-        # --- resolve channel ---
-        ch = self.bot.get_channel(ROLL_CALL_CHANNEL_ID)
-        if not isinstance(ch, discord.TextChannel):
-            try:
-                ch = await self.bot.fetch_channel(ROLL_CALL_CHANNEL_ID)
-            except Exception as e:
-                print(f"[MeetInfoPatch] RC admin: cannot fetch channel: {e}")
-                return
-
-        bot_id = self.bot.user.id if self.bot.user else None
-        if not bot_id:
-            print("[MeetInfoPatch] RC admin: bot user not ready yet.")
-            return
-
-        # --- try DB admin_message_id first ---
-        try:
-            import bot as _bot
-            panel = _bot._rc_db.get_panel(GUILD_ID_RC)
-            if panel:
-                admin_id = panel["admin_message_id"]
-                if admin_id:
-                    try:
-                        msg = await ch.fetch_message(int(admin_id))
-                        await msg.edit(embed=_rc_admin_embed(), view=self.rc_admin)
-                        print("[MeetInfoPatch] RC admin panel updated via DB ID.")
-                        return
-                    except discord.NotFound:
-                        print("[MeetInfoPatch] RC admin: DB message not found, falling back to scan.")
-                    except Exception as e:
-                        print(f"[MeetInfoPatch] RC admin: DB edit failed: {e}")
-        except Exception as e:
-            print(f"[MeetInfoPatch] RC admin: DB lookup failed: {e}")
-
-        # --- fallback: scan channel history ---
-        print("[MeetInfoPatch] RC admin: scanning channel history…")
-        try:
-            async for msg in ch.history(limit=80):
-                if msg.author.id != bot_id:
-                    continue
-                for row in msg.components:
-                    for child in row.children:
-                        cid = getattr(child, "custom_id", "") or ""
-                        if cid.startswith("diff_rollcall_finalize:"):
-                            await msg.edit(embed=_rc_admin_embed(), view=self.rc_admin)
-                            print(f"[MeetInfoPatch] RC admin panel updated via scan (msg {msg.id}).")
-                            return
-        except Exception as e:
-            print(f"[MeetInfoPatch] RC admin scan failed: {e}")
-
-        print("[MeetInfoPatch] RC admin panel not found in channel — run !patch_rc_admin to retry.")
-
-    def _monkey_patch_bot(self) -> None:
-        """Replace bot._rc_post_new_panel so fresh resets also use the new view."""
-        import bot as _bot
-        _orig = _bot._rc_post_new_panel
-        _view_ref = self.rc_admin
-
-        async def _patched_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
-            await _orig(guild, ping_roles=ping_roles)
-            # After original posts, find the new admin message and update it
-            ch = guild.get_channel(ROLL_CALL_CHANNEL_ID)
-            if not isinstance(ch, discord.TextChannel):
-                return
-            try:
-                panel = _bot._rc_db.get_panel(guild.id)
-                if panel and panel.get("admin_message_id"):
-                    msg = await ch.fetch_message(panel["admin_message_id"])
-                    await msg.edit(embed=_rc_admin_embed(), view=_view_ref)
-                    print("[MeetInfoPatch] RC admin panel updated after fresh post.")
-            except Exception as e:
-                print(f"[MeetInfoPatch] Post-patch edit failed: {e}")
-
-        _bot._rc_post_new_panel = _patched_post_new_panel
-        print("[MeetInfoPatch] Monkey-patched _rc_post_new_panel.")
-
     @commands.Cog.listener()
     async def on_ready(self):
         import asyncio
-        await asyncio.sleep(8)   # let bot.py on_ready fully settle
-        print("[MeetInfoPatch] on_ready fired.")
-
-        # Meet-info panel
-        try:
-            await self.refresh_panel()
-        except Exception as e:
-            print(f"[MeetInfoPatch] refresh_panel error: {e}")
-
-        # RC admin view — build and register here so __init__ can't fail
-        try:
-            self.rc_admin = _RcAdminViewV2()
-            self.bot.add_view(self.rc_admin)
-            print("[MeetInfoPatch] _RcAdminViewV2 registered.")
-        except Exception as e:
-            print(f"[MeetInfoPatch] Failed to register _RcAdminViewV2: {e}")
-            self.rc_admin = None
-
-        # RC admin panel edit
-        try:
-            await self.refresh_rc_admin()
-        except Exception as e:
-            print(f"[MeetInfoPatch] refresh_rc_admin error: {e}")
-
-        # Monkey-patch
-        try:
-            self._monkey_patch_bot()
-        except Exception as e:
-            print(f"[MeetInfoPatch] monkey_patch error: {e}")
-
+        await asyncio.sleep(5)   # let bot.py on_ready finish first
+        await self.refresh_panel()
         print("[MeetInfoPatch] Cog ready.")
 
     @commands.command(name="refresh_meetinfo")
@@ -596,13 +352,6 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
     async def cmd_refresh(self, ctx: commands.Context):
         await self.refresh_panel()
         await ctx.send("Meet-info panel refreshed.", delete_after=8)
-
-    @commands.command(name="patch_rc_admin")
-    @commands.has_permissions(manage_guild=True)
-    async def cmd_patch_rc_admin(self, ctx: commands.Context):
-        """Force-update the roll call staff tools panel with the new dropdown."""
-        await self.refresh_rc_admin()
-        await ctx.send("Roll call staff tools panel updated.", delete_after=8)
 
     # ----------------------------------------------------------
     # Crew announce panel force-refresh
@@ -676,9 +425,6 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
                 f"If it returns `0`, the old file is still there — re-download and restart.",
                 delete_after=60,
             )
-
-
-print("[MeetInfoPatch] Module loaded OK — v4.")
 
 
 async def setup(bot: commands.Bot):
