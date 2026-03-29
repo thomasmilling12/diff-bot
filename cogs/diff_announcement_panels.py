@@ -197,7 +197,7 @@ async def _ensure_panel(
             if (
                 msg.author == bot.user
                 and msg.embeds
-                and msg.embeds[0].footer.text == panel_tag
+                and panel_tag in (msg.embeds[0].footer.text or "")
             ):
                 try:
                     await msg.delete()
@@ -346,8 +346,8 @@ class CrewAnnouncementModal(discord.ui.Modal, title="Create Crew Announcement"):
         style=discord.TextStyle.paragraph, max_length=2000, required=True,
     )
     footer_input = discord.ui.TextInput(
-        label="Footer Text (optional)",
-        placeholder="Example: DIFF Staff Team",
+        label="Sign-Off (optional)",
+        placeholder="e.g. DIFF Management Team  or  DIFF Leadership",
         max_length=100, required=False,
     )
 
@@ -368,19 +368,27 @@ class CrewAnnouncementModal(discord.ui.Modal, title="Create Crew Announcement"):
                 "Crew announcement channel not found.", ephemeral=True
             )
 
-        footer = str(self.footer_input).strip() or "DIFF Crew Announcement System"
+        sign_off = str(self.footer_input).strip() or "DIFF Management Team"
+
+        # Build author label: display name + highest staff role
+        role_label = ""
+        for role in reversed(member.roles):
+            if role.id in STAFF_ROLE_IDS:
+                role_label = f" ({role.name})"
+                break
 
         embed = discord.Embed(
             title=str(self.title_input),
             description=str(self.message_input),
             color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
         )
         embed.set_author(
-            name=f"Posted by {member.display_name}",
+            name=f"Posted by {member.display_name}{role_label}",
             icon_url=member.display_avatar.url if member.display_avatar else None,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-        embed.set_footer(text=footer)
+        embed.set_footer(text=sign_off)
 
         crew_role = interaction.guild.get_role(CREW_ROLE_ID) if interaction.guild else None
         ping = crew_role.mention if crew_role else ""
@@ -616,25 +624,25 @@ class AnnouncementPanelsCog(commands.Cog):
     def _crew_panel_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="📢 DIFF Crew Announcement Center",
-            color=discord.Color.dark_red(),
             description=(
-                "**Staff Announcement Panel**\n\n"
-                "Use the button below to post an official crew announcement.\n"
-                "The bot will ping **Crew Members** automatically.\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "• Keep announcements clear and important\n"
-                "• Use short titles when possible\n"
-                "• Avoid spam or duplicate posts\n"
-                "━━━━━━━━━━━━━━━━━━━━━━"
+                "Use the **Make Crew Announcement** button below to post an official announcement.\n"
+                "The bot will ping **Crew Members** automatically."
             ),
-        )
-        embed.add_field(
-            name="📋 Staff Commands",
-            value="`!refresh_crew_announce_panel` — Refresh this panel",
-            inline=False,
+            color=discord.Color.dark_red(),
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-        embed.set_footer(text=CREW_PANEL_TAG)
+        embed.add_field(
+            name="📋 Posting Guidelines",
+            value=(
+                "• Keep announcements clear and important\n"
+                "• Use short, descriptive titles\n"
+                "• Avoid spam or duplicate posts\n"
+                "• Staff use only — crew will be pinged"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=f"DIFF Crew Announcements  |  {CREW_PANEL_TAG}")
+        embed.timestamp = datetime.now(timezone.utc)
         return embed
 
     def _general_panel_embed(self) -> discord.Embed:
