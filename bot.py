@@ -4817,7 +4817,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
             field_name, field_value = format_role_member_field(role, label)
             embed.add_field(name=field_name, value=field_value, inline=False)
 
-        embed.set_footer(text="DIFF Meets • Hierarchy Panel")
+        embed.set_footer(text="Different Meets • Hierarchy Panel  |  Live status • Updates every 2 min")
         embed.timestamp = datetime.utcnow()
         embeds.append(embed)
 
@@ -4825,7 +4825,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
 
 
 _HIERARCHY_OLD_TITLE = "🏆 DIFF SERVER HIERARCHY"
-_HIERARCHY_FOOTER    = "DIFF Meets • Hierarchy Panel"
+_HIERARCHY_FOOTER    = "Different Meets • Hierarchy Panel  |  Live status • Updates every 2 min"
 _HIERARCHY_NEW_TITLES = {"👑 DIFF Leadership", "🏁 Meet Operations", "🎨 Creative Teams"}
 
 
@@ -5011,7 +5011,7 @@ async def post_or_refresh_live_attendance(guild: discord.Guild) -> None:
     _save_diff_json(DIFF_PANEL_STATE_FILE, state)
 
 
-@tasks.loop(minutes=5)
+@tasks.loop(minutes=2)
 async def hierarchy_attendance_loop():
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
