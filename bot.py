@@ -11408,164 +11408,309 @@ def _build_interview_panel_embed() -> discord.Embed:
         title="🎤 Crew Interview Zone",
         description=(
             "*This panel is the staff interview guide for bringing new members into DIFF.*\n\n"
-            "Use the buttons below during interviews to stay organized, cover every required topic, "
-            "and keep the process clean, professional, and consistent.\n\n"
-            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
-            "🗣️ **Interview Speech** — Open with the official DIFF introduction\n\n"
-            "❓ **Interview Questions** — Ask every required question for new applicants\n\n"
-            "🎉 **Crew Events** — Explain the types of events and expectations in DIFF\n\n"
-            "📌 **Crew Positions** — Show the roles members can work toward in the crew\n\n"
-            "✅ **End of Interview** — Close out the interview the right way\n\n"
-            "👑 **Leadership Team** — Show who applicants can contact for help or questions\n\n"
-            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
-            "📘 Keep interviews smooth, respectful, and professional so every applicant gets the same clear DIFF experience."
+            "Select a topic from the dropdown below to view the script, questions, or reference "
+            "material for that stage of the interview. Everything is private — only you can see it.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.blue(),
         timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="🗣️ Interview Speech",
+        value="Open with the official DIFF introduction",
+        inline=True,
+    )
+    embed.add_field(
+        name="❓ Interview Questions",
+        value="Ask every required question for new applicants",
+        inline=True,
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
+        name="🎉 Crew Events",
+        value="Explain the types of events and expectations in DIFF",
+        inline=True,
+    )
+    embed.add_field(
+        name="📌 Crew Positions",
+        value="Show the roles members can work toward in the crew",
+        inline=True,
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
+        name="✅ End of Interview",
+        value="Close out the interview the right way",
+        inline=True,
+    )
+    embed.add_field(
+        name="👑 Leadership Team",
+        value="Show who applicants can contact for help or questions",
+        inline=True,
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
+        name="📘 Reminder",
+        value="Keep interviews smooth, respectful, and professional so every applicant gets the same clear DIFF experience.",
+        inline=False,
     )
     embed.set_footer(text="Different Meets • Staff Interview Panel")
     return embed
 
 
+def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = None) -> discord.Embed:
+    if topic == "speech":
+        embed = discord.Embed(
+            title="🗣️ Interview Speech",
+            description=(
+                "Open the interview with this introduction script.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "*Hello, **[Player Name]**. Welcome to our crew interview. This is **[Your Name]**.*\n\n"
+                "*Give them some info about when you joined the crew and your role within it. "
+                "Then share some history about DIFF — we've been around since 2020 under various names, "
+                "and came to PS5 back in 2022. We're an active crew and community looking for dedicated "
+                "members to help out in the car meet scene.*\n\n"
+                "*Before getting into the questions, ask them if they have anything they'd like to know first.*\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Speech")
+
+    elif topic == "questions":
+        embed = discord.Embed(
+            title="❓ Interview Questions",
+            description=(
+                "You don't have to ask these in order, but **every question must be covered.**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.green(),
+        )
+        embed.add_field(
+            name="1️⃣ Age",
+            value="*All DIFF members must be over the age of 18. Just to confirm — how old are you?*",
+            inline=False,
+        )
+        embed.add_field(
+            name="2️⃣ Car Knowledge",
+            value=(
+                "*We are a clean car community. Do you know the difference between clean cars and being a ricer? "
+                "If so, please explain.*"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="3️⃣ Car Brands",
+            value=(
+                "*Car knowledge is extremely important. Can you name a car brand made in Japan, Europe, and America? "
+                "What's your dream car?*"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="4️⃣ Discord Activity",
+            value=(
+                "*We communicate a lot through this Discord. You need to be able to respond to weekly roll calls "
+                "and crew color announcements. How often do you check Discord?*"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="5️⃣ Headset",
+            value="*A working headset is required. You must be able to speak when needed.*",
+            inline=False,
+        )
+        embed.add_field(
+            name="6️⃣ Crew Tag",
+            value=(
+                "*You're required to set DIFF as active at all meets you attend. "
+                "Failure to wear the crew tag to meets will result in a strike.*"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="7️⃣ Crew Jacket",
+            value="*You must wear the crew jacket to all DIFF meets and crew events.*",
+            inline=False,
+        )
+        embed.add_field(
+            name="8️⃣ Meet Attendance",
+            value=(
+                "*Our meet time is 8pm EST. You must join 30 minutes early. "
+                "You're required to attend at least one meet per week. "
+                "If you can't make it, you must let Management know in advance.*"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="9️⃣ Motivation",
+            value="*Why do you want to join DIFF? What roles are you considering trying out for within the crew?*",
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Questions")
+
+    elif topic == "events":
+        embed = discord.Embed(
+            title="🎉 Crew Events",
+            description=(
+                "Let the applicant know what events DIFF runs and what's expected.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.add_field(
+            name="📅 Monthly Crew Meetings",
+            value=(
+                "Held on Discord — **mandatory to attend**. "
+                "If you can't make it, let Management know in advance."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🚗 Weekly Crew Meets",
+            value="Regular weekly meets and crew color photoshoots.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🎮 Other Events",
+            value="Crew events on other games may be held if requested by members.",
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Crew Events")
+
+    elif topic == "positions":
+        embed = discord.Embed(
+            title="📌 Crew Positions",
+            description=(
+                "If the applicant is interested in a role, direct them to contact the **Leader or Co-Leader**.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.purple(),
+        )
+        embed.add_field(
+            name="Available Positions",
+            value=(
+                "📋 **Crew Managers** — help run operations and the server\n"
+                "🏁 **Crew Meet Hosts** — plan and run crew meets\n"
+                "🎥 **Crew Content Creators** — capture and share crew content\n"
+                "🎨 **Crew Designer Team** — handle graphics and branding\n"
+                "🌈 **Crew Color Team** — manage weekly crew color operations"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Positions")
+
+    elif topic == "end":
+        embed = discord.Embed(
+            title="✅ End of Interview",
+            description=(
+                "Use this closing script to wrap up the interview professionally.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "*Before wrapping up, ask the applicant if they have any questions, comments, or concerns.*\n\n"
+                "*If accepted: Say welcome to the crew and let them know you hope they enjoy their time here.*\n\n"
+                "*Remind them:* We expect all members to carry themselves professionally — inside and outside "
+                "the crew. Always represent DIFF in a positive light and maintain healthy relationships with "
+                "fellow members and meet attendees.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "*Do you understand and agree to uphold these standards?*"
+            ),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — End of Interview")
+
+    elif topic == "leadership":
+        leader_text    = f"<@&{LEADER_ROLE_ID}>"
+        co_leader_text = f"<@&{CO_LEADER_ROLE_ID}>"
+        manager_text   = f"<@&{MANAGER_ROLE_ID}>"
+        if guild:
+            if not guild.get_role(LEADER_ROLE_ID):
+                leader_text = "**Leader** *(role not set)*"
+            if not guild.get_role(CO_LEADER_ROLE_ID):
+                co_leader_text = "**Co-Leader** *(role not set)*"
+            if not guild.get_role(MANAGER_ROLE_ID):
+                manager_text = "**Managers** *(role not set)*"
+        embed = discord.Embed(
+            title="👑 Leadership & Management Team",
+            description=(
+                "Direct the applicant to these roles if they have questions, comments, or concerns "
+                "after the interview.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.gold(),
+        )
+        embed.add_field(name="👑 Leader",      value=leader_text,    inline=False)
+        embed.add_field(name="🛡️ Co-Leader",   value=co_leader_text, inline=False)
+        embed.add_field(name="📋 Managers",    value=manager_text,   inline=False)
+        embed.add_field(
+            name="📅 Founded",
+            value="DIFF has been running since **August 20, 2020**.",
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Leadership")
+
+    else:
+        embed = discord.Embed(title="Unknown topic", color=discord.Color.red())
+
+    embed.timestamp = datetime.now(timezone.utc)
+    return embed
+
+
+class InterviewTopicSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            custom_id="diff_interview_topic_select_v2",
+            placeholder="📋 Select an interview topic...",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="Interview Speech",
+                    value="speech",
+                    emoji="🗣️",
+                    description="Open with the official DIFF introduction script.",
+                ),
+                discord.SelectOption(
+                    label="Interview Questions",
+                    value="questions",
+                    emoji="❓",
+                    description="All required questions — must cover every one.",
+                ),
+                discord.SelectOption(
+                    label="Crew Events",
+                    value="events",
+                    emoji="🎉",
+                    description="Events, meetings, and attendance expectations.",
+                ),
+                discord.SelectOption(
+                    label="Crew Positions",
+                    value="positions",
+                    emoji="📌",
+                    description="Roles members can work toward in the crew.",
+                ),
+                discord.SelectOption(
+                    label="End of Interview",
+                    value="end",
+                    emoji="✅",
+                    description="Closing script — wrap up professionally.",
+                ),
+                discord.SelectOption(
+                    label="Leadership Team",
+                    value="leadership",
+                    emoji="👑",
+                    description="Who applicants can contact after the interview.",
+                ),
+            ],
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        embed = _build_interview_topic_embed(self.values[0], interaction.guild)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class InterviewInfoView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Interview Speech",
-        emoji="🗣️",
-        style=discord.ButtonStyle.primary,
-        custom_id="diff_interview_speech",
-        row=0,
-    )
-    async def interview_speech(self, interaction: discord.Interaction, button: discord.ui.Button):
-        text = (
-            "__**Interview Speech**__\n\n"
-            "*Hello, (Player Name). Welcome to our crew interview. This is (Present your name). "
-            "Also, give some info about when you joined the crew and your role. After that, tell the applicant "
-            "some history about DIFF, which has been around since 2020 under various names. We came to PS5 back in 2022. "
-            "We are an active crew and community looking for active members to help out in the car meet scene. "
-            "Before you ask them questions, ask them if they have any questions before we get started.*"
-        )
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @discord.ui.button(
-        label="Interview Questions",
-        emoji="❓",
-        style=discord.ButtonStyle.success,
-        custom_id="diff_interview_questions",
-        row=0,
-    )
-    async def interview_questions(self, interaction: discord.Interaction, button: discord.ui.Button):
-        text = (
-            "__**Interview Questions**__\n\n"
-            "*You don't have to answer the questions in order but you do have to ask them all of the questions.*\n\n"
-            "■ *All DIFF members must be over the age of 18. Just to confirm how old are you?*\n\n"
-            "■ *We are a clean car community. Do you know the difference between clean cars and being a ricer? "
-            "If so, please explain.*\n\n"
-            "■ *Car knowledge is extremely important. Can you provide me with a car brand made in Japan, Europe, "
-            "& America? What is your dream car?*\n\n"
-            "■ *How often are you able to check Discord? We do a lot of communication via this Discord server. "
-            "You have to be able to react to weekly roll calls, & crew color announcements.*\n\n"
-            "■ *A good working headset is required for all members. You have to be able to speak when needed.*\n\n"
-            "■ *You are required to set DIFF as active to all meets you attend within this crew and community meets. "
-            "Failed to wear a crew tag to meets will result in a strike.*\n\n"
-            "■ *You must wear the crew jackets to all DIFF meets, and crew events.*\n\n"
-            "■ *Are you aware of our meet time which is 8pm EST? You have to join the meet 30 mins early. "
-            "You're required to attend at least one meet a week. If you can't attend you must let someone on Management know in advance.*\n\n"
-            "■ *Why do you want to join our crew Different Meets (DIFF)? What roles are you considering trying out for the crew?*"
-        )
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @discord.ui.button(
-        label="Crew Events",
-        emoji="🎉",
-        style=discord.ButtonStyle.secondary,
-        custom_id="diff_interview_events",
-        row=0,
-    )
-    async def crew_events(self, interaction: discord.Interaction, button: discord.ui.Button):
-        text = (
-            "__**Crew Events**__\n\n"
-            "*We offer a range of events in our crew.*\n\n"
-            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
-            "■ *Monthly crew meetings on Discord (Meetings are mandatory to attend). "
-            "If you can't attend you must let someone in management know in advance.*\n\n"
-            "■ *Weekly crew meets, and crew color photoshoots.*\n\n"
-            "■ *Crew events on other games if requested by another member.*"
-        )
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @discord.ui.button(
-        label="Crew Positions",
-        emoji="📌",
-        style=discord.ButtonStyle.secondary,
-        custom_id="diff_interview_positions",
-        row=1,
-    )
-    async def crew_positions(self, interaction: discord.Interaction, button: discord.ui.Button):
-        text = (
-            "__**Crew Positions**__\n\n"
-            "*If you're interested in any one of these roles, please message the Leader or Co-Leader of DIFF.*\n\n"
-            "■ **Crew Managers**\n"
-            "■ **Crew Meet Hosts**\n"
-            "■ **Crew Content Creators**\n"
-            "■ **Crew Designer Team**\n"
-            "■ **Crew Color Team Members**"
-        )
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @discord.ui.button(
-        label="End of Interview",
-        emoji="✅",
-        style=discord.ButtonStyle.success,
-        custom_id="diff_interview_end",
-        row=1,
-    )
-    async def end_of_interview(self, interaction: discord.Interaction, button: discord.ui.Button):
-        text = (
-            "__**End of Interview**__\n\n"
-            "*Before you end the interview, ask them if they have any questions, comments, or concerns. "
-            "Please say welcome to the crew and that you hope they enjoy their stay here.*\n\n"
-            "*We expect all of our members to carry themselves professionally inside and outside the crew. "
-            "Make sure you are always representing the crew in a positive light. Having a healthy relationship "
-            "with fellow crew members and meet attendees is extremely important. Do you understand?*"
-        )
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @discord.ui.button(
-        label="Leadership Team",
-        emoji="👑",
-        style=discord.ButtonStyle.danger,
-        custom_id="diff_interview_leadership",
-        row=1,
-    )
-    async def leadership_team(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        leader_text = f"<@&{LEADER_ROLE_ID}>"
-        co_leader_text = f"<@&{CO_LEADER_ROLE_ID}>"
-        manager_text = f"<@&{MANAGER_ROLE_ID}>"
-
-        if guild is not None:
-            if guild.get_role(LEADER_ROLE_ID) is None:
-                leader_text = "**Leader role not set**"
-            if guild.get_role(CO_LEADER_ROLE_ID) is None:
-                co_leader_text = "**Co-Leader role not set**"
-            if guild.get_role(MANAGER_ROLE_ID) is None:
-                manager_text = "**Manager role not set**"
-
-        text = (
-            "__**Crew Leadership & Management Team**__\n\n"
-            "*Please direct the applicant you're interviewing to the higher-ups list so they know who to contact "
-            "if they have any questions, comments, or concerns.*\n\n"
-            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
-            f"👑 **Leader:** {leader_text}\n\n"
-            f"🛡️ **Co-Leader:** {co_leader_text}\n\n"
-            f"📋 **Managers:** {manager_text}\n\n"
-            "﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍﹍\n\n"
-            "**STARTED THIS CREW ON AUGUST 20TH 2020**"
-        )
-        await interaction.response.send_message(text, ephemeral=True)
+        self.add_item(InterviewTopicSelect())
 
 
 async def _post_or_refresh_interview_panel() -> None:
