@@ -279,19 +279,43 @@ class StaffHubCog(commands.Cog, name="StaffHubCog"):
         print("[StaffHub] Cog loaded — unified staff panel ready.")
 
     def _build_hub_embed(self) -> discord.Embed:
+        DIFF_LOGO_URL = (
+            "https://media.discordapp.net/attachments/1107375326625005719/"
+            "1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm="
+            "2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a"
+            "&=&format=webp&quality=lossless&width=1376&height=917"
+        )
         embed = discord.Embed(
             title="🎮 DIFF Staff Control Panel",
             description=(
-                "The unified hub for DIFF staff. Use the dropdowns below to access any section.\n\n"
-                "**📊 View Dashboards**\n"
-                "Recruitment stats, activity data, manager performance, season standings, server stats\n\n"
-                "**⚙️ Staff Tools**\n"
-                "Moderation, write-ups, case management, manager hub\n\n"
-                "*All sections open privately — only you can see the response.*"
+                "Welcome to the unified DIFF staff hub. Everything you need is in one place.\n"
+                "Select from either dropdown below — your response is **only visible to you**."
             ),
-            color=discord.Color.blurple(),
+            color=0x5865F2,
         )
-        embed.set_footer(text=HUB_PANEL_TAG)
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.add_field(
+            name="📊 View a Dashboard",
+            value=(
+                "› **Recruitment** — application counts & cooldowns\n"
+                "› **Activity** — attendance, promotions & penalties\n"
+                "› **Manager Performance** — leaderboard & scores\n"
+                "› **Season Standings** — current season rankings\n"
+                "› **Server Statistics** — live member & boost counts"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="⚙️ Open a Staff Tool",
+            value=(
+                "› **Moderation** — member profiles, strikes, flagged hosts\n"
+                "› **Write-Ups** — issue write-ups, warnings & strikes\n"
+                "› **Case Management** — create & manage case files\n"
+                "› **Manager Hub** — full manager control panel"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Staff Dashboard  |  Responses are private")
         return embed
 
     @commands.command(name="staffhub")
@@ -309,7 +333,7 @@ class StaffHubCog(commands.Cog, name="StaffHubCog"):
         async for msg in channel.history(limit=50):
             if msg.author.id == self.bot.user.id:
                 for e in msg.embeds:
-                    if e.footer and e.footer.text == HUB_PANEL_TAG:
+                    if e.title == "🎮 DIFF Staff Control Panel":
                         try:
                             await msg.delete()
                         except Exception:
