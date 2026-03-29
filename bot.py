@@ -7644,42 +7644,83 @@ async def _rc_ensure_panel(guild: discord.Guild):
     await _rc_post_new_panel(guild, ping_roles=True)
 
 
-async def _rc_log_rsvp(guild, member, meet_number, previous, new_status):
-    prev_clean = previous if previous and previous != "none" else None
-    if prev_clean == new_status:
+_RC_LOG_ICONS: dict[str, str] = {
+    "yes": "✅ Yes",
+    "maybe": "❓ Maybe",
+    "no": "❌ No",
+}
+_rc_log_buffer: dict[int, list] = {}
+_rc_log_tasks:  dict[int, "asyncio.Task[None]"] = {}
+
+
+async def _rc_flush_log(guild: discord.Guild, member: discord.Member) -> None:
+    await asyncio.sleep(3)
+    entries = _rc_log_buffer.pop(member.id, [])
+    _rc_log_tasks.pop(member.id, None)
+    if not entries:
         return
     ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if not isinstance(ch, discord.TextChannel):
         return
-    _colors = {"yes": discord.Color.green(), "maybe": discord.Color.orange(), "no": discord.Color.red()}
-    _icons  = {"yes": "✅ Yes", "maybe": "❓ Maybe", "no": "❌ No"}
-    _prev_icons = {"yes": "✅ Yes", "maybe": "❓ Maybe", "no": "❌ No"}
-    new_label  = _icons.get(new_status, new_status.capitalize())
-    prev_label = _prev_icons.get(prev_clean, "none") if prev_clean else "⬜ None"
-    is_new = prev_clean is None
+
+    statuses = [e[2] for e in entries]
+    if "yes" in statuses:
+        color = discord.Color.green()
+    elif all(s == "no" for s in statuses):
+        color = discord.Color.red()
+    else:
+        color = discord.Color.orange()
+
+    n = len(entries)
+    noun = "response" if n == 1 else "responses"
+    all_new     = all(not e[1] or e[1] == "none" for e in entries)
+    all_changed = all(e[1] and e[1] != "none" for e in entries)
+    if all_new:
+        action = f"Set initial {noun} for {n} meet{'s' if n > 1 else ''}"
+    elif all_changed:
+        action = f"Changed {noun} for {n} meet{'s' if n > 1 else ''}"
+    else:
+        action = f"Updated {noun} for {n} meet{'s' if n > 1 else ''}"
+
     embed = discord.Embed(
-        color=_colors.get(new_status, discord.Color.orange()),
+        description=action,
+        color=color,
         timestamp=datetime.now(timezone.utc),
     )
     embed.set_author(
         name=f"{member.display_name}  •  Roll Call Update",
         icon_url=member.display_avatar.url,
     )
-    if is_new:
-        embed.description = f"Initial response set for **Meet {meet_number}**"
-    else:
-        embed.description = f"Response changed for **Meet {meet_number}**"
-    embed.add_field(name="Member", value=f"{member.mention}\n`{member}`", inline=True)
-    embed.add_field(name="Meet",   value=f"**Meet {meet_number}**",        inline=True)
-    embed.add_field(name="\u200b", value="\u200b",                          inline=True)
-    embed.add_field(name="Before", value=prev_label,  inline=True)
-    embed.add_field(name="After",  value=new_label,   inline=True)
-    embed.add_field(name="\u200b", value="\u200b",     inline=True)
+    for meet_number, previous, new_status in sorted(entries, key=lambda x: x[0]):
+        prev_clean = previous if previous and previous != "none" else None
+        prev_label = _RC_LOG_ICONS.get(prev_clean, "⬜ None") if prev_clean else "⬜ None"
+        new_label  = _RC_LOG_ICONS.get(new_status, new_status.capitalize())
+        embed.add_field(
+            name=f"Meet {meet_number}",
+            value=f"{prev_label} → {new_label}",
+            inline=True,
+        )
+    while len(entries) % 3 != 0:
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(name="Member", value=f"{member.mention}  `{member}`", inline=False)
     embed.set_footer(text="Roll Call Log  •  Different Meets")
     try:
         await ch.send(embed=embed)
     except Exception:
         pass
+
+
+async def _rc_log_rsvp(guild: discord.Guild, member: discord.Member, meet_number: int, previous: str, new_status: str) -> None:
+    prev_clean = previous if previous and previous != "none" else None
+    if prev_clean == new_status:
+        return
+    if member.id not in _rc_log_buffer:
+        _rc_log_buffer[member.id] = []
+    _rc_log_buffer[member.id].append((meet_number, previous, new_status))
+    existing = _rc_log_tasks.get(member.id)
+    if existing and not existing.done():
+        existing.cancel()
+    _rc_log_tasks[member.id] = asyncio.create_task(_rc_flush_log(guild, member))
 
 
 async def _rc_log_attendance(guild, meet_number, attended, no_shows, action_by):
