@@ -421,9 +421,12 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
     def __init__(self, bot: commands.Bot):
         self.bot      = bot
         self.view     = MeetInfoViewV2()
-        self.rc_admin = _RcAdminViewV2()
-        bot.add_view(self.view)
-        bot.add_view(self.rc_admin)
+        self.rc_admin = None  # built safely in on_ready
+        try:
+            bot.add_view(self.view)
+            print("[MeetInfoPatch] MeetInfoViewV2 registered.")
+        except Exception as e:
+            print(f"[MeetInfoPatch] Failed to register MeetInfoViewV2: {e}")
 
     def _get_meet_info_msg_id(self) -> Optional[int]:
         cfg = _load_config()
@@ -462,6 +465,10 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
 
     async def refresh_rc_admin(self) -> None:
         """Find the roll call admin message and edit it with the new dropdown view."""
+        if self.rc_admin is None:
+            print("[MeetInfoPatch] RC admin view not ready — skipping refresh.")
+            return
+
         GUILD_ID_RC = 850386896509337710
 
         # --- resolve channel ---
@@ -543,9 +550,35 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
     async def on_ready(self):
         import asyncio
         await asyncio.sleep(8)   # let bot.py on_ready fully settle
-        await self.refresh_panel()
-        await self.refresh_rc_admin()
-        self._monkey_patch_bot()
+        print("[MeetInfoPatch] on_ready fired.")
+
+        # Meet-info panel
+        try:
+            await self.refresh_panel()
+        except Exception as e:
+            print(f"[MeetInfoPatch] refresh_panel error: {e}")
+
+        # RC admin view — build and register here so __init__ can't fail
+        try:
+            self.rc_admin = _RcAdminViewV2()
+            self.bot.add_view(self.rc_admin)
+            print("[MeetInfoPatch] _RcAdminViewV2 registered.")
+        except Exception as e:
+            print(f"[MeetInfoPatch] Failed to register _RcAdminViewV2: {e}")
+            self.rc_admin = None
+
+        # RC admin panel edit
+        try:
+            await self.refresh_rc_admin()
+        except Exception as e:
+            print(f"[MeetInfoPatch] refresh_rc_admin error: {e}")
+
+        # Monkey-patch
+        try:
+            self._monkey_patch_bot()
+        except Exception as e:
+            print(f"[MeetInfoPatch] monkey_patch error: {e}")
+
         print("[MeetInfoPatch] Cog ready.")
 
     @commands.command(name="refresh_meetinfo")
