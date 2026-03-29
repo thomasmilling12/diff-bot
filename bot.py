@@ -16349,40 +16349,363 @@ def _wh_state_save(data: dict) -> None:
 
 def _wh_build_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="📍 Welcome to Different Meets (DIFF)",
-        color=discord.Color.blue(),
+        title="📍 Different Meets — Welcome Hub",
+        color=discord.Color.from_rgb(0, 67, 156),
         description=(
-            "*The official hub for clean builds, organized meets, and a strong car community.*\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🚗 **What is DIFF?**\n"
-            "Different Meets (DIFF) is a PS5-based GTA car meet community focused on "
-            "**clean, realistic builds**, organized meets, and a respectful environment.\n\n"
-            "We host:\n"
-            "🎬 Cinematic car meets\n"
-            "🏁 Themed events\n"
-            "📸 Photoshoots\n"
-            "🏆 Competitions & rankings\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📊 **Get Started:**\n"
-            "Use the buttons below to navigate the server and get set up.\n\n"
-            f"• 📋 **Rules & Requirements** — Know the standards in <#{RULES_CHANNEL_ID}>\n"
-            f"• 🚗 **How Meets Work** — Learn how to join & participate\n"
-            f"• 📅 **Upcoming Meets** — View the schedule in <#{UPCOMING_MEET_CHANNEL_ID}>\n"
-            f"• 🏎️ **Join Crew** — Browse & apply to a crew in <#{CREW_PANEL_CHANNEL_ID}>\n"
-            f"• 🎫 **Support** — Get help in <#{SUPPORT_CHANNEL_ID}>\n"
-            f"• 📊 **My Stats** — View your personal meet activity\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⚠️ **DIFF Standards:**\n"
-            "• Clean & realistic builds only\n"
-            "• Respect all members\n"
-            "• No trolling, griefing, or rice behavior\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*Stay active, stay consistent, and represent DIFF the right way.*\n\n"
-            "— **Different Meets**"
+            "*The official PlayStation GTA car meet community — clean builds, organized meets, real community.*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
         ),
     )
-    embed.set_footer(text="DIFF Welcome Hub")
+    embed.add_field(
+        name="🚗 What is DIFF?",
+        value=(
+            "Different Meets (DIFF) is a **PS5 GTA Online** community built around "
+            "clean & realistic car builds, cinematic meets, and a respectful environment. "
+            "We are not a casual lobby — we hold our members to a standard."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎬 Cinematic Meets",
+        value="Organized, host-led events with full lineups and photography.",
+        inline=True,
+    )
+    embed.add_field(
+        name="🏁 Themed Events",
+        value="Era builds, brand-specific nights, and special competitions.",
+        inline=True,
+    )
+    embed.add_field(
+        name="📸 Photoshoots",
+        value="In-game car photography sessions for your best angles.",
+        inline=True,
+    )
+    embed.add_field(
+        name="⚠️ DIFF Standards",
+        value=(
+            "• **Clean & realistic builds only** — no rice, no neon, no modded colors\n"
+            "• Respect all members and follow host directions\n"
+            "• No trolling, griefing, or disruptive behavior\n"
+            "• Active members are rewarded — inactivity has consequences"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🔗 Quick Links",
+        value=(
+            f"<#{RULES_CHANNEL_ID}> · <#{UPCOMING_MEET_CHANNEL_ID}> · "
+            f"<#{CREW_PANEL_CHANNEL_ID}> · <#{SUPPORT_CHANNEL_ID}>"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="DIFF Welcome Hub  •  Use the menu below to explore")
     return embed
+
+
+class WelcomeHubSelect(discord.ui.Select):
+    def __init__(self) -> None:
+        options = [
+            discord.SelectOption(
+                label="How Meets Work",
+                emoji="🚗",
+                value="meets",
+                description="Step-by-step guide to joining & participating in DIFF meets",
+            ),
+            discord.SelectOption(
+                label="Meet Requirements",
+                emoji="📋",
+                value="requirements",
+                description="What your build needs to qualify for a DIFF meet",
+            ),
+            discord.SelectOption(
+                label="My Stats",
+                emoji="📊",
+                value="stats",
+                description="View your personal meet attendance & activity record",
+            ),
+            discord.SelectOption(
+                label="Social Media",
+                emoji="📲",
+                value="social",
+                description="Follow DIFF on Instagram, TikTok, YouTube & more",
+            ),
+            discord.SelectOption(
+                label="Partnership",
+                emoji="🤝",
+                value="partnership",
+                description="View or apply to partner your community with DIFF",
+            ),
+            discord.SelectOption(
+                label="Server FAQ",
+                emoji="❓",
+                value="faq",
+                description="Common questions answered — read before asking in support",
+            ),
+            discord.SelectOption(
+                label="Before You Invite Anyone",
+                emoji="🚪",
+                value="invite",
+                description="Required reading before sharing the DIFF invite link",
+            ),
+        ]
+        super().__init__(
+            placeholder="🔍  Explore DIFF — select a topic...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="diff_wh_select_v2",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        value = self.values[0]
+
+        if value == "meets":
+            embed = discord.Embed(
+                title="🚗 How DIFF Meets Work",
+                description="Follow these steps every time you attend a DIFF meet.",
+                color=discord.Color.from_rgb(0, 67, 156),
+            )
+            embed.add_field(
+                name="Before the Meet",
+                value=(
+                    "✅ Watch the meet announcement for **date, time, and theme**\n"
+                    "✅ Prepare a **clean, realistic build** that fits the theme\n"
+                    "✅ RSVP in the host RSVP channel so staff know you're coming\n"
+                    "✅ Join the session link posted by the host — don't be late"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="During the Meet",
+                value=(
+                    "🚗 Follow the host's **parking & lineup instructions exactly**\n"
+                    "📸 Stay in position during photos — don't move unless told\n"
+                    "🔇 Keep chat clean — no spam, no honking unless prompted\n"
+                    "⛽ Fill up before the meet — don't go AFK mid-event"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="After the Meet",
+                value=(
+                    "📊 Your attendance is logged automatically\n"
+                    "🏆 Consistent attendance improves your reputation score\n"
+                    "⚠️ No-shows without notice count against your record"
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="Different Meets  •  Stay active, stay consistent")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        elif value == "requirements":
+            embed = discord.Embed(
+                title="📋 DIFF Meet Requirements",
+                description="Your vehicle must meet these standards to participate in any DIFF event.",
+                color=discord.Color.from_rgb(0, 67, 156),
+            )
+            embed.add_field(
+                name="✅ Required",
+                value=(
+                    "• **Clean, realistic build** — factory-style or tasteful custom\n"
+                    "• Correct liveries or no livery if it doesn't fit the build\n"
+                    "• Matching / complementary color scheme\n"
+                    "• Wheels that make sense for the vehicle class\n"
+                    "• A build that would exist in real life (or close to it)"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="❌ Not Allowed",
+                value=(
+                    "• **Rice builds** — random body kits, oversized spoilers, mismatched parts\n"
+                    "• **Neon / underglow** — instant disqualification\n"
+                    "• **Modded / money glitch colors** — bright pearlescent abuse\n"
+                    "• **Import/bunker weapons visible** on the car during the meet\n"
+                    "• **Dirty / damaged vehicles** — repair before attending"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="⚠️ Borderline Builds",
+                value=(
+                    "If you're unsure whether your build qualifies, post it in the appropriate "
+                    "channel for a staff review **before** the meet. "
+                    "Hosts reserve the right to deny entry on the day."
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="When in doubt — keep it clean.  •  Different Meets")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        elif value == "stats":
+            uid = interaction.user.id
+            lb_entry = _rsvp_leaderboard.get(str(uid), {})
+            att_count  = int(lb_entry.get("attendance_count", 0))
+            host_count = int(lb_entry.get("hosted_count", 0))
+            om_stats   = _om_stats_load().get("members", {}).get(str(uid), {})
+            on_time  = int(om_stats.get("attended", 0))
+            late     = int(om_stats.get("late", 0))
+            unable   = int(om_stats.get("unable", 0))
+            no_show  = int(om_stats.get("no_shows", 0))
+            total_check = on_time + late + unable + no_show
+            rate = round((on_time / total_check) * 100) if total_check > 0 else 0
+            embed = discord.Embed(
+                title=f"📊 DIFF Stats — {interaction.user.display_name}",
+                color=discord.Color.from_rgb(0, 67, 156),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.set_thumbnail(url=interaction.user.display_avatar.url)
+            embed.add_field(name="🎟️ Meets Attended", value=f"**{att_count}**", inline=True)
+            embed.add_field(name="🎙️ Meets Hosted",   value=f"**{host_count}**", inline=True)
+            embed.add_field(name="\u200b", value="\u200b", inline=True)
+            if total_check > 0:
+                embed.add_field(name="✅ On-Time",      value=f"**{on_time}**",  inline=True)
+                embed.add_field(name="🕐 Late",         value=f"**{late}**",     inline=True)
+                embed.add_field(name="❌ Unable",       value=f"**{unable}**",   inline=True)
+                embed.add_field(name="⚠️ No-Shows",    value=f"**{no_show}**",  inline=True)
+                embed.add_field(name="📈 On-Time Rate", value=f"**{rate}%**",    inline=True)
+                embed.add_field(name="\u200b", value="\u200b", inline=True)
+            else:
+                embed.add_field(
+                    name="No check-in data yet",
+                    value="Attend a meet and check in to start tracking.",
+                    inline=False,
+                )
+            embed.set_footer(text="Different Meets  •  Stats update after each meet")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        elif value == "social":
+            await interaction.response.send_message(
+                embed=_social_build_embed(), view=SocialMediaLinksView(), ephemeral=True
+            )
+
+        elif value == "partnership":
+            partners = _pp_get_partners()
+            await interaction.response.send_message(
+                embed=_pp_build_embed(partners), view=_PartnerHubView(partners), ephemeral=True
+            )
+
+        elif value == "faq":
+            embed = discord.Embed(
+                title="❓ DIFF Server FAQ",
+                description="Quick answers to the most common questions. Read this before opening a support ticket.",
+                color=discord.Color.from_rgb(0, 67, 156),
+            )
+            embed.add_field(
+                name="How do I join a meet?",
+                value=(
+                    f"Watch <#{UPCOMING_MEET_CHANNEL_ID}> for announcements. RSVP when it goes up, "
+                    "then join the session link posted by the host on meet day."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="How do I join a crew?",
+                value=(
+                    f"Browse available crews in <#{CREW_PANEL_CHANNEL_ID}> and click the crew's Apply button. "
+                    "A crew leader will review your application."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="My build got denied — why?",
+                value=(
+                    "Builds are denied for rice, neon, unrealistic mods, or mismatched parts. "
+                    "Check the Meet Requirements option in this menu and rebuild accordingly."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="How do I get verified / ranked up?",
+                value=(
+                    "Attend meets consistently, follow all rules, and stay active. "
+                    "Staff review member activity and handle promotions manually."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="I was warned / punished — what do I do?",
+                value=(
+                    f"If you believe a warning was unfair, open a support ticket in <#{SUPPORT_CHANNEL_ID}>. "
+                    "Do not argue in public channels — that adds to your case."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Can I host a meet?",
+                value=(
+                    "Yes, if you have the Host role. Apply through the proper channel. "
+                    "Hosts are selected based on activity, reliability, and community standing."
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="Still need help?  Open a ticket in #support-center  •  Different Meets")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        elif value == "invite":
+            embed = discord.Embed(
+                title="🚪 Before You Invite Anyone",
+                description="*This is required reading before sharing any DIFF invite link.*",
+                color=discord.Color.red(),
+            )
+            embed.add_field(
+                name="⚠️ You Are Responsible",
+                value=(
+                    "Everyone you invite **represents you**.\n"
+                    "If they break rules, warnings and consequences may fall on **both** of you.\n\n"
+                    "**There are no exceptions to this policy.**"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="✔️ Before You Send the Link",
+                value=(
+                    f"• Have them read <#{RULES_CHANNEL_ID}> **before** joining\n"
+                    "• Confirm they have a clean, realistic build ready\n"
+                    "• Make sure they understand meet etiquette and host authority\n"
+                    "• Verify they are respectful and won't cause issues"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🚫 Do NOT Invite",
+                value=(
+                    "• Random players from public lobbies\n"
+                    "• Known trollers, griefers, or rammers\n"
+                    "• Anyone who argues with or disrespects authority\n"
+                    "• People who haven't read the rules"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🔗 Invite Links — Use Responsibly",
+                value=(
+                    "• https://discord.gg/vYcqNEtksS\n"
+                    "• https://discord.gg/NTeqDCg74Y\n"
+                    "• https://discord.gg/diffmeets"
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="Invite quality > quantity. Keep DIFF clean.  —  Different Meets 🏁")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            log_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
+            if isinstance(log_ch, discord.TextChannel):
+                log_embed = discord.Embed(
+                    title="🚪 Invite Policy Accessed",
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                log_embed.add_field(
+                    name="Member",
+                    value=f"{interaction.user.mention} (`{interaction.user}`)",
+                    inline=False,
+                )
+                log_embed.set_footer(text="Welcome Hub — Invite Option")
+                try:
+                    await log_ch.send(embed=log_embed)
+                except Exception:
+                    pass
 
 
 class WelcomeHubView(discord.ui.View):
@@ -16404,123 +16727,7 @@ class WelcomeHubView(discord.ui.View):
             label="Join Crew", emoji="🏎️", style=discord.ButtonStyle.link, row=0,
             url=f"https://discord.com/channels/{GUILD_ID}/{CREW_PANEL_CHANNEL_ID}",
         ))
-
-    @discord.ui.button(label="Social Media", emoji="📲", style=discord.ButtonStyle.secondary,
-                       custom_id="diff_wh_social", row=1)
-    async def social_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            embed=_social_build_embed(), view=SocialMediaLinksView(), ephemeral=True
-        )
-
-    @discord.ui.button(label="How Meets Work", emoji="🚗", style=discord.ButtonStyle.secondary,
-                       custom_id="diff_wh_meets", row=1)
-    async def meets_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            "**🚗 How DIFF Meets Work**\n\n"
-            "1. Watch for the meet announcement and schedule.\n"
-            "2. Join on time and be ready with a clean vehicle.\n"
-            "3. Follow the host's parking and lineup instructions.\n"
-            "4. Drive responsibly and represent DIFF properly.\n"
-            "5. Enjoy the meet, photos, and community.",
-            ephemeral=True,
-        )
-
-    @discord.ui.button(label="My Stats", emoji="📊", style=discord.ButtonStyle.secondary,
-                       custom_id="diff_wh_stats", row=1)
-    async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        uid = interaction.user.id
-        lb_entry = _rsvp_leaderboard.get(str(uid), {})
-        att_count  = int(lb_entry.get("attendance_count", 0))
-        host_count = int(lb_entry.get("hosted_count", 0))
-        om_stats   = _om_stats_load().get("members", {}).get(str(uid), {})
-        on_time  = int(om_stats.get("attended", 0))
-        late     = int(om_stats.get("late", 0))
-        unable   = int(om_stats.get("unable", 0))
-        no_show  = int(om_stats.get("no_shows", 0))
-        lines = [
-            f"**📊 Your DIFF Stats — {interaction.user.display_name}**\n",
-            f"🎟️ Meets Attended: **{att_count}**",
-            f"🎙️ Meets Hosted: **{host_count}**",
-        ]
-        if any([on_time, late, unable, no_show]):
-            lines += [
-                "",
-                f"✅ On-Time Check-Ins: **{on_time}**",
-                f"🕐 Late Check-Ins: **{late}**",
-                f"❌ Unable to Join: **{unable}**",
-                f"⚠️ No-Shows: **{no_show}**",
-            ]
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
-    @discord.ui.button(label="Partnership", emoji="🤝", style=discord.ButtonStyle.primary,
-                       custom_id="diff_wh_partnership", row=2)
-    async def partnership_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        partners = _pp_get_partners()
-        await interaction.response.send_message(
-            embed=_pp_build_embed(partners), view=_PartnerHubView(partners), ephemeral=True
-        )
-
-    @discord.ui.button(label="Before You Invite Anyone", emoji="🚪", style=discord.ButtonStyle.danger,
-                       custom_id="diff_wh_invite", row=2)
-    async def invite_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="🚪 Before You Invite Anyone",
-            description="*This is a required step before sharing DIFF invites.*",
-            color=discord.Color.red(),
-        )
-        embed.add_field(
-            name="⚠️ Zero-Tolerance Policy",
-            value=(
-                "Everyone you invite represents **you**.\n"
-                "If they break rules, it reflects directly on you.\n\n"
-                "**There are no exceptions.**"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="📌 What You MUST Do Before Inviting",
-            value=(
-                "✔️ Make sure your friend understands DIFF standards\n"
-                "✔️ Ensure they bring clean, realistic builds\n"
-                "✔️ Confirm they are respectful and active\n"
-                f"✔️ Have them read the rules FIRST → <#{RULES_CHANNEL_ID}>"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="🚫 Do NOT Invite",
-            value=(
-                "• Random players\n"
-                "• Trollers / griefers\n"
-                "• People who don't follow instructions\n"
-                "• Anyone who hasn't read the rules"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="🔗 Invite Links (Use Responsibly)",
-            value=(
-                "• https://discord.gg/vYcqNEtksS\n"
-                "• https://discord.gg/NTeqDCg74Y\n"
-                "• https://discord.gg/diffmeets"
-            ),
-            inline=False,
-        )
-        embed.set_footer(text="📊 Invite quality > quantity. Keep DIFF clean.  —  Different Meets Crew 🏁")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        log_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
-        if isinstance(log_ch, discord.TextChannel):
-            log_embed = discord.Embed(
-                title="🚪 Invite Policy Accessed",
-                color=discord.Color.orange(),
-                timestamp=datetime.now(timezone.utc),
-            )
-            log_embed.add_field(name="Member", value=f"{interaction.user.mention} (`{interaction.user}`)", inline=False)
-            log_embed.set_footer(text="Welcome Hub — Invite Button")
-            try:
-                await log_ch.send(embed=log_embed)
-            except Exception:
-                pass
+        self.add_item(WelcomeHubSelect())
 
 
 async def _wh_post_or_refresh(guild: discord.Guild) -> None:
