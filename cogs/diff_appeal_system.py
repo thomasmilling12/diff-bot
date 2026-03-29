@@ -35,6 +35,8 @@ DIFF_LOGO_URL = (
     "&=&format=webp&quality=lossless&width=1376&height=917"
 )
 
+DIFF_BANNER_URL = DIFF_LOGO_URL  # falls back to logo; override with banner URL when available
+
 
 # =========================================================
 # FILE HELPERS
@@ -292,30 +294,24 @@ def _panel_embed() -> discord.Embed:
         title="🧾 DIFF Appeal Center",
         color=discord.Color.blurple(),
         description=(
-            "**Appeal Information**\n\n"
-            "Use this panel if you want staff to review a punishment decision.\n\n"
+            "If you believe a staff action taken against you was unfair, press **Submit Appeal** "
+            "below to open a private review with DIFF staff.\n\n"
             "**Before submitting:**\n"
             "• Be respectful and honest\n"
             "• Explain your side clearly\n"
             "• Do not submit multiple appeals for the same issue\n"
-            "• Troll or false appeals may be denied without review\n\n"
+            "• False or troll appeals may be denied without review\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "**Accepted appeals can automatically reverse:**\n"
             "• ⚠️ Warning → latest warning removed\n"
             "• ⏰ Timeout → cleared immediately\n"
             "• 🔨 Ban → user unbanned automatically\n"
-            "• 👢 Kick → reviewed manually (Discord cannot reverse kicks)\n\n"
-            "Press the button below to submit your appeal.\n"
-            "━━━━━━━━━━━━━━━━━━━━━━"
+            "• 👢 Kick → reviewed manually *(Discord cannot reverse kicks)*"
         ),
     )
-    embed.add_field(
-        name="📋 Staff Commands",
-        value="`!refresh_appeal_panel` — Refresh this panel",
-        inline=False,
-    )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text=PANEL_TAG)
+    embed.set_image(url=DIFF_BANNER_URL)
+    embed.set_footer(text="Different Meets • Support System")
     return embed
 
 

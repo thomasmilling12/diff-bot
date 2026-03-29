@@ -13653,19 +13653,18 @@ def _supp_brand_embed(embed: discord.Embed) -> discord.Embed:
 
 def _supp_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title=_SUPPORT_BRAND,
+        title="🎟️ DIFF Support Center",
         description=(
-            "Need help with something in the server or during a meet? Use the dropdown "
-            "below to contact the right staff team.\n\n"
-            "Whether you have a concern, need assistance, want to appeal a punishment, "
-            "or are interested in joining the DIFF staff team, this panel is here to "
-            "direct you to the correct place quickly and clearly.\n\n"
-            "**Please select the option that best matches your situation below.**"
+            "Use the dropdown below to open a private ticket with the right team. "
+            "Select the option that best matches your situation and staff will be notified right away.\n\n"
+            "🛡️ **Report** — Rule violations, toxic behavior, or meet disruptions\n"
+            "⚠️ **Appeal** — Contest a ban, timeout, warning, or other staff action\n"
+            "🚗 **Support** — Help with roles, channels, meet rules, or server questions\n"
+            "📩 **Apply** — Show interest in joining the DIFF staff team\n\n"
+            "*All tickets are private between you and DIFF staff.*"
         ),
         color=discord.Color.blue(),
     )
-    for ticket in _TICKET_TYPES.values():
-        embed.add_field(name=ticket.label, value=ticket.long_description, inline=False)
     return _supp_brand_embed(embed)
 
 
