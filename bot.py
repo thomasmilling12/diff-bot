@@ -8922,15 +8922,16 @@ async def on_ready():
             await _popup_post_or_refresh(_g)
         except Exception as _e:
             print(f"[PopupMeet] on_ready refresh error: {_e}")
-    bot.add_view(WelcomeHubView())
-    bot.add_view(SocialMediaLinksView())
-    bot.add_view(_PshipPanelView())
-    bot.add_view(_PshipStaffView())
-    bot.add_view(_PartnerPanelView(_pp_get_partners()))
-    bot.add_view(_RsvpView())
-    bot.add_view(_IgDropView())
-    bot.add_view(JoinPlatformView())
-    bot.add_view(JoinTicketView())
+    try:
+        bot.add_view(WelcomeHubView())
+        bot.add_view(SocialMediaLinksView())
+        bot.add_view(_PshipPanelView())
+        bot.add_view(_PshipStaffView())
+        bot.add_view(_PartnerPanelView(_pp_get_partners()))
+        bot.add_view(_RsvpView())
+        bot.add_view(_IgDropView())
+    except Exception as _e:
+        print(f"[ViewReg2] warning: {_e}")
     for _g in bot.guilds:
         try:
             await _wh_post_or_refresh(_g)
