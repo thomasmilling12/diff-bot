@@ -2060,6 +2060,7 @@ def _photo_hashes_save(data: dict) -> None:
 
 
 _join_photo_locks: dict[int, asyncio.Lock] = {}
+_join_ticket_tasks: dict[int, asyncio.Task] = {}
 
 def _join_photo_lock(channel_id: int) -> asyncio.Lock:
     if channel_id not in _join_photo_locks:
@@ -14938,6 +14939,83 @@ def _join_extra_save(data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
+async def _join_idle_timer(channel: discord.TextChannel, applicant: discord.Member) -> None:
+    """Auto-closes a join ticket if the applicant sends no photos within 30 minutes."""
+    _JOIN_IDLE_WARN  = 25 * 60   # 25 minutes — send reminder
+    _JOIN_IDLE_CLOSE = 5  * 60   # 5 more minutes — then delete
+
+    await asyncio.sleep(_JOIN_IDLE_WARN)
+
+    # Check if any image was sent by the applicant
+    def _has_photos(msgs: list[discord.Message]) -> bool:
+        return any(
+            m.author.id == applicant.id and m.attachments
+            for m in msgs
+        )
+
+    try:
+        history = [m async for m in channel.history(limit=50)]
+    except Exception:
+        return
+
+    if _has_photos(history):
+        _join_ticket_tasks.pop(channel.id, None)
+        return
+
+    # Send the 5-minute warning
+    try:
+        warn_embed = discord.Embed(
+            title="⏳ Ticket Closing Soon",
+            description="\n".join([
+                f"{applicant.mention}, your join application ticket will be **automatically closed in 5 minutes** if no photos are sent.",
+                "",
+                f"Please send your **{MIN_GARAGE_PHOTOS} car photos** now to keep this ticket open.",
+                "",
+                "*If you need more time, just send a message and a staff member can assist you.*",
+            ]),
+            color=discord.Color.orange(),
+        )
+        warn_embed.set_footer(text="Different Meets • Auto-Close System")
+        await channel.send(content=applicant.mention, embed=warn_embed, allowed_mentions=discord.AllowedMentions(users=True))
+    except Exception:
+        pass
+
+    await asyncio.sleep(_JOIN_IDLE_CLOSE)
+
+    # Final check — did they send photos during the grace period?
+    try:
+        history = [m async for m in channel.history(limit=50)]
+    except Exception:
+        return
+
+    if _has_photos(history):
+        _join_ticket_tasks.pop(channel.id, None)
+        return
+
+    # Still no photos — auto-close
+    try:
+        close_embed = discord.Embed(
+            title="🔒 Ticket Auto-Closed",
+            description="\n".join([
+                f"{applicant.mention}, this ticket has been automatically closed due to **30 minutes of inactivity** (no photos sent).",
+                "",
+                "You can open a new application any time when you're ready.",
+            ]),
+            color=discord.Color.red(),
+        )
+        close_embed.set_footer(text="Different Meets • Auto-Close System")
+        await channel.send(embed=close_embed)
+    except Exception:
+        pass
+
+    await asyncio.sleep(8)
+    _join_ticket_tasks.pop(channel.id, None)
+    try:
+        await channel.delete(reason="Join ticket auto-closed — no photos sent within 30 minutes")
+    except discord.HTTPException:
+        pass
+
+
 def _join_build_ticket_embed(
     member: discord.Member,
     psn_name: str = "",
@@ -15173,6 +15251,10 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
         extra[str(channel.id)] = {"car_type": car_type_val, "heard_from": heard_from_val}
         _join_extra_save(extra)
 
+        # Start the 30-minute idle auto-close timer
+        task = asyncio.create_task(_join_idle_timer(channel, interaction.user))
+        _join_ticket_tasks[channel.id] = task
+
         from datetime import timezone as _tz
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
@@ -15259,6 +15341,9 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
+        t = _join_ticket_tasks.pop(interaction.channel.id, None)
+        if t:
+            t.cancel()
         reason_text = str(self.reason).strip()
         uid_raw = _join_parse_user_id(interaction.channel.topic)
         if not uid_raw or not uid_raw.isdigit():
@@ -15531,6 +15616,10 @@ class JoinTicketView(discord.ui.View):
         except discord.HTTPException:
             pass
 
+        t = _join_ticket_tasks.pop(interaction.channel.id, None)
+        if t:
+            t.cancel()
+
         await asyncio.sleep(5)
         try:
             await interaction.channel.delete(reason=f"Join application accepted by {interaction.user}")
@@ -15592,6 +15681,10 @@ class JoinTicketView(discord.ui.View):
                     await logs_channel.send(embed=close_embed)
             except discord.HTTPException:
                 pass
+
+        t = _join_ticket_tasks.pop(interaction.channel.id, None)
+        if t:
+            t.cancel()
 
         await asyncio.sleep(2.5)
         try:
