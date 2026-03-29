@@ -55,8 +55,31 @@ TOKEN = os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN")
 # =========================
 GUILD_ID = 850386896509337710
 
-DIFF_LOGO_URL = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm=2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a&=&format=webp&quality=lossless&width=1376&height=917"
-DIFF_BANNER_URL = DIFF_LOGO_URL
+_BOT_CONFIG_FILE = "diff_data/bot_config.json"
+
+
+def _load_bot_config() -> dict:
+    if os.path.exists(_BOT_CONFIG_FILE):
+        try:
+            with open(_BOT_CONFIG_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_bot_config(data: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    with open(_BOT_CONFIG_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+_bot_cfg = _load_bot_config()
+DIFF_LOGO_URL: str = _bot_cfg.get(
+    "logo_url",
+    "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png",
+)
+DIFF_BANNER_URL: str = _bot_cfg.get("banner_url", DIFF_LOGO_URL)
 
 DATA_FILE = "diff_data.json"
 
@@ -6235,6 +6258,50 @@ async def setup_jackets(ctx):
 
     _save_jacket_urls(urls)
     await status_msg.edit(content=f"✅ All {len(all_paths)} jacket images uploaded and cached. The **Crew Jackets** dropdown will now work from any machine.")
+
+
+@bot.command(name="setlogo")
+async def set_logo(ctx, url: str = ""):
+    """Update the DIFF logo URL stored in config. Manager+ only."""
+    if not isinstance(ctx.author, discord.Member):
+        return
+    manager_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    if not any(r.id in manager_ids for r in ctx.author.roles):
+        return await ctx.send("❌ Manager+ only.", delete_after=5)
+    if not url.startswith("http"):
+        return await ctx.send("❌ Provide a valid image URL.\nUsage: `!setlogo https://...`")
+    global DIFF_LOGO_URL, DIFF_BANNER_URL
+    DIFF_LOGO_URL = url
+    DIFF_BANNER_URL = url
+    cfg = _load_bot_config()
+    cfg["logo_url"] = url
+    cfg["banner_url"] = url
+    _save_bot_config(cfg)
+    embed = discord.Embed(description="✅ Logo and banner URL updated.", color=discord.Color.green())
+    embed.set_thumbnail(url=url)
+    embed.set_footer(text="Run /refresh-join-panel to update the join hub with the new image.")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="setbanner")
+async def set_banner(ctx, url: str = ""):
+    """Update the DIFF banner URL stored in config separately. Manager+ only."""
+    if not isinstance(ctx.author, discord.Member):
+        return
+    manager_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    if not any(r.id in manager_ids for r in ctx.author.roles):
+        return await ctx.send("❌ Manager+ only.", delete_after=5)
+    if not url.startswith("http"):
+        return await ctx.send("❌ Provide a valid image URL.\nUsage: `!setbanner https://...`")
+    global DIFF_BANNER_URL
+    DIFF_BANNER_URL = url
+    cfg = _load_bot_config()
+    cfg["banner_url"] = url
+    _save_bot_config(cfg)
+    embed = discord.Embed(description="✅ Banner URL updated.", color=discord.Color.green())
+    embed.set_image(url=url)
+    embed.set_footer(text="Run /refresh-join-panel to update the join hub with the new banner.")
+    await ctx.send(embed=embed)
 
 
 # =========================
@@ -15121,29 +15188,40 @@ def _join_sanitize_channel_name(psn: str) -> str:
 
 def _join_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🏁 DIFF MEETS — OFFICIAL JOIN HUB",
-        description="\n".join([
-            "👋 **Select your platform** below to join our GTA car meets.",
-            "",
-            "**Attention**",
-            "🚗 Only clean customized vehicles are allowed at our meets.",
-            "",
-            "**Crew**",
-            "🤝 If you also want to join the crew, head to your crew application area after getting set up.",
-            "",
-            "━━━━━━━━━━━━━━━━━━━━━━",
-            "🎮 **PlayStation** — Enter your PSN and open a private join ticket",
-            "🟢 **Xbox** — Redirects to our partners at **MMI Meets**",
-            "💻 **PC** — Redirects to our partners at **MMI Meets**",
-            "━━━━━━━━━━━━━━━━━━━━━━",
-        ]),
-        color=discord.Color.from_str("#111111"),
+        title="🎮 DIFF MEETS — OFFICIAL JOIN HUB",
+        description="👋 **Select your platform** below to join our GTA car meets.",
+        color=discord.Color.from_str("#00439C"),
+    )
+    embed.add_field(
+        name="⚠️ Attention",
+        value="Only **clean customized vehicles** are allowed at our meets.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🤝 Want to join the crew too?",
+        value="Head to the crew application area after getting set up here.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎮 PlayStation",
+        value="Enter your PSN and open a private join ticket",
+        inline=True,
+    )
+    embed.add_field(
+        name="🟢 Xbox",
+        value="Redirects to our partners at **MMI Meets**",
+        inline=True,
+    )
+    embed.add_field(
+        name="💻 PC",
+        value="Redirects to our partners at **MMI Meets**",
+        inline=True,
     )
     if DIFF_LOGO_URL:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
     if DIFF_BANNER_URL:
         embed.set_image(url=DIFF_BANNER_URL)
-    embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
+    embed.set_footer(text="Different Meets • GTA Car Meets")
     return embed
 
 
@@ -15367,7 +15445,7 @@ class JoinPlatformSelect(discord.ui.Select):
             )
             if DIFF_LOGO_URL:
                 embed.set_thumbnail(url=DIFF_LOGO_URL)
-            embed.set_footer(text="Different Meets • PlayStation Only")
+            embed.set_footer(text="Different Meets • GTA Car Meets")
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         category = interaction.guild.get_channel(JOIN_TICKET_CATEGORY_ID)
@@ -15461,13 +15539,20 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
                     attach_files=True, embed_links=True,
                 )
 
-        channel = await interaction.guild.create_text_channel(
-            name=_join_sanitize_channel_name(clean_psn),
-            category=category,
-            overwrites=overwrites,
-            topic=f"DIFF PlayStation Join Application | JOIN_USER:{interaction.user.id} | PSN:{clean_psn}",
-            reason=f"PS Join ticket opened by {interaction.user} ({interaction.user.id})",
-        )
+        try:
+            channel = await interaction.guild.create_text_channel(
+                name=_join_sanitize_channel_name(clean_psn),
+                category=category,
+                overwrites=overwrites,
+                topic=f"DIFF PlayStation Join Application | JOIN_USER:{interaction.user.id} | PSN:{clean_psn}",
+                reason=f"PS Join ticket opened by {interaction.user} ({interaction.user.id})",
+            )
+        except discord.HTTPException as e:
+            print(f"[JoinHub] Failed to create ticket channel for {interaction.user}: {e}")
+            return await interaction.followup.send(
+                "❌ Could not create your join ticket. This may be a temporary issue — please try again or contact staff.",
+                ephemeral=True,
+            )
 
         ping_parts = [interaction.user.mention]
         for rid in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID):
@@ -15524,7 +15609,7 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
 
         await interaction.followup.send(
             f"Your PlayStation join ticket has been created: {channel.mention}\n"
-            "Please send your **10 car photos** and a staff member will review you shortly.",
+            f"Please send your **{MIN_GARAGE_PHOTOS} car photos** and a staff member will review you shortly.",
             ephemeral=True,
         )
 
