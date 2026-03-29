@@ -5152,20 +5152,14 @@ async def _auto_refresh_hierarchy_panel(guild: discord.Guild):
 
 
 def build_status_embed(guild: discord.Guild) -> discord.Embed:
-    embed = discord.Embed(
-        title="🏁 DIFF Meets Crew",
-        description="**Live Host Activity Board**\nStay connected. Stay active.",
-        color=0xC9A227,
-    )
-    embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_image(url=DIFF_BANNER_URL)
-
-    gta_hosts = []
-    online_hosts = []
-    offline_hosts = []
+    gta_hosts: list[str] = []
+    online_hosts: list[str] = []
+    offline_hosts: list[str] = []
 
     for host in data["hosts"]:
         member = guild.get_member(host["discord_id"])
+        profile = host.get("profile_url", "")
+        link = f" [↗]({profile})" if profile else ""
 
         if member:
             is_online = member.status != discord.Status.offline
@@ -5176,25 +5170,61 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
             activity = "Offline"
             name = host["name"]
 
-        line = f"**{name}**\n🎮 `{activity}`\n🔗 [View Profile]({host['profile_url']})"
         activity_lower = activity.lower()
 
         if is_online:
             if "grand theft auto" in activity_lower or "gta" in activity_lower:
-                gta_hosts.append(f"🟢 {line}")
+                gta_hosts.append(f"🟢 **{name}** — `{activity}`{link}")
             else:
-                online_hosts.append(f"🟡 {line}")
+                act_label = activity if activity not in ("", "Idle") else "Idle"
+                online_hosts.append(f"🟡 **{name}** — `{act_label}`{link}")
         else:
-            offline_hosts.append(f"🔴 {line}")
+            offline_hosts.append(f"🔴 **{name}**{link}")
+
+    # Summary bar
+    parts = []
+    if gta_hosts:
+        parts.append(f"🟢 **{len(gta_hosts)}** in GTA")
+    if online_hosts:
+        parts.append(f"🟡 **{len(online_hosts)}** online")
+    if offline_hosts:
+        parts.append(f"🔴 **{len(offline_hosts)}** parked")
+    summary = "  •  ".join(parts) if parts else "No hosts being tracked yet."
+
+    embed = discord.Embed(
+        title="🏁 DIFF Host Activity Board",
+        description=(
+            "Real-time status of your DIFF host team.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{summary}"
+        ),
+        color=0xC9A227,
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    if DIFF_BANNER_URL:
+        embed.set_image(url=DIFF_BANNER_URL)
 
     if gta_hosts:
-        embed.add_field(name="🎮 In GTA Right Now", value="\n\n".join(gta_hosts), inline=False)
+        embed.add_field(
+            name=f"🎮 In GTA Right Now  ({len(gta_hosts)})",
+            value="\n".join(gta_hosts),
+            inline=False,
+        )
     if online_hosts:
-        embed.add_field(name="🟡 Online Elsewhere", value="\n\n".join(online_hosts), inline=False)
+        embed.add_field(
+            name=f"🟡 Online Elsewhere  ({len(online_hosts)})",
+            value="\n".join(online_hosts),
+            inline=False,
+        )
     if offline_hosts:
-        embed.add_field(name="🔴 Parked", value="\n\n".join(offline_hosts), inline=False)
+        embed.add_field(
+            name=f"🔴 Parked  ({len(offline_hosts)})",
+            value="\n".join(offline_hosts),
+            inline=False,
+        )
 
-    embed.set_footer(text=f"DIFF Meets • EST. 2020 • {datetime.utcnow().strftime('%H:%M:%S UTC')}")
+    embed.set_footer(text="DIFF Meets • EST. 2020")
+    embed.timestamp = datetime.utcnow()
     return embed
 
 
