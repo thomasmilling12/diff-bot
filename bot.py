@@ -6826,23 +6826,12 @@ async def diff_leaderboard(interaction: discord.Interaction):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
     if not interaction.guild:
         return
-    data = _load_activity_meets()
-    members = data.get("members", {})
-    ranked = sorted(members.items(), key=lambda x: (x[1].get("attended", 0), x[1].get("hosted", 0), -x[1].get("no_shows", 0)), reverse=True)
-    medals = ["🥇", "🥈", "🥉"]
-    lines = []
-    for idx, (uid, stats) in enumerate(ranked[:10], start=1):
-        m = interaction.guild.get_member(int(uid))
-        name = m.mention if m else f"<@{uid}>"
-        prefix = medals[idx - 1] if idx <= 3 else f"{idx}."
-        lines.append(f"{prefix} {name}\nAttended: {stats.get('attended', 0)} | Hosted: {stats.get('hosted', 0)} | No-Shows: {stats.get('no_shows', 0)}")
-    embed = discord.Embed(title="DIFF Activity Leaderboard", description="\n\n".join(lines) if lines else "No data yet.", color=discord.Color.blue(), timestamp=utc_now())
-    lb_ch = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
-    if isinstance(lb_ch, discord.TextChannel):
-        await lb_ch.send(embed=embed)
-        await interaction.response.send_message("Leaderboard posted.", ephemeral=True)
-    else:
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    await _upsert_unified_leaderboard(interaction.guild)
+    await interaction.followup.send("Leaderboard refreshed.", ephemeral=True)
 
 
 @bot.tree.command(name="diff-dashboard-post", description="Post the live DIFF activity dashboard (staff only)")
@@ -8651,54 +8640,138 @@ def _om_increment_host_stat(user_id: int, field_name: str, amount: int = 1) -> N
     _om_stats_save(data)
 
 
-async def _om_post_or_update_leaderboard() -> None:
-    channel = bot.get_channel(_OM_LEADERBOARD_CHANNEL_ID)
-    if not isinstance(channel, discord.TextChannel):
-        return
-    data = _om_stats_load()
+_OM_LB_MSG_KEY = "leaderboard_msg_id"
+
+
+def _build_unified_lb_embed(guild: discord.Guild) -> discord.Embed:
+    """Builds the single unified DIFF Activity Leaderboard embed."""
+    from datetime import timezone as _tz
+    om_data = _om_stats_load()
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+    # Top Hosts
     host_list = sorted(
-        data.get("hosts", {}).values(),
+        om_data.get("hosts", {}).values(),
         key=lambda x: (x.get("meets_completed", 0), x.get("total_attendance", 0)),
         reverse=True,
     )
-    member_list = sorted(
-        data.get("members", {}).values(),
-        key=lambda x: (x.get("attended", 0), -x.get("no_shows", 0)),
-        reverse=True,
-    )
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     host_lines = []
-    for i, s in enumerate(host_list[:10], 1):
+    for i, s in enumerate(host_list[:5], 1):
         prefix = medals.get(i, f"**{i}.**")
         host_lines.append(
-            f"{prefix} <@{s['user_id']}> — Hosted: **{s.get('meets_hosted', 0)}** | "
+            f"{prefix} <@{s['user_id']}> — "
+            f"Hosted: **{s.get('meets_hosted', 0)}** | "
             f"Completed: **{s.get('meets_completed', 0)}** | "
-            f"Attendance: **{s.get('total_attendance', 0)}** | "
-            f"No-Shows: **{s.get('total_no_shows', 0)}**"
+            f"Attend: **{s.get('total_attendance', 0)}** | "
+            f"NS: **{s.get('total_no_shows', 0)}**"
         )
+
+    # Top Members (RSVP leaderboard — most active meet attendees)
+    rsvp_top = sorted(
+        _rsvp_leaderboard.values(),
+        key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))),
+        reverse=True,
+    )[:5]
     member_lines = []
-    for i, s in enumerate(member_list[:10], 1):
+    for i, entry in enumerate(rsvp_top, 1):
         prefix = medals.get(i, f"**{i}.**")
         member_lines.append(
-            f"{prefix} <@{s['user_id']}> — Attended: **{s.get('attended', 0)}** | "
-            f"Late: **{s.get('late', 0)}** | "
-            f"No-Shows: **{s.get('no_shows', 0)}**"
+            f"{prefix} <@{entry['user_id']}> — "
+            f"Meets: **{entry.get('attendance_count', 0)}** | "
+            f"Hosted: **{entry.get('hosted_count', 0)}**"
         )
-    content = (
-        "🏆 **DIFF Activity Leaderboard**\n\n"
-        "**Top Hosts**\n"
-        + ("\n".join(host_lines) if host_lines else "No host data yet.")
-        + "\n\n**Top Members**\n"
-        + ("\n".join(member_lines) if member_lines else "No member data yet.")
+
+    # Staff Performance
+    staff_rows = _auto_stats.leaderboard()
+    staff_lines = []
+    top_performer: tuple | None = None
+    for idx, (uid, stats) in enumerate(staff_rows[:5], 1):
+        m = guild.get_member(uid)
+        display = m.mention if m else f"<@{uid}>"
+        score = _auto_score(stats)
+        staff_lines.append(
+            f"**#{idx}** {display} — Score: **{score}** | "
+            f"Tickets: **{stats.get('tickets_handled', 0)}** | "
+            f"Apps: **{stats.get('applications_reviewed', 0)}** | "
+            f"Meets: **{stats.get('meets_hosted', 0)}**"
+        )
+        if idx == 1:
+            top_performer = (uid, stats, score)
+
+    embed = discord.Embed(
+        title="🏆 DIFF Activity Leaderboard",
+        description=(
+            "Live tracking of host performance, member attendance, and staff activity.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(_tz.utc),
     )
-    try:
-        async for msg in channel.history(limit=15):
-            if msg.author == bot.user and "🏆 **DIFF Activity Leaderboard**" in (msg.content or ""):
-                await msg.edit(content=content)
-                return
-    except Exception:
-        pass
-    await channel.send(content)
+    embed.add_field(
+        name="🎙️ Top Hosts",
+        value="\n".join(host_lines) if host_lines else "*No host data yet.*",
+        inline=False,
+    )
+    embed.add_field(
+        name="👥 Top Members",
+        value="\n".join(member_lines) if member_lines else "*No member data yet.*",
+        inline=False,
+    )
+    embed.add_field(
+        name="⚙️ Staff Performance",
+        value="\n".join(staff_lines) if staff_lines else "*No staff data yet.*",
+        inline=False,
+    )
+    if top_performer:
+        uid, stats, score = top_performer
+        m = guild.get_member(uid)
+        display = m.mention if m else f"<@{uid}>"
+        embed.add_field(
+            name="🔥 Top Performer of the Week",
+            value=(
+                f"{display}\n"
+                f"Score: **{score}** | "
+                f"Tickets: **{stats.get('tickets_handled', 0)}** | "
+                f"Apps: **{stats.get('applications_reviewed', 0)}** | "
+                f"Meets: **{stats.get('meets_hosted', 0)}**"
+            ),
+            inline=False,
+        )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    if DIFF_BANNER_URL:
+        embed.set_image(url=DIFF_BANNER_URL)
+    embed.set_footer(text="Different Meets • Automated Tracking")
+    return embed
+
+
+async def _upsert_unified_leaderboard(guild: discord.Guild | None = None) -> None:
+    """Post or edit the single unified leaderboard message in the leaderboard channel."""
+    if guild is None:
+        guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
+    channel = guild.get_channel(_OM_LEADERBOARD_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    embed = _build_unified_lb_embed(guild)
+    data = _om_stats_load()
+    msg_id = data.get(_OM_LB_MSG_KEY)
+    if msg_id:
+        try:
+            existing = await channel.fetch_message(int(msg_id))
+            await existing.edit(content=None, embed=embed)
+            return
+        except (discord.NotFound, discord.HTTPException):
+            pass
+    msg = await channel.send(embed=embed)
+    data[_OM_LB_MSG_KEY] = msg.id
+    _om_stats_save(data)
+
+
+async def _om_post_or_update_leaderboard() -> None:
+    """Legacy wrapper — delegates to the unified leaderboard upsert."""
+    await _upsert_unified_leaderboard()
 
 
 class _OmAttendanceView(discord.ui.View):
@@ -9870,6 +9943,11 @@ async def on_ready():
             await send_or_refresh_crew_panel(_g)
         except Exception as _e:
             print(f"[CrewPanel] on_ready error: {_e}")
+    for _g in bot.guilds:
+        try:
+            await _upsert_unified_leaderboard(_g)
+        except Exception as _e:
+            print(f"[UnifiedLeaderboard] on_ready error: {_e}")
     if not _rc_ensure_loop.is_running():
         _rc_ensure_loop.start()
 
@@ -15990,15 +16068,8 @@ async def _auto_weekly_loop() -> None:
         rows = _auto_stats.leaderboard()
         if isinstance(report_channel, discord.TextChannel):
             try:
-                await report_channel.send(embed=_auto_build_weekly_embed(guild, rows))
-            except discord.HTTPException:
-                pass
-            try:
-                lb_embed = build_leaderboard_embed(guild)
-                notify_role = guild.get_role(NOTIFY_ROLE_ID)
-                content = notify_role.mention if notify_role else None
-                await report_channel.send(content=content, embed=lb_embed, view=LeaderboardView())
-            except discord.HTTPException:
+                await _upsert_unified_leaderboard(guild)
+            except Exception:
                 pass
             try:
                 hub_embed = _build_crew_hub_embed()
@@ -16344,10 +16415,9 @@ async def force_weekly_staff_report(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
     except discord.NotFound:
         return
-    rows = _auto_stats.leaderboard()
-    await report_channel.send(embed=_auto_build_weekly_embed(interaction.guild, rows))
+    await _upsert_unified_leaderboard(interaction.guild)
     _auto_stats.archive_and_reset()
-    await interaction.followup.send(f"Weekly report posted in {report_channel.mention} and stats reset.", ephemeral=True)
+    await interaction.followup.send(f"Leaderboard refreshed in {report_channel.mention} and stats reset.", ephemeral=True)
 
 
 @bot.command(name="clearweeklyreport")
@@ -16408,8 +16478,8 @@ async def post_auto_staff_leaderboard(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
     except discord.NotFound:
         return
-    await lb_channel.send(embed=_auto_build_weekly_embed(interaction.guild, _auto_stats.leaderboard()))
-    await interaction.followup.send(f"Auto leaderboard posted in {lb_channel.mention}.", ephemeral=True)
+    await _upsert_unified_leaderboard(interaction.guild)
+    await interaction.followup.send(f"Leaderboard refreshed in {lb_channel.mention}.", ephemeral=True)
 
 
 # =========================
