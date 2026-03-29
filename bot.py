@@ -2499,6 +2499,11 @@ def _hrsvp_reset() -> dict:
     return data
 
 
+def _hrsvp_uid(entry) -> str:
+    """Return UID string from either a plain string or a dict entry."""
+    return entry if isinstance(entry, str) else entry.get("uid", "")
+
+
 def _hrsvp_build_embed() -> discord.Embed:
     data = _hrsvp_load()
     desc = [
@@ -2509,14 +2514,25 @@ def _hrsvp_build_embed() -> discord.Embed:
     ]
     for day in _HRSVP_DAYS:
         d = data.get(day, {"yes": [], "no": [], "maybe": []})
-        yes_tags = " ".join(f"<@{u}>" for u in d["yes"]) or "—"
-        no_count = len(d["no"])
-        maybe_tags = " ".join(f"<@{u}>" for u in d["maybe"]) or "—"
+        yes_entries = d.get("yes", [])
+        no_count = len(d.get("no", []))
+        maybe_entries = d.get("maybe", [])
+
         desc.append(f"**{day}**")
-        desc.append(f"✅ `{len(d['yes'])}` → {yes_tags}")
+        if yes_entries:
+            for e in yes_entries:
+                uid = _hrsvp_uid(e)
+                if isinstance(e, dict):
+                    desc.append(f"✅ <@{uid}> — 🕒 {e.get('time', 'TBD')} | 🎮 {e.get('theme', 'TBD')}")
+                else:
+                    desc.append(f"✅ <@{uid}>")
+        else:
+            desc.append("✅ `0` → —")
         if no_count:
             desc.append(f"❌ `{no_count}` unavailable")
-        desc.append(f"❓ `{len(d['maybe'])}` → {maybe_tags}")
+        if maybe_entries:
+            maybe_tags = " ".join(f"<@{_hrsvp_uid(u)}>" for u in maybe_entries)
+            desc.append(f"❓ `{len(maybe_entries)}` → {maybe_tags}")
         desc.append("")
     desc.append("━━━━━━━━━━━━━━━━━━━━━━")
     desc.append("🌐 Convert times: https://hammertime.cyou/en")
@@ -2538,6 +2554,45 @@ class HostRSVPView(discord.ui.View):
             self.add_item(_HostRSVPBtn(day, "maybe", "❓", discord.ButtonStyle.secondary))
 
 
+class _HostAvailModal(discord.ui.Modal):
+    time_input = discord.ui.TextInput(
+        label="What time do you want to host?",
+        placeholder="e.g. 8pm EST  or  8:30pm CST",
+        required=True,
+        max_length=50,
+    )
+    theme_input = discord.ui.TextInput(
+        label="Theme / Class for this meet",
+        placeholder="e.g. JDM Night  or  Stanced Only  or  Open",
+        required=True,
+        max_length=100,
+    )
+
+    def __init__(self, day: str):
+        super().__init__(title=f"✅ Hosting {day} — Details")
+        self.day = day
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.user:
+            await interaction.response.defer()
+            return
+        uid = str(interaction.user.id)
+        time_val = str(self.time_input).strip()
+        theme_val = str(self.theme_input).strip()
+        data = _hrsvp_load()
+        slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
+        # Remove from all lists first (handles old str format and new dict format)
+        for c in ("yes", "no", "maybe"):
+            slot[c] = [e for e in slot.get(c, []) if (e if isinstance(e, str) else e.get("uid")) != uid]
+        slot["yes"].append({"uid": uid, "time": time_val, "theme": theme_val})
+        _hrsvp_save(data)
+        await _hrsvp_update_panel(interaction.client)
+        await interaction.response.send_message(
+            f"✅ **{self.day}**: you're marked available\n🕒 Time: **{time_val}** | 🎮 Theme: **{theme_val}**",
+            ephemeral=True,
+        )
+
+
 class _HostRSVPBtn(discord.ui.Button):
     def __init__(self, day: str, choice: str, emoji: str, style: discord.ButtonStyle):
         super().__init__(
@@ -2557,16 +2612,19 @@ class _HostRSVPBtn(discord.ui.Button):
         if not has_host:
             await interaction.response.send_message("Only hosts can use this panel.", ephemeral=True)
             return
-        data = _hrsvp_load()
+        # "yes" opens a modal to collect time + theme
+        if self.choice == "yes":
+            await interaction.response.send_modal(_HostAvailModal(self.day))
+            return
         uid = str(interaction.user.id)
+        data = _hrsvp_load()
+        slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
         for c in ("yes", "no", "maybe"):
-            lst = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []}).get(c, [])
-            if uid in lst:
-                lst.remove(uid)
-        data[self.day].setdefault(self.choice, []).append(uid)
+            slot[c] = [e for e in slot.get(c, []) if (e if isinstance(e, str) else e.get("uid")) != uid]
+        slot[self.choice].append(uid)
         _hrsvp_save(data)
         await _hrsvp_update_panel(interaction.client)
-        label_map = {"yes": "✅ Available", "no": "❌ Unavailable", "maybe": "❓ Maybe"}
+        label_map = {"no": "❌ Unavailable", "maybe": "❓ Maybe"}
         await interaction.response.send_message(
             f"**{self.day}**: marked as **{label_map[self.choice]}**", ephemeral=True
         )
@@ -2653,21 +2711,26 @@ def _asched_save(data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
-def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple[str | None, str]:
+def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple[str | None, str, str, str]:
+    """Returns (uid, status, time, theme)."""
     day_data = rsvp.get(day, {})
-    yes_hosts = list(day_data.get("yes", []))
+    yes_entries = list(day_data.get("yes", []))
     maybe_hosts = list(day_data.get("maybe", []))
-    if yes_hosts:
-        yes_hosts.sort(key=lambda uid: assigned_counts.get(uid, 0))
-        chosen = yes_hosts[0]
-        assigned_counts[chosen] = assigned_counts.get(chosen, 0) + 1
-        return chosen, "yes"
+    if yes_entries:
+        yes_entries.sort(key=lambda e: assigned_counts.get(_hrsvp_uid(e), 0))
+        chosen = yes_entries[0]
+        uid = _hrsvp_uid(chosen)
+        assigned_counts[uid] = assigned_counts.get(uid, 0) + 1
+        time_val = chosen.get("time", "TBD") if isinstance(chosen, dict) else "TBD"
+        theme_val = chosen.get("theme", "TBD") if isinstance(chosen, dict) else "TBD"
+        return uid, "yes", time_val, theme_val
     if maybe_hosts:
-        maybe_hosts.sort(key=lambda uid: assigned_counts.get(uid, 0))
+        maybe_hosts.sort(key=lambda e: assigned_counts.get(_hrsvp_uid(e), 0))
         chosen = maybe_hosts[0]
-        assigned_counts[chosen] = assigned_counts.get(chosen, 0) + 1
-        return chosen, "maybe"
-    return None, "none"
+        uid = _hrsvp_uid(chosen)
+        assigned_counts[uid] = assigned_counts.get(uid, 0) + 1
+        return uid, "maybe", "TBD", "TBD"
+    return None, "none", "TBD", "TBD"
 
 
 def _asched_build() -> dict:
@@ -2675,9 +2738,12 @@ def _asched_build() -> dict:
     schedule = _asched_load()
     assigned_counts: dict = {}
     for day in _HRSVP_DAYS:
-        host_id, host_status = _asched_pick_host(day, rsvp, assigned_counts)
-        schedule["days"].setdefault(day, {})["host_id"] = int(host_id) if host_id else None
-        schedule["days"][day]["host_status"] = host_status
+        host_id, host_status, time_val, theme_val = _asched_pick_host(day, rsvp, assigned_counts)
+        slot = schedule["days"].setdefault(day, {})
+        slot["host_id"] = int(host_id) if host_id else None
+        slot["host_status"] = host_status
+        slot["time"] = time_val
+        slot["class"] = theme_val
     schedule["updated_at"] = utc_now().isoformat()
     _asched_save(schedule)
     return schedule
