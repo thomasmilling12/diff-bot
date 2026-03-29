@@ -16149,11 +16149,20 @@ async def on_message(message: discord.Message) -> None:
     if not isinstance(message.channel, discord.TextChannel):
         return
 
-    # --- Instagram auto-post ---
+    # --- Social feed auto-post (Instagram / TikTok / YouTube) ---
     if message.channel.id == _IG_CHANNEL_ID:
         _ig_m = _IG_LINK_RE.search(message.content)
         if _ig_m:
-            await _ig_handle_drop(message.channel, _ig_m.group(1))
+            await _social_handle_drop(message.channel, _ig_m.group(1), "instagram")
+            return
+        _tt_m = _TT_LINK_RE.search(message.content)
+        if _tt_m:
+            await _social_handle_drop(message.channel, _tt_m.group(1), "tiktok")
+            return
+        _yt_m = _YT_LINK_RE.search(message.content)
+        if _yt_m:
+            await _social_handle_drop(message.channel, _yt_m.group(1), "youtube")
+            return
         return
 
     # --- Join channel photo progress tracking ---
@@ -18854,6 +18863,14 @@ _IG_LINK_RE = re.compile(
     r"(https?://(?:www\.)?(?:instagram\.com|instagr\.am)/[^\s]+)",
     re.IGNORECASE,
 )
+_TT_LINK_RE = re.compile(
+    r"(https?://(?:www\.)?(?:tiktok\.com|vm\.tiktok\.com)/[^\s]+)",
+    re.IGNORECASE,
+)
+_YT_LINK_RE = re.compile(
+    r"(https?://(?:www\.)?(?:youtube\.com/(?:watch|shorts|live)|youtu\.be)/[^\s]+)",
+    re.IGNORECASE,
+)
 
 
 def _ig_panel_load() -> dict:
@@ -18874,24 +18891,38 @@ def _ig_panel_save(data: dict):
 
 def _ig_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="📸 DIFF Social Feed",
-        color=discord.Color.magenta(),
+        title="📡 DIFF Social Feed",
+        color=discord.Color.from_rgb(225, 48, 108),
         description=(
-            "This is the official DIFF Instagram drop channel.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "**How it works**\n"
-            "Drop a valid Instagram link anywhere in a message and the bot will:\n"
-            "• Auto-format it into a clean embed\n"
-            f"• Ping <@&{_IG_PING_ROLE_ID}>\n"
-            "• Add 🔥 📸 🏁 reaction prompts automatically\n\n"
-            "**React with**\n"
-            "🔥 — This was hard\n"
-            "📸 — I was there\n"
-            "🏁 — Pulling up next meet\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "*Staff can also use `!igpost <link>` to manually trigger a formatted drop.*"
+            "Drop social media content from Instagram, TikTok, or YouTube.\n"
+            "Use the dropdown below or paste a link directly into this channel.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
         ),
     )
+    embed.add_field(
+        name="📸 Instagram",
+        value=(
+            "Drop an `instagram.com` link — it's auto-formatted and pings "
+            f"<@&{_IG_PING_ROLE_ID}> with reactions."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎵 TikTok",
+        value="Drop a `tiktok.com` link — formatted as a TikTok drop embed.",
+        inline=False,
+    )
+    embed.add_field(
+        name="▶️ YouTube",
+        value="Drop a `youtube.com` or `youtu.be` link — formatted as a YouTube post embed.",
+        inline=False,
+    )
+    embed.add_field(
+        name="💬 React with",
+        value="🔥 This was hard  •  📸 I was there  •  🏁 Pulling up next meet",
+        inline=False,
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text="Different Meets • DIFF Social Feed")
     return embed
 
@@ -18905,20 +18936,64 @@ def _ig_user_allowed(member: discord.Member) -> bool:
     )
 
 
-class _IgDropModal(discord.ui.Modal, title="📸 Drop IG Post"):
+_PLATFORM_META = {
+    "instagram": {
+        "label": "Instagram",
+        "emoji": "📸",
+        "color": discord.Color.from_rgb(225, 48, 108),
+        "regex": None,   # set below after compile
+        "placeholder": "https://www.instagram.com/p/...",
+        "drop_title": "📸 DIFF Instagram Drop",
+        "drop_header": "🔥 __**NEW DIFF POST — INSTAGRAM**__ 🔥",
+        "support_msg": "💬 **Show support:** like, comment, and share on Instagram",
+    },
+    "tiktok": {
+        "label": "TikTok",
+        "emoji": "🎵",
+        "color": discord.Color.from_rgb(105, 201, 208),
+        "regex": None,
+        "placeholder": "https://www.tiktok.com/@diffmeets/video/...",
+        "drop_title": "🎵 DIFF TikTok Drop",
+        "drop_header": "🔥 __**NEW DIFF VIDEO — TIKTOK**__ 🔥",
+        "support_msg": "💬 **Show support:** like, comment, and follow on TikTok",
+    },
+    "youtube": {
+        "label": "YouTube",
+        "emoji": "▶️",
+        "color": discord.Color.from_rgb(255, 0, 0),
+        "regex": None,
+        "placeholder": "https://www.youtube.com/watch?v=... or youtu.be/...",
+        "drop_title": "▶️ DIFF YouTube Drop",
+        "drop_header": "🔥 __**NEW DIFF VIDEO — YOUTUBE**__ 🔥",
+        "support_msg": "💬 **Show support:** like, comment, and subscribe on YouTube",
+    },
+}
+_PLATFORM_META["instagram"]["regex"] = _IG_LINK_RE
+_PLATFORM_META["tiktok"]["regex"]    = _TT_LINK_RE
+_PLATFORM_META["youtube"]["regex"]   = _YT_LINK_RE
+
+
+class _SocialDropModal(discord.ui.Modal):
     link_field = discord.ui.TextInput(
-        label="Instagram Link",
-        placeholder="https://www.instagram.com/p/...",
+        label="Post Link",
         required=True,
         max_length=500,
     )
 
+    def __init__(self, platform: str):
+        meta = _PLATFORM_META[platform]
+        super().__init__(title=f"{meta['emoji']} Drop {meta['label']} Post")
+        self.platform = platform
+        self.link_field.label = f"{meta['label']} Link"
+        self.link_field.placeholder = meta["placeholder"]
+
     async def on_submit(self, interaction: discord.Interaction):
-        raw = self.link_field.value.strip()
-        m = _IG_LINK_RE.search(raw)
+        raw  = self.link_field.value.strip()
+        meta = _PLATFORM_META[self.platform]
+        m = meta["regex"].search(raw)
         if not m:
             await interaction.response.send_message(
-                "That doesn't look like a valid Instagram link. Try again.", ephemeral=True
+                f"That doesn't look like a valid {meta['label']} link. Try again.", ephemeral=True
             )
             return
         channel = interaction.channel
@@ -18926,29 +19001,54 @@ class _IgDropModal(discord.ui.Modal, title="📸 Drop IG Post"):
             await interaction.response.send_message("Can only post in a text channel.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        await _ig_handle_drop(channel, m.group(1))
+        await _social_handle_drop(channel, m.group(1), self.platform)
         await interaction.followup.send("Posted!", ephemeral=True)
+
+
+class _SocialPlatformSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            custom_id="diff_social:platform_select_v1",
+            placeholder="📡 Drop a social media post — select platform…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="Drop Instagram Post",
+                    value="instagram",
+                    emoji="📸",
+                    description="Share an Instagram post, reel, or story link.",
+                ),
+                discord.SelectOption(
+                    label="Drop TikTok Video",
+                    value="tiktok",
+                    emoji="🎵",
+                    description="Share a TikTok video link.",
+                ),
+                discord.SelectOption(
+                    label="Drop YouTube Video",
+                    value="youtube",
+                    emoji="▶️",
+                    description="Share a YouTube video or Shorts link.",
+                ),
+            ],
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not _ig_user_allowed(interaction.user):
+            return await interaction.response.send_message(
+                "You need the Content Team role to post here.", ephemeral=True
+            )
+        await interaction.response.send_modal(_SocialDropModal(self.values[0]))
 
 
 class _IgDropView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="📸 Drop IG Post",
-        style=discord.ButtonStyle.primary,
-        custom_id="diff_ig:drop",
-    )
-    async def drop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("Server only.", ephemeral=True)
-            return
-        if not _ig_user_allowed(interaction.user):
-            await interaction.response.send_message(
-                "You need the Content Team role to post here.", ephemeral=True
-            )
-            return
-        await interaction.response.send_modal(_IgDropModal())
+        self.add_item(_SocialPlatformSelect())
 
 
 async def _ig_panel_post_or_refresh(guild: discord.Guild):
@@ -18981,26 +19081,29 @@ async def _ig_panel_post_or_refresh(guild: discord.Guild):
         pass
 
 
-async def _ig_handle_drop(channel: discord.TextChannel, link: str):
-    """Post a formatted IG drop embed and add reactions."""
+async def _social_handle_drop(channel: discord.TextChannel, link: str, platform: str = "instagram"):
+    """Post a formatted social-media drop embed and add reactions."""
+    meta = _PLATFORM_META.get(platform, _PLATFORM_META["instagram"])
     ping = f"<@&{_IG_PING_ROLE_ID}>"
     embed = discord.Embed(
-        title="DIFF Instagram Drop",
+        title=meta["drop_title"],
         description=(
             "A new DIFF post is live.\n\n"
-            "💬 **Show support:** like, comment, and share\n"
-            f"🔗 **Post Link:** {link}"
+            f"{meta['support_msg']}\n"
+            f"🔗 **Link:** {link}"
         ),
-        color=discord.Color.magenta(),
+        color=meta["color"],
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(
-        name="Community Reactions",
-        value="🔥 = This was hard\n📸 = I was there\n🏁 = Pulling up next meet",
+        name="💬 Community Reactions",
+        value="🔥 This was hard  •  📸 I was there  •  🏁 Pulling up next meet",
         inline=False,
     )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text="Different Meets • DIFF Social Feed")
     sent = await channel.send(
-        content=f"{ping}\n\n🔥 __**NEW DIFF POST**__ 🔥",
+        content=f"{ping}\n\n{meta['drop_header']}",
         embed=embed,
         allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
     )
@@ -19009,6 +19112,11 @@ async def _ig_handle_drop(channel: discord.TextChannel, link: str):
             await sent.add_reaction(emoji)
         except Exception:
             pass
+
+
+async def _ig_handle_drop(channel: discord.TextChannel, link: str):
+    """Legacy wrapper — delegates to the unified social drop handler."""
+    await _social_handle_drop(channel, link, "instagram")
 
 
 @bot.command(name="igpost")
