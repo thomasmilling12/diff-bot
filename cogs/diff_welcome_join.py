@@ -141,42 +141,180 @@ class CheckInDB:
         """, (threshold,)).fetchall()
 
 
+class CheckInHelpSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            custom_id="diff_checkin_help_select_v1",
+            placeholder="📋 Need help? — choose an option...",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="Check My Progress",
+                    value="progress",
+                    emoji="📊",
+                    description="See which check-in steps you've completed.",
+                ),
+                discord.SelectOption(
+                    label="How does check-in work?",
+                    value="howto",
+                    emoji="❓",
+                    description="A detailed walkthrough of the 3 steps.",
+                ),
+                discord.SelectOption(
+                    label="What is DIFF Meets?",
+                    value="about",
+                    emoji="🏁",
+                    description="Learn about Different Meets and what we're about.",
+                ),
+                discord.SelectOption(
+                    label="Why is my access locked?",
+                    value="locked",
+                    emoji="🔒",
+                    description="Understand why you can't see the meet area yet.",
+                ),
+            ],
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This only works inside the server.", ephemeral=True)
+            return
+
+        selected = self.values[0]
+
+        if selected == "progress":
+            cog: DiffWelcomeJoinSystem = interaction.client.cogs.get("DiffWelcomeJoinSystem")
+            if cog is None:
+                await interaction.response.send_message("System temporarily unavailable.", ephemeral=True)
+                return
+            state = cog.get_progress_state(interaction.user)
+            embed = cog.build_progress_embed(interaction.user, state)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        elif selected == "howto":
+            embed = discord.Embed(
+                title="❓ How Does Check-In Work?",
+                description=(
+                    "Completing your check-in gives you full access to the DIFF server. "
+                    "There are **3 steps** — here's what each one means.\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                color=discord.Color.blue(),
+                timestamp=utcnow(),
+            )
+            embed.add_field(
+                name="🔴 Step 1 — Read the Rules",
+                value=(
+                    f"Head to <#{RULES_CHANNEL_ID}> and read through the server rules.\n"
+                    "Once you accept them, you'll receive the **Verified** role automatically."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🔵 Step 2 — Verify Your Identity",
+                value=(
+                    f"Go to <#{JOIN_MEETS_HUB_CHANNEL_ID}> and follow the instructions there.\n"
+                    "This step confirms you're a real person and ready to join."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🟢 Step 3 — Get Cleared to Enter",
+                value=(
+                    "After steps 1 and 2, staff will verify your check-in and grant you full access.\n"
+                    "This usually happens quickly — check back in a few minutes."
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="Different Meets • Check-In Guide")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        elif selected == "about":
+            embed = discord.Embed(
+                title="🏁 About Different Meets (DIFF)",
+                description=(
+                    "**Different Meets** is a structured, community-driven **PS5 GTA car meet crew** "
+                    "built on realism, quality builds, and consistency.\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                color=discord.Color.gold(),
+                timestamp=utcnow(),
+            )
+            embed.add_field(
+                name="🚗 Who We Are",
+                value=(
+                    "DIFF has been running since **August 2020**. We moved to PS5 in 2022 and "
+                    "have grown into one of the most organised car meet communities on PlayStation."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="📅 What We Do",
+                value=(
+                    "• Weekly crew meets with structured hosting\n"
+                    "• Weekly crew color changes voted by the community\n"
+                    "• Monthly crew-wide meetings\n"
+                    "• Crew collaborations and community events"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="✅ What We Expect",
+                value=(
+                    "• 18+ only\n"
+                    "• Clean, realistic cars\n"
+                    "• Active on Discord and in-game\n"
+                    "• Professional and respectful conduct"
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="Different Meets • About")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        elif selected == "locked":
+            embed = discord.Embed(
+                title="🔒 Why Is My Access Locked?",
+                description=(
+                    "New members go through a quick verification process before getting full access. "
+                    "This keeps DIFF a safe, quality community.\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "Your access will unlock **automatically** once you complete all 3 check-in steps:\n\n"
+                    f"🔴 Read rules in <#{RULES_CHANNEL_ID}>\n"
+                    f"🔵 Verify in <#{JOIN_MEETS_HUB_CHANNEL_ID}>\n"
+                    "🟢 Wait for staff clearance\n\n"
+                    "Select **Check My Progress** above to see which steps are done."
+                ),
+                color=discord.Color.red(),
+                timestamp=utcnow(),
+            )
+            embed.set_footer(text="Different Meets • Access Info")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class CheckInView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+
+        # Row 0: help dropdown
+        self.add_item(CheckInHelpSelect())
+
+        # Row 1: quick-link buttons
         self.add_item(discord.ui.Button(
             label="Go to #rules",
             style=discord.ButtonStyle.link,
             url=f"https://discord.com/channels/{GUILD_ID}/{RULES_CHANNEL_ID}",
             emoji="📘",
+            row=1,
         ))
         self.add_item(discord.ui.Button(
             label="Go to #joinmeets",
             style=discord.ButtonStyle.link,
             url=f"https://discord.com/channels/{GUILD_ID}/{JOIN_MEETS_HUB_CHANNEL_ID}",
             emoji="🏁",
+            row=1,
         ))
-
-    @discord.ui.button(
-        label="Check My Progress",
-        style=discord.ButtonStyle.secondary,
-        emoji="📊",
-        custom_id="diff_checkin_progress_button",
-        row=1,
-    )
-    async def check_progress(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message(
-                "This button only works inside the server.", ephemeral=True
-            )
-            return
-        cog: DiffWelcomeJoinSystem = interaction.client.cogs.get("DiffWelcomeJoinSystem")
-        if cog is None:
-            await interaction.response.send_message("System temporarily unavailable.", ephemeral=True)
-            return
-        state = cog.get_progress_state(interaction.user)
-        embed = cog.build_progress_embed(interaction.user, state)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class DiffWelcomeJoinSystem(commands.Cog):
@@ -230,18 +368,34 @@ class DiffWelcomeJoinSystem(commands.Cog):
 
     async def _send_checkin_panel(self, channel: discord.TextChannel, member: discord.Member):
         embed = discord.Embed(
-            title="🏁 DIFF CHECK-IN REQUIRED",
+            title="🏁 DIFF Check-In Required",
             description=(
-                f"Welcome to **Different Meets**, {member.mention}!\n\n"
-                "Before entering the meet area, complete the steps below:\n\n"
-                f"🔴 **Step 1 — Read** <#{RULES_CHANNEL_ID}> to get the Verified role\n"
-                f"🔵 **Step 2 — Verify identity** in <#{JOIN_MEETS_HUB_CHANNEL_ID}>\n"
-                "🟢 **Step 3 — Get cleared to enter** for full access\n\n"
-                "🔒 **Access is locked until verification is complete.**\n"
-                "*No verification = No access to meet area, chats, or events*"
+                f"Welcome to **Different Meets**, {member.mention}! "
+                "Before you can access the meet area, complete the 3 steps below.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=weekly_color(),
             timestamp=utcnow(),
+        )
+        embed.add_field(
+            name="🔴 Step 1 — Read the Rules",
+            value=f"Go to <#{RULES_CHANNEL_ID}> and read through the rules to receive the **Verified** role.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🔵 Step 2 — Verify Your Identity",
+            value=f"Head to <#{JOIN_MEETS_HUB_CHANNEL_ID}> and complete the verification process.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🟢 Step 3 — Get Cleared",
+            value="Once both steps are done, staff will clear you for full server access.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🔒 Access Status",
+            value="**Locked** — complete all steps to unlock the meet area, chats, and events.",
+            inline=False,
         )
         embed.set_footer(text=FOOTER_TEXT)
 
