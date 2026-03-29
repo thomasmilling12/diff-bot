@@ -241,6 +241,12 @@ async def _ensure_panel(
 class AnnouncementButtons(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(
+            label="View Updates",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{GUILD_ID}/{VIEW_UPDATES_CHANNEL_ID}",
+            emoji="📍",
+        ))
 
     @discord.ui.button(
         label="Acknowledge", style=discord.ButtonStyle.success, emoji="✅",
@@ -335,15 +341,6 @@ class AnnouncementButtons(discord.ui.View):
                 except Exception:
                     pass
         await interaction.response.send_message("🔥 Marked as interested.", ephemeral=True)
-
-    @discord.ui.button(
-        label="View Updates",
-        style=discord.ButtonStyle.link,
-        url=f"https://discord.com/channels/{GUILD_ID}/{VIEW_UPDATES_CHANNEL_ID}",
-        emoji="📍",
-    )
-    async def view_updates(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass
 
 
 # =========================================================
