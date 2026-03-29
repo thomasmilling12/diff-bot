@@ -17355,8 +17355,7 @@ class WelcomeHubSelect(discord.ui.Select):
             embed.add_field(
                 name="🔗 Invite Links — Use Responsibly",
                 value=(
-                    "• https://discord.gg/vYcqNEtksS\n"
-                    "• https://discord.gg/NTeqDCg74Y\n"
+                    "• https://discord.gg/vPj8Nk4PdW\n"
                     "• https://discord.gg/diffmeets"
                 ),
                 inline=False,
