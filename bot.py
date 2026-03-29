@@ -5224,40 +5224,57 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
 
 
 def build_meet_info_embed() -> discord.Embed:
-    meet_rules_mention = f"<#{MEET_RULES_CHANNEL_ID}>"
-    join_meets_mention = f"<#{JOIN_MEETS_CHANNEL_ID}>"
-    upcoming_meet_mention = f"<#{UPCOMING_MEET_CHANNEL_ID}>"
+    meet_rules_mention      = f"<#{MEET_RULES_CHANNEL_ID}>"
+    join_meets_mention      = f"<#{JOIN_MEETS_CHANNEL_ID}>"
+    upcoming_meet_mention   = f"<#{UPCOMING_MEET_CHANNEL_ID}>"
     support_tickets_mention = f"<#{SUPPORT_TICKETS_CHANNEL_ID}>"
-    diff_hosts_mention = f"<#{DIFF_HOSTS_CHANNEL_ID}>"
+    diff_hosts_mention      = f"<#{DIFF_HOSTS_CHANNEL_ID}>"
 
     embed = discord.Embed(
-        title="📘 DIFF Meets | Meet Info",
+        title="📘 DIFF Meets — Meet Info",
         description=(
-            "Below is the following info during the meets.\n"
-            "Please make sure you understand the rules before joining.\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "**🎙 Voice Channel**\n"
-            "▢ When joining the voice channel, please look at the channel name to make sure you are in the right session.\n"
-            "▢ **ALL HOSTS HAVE THE PERMS TO MUTE & KICK MEMBERS FROM THEIR VC IF THEY ARE TALKING OVER THE HOST OR BREAKING ANY CAR MEET RULES.**\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "**🛠 Report Another Player**\n"
-            f"▢ If you are having an issue with someone during the meet or discord server, please do not hesitate to create a ticket found at {support_tickets_mention} for assistance by the DIFF Management team.\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "**⚠️ Warnings & Ban Appeals**\n"
-            f"▢ Warnings will be given if you break any rules found at {meet_rules_mention}.\n"
-            "▢ After your second warning you will be banned from the server and meets.\n\n"
-            "▢ Once banned, you will receive a DM from a Crew Manager stating that you have been banned from our server which will include the reason.\n\n"
-            "▢ Ban Appeals: you can appeal your ban after 30 days. Members of the Hosts & Management team vote on your appeal.\n"
-            "▢ We believe this is a very simple, clear, and fair system.\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "**🚗 How to Join the Meets**\n"
-            "▢ All new members must be in our discord server.\n"
-            "▢ Your discord name must match your PSN.\n"
-            f"▢ Once you have completed the steps found at {join_meets_mention}, please note this is to gain access to the server and change your discord name.\n"
-            f"▢ When the meets are happening, you must add the hosts found at {diff_hosts_mention} and check updates in {upcoming_meet_mention}.\n"
-            "▢ They will only add you back if you send a screen recording of your garages."
+            "Everything you need to know before joining a **DIFF Car Meet**.\n"
+            "Read each section carefully — these apply to every session.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=0xC9A227,
+    )
+    embed.add_field(
+        name="🎙️ Voice Channel",
+        value=(
+            "▢ Check the VC name before joining to make sure you're in the correct session.\n"
+            "▢ **Hosts can mute or kick you if you talk over them or break meet rules.**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🛠️ Report a Player",
+        value=(
+            f"▢ Having an issue with someone at the meet or on the server?\n"
+            f"▢ Open a ticket in {support_tickets_mention} — the DIFF Management team will assist you."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="⚠️ Warnings & Bans",
+        value=(
+            f"▢ Warnings are issued for breaking rules listed in {meet_rules_mention}.\n"
+            "▢ **Two warnings = ban** from the server and all meets.\n"
+            "▢ You'll receive a DM from a Crew Manager explaining the reason.\n"
+            "▢ **Ban Appeals:** you may appeal after **30 days**. Hosts & Management vote on every appeal."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🚗 How to Join the Meets",
+        value=(
+            "▢ You must be in our Discord server.\n"
+            "▢ Your Discord name must match your PSN.\n"
+            f"▢ Complete the steps in {join_meets_mention} to get access and update your name.\n"
+            f"▢ When a meet is live, add the hosts listed in {diff_hosts_mention} and track updates in {upcoming_meet_mention}.\n"
+            "▢ Hosts will only add you back if you send a **screen recording of your garages**."
+        ),
+        inline=False,
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_image(url=DIFF_BANNER_URL)
@@ -5265,32 +5282,193 @@ def build_meet_info_embed() -> discord.Embed:
     return embed
 
 
+# ------------------------------------------------------------------
+# MEET INFO — Feedback dropdown modals
+# ------------------------------------------------------------------
+class _SuggestionModal(discord.ui.Modal, title="Suggest an Improvement"):
+    category = discord.ui.TextInput(
+        label="Category",
+        placeholder="Meet Format / Rules / Discord / Hosts / Other",
+        max_length=60, required=True,
+    )
+    suggestion = discord.ui.TextInput(
+        label="Your Suggestion",
+        placeholder="Describe your idea or improvement clearly…",
+        style=discord.TextStyle.paragraph, max_length=1000, required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from datetime import datetime, timezone
+        embed = discord.Embed(
+            title="💡 Improvement Suggestion",
+            color=0xFEE75C,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Category",   value=str(self.category),   inline=True)
+        embed.add_field(name="Submitted By", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
+        embed.add_field(name="Suggestion", value=str(self.suggestion), inline=False)
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.set_footer(text="DIFF Meets • Suggestion System")
+        log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(log_ch, discord.TextChannel):
+            try:
+                await log_ch.send(embed=embed)
+            except Exception:
+                pass
+        await interaction.response.send_message(
+            "💡 Thanks for the suggestion — it's been sent to the DIFF team.", ephemeral=True
+        )
+
+
+class _PlayerReportModal(discord.ui.Modal, title="Report a Player"):
+    reported_user = discord.ui.TextInput(
+        label="Player Name / PSN / Discord",
+        placeholder="Username, PSN, or @mention",
+        max_length=100, required=True,
+    )
+    incident = discord.ui.TextInput(
+        label="What happened?",
+        placeholder="Describe the incident clearly — when, where, and what they did…",
+        style=discord.TextStyle.paragraph, max_length=1000, required=True,
+    )
+    evidence = discord.ui.TextInput(
+        label="Evidence (optional)",
+        placeholder="Any screenshots, clips, or video links",
+        max_length=300, required=False,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from datetime import datetime, timezone
+        embed = discord.Embed(
+            title="🚨 Player Report",
+            color=0xED4245,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Reported Player", value=str(self.reported_user),   inline=True)
+        embed.add_field(name="Reported By",     value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
+        embed.add_field(name="Incident",        value=str(self.incident),         inline=False)
+        if str(self.evidence).strip():
+            embed.add_field(name="Evidence",    value=str(self.evidence),         inline=False)
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.set_footer(text="DIFF Meets • Player Report")
+        log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(log_ch, discord.TextChannel):
+            try:
+                await log_ch.send(embed=embed)
+            except Exception:
+                pass
+        await interaction.response.send_message(
+            "🚨 Your report has been sent to the DIFF Management team. Thank you.", ephemeral=True
+        )
+
+
+class _MeetInfoFeedbackSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            custom_id="diff_meetinfo_feedback_select_v1",
+            placeholder="📝 Feedback, suggestions, or reports…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="Submit Meet Feedback",
+                    value="feedback",
+                    emoji="📝",
+                    description="Rate a meet and leave detailed feedback for the host.",
+                ),
+                discord.SelectOption(
+                    label="Suggest an Improvement",
+                    value="suggest",
+                    emoji="💡",
+                    description="Suggest a change to how DIFF meets or the server works.",
+                ),
+                discord.SelectOption(
+                    label="Report a Player",
+                    value="report",
+                    emoji="🚨",
+                    description="Report someone for breaking rules at a meet or on Discord.",
+                ),
+                discord.SelectOption(
+                    label="Common Questions (FAQ)",
+                    value="faq",
+                    emoji="❓",
+                    description="Quick answers to the most common meet questions.",
+                ),
+            ],
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected = self.values[0]
+
+        if selected == "feedback":
+            from cogs.diff_feedback_system import FeedbackModal
+            cog = interaction.client.cogs.get("FeedbackSystem")
+            if cog is None:
+                return await interaction.response.send_message(
+                    "Feedback system is temporarily unavailable.", ephemeral=True
+                )
+            await interaction.response.send_modal(FeedbackModal(cog))
+
+        elif selected == "suggest":
+            await interaction.response.send_modal(_SuggestionModal())
+
+        elif selected == "report":
+            await interaction.response.send_modal(_PlayerReportModal())
+
+        elif selected == "faq":
+            from datetime import datetime, timezone
+            embed = discord.Embed(
+                title="❓ DIFF Meets — Common Questions",
+                description="Quick answers to the most frequently asked questions.",
+                color=0xC9A227,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(
+                name="How do I join a meet?",
+                value=f"Complete the steps in <#{JOIN_MEETS_CHANNEL_ID}>, make sure your Discord name matches your PSN, then add the hosts listed in <#{DIFF_HOSTS_CHANNEL_ID}>.",
+                inline=False,
+            )
+            embed.add_field(
+                name="What garages do I need?",
+                value="You must send a screen recording of your garages to the host. They will only add you once this is received.",
+                inline=False,
+            )
+            embed.add_field(
+                name="When is the next meet?",
+                value=f"Check <#{UPCOMING_MEET_CHANNEL_ID}> for all scheduled meets and updates.",
+                inline=False,
+            )
+            embed.add_field(
+                name="I got a warning — what happens next?",
+                value=f"A second warning results in a ban from the server and all meets. Check the rules in <#{MEET_RULES_CHANNEL_ID}> to avoid further warnings.",
+                inline=False,
+            )
+            embed.add_field(
+                name="Can I appeal a ban?",
+                value="Yes — after 30 days. Hosts and Management vote on every appeal. Open a ticket to start the process.",
+                inline=False,
+            )
+            embed.add_field(
+                name="What cars are allowed?",
+                value=f"No weaponized, armored, or modded cars. Check the full rules in <#{MEET_RULES_CHANNEL_ID}>.",
+                inline=False,
+            )
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+            embed.set_footer(text="DIFF Meets • FAQ")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class MeetInfoView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         guild_id = GUILD_ID
-        self.add_item(discord.ui.Button(label="General Rules", style=discord.ButtonStyle.link, emoji="📜", url=build_channel_link(guild_id, MEET_RULES_CHANNEL_ID)))
-        self.add_item(discord.ui.Button(label="Join Meets", style=discord.ButtonStyle.link, emoji="📥", url=build_channel_link(guild_id, JOIN_MEETS_CHANNEL_ID)))
-        self.add_item(discord.ui.Button(label="Upcoming Meet", style=discord.ButtonStyle.link, emoji="📅", url=build_channel_link(guild_id, UPCOMING_MEET_CHANNEL_ID)))
-        self.add_item(discord.ui.Button(label="Support Tickets", style=discord.ButtonStyle.link, emoji="🎟️", url=build_channel_link(guild_id, SUPPORT_TICKETS_CHANNEL_ID)))
-        self.add_item(discord.ui.Button(label="Hosts", style=discord.ButtonStyle.link, emoji="👥", url=build_channel_link(guild_id, DIFF_HOSTS_CHANNEL_ID)))
-
-    @discord.ui.button(
-        label="Submit Feedback",
-        style=discord.ButtonStyle.primary,
-        custom_id="diff_meetinfo_feedback_submit",
-        emoji="📝",
-        row=1,
-    )
-    async def submit_feedback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from cogs.diff_feedback_system import FeedbackModal
-        cog = interaction.client.cogs.get("FeedbackSystem")
-        if cog is None:
-            await interaction.response.send_message(
-                "Feedback system is temporarily unavailable.", ephemeral=True
-            )
-            return
-        await interaction.response.send_modal(FeedbackModal(cog))
+        self.add_item(discord.ui.Button(label="General Rules",   style=discord.ButtonStyle.link, emoji="📜", url=build_channel_link(guild_id, MEET_RULES_CHANNEL_ID),      row=0))
+        self.add_item(discord.ui.Button(label="Join Meets",      style=discord.ButtonStyle.link, emoji="📥", url=build_channel_link(guild_id, JOIN_MEETS_CHANNEL_ID),       row=0))
+        self.add_item(discord.ui.Button(label="Upcoming Meet",   style=discord.ButtonStyle.link, emoji="📅", url=build_channel_link(guild_id, UPCOMING_MEET_CHANNEL_ID),    row=0))
+        self.add_item(discord.ui.Button(label="Support Tickets", style=discord.ButtonStyle.link, emoji="🎟️", url=build_channel_link(guild_id, SUPPORT_TICKETS_CHANNEL_ID), row=0))
+        self.add_item(discord.ui.Button(label="Hosts",           style=discord.ButtonStyle.link, emoji="👥", url=build_channel_link(guild_id, DIFF_HOSTS_CHANNEL_ID),       row=0))
+        self.add_item(_MeetInfoFeedbackSelect())
 
 
 def build_meet_info_view(guild_id: int = GUILD_ID) -> MeetInfoView:
