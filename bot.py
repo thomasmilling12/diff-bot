@@ -13695,26 +13695,242 @@ async def _supp_find_existing_ticket(
     return None
 
 
-async def _supp_export_transcript(channel: discord.TextChannel) -> discord.File:
-    lines: list[str] = []
-    async for msg in channel.history(limit=None, oldest_first=True):
-        created = msg.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
-        header = f"[{created}] {msg.author} ({msg.author.id})"
-        content = msg.content or ""
-        attachments = "\n" + "\n".join(f"[Attachment] {a.url}" for a in msg.attachments) if msg.attachments else ""
-        embed_lines: list[str] = []
+def _esc(text: str) -> str:
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def _md(text: str) -> str:
+    import re
+    t = _esc(text)
+    t = re.sub(r"```(?:\w+)?\n?([\s\S]*?)```", lambda m: f"<pre><code>{m.group(1)}</code></pre>", t)
+    t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+    t = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong><em>\1</em></strong>", t)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+    t = re.sub(r"\*(.+?)\*", r"<em>\1</em>", t)
+    t = re.sub(r"__(.+?)__", r"<u>\1</u>", t)
+    t = re.sub(r"~~(.+?)~~", r"<s>\1</s>", t)
+    t = re.sub(r"&lt;@!?(\d+)&gt;", r'<span class="mention">@\1</span>', t)
+    t = re.sub(r"&lt;#(\d+)&gt;", r'<span class="mention">#\1</span>', t)
+    t = re.sub(r"&lt;@&amp;(\d+)&gt;", r'<span class="mention">@role</span>', t)
+    t = t.replace("\n", "<br>")
+    return t
+
+
+def _size_label(b: int) -> str:
+    if b >= 1_048_576:
+        return f"{b/1_048_576:.1f} MB"
+    return f"{b/1024:.0f} KB"
+
+
+def _color_css(c) -> str:
+    if c is None or c == discord.Colour.default():
+        return "#5865f2"
+    return f"#{c.value:06x}"
+
+
+def _render_embed(emb: discord.Embed) -> str:
+    color = _color_css(emb.colour)
+    parts = [f'<div class="embed" style="border-color:{color}">']
+    if emb.author and emb.author.name:
+        icon = f'<img src="{_esc(emb.author.icon_url)}" onerror="this.style.display=\'none\'">' if emb.author.icon_url else ""
+        parts.append(f'<div class="embed-author">{icon}{_esc(emb.author.name)}</div>')
+    if emb.thumbnail and emb.thumbnail.url:
+        parts.append(f'<div class="embed-thumbnail"><img src="{_esc(emb.thumbnail.url)}" onerror="this.style.display=\'none\'"></div>')
+    if emb.title:
+        url_open = f'<a href="{_esc(emb.url)}" target="_blank" style="text-decoration:none">' if emb.url else ""
+        url_close = "</a>" if emb.url else ""
+        parts.append(f'<div class="embed-title">{url_open}{_esc(emb.title)}{url_close}</div>')
+    if emb.description:
+        parts.append(f'<div class="embed-description">{_md(emb.description)}</div>')
+    if emb.fields:
+        parts.append('<div class="embed-fields">')
+        for field in emb.fields:
+            cls = "embed-field inline" if field.inline else "embed-field"
+            parts.append(f'<div class="{cls}"><div class="embed-field-name">{_esc(field.name)}</div>'
+                         f'<div class="embed-field-value">{_md(field.value)}</div></div>')
+        parts.append("</div>")
+    if emb.image and emb.image.url:
+        parts.append(f'<img src="{_esc(emb.image.url)}" style="max-width:400px;max-height:300px;border-radius:4px;margin-top:8px;display:block" onerror="this.style.display=\'none\'">')
+    if emb.footer and emb.footer.text:
+        ficon = f'<img src="{_esc(emb.footer.icon_url)}" style="width:16px;height:16px;border-radius:50%" onerror="this.style.display=\'none\'">' if emb.footer.icon_url else ""
+        parts.append(f'<div class="embed-footer">{ficon}{_esc(emb.footer.text)}</div>')
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _avatar_html(author) -> str:
+    url = getattr(author, "display_avatar", None)
+    if url:
+        return f'<img src="{_esc(url.url)}" onerror="this.src=\'\';" alt="">'
+    letter = (author.display_name or str(author) or "?")[0].upper()
+    return f'<div class="avatar-fallback">{letter}</div>'
+
+
+def _author_class(author) -> str:
+    if getattr(author, "bot", False):
+        return "bot"
+    if isinstance(author, discord.Member):
+        staff_ids = {850391095845584937, 850391378559238235, 990011447193006101, 1055823929358430248}
+        if any(r.id in staff_ids for r in author.roles):
+            return "staff"
+    return "normal"
+
+
+_TRANSCRIPT_CSS = """
+body{background:#313338;color:#dcddde;font-family:"gg sans","Noto Sans",Arial,sans-serif;margin:0;padding:0}
+.hdr{background:#1e1f22;padding:14px 20px;border-bottom:1px solid #404249;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10}
+.hdr-icon{font-size:20px;color:#949ba4}.hdr-title{font-size:16px;font-weight:700;color:#f2f3f5}
+.hdr-meta{font-size:12px;color:#949ba4;margin-top:2px}
+.msgs{padding:16px 0}
+.divider{display:flex;align-items:center;padding:16px 16px 4px;gap:10px}
+.divider-line{flex:1;height:1px;background:#3f4147}
+.divider-text{font-size:12px;font-weight:600;color:#949ba4;white-space:nowrap}
+.msg{display:flex;padding:2px 16px 2px 72px;position:relative;min-height:2.75rem}
+.msg:hover{background:rgba(4,4,5,.07)}
+.msg.first{margin-top:16px;padding-top:4px}
+.av{position:absolute;left:16px;top:4px;width:40px;height:40px}
+.av img,.avatar-fallback{width:40px;height:40px;border-radius:50%}
+.avatar-fallback{background:#5865f2;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px}
+.mh{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
+.au{font-size:15px;font-weight:600}
+.au.bot{color:#5865f2}.au.staff{color:#faa61a}.au.normal{color:#f2f3f5}
+.badge{background:#5865f2;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;margin-left:4px;vertical-align:middle}
+.ts{font-size:11px;color:#949ba4}
+.ct{font-size:15px;line-height:1.375rem;color:#dcddde;word-break:break-word}
+code{background:#2b2d31;border-radius:3px;padding:.15em .35em;font-size:87%;font-family:Consolas,monospace;color:#c9d1d9}
+pre{background:#2b2d31;border-radius:4px;padding:10px;overflow-x:auto;margin:4px 0}
+pre code{background:none;padding:0;font-size:13px}
+strong{color:#f2f3f5}
+.att{display:inline-flex;align-items:center;gap:10px;background:#2b2d31;border:1px solid #1e1f22;border-radius:8px;padding:10px 14px;margin-top:6px;max-width:480px}
+.att-name{color:#00b0f4;font-size:14px;text-decoration:none;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att-name:hover{text-decoration:underline}.att-size{font-size:12px;color:#949ba4}
+.att-img{display:block;max-width:400px;max-height:300px;border-radius:8px;margin-top:6px;cursor:zoom-in}
+.embed{border-left:4px solid;border-radius:0 4px 4px 0;background:#2b2d31;padding:12px 16px;margin-top:6px;max-width:520px;overflow:hidden}
+.embed-author{font-size:13px;font-weight:600;color:#f2f3f5;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.embed-author img{width:24px;height:24px;border-radius:50%}
+.embed-title{font-size:15px;font-weight:700;color:#00b0f4;margin-bottom:4px}
+.embed-title a{color:inherit}
+.embed-description{font-size:14px;color:#dcddde;white-space:pre-line;margin-bottom:8px}
+.embed-fields{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}
+.embed-field{min-width:0}.embed-field.inline{}
+.embed-field-name{font-size:13px;font-weight:700;color:#f2f3f5;margin-bottom:2px}
+.embed-field-value{font-size:13px;color:#dcddde}
+.embed-footer{font-size:12px;color:#949ba4;margin-top:8px;display:flex;align-items:center;gap:6px;clear:both}
+.embed-thumbnail{float:right;margin-left:12px;margin-bottom:4px}
+.embed-thumbnail img{max-width:80px;max-height:80px;border-radius:4px}
+.mention{background:rgba(88,101,242,.15);color:#dee0fc;border-radius:3px;padding:0 2px;cursor:pointer}
+"""
+
+
+async def _build_html_transcript(
+    channel: discord.TextChannel,
+    limit: int | None = 500,
+) -> discord.File:
+    msgs: list[discord.Message] = []
+    async for m in channel.history(limit=limit, oldest_first=True):
+        msgs.append(m)
+
+    server_name = _esc(channel.guild.name) if channel.guild else "Unknown Server"
+    generated = datetime.utcnow().strftime("%d %b %Y at %H:%M UTC")
+
+    rows: list[str] = []
+    last_date = None
+    last_author_id: int | None = None
+    last_ts = None
+
+    for msg in msgs:
+        ts = msg.created_at.replace(tzinfo=timezone.utc)
+        date_label = ts.strftime("%B %d, %Y")
+        if date_label != last_date:
+            rows.append(
+                f'<div class="divider"><div class="divider-line"></div>'
+                f'<div class="divider-text">{date_label}</div>'
+                f'<div class="divider-line"></div></div>'
+            )
+            last_date = date_label
+            last_author_id = None
+
+        same_author = (
+            last_author_id == msg.author.id
+            and last_ts is not None
+            and (ts - last_ts).total_seconds() < 420
+        )
+        is_first = not same_author
+        last_author_id = msg.author.id
+        last_ts = ts
+
+        time_str = ts.strftime("%H:%M")
+        full_time = ts.strftime("%d %b %Y %H:%M UTC")
+        au_class = _author_class(msg.author)
+        is_bot = getattr(msg.author, "bot", False)
+        badge = '<span class="badge">APP</span>' if is_bot else ""
+
+        msg_html = [f'<div class="msg {"first" if is_first else ""}">']
+
+        if is_first:
+            msg_html.append(f'<div class="av">{_avatar_html(msg.author)}</div>')
+            author_name = _esc(getattr(msg.author, "display_name", str(msg.author)))
+            msg_html.append(
+                f'<div><div class="mh">'
+                f'<span class="au {au_class}">{author_name}{badge}</span>'
+                f'<span class="ts" title="{full_time}">{full_time}</span>'
+                f'</div>'
+            )
+        else:
+            msg_html.append(
+                f'<div><span class="ts" title="{full_time}" style="position:absolute;left:20px;top:7px;font-size:10px">{time_str}</span>'
+            )
+
+        # Content
+        if msg.content:
+            msg_html.append(f'<div class="ct">{_md(msg.content)}</div>')
+
+        # Attachments
+        for att in msg.attachments:
+            is_img = att.content_type and att.content_type.startswith("image/")
+            if is_img:
+                msg_html.append(
+                    f'<img class="att-img" src="{_esc(att.url)}" alt="{_esc(att.filename)}" '
+                    f'onerror="this.style.display=\'none\'">'
+                )
+            else:
+                icon = "🎬" if att.content_type and att.content_type.startswith("video/") else "📄"
+                size = _size_label(att.size) if att.size else ""
+                msg_html.append(
+                    f'<div class="att"><span style="font-size:28px">{icon}</span>'
+                    f'<div><a class="att-name" href="{_esc(att.url)}" target="_blank">{_esc(att.filename)}</a>'
+                    f'<div class="att-size">{size}</div></div></div>'
+                )
+
+        # Embeds
         for emb in msg.embeds:
-            if emb.title:
-                embed_lines.append(f"[Embed Title] {emb.title}")
-            if emb.description:
-                embed_lines.append(f"[Embed Description] {emb.description}")
-            for field in emb.fields:
-                embed_lines.append(f"[Embed Field] {field.name}: {field.value}")
-        embeds = ("\n" + "\n".join(embed_lines)) if embed_lines else ""
-        lines.append(f"{header}\n{content}{attachments}{embeds}\n{'-'*60}\n")
-    text = "".join(lines) if lines else "No messages found."
-    buffer = io.BytesIO(text.encode("utf-8"))
-    return discord.File(buffer, filename=f"{channel.name[:80]}-transcript.txt")
+            msg_html.append(_render_embed(emb))
+
+        msg_html.append("</div></div>")
+        rows.append("".join(msg_html))
+
+    no_msgs = "<p style=\"padding:24px;color:#949ba4\">No messages found.</p>"
+    msgs_body = "".join(rows) if rows else no_msgs
+    ch_name = _esc(channel.name)
+    html = (
+        f'<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>#{ch_name} \u2014 Transcript</title>'
+        f'<style>{_TRANSCRIPT_CSS}</style></head><body>'
+        f'<div class="hdr"><span class="hdr-icon">\U0001f512</span><div>'
+        f'<div class="hdr-title">#{ch_name}</div>'
+        f'<div class="hdr-meta">{server_name} &nbsp;\u2022&nbsp; {len(msgs)} messages &nbsp;\u2022&nbsp; Generated {generated}</div>'
+        f'</div></div>'
+        f'<div class="msgs">{msgs_body}</div>'
+        f'</body></html>'
+    )
+
+    buf = io.BytesIO(html.encode("utf-8"))
+    return discord.File(buf, filename=f"{channel.name[:80]}-transcript.html")
+
+
+async def _supp_export_transcript(channel: discord.TextChannel) -> discord.File:
+    return await _build_html_transcript(channel, limit=None)
 
 
 class SupportCloseButton(discord.ui.View):
@@ -15376,22 +15592,7 @@ def _join_build_ticket_embed(
 
 
 async def _join_build_transcript(channel: discord.TextChannel) -> discord.File:
-    lines: list[str] = []
-    async for msg in channel.history(limit=200, oldest_first=True):
-        ts = msg.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
-        content = (msg.content or "").replace("\n", " ").strip()
-        attachments = (
-            " [Attachments: " + ", ".join(a.url for a in msg.attachments) + "]"
-            if msg.attachments else ""
-        )
-        lines.append(f"[{ts}] {msg.author} ({msg.author.id}): {content}{attachments}")
-    header = (
-        f"Transcript for #{channel.name}\n"
-        f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-        f"{'=' * 52}\n\n"
-    )
-    buf = io.BytesIO((header + "\n".join(lines)).encode("utf-8"))
-    return discord.File(buf, filename=f"{channel.name[:80]}-transcript.txt")
+    return await _build_html_transcript(channel, limit=300)
 
 
 class JoinPlatformSelect(discord.ui.Select):
