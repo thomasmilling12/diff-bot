@@ -338,25 +338,20 @@ class PartnerExpansion(commands.Cog):
                 needs_full_sync = True
 
             if needs_full_sync:
-                all_old_ids = ([header_id] if header_id else []) + content_ids
-                for mid in all_old_ids:
-                    if not mid:
-                        continue
-                    try:
-                        old = await channel.fetch_message(mid)
-                        await old.delete()
-                    except Exception:
-                        pass
-
+                # Only delete messages that are partner directory panels (by footer tag)
+                _PARTNER_FOOTERS = {
+                    "Different Meets • Official Partner Network",
+                    "Different Meets • Partner Directory",
+                }
                 try:
-                    async for msg in channel.history(limit=100):
-                        if msg.author == self.bot.user:
-                            is_request_panel = any(
-                                getattr(c, "custom_id", "") == "diff_partner_request_open"
-                                for row in msg.components for c in row.children
-                            )
-                            if not is_request_panel:
-                                await msg.delete()
+                    async for msg in channel.history(limit=200):
+                        if msg.author == self.bot.user and msg.embeds:
+                            footer = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
+                            if footer in _PARTNER_FOOTERS:
+                                try:
+                                    await msg.delete()
+                                except Exception:
+                                    pass
                 except Exception:
                     pass
 

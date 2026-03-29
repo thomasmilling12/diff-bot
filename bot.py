@@ -8186,6 +8186,19 @@ async def _om_panel_post_or_refresh(guild: discord.Guild, force_repost: bool = F
         except Exception:
             return
 
+    # Saved ID missing or deleted — scan history for existing panel before posting new
+    try:
+        async for hist_msg in channel.history(limit=150):
+            if hist_msg.author.id == guild.me.id and hist_msg.embeds:
+                footer = hist_msg.embeds[0].footer.text if hist_msg.embeds[0].footer else ""
+                if footer == "DIFF Official Meet System":
+                    data[str(guild.id)] = hist_msg.id
+                    _om_panel_save(data)
+                    await hist_msg.edit(embed=_om_panel_build_embed(), view=_OfficialMeetPanelView())
+                    return
+    except Exception:
+        pass
+
     msg = await channel.send(embed=_om_panel_build_embed(), view=_OfficialMeetPanelView())
     data[str(guild.id)] = msg.id
     _om_panel_save(data)
