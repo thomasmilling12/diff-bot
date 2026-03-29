@@ -7645,14 +7645,37 @@ async def _rc_ensure_panel(guild: discord.Guild):
 
 
 async def _rc_log_rsvp(guild, member, meet_number, previous, new_status):
+    prev_clean = previous if previous and previous != "none" else None
+    if prev_clean == new_status:
+        return
     ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if not isinstance(ch, discord.TextChannel):
         return
-    embed = discord.Embed(title="📋 Roll Call Update", color=discord.Color.orange(), timestamp=datetime.utcnow())
-    embed.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=False)
-    embed.add_field(name="Meet", value=f"Meet {meet_number}", inline=True)
-    embed.add_field(name="Previous", value=previous or "none", inline=True)
-    embed.add_field(name="New", value=new_status, inline=True)
+    _colors = {"yes": discord.Color.green(), "maybe": discord.Color.orange(), "no": discord.Color.red()}
+    _icons  = {"yes": "✅ Yes", "maybe": "❓ Maybe", "no": "❌ No"}
+    _prev_icons = {"yes": "✅ Yes", "maybe": "❓ Maybe", "no": "❌ No"}
+    new_label  = _icons.get(new_status, new_status.capitalize())
+    prev_label = _prev_icons.get(prev_clean, "none") if prev_clean else "⬜ None"
+    is_new = prev_clean is None
+    embed = discord.Embed(
+        color=_colors.get(new_status, discord.Color.orange()),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_author(
+        name=f"{member.display_name}  •  Roll Call Update",
+        icon_url=member.display_avatar.url,
+    )
+    if is_new:
+        embed.description = f"Initial response set for **Meet {meet_number}**"
+    else:
+        embed.description = f"Response changed for **Meet {meet_number}**"
+    embed.add_field(name="Member", value=f"{member.mention}\n`{member}`", inline=True)
+    embed.add_field(name="Meet",   value=f"**Meet {meet_number}**",        inline=True)
+    embed.add_field(name="\u200b", value="\u200b",                          inline=True)
+    embed.add_field(name="Before", value=prev_label,  inline=True)
+    embed.add_field(name="After",  value=new_label,   inline=True)
+    embed.add_field(name="\u200b", value="\u200b",     inline=True)
+    embed.set_footer(text="Roll Call Log  •  Different Meets")
     try:
         await ch.send(embed=embed)
     except Exception:
@@ -7663,14 +7686,24 @@ async def _rc_log_attendance(guild, meet_number, attended, no_shows, action_by):
     ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if not isinstance(ch, discord.TextChannel):
         return
-    embed = discord.Embed(title="📊 Meet Attendance Finalized", color=discord.Color.green(), timestamp=datetime.utcnow())
-    embed.add_field(name="Meet", value=f"Meet {meet_number}", inline=True)
-    embed.add_field(name="Finalized By", value=action_by.mention, inline=True)
-    embed.add_field(name="Present", value=str(len(attended)), inline=True)
-    attended_text = " ".join(f"<@{uid}>" for uid in attended[:30]) or "None recorded"
-    no_show_text = " ".join(f"<@{uid}>" for uid in no_shows[:30]) or "None"
-    embed.add_field(name="Present Users", value=attended_text[:1024], inline=False)
-    embed.add_field(name="No-Shows", value=no_show_text[:1024], inline=False)
+    embed = discord.Embed(
+        title=f"📊 Meet {meet_number} — Attendance Finalized",
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_author(
+        name=f"Finalized by {action_by.display_name}",
+        icon_url=action_by.display_avatar.url,
+    )
+    embed.add_field(name="✅ Present",   value=f"**{len(attended)}**",  inline=True)
+    embed.add_field(name="⚠️ No-Shows", value=f"**{len(no_shows)}**",  inline=True)
+    embed.add_field(name="\u200b",       value="\u200b",                 inline=True)
+    attended_text = " ".join(f"<@{uid}>" for uid in attended[:30]) or "*None recorded*"
+    no_show_text  = " ".join(f"<@{uid}>" for uid in no_shows[:30]) or "*None*"
+    embed.add_field(name="Present Members", value=attended_text[:1024], inline=False)
+    if no_shows:
+        embed.add_field(name="No-Shows", value=no_show_text[:1024], inline=False)
+    embed.set_footer(text="Roll Call Log  •  Different Meets")
     try:
         await ch.send(embed=embed)
     except Exception:
