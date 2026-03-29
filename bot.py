@@ -6135,9 +6135,9 @@ async def diffpanel(interaction: discord.Interaction):
     panel_ch = interaction.guild.get_channel(DIFF_PANEL_CHANNEL_ID)
     if not isinstance(panel_ch, discord.TextChannel):
         return await interaction.response.send_message("Panel channel not found.", ephemeral=True)
+    await interaction.response.send_message(f"Panel posted in {panel_ch.mention} ✅", ephemeral=True)
     message = await panel_ch.send(embed=_build_diff_panel_embed(), view=DiffPanel())
     _save_diff_json(DIFF_PANEL_STATE_FILE, {"channel_id": panel_ch.id, "message_id": message.id})
-    await interaction.response.send_message(f"Panel posted in {panel_ch.mention} ✅", ephemeral=True)
 
 
 @bot.tree.command(name="refreshdiffpanel", description="Refresh the existing DIFF Crew Control Panel (staff only)")
@@ -6174,9 +6174,9 @@ async def diffhub(interaction: discord.Interaction):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
     if not isinstance(interaction.channel, discord.TextChannel):
         return await interaction.response.send_message("Must be used in a text channel.", ephemeral=True)
+    await interaction.response.send_message("Control Hub posted ✅", ephemeral=True)
     embed = _build_unified_hub_embed()
     await interaction.channel.send(embed=embed, view=UnifiedCrewHubView())
-    await interaction.response.send_message("Control Hub posted ✅", ephemeral=True)
 
 
 # =========================
