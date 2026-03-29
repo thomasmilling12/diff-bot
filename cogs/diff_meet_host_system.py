@@ -179,13 +179,7 @@ class DiffMeetHostSystem(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print("[DiffMeetHostSystem] Cog ready.")
-        guild = self.bot.get_guild(GUILD_ID)
-        if guild is None:
-            return
-        channel = guild.get_channel(HOST_PANEL_CHANNEL_ID)
-        if isinstance(channel, discord.TextChannel):
-            await self._post_or_refresh(channel)
+        print("[DiffMeetHostSystem] Cog ready. (panel managed by UnifiedHostHubView in bot.py)")
 
     def _build_panel_embed(self) -> discord.Embed:
         embed = discord.Embed(

@@ -3540,16 +3540,17 @@ async def _hosthub_post_or_refresh() -> None:
 @bot.command(name="hosthub")
 async def _hosthub_cmd(ctx: commands.Context):
     is_staff = any(
-        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
         for r in ctx.author.roles
     )
     if not is_staff:
-        return
+        return await ctx.reply("Manager+ only.", mention_author=False)
     try:
         await ctx.message.delete()
     except Exception:
         pass
-    await _hosthub_post_or_refresh()
+    await _unified_hosthub_post_or_refresh()
+    await ctx.reply("✅ Unified Host Hub posted/refreshed.", mention_author=False, delete_after=8)
 
 
 @bot.command(name="blacklistsearch")
@@ -7134,6 +7135,450 @@ async def cmd_hostperformance(ctx: commands.Context):
     await ctx.reply("Host Performance Hub posted/updated.", mention_author=False)
 
 
+# =============================================================
+# DIFF UNIFIED HOST HUB — single combined panel for #host-hub
+# =============================================================
+
+_UNIFIED_HOSTHUB_TAG = "Different Meets • Host Hub"
+_UNIFIED_HOSTHUB_OLD_FOOTER_TAGS: set[str] = {
+    "DIFF Host System • Stay prepared • Lead properly • Keep meets clean",
+    "DIFF Host Flow • Stay prepared • Lead properly",
+    "DIFF Host Performance • Built for structure • Powered by consistency",
+    "DIFF_HOST_MEET_SYSTEM_V1",
+}
+_UNIFIED_HOSTHUB_OLD_TITLES: set[str] = {
+    "📍 DIFF Host Control Hub",
+    "📌 DIFF Host Flow System",
+    "🧠 DIFF Host Performance Hub",
+    "DIFF Host Meet Control",
+}
+
+
+def _unified_hosthub_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🏁 DIFF Host Hub",
+        description="*Your all-in-one command centre for DIFF car meets.*",
+        color=0xC9A227,
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.add_field(
+        name="📚 Reference & Guides",
+        value="Host rules, role breakdowns, reminders, and prep checklists.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🚦 Live Meet Control",
+        value="Start/end the meet, post location updates, voice scripts, and request feedback.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🚫 Blacklist Tools",
+        value="Check, submit, search, view, and appeal blacklist entries.",
+        inline=False,
+    )
+    embed.add_field(
+        name="📊 Host Performance",
+        value="Start tracked sessions, view your stats, and review the warning system.",
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Host Hub  |  Use the dropdowns below")
+    embed.timestamp = datetime.utcnow()
+    return embed
+
+
+class _HostHubReferenceSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="📚  Reference & Guides",
+            options=[
+                discord.SelectOption(label="Host Guide", value="host_guide", emoji="📘",
+                                     description="Full host rules and expectations"),
+                discord.SelectOption(label="Role Assignments", value="role_assignments", emoji="🎯",
+                                     description="Crew job breakdown for meets"),
+                discord.SelectOption(label="Meet Reminders", value="meet_reminders", emoji="⚠️",
+                                     description="Important reminders before hosting"),
+                discord.SelectOption(label="Host Checklist", value="host_checklist", emoji="📝",
+                                     description="Quick pre-meet prep checklist"),
+            ],
+            custom_id="diff_unified_hosthub:reference",
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        val = self.values[0]
+        if val == "host_guide":
+            embed = _hosthub_guide_embed()
+        elif val == "role_assignments":
+            embed = _hosthub_roles_embed()
+        elif val == "meet_reminders":
+            embed = _hosthub_reminders_embed()
+        else:
+            embed = _hosthub_checklist_embed()
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class _HostHubLiveMeetSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="🚦  Live Meet Control",
+            options=[
+                discord.SelectOption(label="Start Meet", value="start_meet", emoji="🏁",
+                                     description="Post official meet-start notice in meet channel"),
+                discord.SelectOption(label="Post Location Update", value="location_update", emoji="📍",
+                                     description="Send the next spot or movement update"),
+                discord.SelectOption(label="End Meet", value="end_meet", emoji="🛑",
+                                     description="Close out the meet officially"),
+                discord.SelectOption(label="Post Start Speech", value="start_speech", emoji="🔱",
+                                     description="Send the DIFF host welcome speech"),
+                discord.SelectOption(label="Post End Speech", value="end_speech", emoji="📌",
+                                     description="Send the ending speech and log activity"),
+                discord.SelectOption(label="Voice Script", value="voice_script", emoji="🎤",
+                                     description="View host voice scripts for the meet"),
+                discord.SelectOption(label="Request Feedback", value="request_feedback", emoji="📝",
+                                     description="Post a feedback request for this meet"),
+            ],
+            custom_id="diff_unified_hosthub:live_meet",
+            row=1,
+        )
+
+    def _has_access(self, user: discord.Member) -> bool:
+        if user.guild_permissions.administrator or user.guild_permissions.manage_guild:
+            return True
+        return any(r.id in _HOSTFLOW_ALLOWED_ROLES for r in user.roles)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not self._has_access(interaction.user):
+            return await interaction.response.send_message(
+                "Only approved hosts or staff can use this.", ephemeral=True
+            )
+        val = self.values[0]
+
+        if val == "voice_script":
+            await interaction.response.send_message(
+                _hostflow_voice_script(interaction.user.mention), ephemeral=True
+            )
+            return
+
+        if val == "location_update":
+            await interaction.response.send_modal(_UnifiedLocationUpdateModal())
+            return
+
+        if val == "start_speech":
+            await interaction.response.defer(ephemeral=True)
+            ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                await ch.send(
+                    _hostflow_start_msg(interaction.user.mention, interaction.guild),
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+                await interaction.followup.send(f"✅ Welcome speech posted in {ch.mention}.", ephemeral=True)
+            else:
+                await interaction.followup.send("Meet channel not found.", ephemeral=True)
+            return
+
+        if val == "end_speech":
+            await interaction.response.defer(ephemeral=True)
+            ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                await ch.send(
+                    _hostflow_end_msg(interaction.guild),
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+                log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
+                if isinstance(log_ch, discord.TextChannel):
+                    await log_ch.send(_hostflow_log_msg(interaction.user.mention))
+                await interaction.followup.send(
+                    f"✅ Ending speech posted in {ch.mention} and activity logged.", ephemeral=True
+                )
+            else:
+                await interaction.followup.send("Meet channel not found.", ephemeral=True)
+            return
+
+        if val == "start_meet":
+            await interaction.response.defer(ephemeral=True)
+            ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                ps_role = f"<@&{PS5_ROLE_ID}>"
+                cm_role = f"<@&{NOTIFY_ROLE_ID}>"
+                embed = discord.Embed(
+                    title="DIFF Official Meet Started",
+                    description=(
+                        f"{ps_role} {cm_role}\n\n"
+                        f"The meet is now **live**.\n\n"
+                        f"**Host:** {interaction.user.mention}\n\n"
+                        "**Use this channel for:**\n"
+                        "• Meet start updates\n"
+                        "• Meet locations\n"
+                        "• Host instructions\n"
+                        "• Movement between spots\n\n"
+                        "Please stay ready and follow host directions."
+                    ),
+                    color=0x111111,
+                )
+                embed.set_image(url=DIFF_LOGO_URL)
+                embed.set_footer(text="DIFF Meet Start Notice")
+                await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions(roles=True))
+                log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
+                if isinstance(log_ch, discord.TextChannel):
+                    await log_ch.send(
+                        f"🏁 **Meet Started**\nHost: {interaction.user.mention}\nChannel: {ch.mention}"
+                    )
+                await interaction.followup.send(f"✅ Meet start message sent in {ch.mention}.", ephemeral=True)
+            else:
+                await interaction.followup.send("Meet channel not found.", ephemeral=True)
+            return
+
+        if val == "end_meet":
+            await interaction.response.defer(ephemeral=True)
+            ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                embed = discord.Embed(
+                    title="DIFF Meet Ended",
+                    description=(
+                        f"The meet has now **ended**.\n\n"
+                        f"**Host:** {interaction.user.mention}\n\n"
+                        "Thank you to everyone who attended and helped keep the meet clean.\n"
+                        "Watch for the next official announcement and future events."
+                    ),
+                    color=0x111111,
+                )
+                embed.set_image(url=DIFF_LOGO_URL)
+                embed.set_footer(text="DIFF Meet End Notice")
+                await ch.send(embed=embed)
+                log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
+                if isinstance(log_ch, discord.TextChannel):
+                    await log_ch.send(
+                        f"🛑 **Meet Ended**\nHost: {interaction.user.mention}\nChannel: {ch.mention}"
+                    )
+                await interaction.followup.send(f"✅ Meet end message sent in {ch.mention}.", ephemeral=True)
+            else:
+                await interaction.followup.send("Meet channel not found.", ephemeral=True)
+            return
+
+        if val == "request_feedback":
+            await interaction.response.defer(ephemeral=True)
+            ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                fb_embed = discord.Embed(
+                    title="📝 Leave Your Meet Feedback",
+                    description=(
+                        f"**{interaction.user.display_name}** is requesting feedback from tonight's meet!\n\n"
+                        "Let us know how it went — your thoughts help us improve every event.\n\n"
+                        "▢ Rate the meet experience\n"
+                        "▢ Comment on the host's performance\n"
+                        "▢ Share suggestions for next time"
+                    ),
+                    color=0x1F6FEB,
+                )
+                fb_embed.set_footer(text="Different Meets • Meet Feedback • All responses are appreciated")
+                await ch.send(embed=fb_embed, view=HostFeedbackRequestView())
+                await interaction.followup.send(f"✅ Feedback request posted in {ch.mention}.", ephemeral=True)
+            else:
+                await interaction.followup.send("Meet flow channel not found.", ephemeral=True)
+            return
+
+
+class _UnifiedLocationUpdateModal(discord.ui.Modal, title="DIFF Meet Location Update"):
+    location_name = discord.ui.TextInput(
+        label="New Location / Spot Name",
+        placeholder="Example: Airport Parking Lot / Spot 2",
+        max_length=100,
+    )
+    extra_notes = discord.ui.TextInput(
+        label="Extra Notes",
+        placeholder="Example: Pull in slowly, stay in order, no revving",
+        required=False,
+        style=discord.TextStyle.paragraph,
+        max_length=300,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+        if ch is None:
+            return await interaction.response.send_message("Meet channel not found.", ephemeral=True)
+        embed = discord.Embed(
+            title="📍 DIFF Meet Location Update",
+            description=(
+                f"**Host:** {interaction.user.mention}\n"
+                f"**New Location:** {self.location_name.value}\n\n"
+                f"**Notes:**\n{self.extra_notes.value or 'No extra notes provided.'}"
+            ),
+            color=0x111111,
+        )
+        embed.set_image(url=DIFF_LOGO_URL)
+        embed.set_footer(text="DIFF Meet Location Update")
+        await ch.send(embed=embed)
+        log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(log_ch, discord.TextChannel):
+            await log_ch.send(
+                f"📍 **Location Update**\nHost: {interaction.user.mention}\nLocation: {self.location_name.value}"
+            )
+        await interaction.response.send_message(
+            f"✅ Location update sent in {ch.mention}.", ephemeral=True
+        )
+
+
+class _HostHubBlacklistSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="🚫  Blacklist Management",
+            options=[
+                discord.SelectOption(label="Blacklist Check", value="bl_check", emoji="🚫",
+                                     description="Review restrictions before inviting someone"),
+                discord.SelectOption(label="Submit Blacklist", value="bl_submit", emoji="🔴",
+                                     description="Report a host violation (staff only)"),
+                discord.SelectOption(label="Search Blacklist", value="bl_search", emoji="🔎",
+                                     description="Search for a specific blacklist entry"),
+                discord.SelectOption(label="View Blacklist", value="bl_view", emoji="📊",
+                                     description="Browse all current blacklist records"),
+                discord.SelectOption(label="Appeal Blacklist", value="bl_appeal", emoji="📩",
+                                     description="Submit an appeal for a blacklist entry"),
+            ],
+            custom_id="diff_unified_hosthub:blacklist",
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        val = self.values[0]
+        if val == "bl_check":
+            bl_view = discord.ui.View()
+            bl_view.add_item(discord.ui.Button(
+                label="Open Blacklist",
+                style=discord.ButtonStyle.link,
+                url=f"https://discord.com/channels/850386896509337710/{BLACKLIST_CHANNEL_ID}",
+                emoji="🔗",
+            ))
+            await interaction.response.send_message(embed=_hosthub_blacklist_embed(), view=bl_view, ephemeral=True)
+        elif val == "bl_submit":
+            is_staff = any(
+                r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+                for r in getattr(interaction.user, "roles", [])
+            )
+            if not is_staff:
+                return await interaction.response.send_message(
+                    "Only staff can submit blacklist entries.", ephemeral=True
+                )
+            await interaction.response.send_modal(_BlacklistModal())
+        elif val == "bl_search":
+            await interaction.response.send_modal(_BlacklistSearchModal())
+        elif val == "bl_view":
+            await interaction.response.send_message(
+                f"🔗 **Blacklist Records:**\nhttps://discord.com/channels/850386896509337710/{BLACKLIST_CHANNEL_ID}",
+                ephemeral=True,
+            )
+        elif val == "bl_appeal":
+            await interaction.response.send_modal(_AppealModal())
+
+
+class _HostHubPerformanceSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="📊  Host Performance",
+            options=[
+                discord.SelectOption(label="Start Track Session", value="hp_session", emoji="🟢",
+                                     description="Open a tracked host session for this meet"),
+                discord.SelectOption(label="My Host Stats", value="hp_stats", emoji="📊",
+                                     description="View your personal performance totals"),
+                discord.SelectOption(label="System Info", value="hp_info", emoji="⚠️",
+                                     description="See what gets tracked and what triggers warnings"),
+            ],
+            custom_id="diff_unified_hosthub:performance",
+            row=3,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        val = self.values[0]
+        if val == "hp_session":
+            if not isinstance(interaction.user, discord.Member) or not _hp_has_role(interaction.user):
+                return await interaction.response.send_message("Host role required.", ephemeral=True)
+            await interaction.response.send_modal(_HPStartModal())
+        elif val == "hp_stats":
+            hp_data = _hp_load()
+            stats = hp_data["host_stats"].get(str(interaction.user.id))
+            if not stats:
+                return await interaction.response.send_message("No host stats found yet.", ephemeral=True)
+            await interaction.response.send_message(embed=_hp_stats_embed(interaction.user, stats), ephemeral=True)
+        elif val == "hp_info":
+            embed = discord.Embed(
+                title="⚠️ DIFF Host Performance System Info",
+                description="*Here is what this system tracks automatically during each host session.*",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="📊 Performance Tracking", value=(
+                "• Meets hosted\n• Total attendance\n• DIFF attendance\n"
+                "• Blacklist confirmations\n• Checklist confirmations\n"
+                "• Lobby proof confirmations\n• Today's Meet confirmations\n• Host session score"
+            ), inline=False)
+            embed.add_field(name="🚨 Warning Triggers", value=(
+                "• Blacklist not checked\n• Checklist not completed\n"
+                "• Lobby proof missing\n• Today's Meet post missing\n"
+                "• Session ended with missing required steps"
+            ), inline=False)
+            embed.set_footer(text="Hosts are expected to use the tracking thread for every meet")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class UnifiedHostHubView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(_HostHubReferenceSelect())
+        self.add_item(_HostHubLiveMeetSelect())
+        self.add_item(_HostHubBlacklistSelect())
+        self.add_item(_HostHubPerformanceSelect())
+
+
+async def _unified_hosthub_post_or_refresh() -> None:
+    channel = bot.get_channel(HOST_HUB_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        try:
+            channel = await bot.fetch_channel(HOST_HUB_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    embed = _unified_hosthub_embed()
+    view = UnifiedHostHubView()
+
+    unified_msg: discord.Message | None = None
+    to_delete: list[discord.Message] = []
+
+    async for msg in channel.history(limit=60):
+        if msg.author.id != bot.user.id or not msg.embeds:
+            continue
+        footer_text = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
+        embed_title = msg.embeds[0].title or ""
+        is_unified = footer_text.startswith(_UNIFIED_HOSTHUB_TAG)
+        is_old = (
+            footer_text in _UNIFIED_HOSTHUB_OLD_FOOTER_TAGS
+            or embed_title in _UNIFIED_HOSTHUB_OLD_TITLES
+        )
+        if is_unified and unified_msg is None:
+            unified_msg = msg
+        elif is_unified or is_old:
+            to_delete.append(msg)
+
+    for m in to_delete:
+        try:
+            await m.delete()
+        except Exception:
+            pass
+
+    if unified_msg:
+        try:
+            await unified_msg.edit(embed=embed, view=view)
+            return
+        except Exception:
+            pass
+
+    try:
+        await channel.send(embed=embed, view=view)
+    except Exception as e:
+        print(f"[UnifiedHostHub] Post failed: {e}")
+
+
 # =========================
 # AUTO ROLL CALL SYSTEM
 # =========================
@@ -9103,13 +9548,12 @@ async def on_ready():
     _asched_build()
     await _asched_update_panel(bot)
     bot.add_view(HostHubView())
-    await _hosthub_post_or_refresh()
     bot.add_view(HostFlowView())
-    await _hostflow_post_or_refresh()
     bot.add_view(_MobileRefreshView())
     bot.add_view(HostPerformanceHubView())
     bot.add_view(HostSessionView())
-    await _hp_post_or_refresh()
+    bot.add_view(UnifiedHostHubView())
+    await _unified_hosthub_post_or_refresh()
     bot.add_view(_RcRollCallView())
     bot.add_view(_RcAdminView())
     bot.add_view(_OfficialMeetRSVPView())
