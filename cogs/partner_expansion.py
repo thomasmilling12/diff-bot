@@ -263,6 +263,25 @@ class PartnerExpansion(commands.Cog):
         embed.set_footer(text="Different Meets • Partner Directory")
         return embed
 
+    _PARTNER_FOOTERS = {
+        "Different Meets • Official Partner Network",
+        "Different Meets • Partner Directory",
+    }
+
+    async def _scan_existing_panel_msgs(self, channel: discord.TextChannel) -> list:
+        """Scan channel history and return bot messages that belong to the partner panel, oldest first."""
+        found = []
+        try:
+            async for msg in channel.history(limit=200):
+                if msg.author == self.bot.user and msg.embeds:
+                    footer = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
+                    if footer in self._PARTNER_FOOTERS:
+                        found.append(msg)
+        except Exception:
+            pass
+        found.reverse()  # oldest first
+        return found
+
     async def sync_directory_panel(self):
         if not hasattr(self, "_sync_lock"):
             import asyncio
@@ -315,45 +334,56 @@ class PartnerExpansion(commands.Cog):
                     content_embeds.append(self._build_partner_embed(p))
                     content_views.append(PartnerInviteView(p.get("invite_link", "")))
 
+            # Total expected messages = 1 header + len(content_embeds)
+            total_expected = 1 + len(content_embeds)
+
+            # Fast path: try saved message IDs first
             header_id = state.get("header_id")
             content_ids = state.get("content_ids", [])
-            needs_full_sync = False
+            edited_ok = False
 
             if header_id and len(content_ids) == len(content_embeds):
                 try:
                     header_msg = await channel.fetch_message(header_id)
                     await header_msg.edit(embed=header_embed)
-                except Exception:
-                    needs_full_sync = True
-
-                if not needs_full_sync:
+                    all_ok = True
                     for mid, emb, view in zip(content_ids, content_embeds, content_views):
                         try:
                             msg = await channel.fetch_message(mid)
                             await msg.edit(embed=emb, view=view)
                         except Exception:
-                            needs_full_sync = True
+                            all_ok = False
                             break
-            else:
-                needs_full_sync = True
-
-            if needs_full_sync:
-                # Only delete messages that are partner directory panels (by footer tag)
-                _PARTNER_FOOTERS = {
-                    "Different Meets • Official Partner Network",
-                    "Different Meets • Partner Directory",
-                }
-                try:
-                    async for msg in channel.history(limit=200):
-                        if msg.author == self.bot.user and msg.embeds:
-                            footer = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
-                            if footer in _PARTNER_FOOTERS:
-                                try:
-                                    await msg.delete()
-                                except Exception:
-                                    pass
+                    if all_ok:
+                        edited_ok = True
                 except Exception:
                     pass
+
+            # Fallback: scan channel for existing panel messages and edit them
+            if not edited_ok:
+                existing = await self._scan_existing_panel_msgs(channel)
+                if len(existing) == total_expected:
+                    # Edit in place — header is first, rest are content
+                    try:
+                        await existing[0].edit(embed=header_embed)
+                        for msg, emb, view in zip(existing[1:], content_embeds, content_views):
+                            await msg.edit(embed=emb, view=view)
+                        self._save_dir_state({
+                            "header_id": existing[0].id,
+                            "content_ids": [m.id for m in existing[1:]],
+                        })
+                        edited_ok = True
+                    except Exception:
+                        pass
+
+            # Full sync: delete existing panel messages and repost fresh
+            if not edited_ok:
+                existing = await self._scan_existing_panel_msgs(channel)
+                for msg in existing:
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
 
                 header_msg = await channel.send(embed=header_embed)
                 new_content_ids = []
