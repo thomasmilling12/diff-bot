@@ -25,7 +25,7 @@ GUILD_ID                    = 850386896509337710
 # =========================================================
 # CONFIG — Shared
 # =========================================================
-LOG_CHANNEL_ID = 1485265848099799163
+LOG_CHANNEL_ID         = 1485265848099799163
 REMINDER_DELAY_MINUTES = 15
 
 STAFF_ROLE_IDS: set[int] = {
@@ -34,13 +34,13 @@ STAFF_ROLE_IDS: set[int] = {
     990011447193006101,
 }
 
-CREW_PANEL_TAG    = "DIFF_CREW_ANNOUNCE_PANEL_V1"
+CREW_PANEL_TAG    = "DIFF_CREW_ANNOUNCE_PANEL_V2"
 GENERAL_PANEL_TAG = "DIFF_GENERAL_ANNOUNCE_PANEL_V1"
 
-DATA_DIR              = "diff_data"
-CREW_PANEL_FILE       = os.path.join(DATA_DIR, "crew_announce_panel.json")
-GENERAL_PANEL_FILE    = os.path.join(DATA_DIR, "general_announce_panel.json")
-TRACKING_FILE         = os.path.join(DATA_DIR, "announcement_tracking.json")
+DATA_DIR           = "diff_data"
+CREW_PANEL_FILE    = os.path.join(DATA_DIR, "crew_announce_panel.json")
+GENERAL_PANEL_FILE = os.path.join(DATA_DIR, "general_announce_panel.json")
+TRACKING_FILE      = os.path.join(DATA_DIR, "announcement_tracking.json")
 
 DIFF_LOGO_URL = (
     "https://media.discordapp.net/attachments/1107375326625005719/"
@@ -90,6 +90,13 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _role_label(member: discord.Member) -> str:
+    for role in reversed(member.roles):
+        if role.id in STAFF_ROLE_IDS:
+            return f" ({role.name})"
+    return ""
+
+
 # =========================================================
 # HELPERS — Tracking
 # =========================================================
@@ -110,6 +117,14 @@ def _upsert_record(message_id: int, record: dict) -> None:
     _save_json(TRACKING_FILE, data)
 
 
+def _latest_record() -> Optional[dict]:
+    data = _load_tracking()["announcements"]
+    if not data:
+        return None
+    latest_key = max(data.keys(), key=lambda k: data[k].get("created_at", ""))
+    return data[latest_key]
+
+
 def _build_stats_embed(guild: discord.Guild, message_id: int, record: dict) -> discord.Embed:
     acknowledged = len(record.get("acknowledged", {}))
     interested   = len(record.get("interested", {}))
@@ -118,15 +133,19 @@ def _build_stats_embed(guild: discord.Guild, message_id: int, record: dict) -> d
     pending      = max(total - acknowledged, 0)
 
     embed = discord.Embed(
-        title="📊 DIFF Announcement Tracking",
+        title="📊 Announcement Tracking Stats",
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
-        description=f"Stats for: **{record.get('title', 'Untitled')}**",
+        description=f"**{record.get('title', 'Untitled')}**",
     )
     embed.add_field(name="✅ Acknowledged", value=str(acknowledged), inline=True)
     embed.add_field(name="🔥 Interested",   value=str(interested),   inline=True)
     embed.add_field(name="⏰ Remind Me",    value=str(reminders),    inline=True)
     embed.add_field(name="⏳ Pending",      value=str(pending),      inline=True)
+    embed.add_field(name="👥 Total Members", value=str(total),       inline=True)
+    if record.get("message_url"):
+        embed.add_field(name="📌 Jump To", value=f"[View Announcement]({record['message_url']})", inline=True)
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text="DIFF Announcement System")
     return embed
 
@@ -150,6 +169,7 @@ async def _schedule_dm_reminder(
             color=discord.Color.blurple(),
             timestamp=datetime.now(timezone.utc),
         )
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text="DIFF Announcement System")
         await user.send(embed=embed)
         if isinstance(ch, discord.TextChannel):
@@ -197,7 +217,8 @@ async def _ensure_panel(
             if (
                 msg.author == bot.user
                 and msg.embeds
-                and panel_tag in (msg.embeds[0].footer.text or "")
+                and ("DIFF_CREW_ANNOUNCE_PANEL" in (msg.embeds[0].footer.text or "")
+                     or panel_tag in (msg.embeds[0].footer.text or ""))
             ):
                 try:
                     await msg.delete()
@@ -222,9 +243,7 @@ class AnnouncementButtons(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="Acknowledge",
-        style=discord.ButtonStyle.success,
-        emoji="✅",
+        label="Acknowledge", style=discord.ButtonStyle.success, emoji="✅",
         custom_id="diff_announce_acknowledge_v1",
     )
     async def acknowledge(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -252,9 +271,7 @@ class AnnouncementButtons(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Remind Me",
-        style=discord.ButtonStyle.secondary,
-        emoji="⏰",
+        label="Remind Me", style=discord.ButtonStyle.secondary, emoji="⏰",
         custom_id="diff_announce_remind_v1",
     )
     async def remind_me(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -294,9 +311,7 @@ class AnnouncementButtons(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Interested",
-        style=discord.ButtonStyle.primary,
-        emoji="🔥",
+        label="Interested", style=discord.ButtonStyle.primary, emoji="🔥",
         custom_id="diff_announce_interested_v1",
     )
     async def interested(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -332,9 +347,9 @@ class AnnouncementButtons(discord.ui.View):
 
 
 # =========================================================
-# CREW ANNOUNCEMENT MODAL + VIEW
+# CREW ANNOUNCEMENT MODALS
 # =========================================================
-class CrewAnnouncementModal(discord.ui.Modal, title="Create Crew Announcement"):
+class CrewAnnouncementModal(discord.ui.Modal, title="Post Crew Announcement"):
     title_input = discord.ui.TextInput(
         label="Announcement Title",
         placeholder="Example: Saturday Meet Update",
@@ -342,12 +357,12 @@ class CrewAnnouncementModal(discord.ui.Modal, title="Create Crew Announcement"):
     )
     message_input = discord.ui.TextInput(
         label="Announcement Message",
-        placeholder="Type the full crew announcement here...",
+        placeholder="Type the full crew announcement here…",
         style=discord.TextStyle.paragraph, max_length=2000, required=True,
     )
     footer_input = discord.ui.TextInput(
-        label="Sign-Off (optional)",
-        placeholder="e.g. DIFF Management Team  or  DIFF Leadership",
+        label="Sign-Off",
+        placeholder="DIFF Management Team  /  DIFF Leadership",
         max_length=100, required=False,
     )
 
@@ -369,52 +384,225 @@ class CrewAnnouncementModal(discord.ui.Modal, title="Create Crew Announcement"):
             )
 
         sign_off = str(self.footer_input).strip() or "DIFF Management Team"
-
-        # Build author label: display name + highest staff role
-        role_label = ""
-        for role in reversed(member.roles):
-            if role.id in STAFF_ROLE_IDS:
-                role_label = f" ({role.name})"
-                break
+        title    = str(self.title_input).strip()
 
         embed = discord.Embed(
-            title=str(self.title_input),
+            title=title,
             description=str(self.message_input),
             color=discord.Color.red(),
             timestamp=datetime.now(timezone.utc),
         )
         embed.set_author(
-            name=f"Posted by {member.display_name}{role_label}",
+            name=f"Posted by {member.display_name}{_role_label(member)}",
             icon_url=member.display_avatar.url if member.display_avatar else None,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text=sign_off)
 
         crew_role = interaction.guild.get_role(CREW_ROLE_ID) if interaction.guild else None
-        ping = crew_role.mention if crew_role else ""
+        ping      = crew_role.mention if crew_role else ""
+
+        tracking_view = AnnouncementButtons()
+        msg = await channel.send(
+            content=ping,
+            embed=embed,
+            view=tracking_view,
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+
+        record = {
+            "title":        title,
+            "type":         "crew",
+            "channel_id":   channel.id,
+            "message_id":   msg.id,
+            "message_url":  msg.jump_url,
+            "created_by":   interaction.user.id,
+            "created_at":   _utc_now(),
+            "acknowledged": {},
+            "remind_me":    {},
+            "interested":   {},
+        }
+        _upsert_record(msg.id, record)
+
+        await interaction.response.send_message(
+            f"Crew announcement posted in {channel.mention}.", ephemeral=True
+        )
+        await self.cog.log_action(
+            interaction.guild,
+            f"📢 Crew announcement **{title}** posted by {member.mention} — {msg.jump_url}",
+        )
+
+
+class CrewQuickPingModal(discord.ui.Modal, title="Quick Crew Ping"):
+    message_input = discord.ui.TextInput(
+        label="Message",
+        placeholder="A short, important message for the crew…",
+        style=discord.TextStyle.paragraph, max_length=800, required=True,
+    )
+
+    def __init__(self, cog: "AnnouncementPanelsCog"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not _is_staff(member):
+            return await interaction.response.send_message(
+                "Only staff can send crew pings.", ephemeral=True
+            )
+
+        channel = interaction.client.get_channel(CREW_ANNOUNCE_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return await interaction.response.send_message(
+                "Crew announcement channel not found.", ephemeral=True
+            )
+
+        crew_role = interaction.guild.get_role(CREW_ROLE_ID) if interaction.guild else None
+        ping      = crew_role.mention if crew_role else ""
+
+        embed = discord.Embed(
+            description=f"**📌 Quick Update from Staff**\n\n{str(self.message_input)}",
+            color=discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_author(
+            name=f"{member.display_name}{_role_label(member)}",
+            icon_url=member.display_avatar.url if member.display_avatar else None,
+        )
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+        embed.set_footer(text="DIFF Crew • Quick Update")
 
         await channel.send(
             content=ping,
             embed=embed,
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
-        await interaction.response.send_message(
-            "Crew announcement posted successfully.", ephemeral=True
-        )
+        await interaction.response.send_message("Quick ping sent.", ephemeral=True)
         await self.cog.log_action(
             interaction.guild,
-            f"📢 Crew announcement `{str(self.title_input)}` posted by {member.mention}"
+            f"⚡ Quick crew ping sent by {member.mention}",
         )
 
 
+# =========================================================
+# CREW PANEL DROPDOWN
+# =========================================================
+class _CrewAnnounceSelect(discord.ui.Select):
+    def __init__(self, cog: "AnnouncementPanelsCog"):
+        super().__init__(
+            custom_id="diff_crew_announce_select_v2",
+            placeholder="📢 Select an action…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="Post Crew Announcement",
+                    value="announce",
+                    emoji="📣",
+                    description="Post a full embed announcement to Crew Members.",
+                ),
+                discord.SelectOption(
+                    label="Quick Crew Ping",
+                    value="quick",
+                    emoji="⚡",
+                    description="Send a short update without a title — fast and direct.",
+                ),
+                discord.SelectOption(
+                    label="Posting Guidelines",
+                    value="guidelines",
+                    emoji="📋",
+                    description="View best practices for crew announcements.",
+                ),
+                discord.SelectOption(
+                    label="Latest Announcement Stats",
+                    value="stats",
+                    emoji="📊",
+                    description="See acknowledgement tracking for the latest announcement.",
+                ),
+            ],
+            row=0,
+        )
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not _is_staff(member):
+            return await interaction.response.send_message(
+                "Staff only.", ephemeral=True
+            )
+
+        selected = self.values[0]
+
+        if selected == "announce":
+            await interaction.response.send_modal(CrewAnnouncementModal(self.cog))
+
+        elif selected == "quick":
+            await interaction.response.send_modal(CrewQuickPingModal(self.cog))
+
+        elif selected == "guidelines":
+            embed = discord.Embed(
+                title="📋 Crew Announcement Guidelines",
+                description="Follow these when posting to keep the crew channel clean and credible.",
+                color=discord.Color.dark_red(),
+            )
+            embed.add_field(
+                name="✅ Do",
+                value=(
+                    "› Use clear, descriptive titles\n"
+                    "› Keep the message focused and to the point\n"
+                    "› Include all relevant info (dates, times, links)\n"
+                    "› Use Quick Ping for short updates, full Announcement for detailed posts\n"
+                    "› Sign off with your team name"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="❌ Don't",
+                value=(
+                    "› Post duplicate or near-identical announcements\n"
+                    "› Use crew ping for non-important messages\n"
+                    "› Leave the sign-off blank for official posts\n"
+                    "› Post personal messages in this channel"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="📌 Ping Rules",
+                value=(
+                    "**Full Announcement** — always pings @Crew Members\n"
+                    "**Quick Ping** — always pings @Crew Members\n"
+                    "Only post if the content is relevant to the whole crew."
+                ),
+                inline=False,
+            )
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+            embed.set_footer(text="DIFF Crew Announcements • Guidelines")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        elif selected == "stats":
+            record = _latest_record()
+            if not record:
+                return await interaction.response.send_message(
+                    "No tracked announcements found yet.", ephemeral=True
+                )
+            embed = _build_stats_embed(interaction.guild, record["message_id"], record)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# CREW PANEL VIEW  (persistent)
+# =========================================================
 class CrewAnnouncePanelView(discord.ui.View):
     def __init__(self, cog: "AnnouncementPanelsCog"):
         super().__init__(timeout=None)
         self.cog = cog
+        self.add_item(_CrewAnnounceSelect(cog))
 
-    @discord.ui.button(label="Make Crew Announcement", emoji="📣",
-                       style=discord.ButtonStyle.danger,
-                       custom_id="diff_crew_announce_create_v1")
+    @discord.ui.button(
+        label="Post Announcement", emoji="📣",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_crew_announce_create_v1", row=1,
+    )
     async def make_crew_announcement(self, interaction: discord.Interaction, button: discord.ui.Button):
         member = interaction.user
         if not isinstance(member, discord.Member) or not _is_staff(member):
@@ -423,18 +611,18 @@ class CrewAnnouncePanelView(discord.ui.View):
             )
         await interaction.response.send_modal(CrewAnnouncementModal(self.cog))
 
-    @discord.ui.button(label="Refresh Panel", emoji="♻️",
-                       style=discord.ButtonStyle.secondary,
-                       custom_id="diff_crew_announce_refresh_v1")
-    async def refresh_crew_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(
+        label="Quick Ping", emoji="⚡",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_crew_announce_quick_v1", row=1,
+    )
+    async def quick_ping(self, interaction: discord.Interaction, button: discord.ui.Button):
         member = interaction.user
         if not isinstance(member, discord.Member) or not _is_staff(member):
             return await interaction.response.send_message(
-                "Only staff can refresh this panel.", ephemeral=True
+                "Only staff can use this button.", ephemeral=True
             )
-        await interaction.response.defer(ephemeral=True)
-        await self.cog.ensure_crew_panel()
-        await interaction.followup.send("Crew announcement panel refreshed.", ephemeral=True)
+        await interaction.response.send_modal(CrewQuickPingModal(self.cog))
 
 
 # =========================================================
@@ -485,7 +673,7 @@ class GeneralAnnouncementModal(discord.ui.Modal, title="Create General Announcem
             timestamp=datetime.now(timezone.utc),
         )
         embed.set_author(
-            name=f"Posted by {member.display_name}",
+            name=f"Posted by {member.display_name}{_role_label(member)}",
             icon_url=member.display_avatar.url if member.display_avatar else None,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -519,12 +707,13 @@ class GeneralAnnouncementModal(discord.ui.Modal, title="Create General Announcem
         )
 
         record = {
-            "title":       title,
-            "channel_id":  channel.id,
-            "message_id":  msg.id,
-            "message_url": msg.jump_url,
-            "created_by":  interaction.user.id,
-            "created_at":  _utc_now(),
+            "title":        title,
+            "type":         "general",
+            "channel_id":   channel.id,
+            "message_id":   msg.id,
+            "message_url":  msg.jump_url,
+            "created_by":   interaction.user.id,
+            "created_at":   _utc_now(),
             "acknowledged": {},
             "remind_me":    {},
             "interested":   {},
@@ -585,9 +774,11 @@ class GeneralAnnouncePanelView(discord.ui.View):
         self.cog = cog
         self.add_item(_PingSelect(cog))
 
-    @discord.ui.button(label="Refresh Panel", emoji="♻️",
-                       style=discord.ButtonStyle.secondary,
-                       custom_id="diff_general_announce_refresh_v1")
+    @discord.ui.button(
+        label="Refresh Panel", emoji="♻️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_general_announce_refresh_v1",
+    )
     async def refresh_general_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
         member = interaction.user
         if not isinstance(member, discord.Member) or not _is_staff(member):
@@ -623,31 +814,37 @@ class AnnouncementPanelsCog(commands.Cog):
 
     def _crew_panel_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="📢 DIFF Crew Announcement Center",
+            title="📢 DIFF Crew Announcement Centre",
             description=(
-                "Use the **Make Crew Announcement** button below to post an official announcement.\n"
-                "The bot will ping **Crew Members** automatically."
+                "Staff-only announcement panel for **Crew Members**.\n"
+                "Use the dropdown for all options, or the quick buttons below.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=discord.Color.dark_red(),
+            timestamp=datetime.now(timezone.utc),
         )
-        embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.add_field(
-            name="📋 Posting Guidelines",
-            value=(
-                "• Keep announcements clear and important\n"
-                "• Use short, descriptive titles\n"
-                "• Avoid spam or duplicate posts\n"
-                "• Staff use only — crew will be pinged"
-            ),
+            name="📣 Full Announcement",
+            value="Formal embed with title, message, and sign-off. Pings @Crew Members.",
+            inline=True,
+        )
+        embed.add_field(
+            name="⚡ Quick Ping",
+            value="Short urgent message without a title. Faster to post, same crew ping.",
+            inline=True,
+        )
+        embed.add_field(
+            name="📊 Tracking",
+            value="Crew announcements include Acknowledge, Remind Me, and Interested buttons.",
             inline=False,
         )
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text=f"DIFF Crew Announcements  |  {CREW_PANEL_TAG}")
-        embed.timestamp = datetime.now(timezone.utc)
         return embed
 
     def _general_panel_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="📢 DIFF General Announcement Center",
+            title="📢 DIFF General Announcement Centre",
             color=discord.Color.dark_blue(),
             description=(
                 "**Staff General Announcement Panel**\n\n"
