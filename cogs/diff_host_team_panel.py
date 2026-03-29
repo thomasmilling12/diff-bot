@@ -177,8 +177,7 @@ class HostTeamPanelCog(commands.Cog):
     # ------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_ready(self):
-        await self.ensure_panel()
-        print("[HostTeamPanel] Cog ready.")
+        print("[HostTeamPanel] Cog ready. (panel managed by UnifiedHostTeamView)")
 
     @commands.command(name="refresh_host_panel")
     @commands.has_permissions(manage_guild=True)
