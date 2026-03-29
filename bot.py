@@ -8093,9 +8093,14 @@ async def _om_restore_on_ready() -> None:
                     pass
 
 
-def _om_build_message(theme: str, host: discord.Member, timestamp: int) -> str:
+def _om_build_message(theme: str, host: discord.Member, timestamp: int, notes: str = "") -> str:
     ps_ping = f"<@&{PS5_ROLE_ID}>"
     cm_ping = f"<@&{NOTIFY_ROLE_ID}>"
+    notes_section = (
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"**Staff Notes**\n\n"
+        f"{notes}\n\n"
+    ) if notes else ""
     return (
         f"{ps_ping} {cm_ping}\n\n"
         f"🏁 **DIFF Official Meet**\n\n"
@@ -8107,6 +8112,7 @@ def _om_build_message(theme: str, host: discord.Member, timestamp: int) -> str:
         f"**Entry Info**\n\n"
         f"Send your vehicle photos to the host before joining, unless told otherwise.\n\n"
         f"All vehicles must match the meet theme and follow the standards listed in #meet-info and #rules.\n\n"
+        f"{notes_section}"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"**Meet Notes**\n\n"
         f"• Follow all host instructions at all times\n"
@@ -8219,49 +8225,96 @@ def _om_parse_datetime(date_str: str, time_str: str) -> int | None:
 def _om_panel_build_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🏁 DIFF Official Meet Hub",
-        color=discord.Color.dark_gold(),
         description=(
-            "Use the button below to schedule and post an official DIFF meet announcement.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "**What gets posted**\n"
+            f"Use the **Schedule Official Meet** button below to post an official meet "
+            f"announcement to <#{_OFFICIAL_MEET_CHANNEL_ID}>."
+        ),
+        color=discord.Color.dark_gold(),
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.add_field(
+        name="📋 What Gets Posted",
+        value=(
             "• Full meet announcement with role pings\n"
-            "• Auto-converting Discord timestamp (every member sees their own timezone)\n"
-            "• Entry info, meet notes, and style direction\n"
+            "• Auto-converting Discord timestamp\n"
+            "• Entry info, custom notes, and style direction\n"
             "• RSVP buttons for members\n"
             "• Start / End meet controls for the host\n"
-            "• Automatic 1-hour and 15-minute reminders\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "**Restricted to staff and assigned hosts.**"
+            "• Automatic 1-hour and 15-minute reminders"
         ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🔒 Access",
+        value="Restricted to **staff and assigned hosts** only.",
+        inline=False,
     )
     embed.set_footer(text="DIFF Official Meet System")
+    embed.timestamp = datetime.now(timezone.utc)
     return embed
+
+
+def _om_parse_combined_datetime(text: str) -> int | None:
+    """Parse a natural-language 'Date & Time' string into a Unix timestamp.
+    Accepts: 'April 5 9:00 PM EST', '04/05 9PM CST', '2026-04-05 21:00 UTC', etc.
+    """
+    text = text.strip()
+    tz_name = "America/New_York"
+    m = re.search(r'\b([A-Za-z]{2,5})$', text)
+    if m:
+        abbr = m.group(1).upper()
+        tz_name = _POPUP_TZ_MAP.get(abbr, tz_name)
+        text = text[:m.start()].strip()
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("America/New_York")
+    text = re.sub(r'(\d)(am|pm)', r'\1 \2', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+', ' ', text).strip()
+    if not re.search(r'\b(202\d|203\d)\b', text):
+        text = f"{text} {datetime.now(timezone.utc).year}"
+    fmts = [
+        "%B %d %Y %I:%M %p", "%B %d %Y %I %p",
+        "%B %d, %Y %I:%M %p", "%B %d, %Y %I %p",
+        "%m/%d/%Y %I:%M %p", "%m/%d/%Y %I %p",
+        "%m/%d %I:%M %p %Y", "%m/%d %I %p %Y",
+        "%Y-%m-%d %H:%M",    "%Y-%m-%d %I:%M %p",
+        "%Y-%m-%d %I %p",
+    ]
+    for fmt in fmts:
+        try:
+            naive = datetime.strptime(text, fmt)
+            return int(naive.replace(tzinfo=tz).timestamp())
+        except ValueError:
+            continue
+    return None
 
 
 class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official Meet"):
     theme_field = discord.ui.TextInput(
-        label="Theme",
+        label="Meet Theme",
         placeholder="e.g. Tire Lettering / JDM Night / Stanced Only",
         required=True,
         max_length=100,
     )
-    date_field = discord.ui.TextInput(
-        label="Date (YYYY-MM-DD)",
-        placeholder="e.g. 2026-04-05",
+    datetime_field = discord.ui.TextInput(
+        label="Date & Time",
+        placeholder="e.g. April 5 9:00 PM EST  or  04/05 9PM CST",
         required=True,
-        max_length=20,
-    )
-    time_field = discord.ui.TextInput(
-        label="Time",
-        placeholder="e.g. 8pm EST  or  8:30pm CST  or  20:00 ET",
-        required=True,
-        max_length=50,
+        max_length=80,
     )
     host_field = discord.ui.TextInput(
         label="Host (user ID or @mention)",
         placeholder="e.g. 123456789012345678  or paste their @mention",
         required=True,
         max_length=100,
+    )
+    notes_field = discord.ui.TextInput(
+        label="Meet Notes (optional)",
+        placeholder="e.g. LOWERED CARS ONLY • Send photos to host before joining",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -8288,10 +8341,14 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
                 )
                 return
 
-        meet_ts = _om_parse_datetime(self.date_field.value, self.time_field.value)
+        meet_ts = _om_parse_combined_datetime(self.datetime_field.value)
         if meet_ts is None:
             await interaction.response.send_message(
-                "Couldn't parse the date/time. Use format: `YYYY-MM-DD` and `8pm EST`.", ephemeral=True
+                "❌ Couldn't read that date/time. Try:\n"
+                "• `April 5 9:00 PM EST`\n"
+                "• `04/05 9PM CST`\n"
+                "• `2026-04-05 21:00 UTC`",
+                ephemeral=True,
             )
             return
         if meet_ts <= int(datetime.now(timezone.utc).timestamp()):
@@ -8303,10 +8360,16 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
             await interaction.response.send_message("Meet channel not found.", ephemeral=True)
             return
 
+        notes = self.notes_field.value.strip() if self.notes_field.value else ""
         await interaction.response.defer(ephemeral=True)
         try:
             sent = await channel.send(
-                _om_build_message(theme=self.theme_field.value.strip(), host=host_member, timestamp=meet_ts),
+                _om_build_message(
+                    theme=self.theme_field.value.strip(),
+                    host=host_member,
+                    timestamp=meet_ts,
+                    notes=notes,
+                ),
                 view=_OfficialMeetRSVPView(),
                 allowed_mentions=discord.AllowedMentions(roles=True, users=True),
             )
