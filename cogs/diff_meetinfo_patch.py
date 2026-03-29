@@ -353,6 +353,79 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
         await self.refresh_panel()
         await ctx.send("Meet-info panel refreshed.", delete_after=8)
 
+    # ----------------------------------------------------------
+    # Crew announce panel force-refresh
+    # ----------------------------------------------------------
+    @commands.command(name="patch_crew_panel")
+    @commands.has_permissions(manage_guild=True)
+    async def cmd_patch_crew(self, ctx: commands.Context):
+        """Force-refresh the crew announcement panel using whatever method is available."""
+        # Strategy 1: use the loaded AnnouncementPanelsCog if it has the new method
+        announce_cog = ctx.bot.cogs.get("AnnouncementPanelsCog")
+        if announce_cog is not None and hasattr(announce_cog, "ensure_crew_panel"):
+            try:
+                await announce_cog.ensure_crew_panel()
+                return await ctx.send("Crew panel refreshed via AnnouncementPanelsCog.", delete_after=8)
+            except Exception as e:
+                await ctx.send(f"AnnouncementPanelsCog.ensure_crew_panel failed: {e}", delete_after=15)
+
+        # Strategy 2: import the module fresh (works if new file is on disk even if cog failed to load)
+        try:
+            import importlib
+            mod = importlib.import_module("cogs.diff_announcement_panels")
+            importlib.reload(mod)
+
+            CREW_CH_ID  = 990097152044855326
+            PANEL_FILE  = os.path.join(DATA_DIR, "crew_announce_panel.json")
+
+            def _get_id() -> Optional[int]:
+                try:
+                    with open(PANEL_FILE, "r", encoding="utf-8") as f:
+                        return int(json.load(f).get("panel_message_id", 0)) or None
+                except Exception:
+                    return None
+
+            ch = ctx.bot.get_channel(CREW_CH_ID)
+            if not isinstance(ch, discord.TextChannel):
+                ch = await ctx.bot.fetch_channel(CREW_CH_ID)
+
+            # Build a minimal stand-in so the view can be instantiated
+            class _StubCog:
+                def __init__(self, bot): self.bot = bot
+                async def log_action(self, *a, **kw): pass
+
+            stub   = _StubCog(ctx.bot)
+            view   = mod.CrewAnnouncePanelView(stub)
+            ctx.bot.add_view(view)
+
+            embed_builder = mod.AnnouncementPanelsCog(ctx.bot)
+            embed = embed_builder._crew_panel_embed()
+
+            msg_id = _get_id()
+            if msg_id:
+                try:
+                    msg = await ch.fetch_message(msg_id)
+                    await msg.edit(embed=embed, view=view)
+                    return await ctx.send("Crew panel edited in place (module import method).", delete_after=8)
+                except discord.NotFound:
+                    pass
+
+            # No saved ID or message gone — post fresh
+            new_msg = await ch.send(embed=embed, view=view)
+            with open(PANEL_FILE, "w", encoding="utf-8") as f:
+                json.dump({"panel_message_id": new_msg.id}, f, indent=4)
+            return await ctx.send("Crew panel posted fresh (module import method).", delete_after=8)
+
+        except Exception as e:
+            await ctx.send(
+                f"Both strategies failed.\n"
+                f"Error: `{e}`\n\n"
+                f"Run this on your Pi to check:\n"
+                f"```\ngrep -c '_CrewAnnounceSelect' ~/diffbot/cogs/diff_announcement_panels.py\n```"
+                f"If it returns `0`, the old file is still there — re-download and restart.",
+                delete_after=60,
+            )
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(MeetInfoPatchCog(bot))
