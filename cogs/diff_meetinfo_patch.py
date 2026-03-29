@@ -297,13 +297,133 @@ class MeetInfoViewV2(discord.ui.View):
 
 
 # =========================================================
+# ROLL CALL — STAFF TOOLS V2  (dropdown replacing 3 buttons)
+# =========================================================
+ROLL_CALL_CHANNEL_ID = 1047338695352664165
+
+
+def _rc_admin_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🛠️ DIFF Roll Call — Staff Tools",
+        description=(
+            "Use the dropdown below to manage this week's roll call.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.dark_teal(),
+    )
+    embed.add_field(
+        name="🏁 Finalize Attendance",
+        value="Select a meet and paste the users who actually attended. Stats update and no-shows are flagged automatically.",
+        inline=False,
+    )
+    embed.add_field(
+        name="📊 View Stats",
+        value="See the current RSVP counts for all three meets.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔄 Reset Roll Call",
+        value="Clears all responses and reposts a fresh roll call for a new week.",
+        inline=False,
+    )
+    embed.set_footer(text="DIFF Roll Call • Staff Tools V2")
+    return embed
+
+
+class _RcAdminSelectV2(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            custom_id="diff_rollcall_finalize:select_v2",
+            placeholder="⚙️ Select a staff action…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Finalize Meet 1", value="fin1", emoji="🏁",
+                    description="Mark actual attendees and flag no-shows for Meet 1."),
+                discord.SelectOption(label="Finalize Meet 2", value="fin2", emoji="🏁",
+                    description="Mark actual attendees and flag no-shows for Meet 2."),
+                discord.SelectOption(label="Finalize Meet 3", value="fin3", emoji="🏁",
+                    description="Mark actual attendees and flag no-shows for Meet 3."),
+                discord.SelectOption(label="View Attendance Stats", value="stats", emoji="📊",
+                    description="See current RSVP counts for all three meets."),
+                discord.SelectOption(label="Reset Roll Call", value="reset", emoji="🔄",
+                    description="Clear all responses and post a fresh roll call."),
+            ],
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        import bot as _bot
+
+        member = interaction.user
+        is_admin = (
+            isinstance(member, discord.Member)
+            and any(r.id in _bot._RC_ADMIN_ROLE_IDS for r in member.roles)
+        )
+        if not is_admin:
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
+
+        selected = self.values[0]
+
+        if selected in ("fin1", "fin2", "fin3"):
+            meet_num = int(selected[-1])
+            return await interaction.response.send_modal(_bot._RcFinalizeModal(meet_num))
+
+        if selected == "stats":
+            guild = interaction.guild
+            if not guild:
+                return await interaction.response.send_message("Server only.", ephemeral=True)
+            embed = _bot._rc_build_rollcall_embed(guild)
+            embed.title = "📊 Current Roll Call Stats"
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        if selected == "reset":
+            confirm_view = _RcResetConfirmView()
+            return await interaction.response.send_message(
+                "⚠️ **Reset Roll Call?**\nThis clears all responses and posts a fresh panel.\n"
+                "Click **Confirm** to proceed or **Cancel** to abort.",
+                view=confirm_view,
+                ephemeral=True,
+            )
+
+
+class _RcResetConfirmView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="Confirm Reset", style=discord.ButtonStyle.danger, emoji="🔄")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        import bot as _bot
+        guild = interaction.guild
+        if not guild:
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await _bot._rc_post_new_panel(guild, ping_roles=True)
+        await interaction.followup.send("✅ Roll call has been reset and reposted.", ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Reset cancelled.", view=None)
+        self.stop()
+
+
+class _RcAdminViewV2(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(_RcAdminSelectV2())
+
+
+# =========================================================
 # COG
 # =========================================================
 class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
     def __init__(self, bot: commands.Bot):
-        self.bot  = bot
-        self.view = MeetInfoViewV2()
+        self.bot      = bot
+        self.view     = MeetInfoViewV2()
+        self.rc_admin = _RcAdminViewV2()
         bot.add_view(self.view)
+        bot.add_view(self.rc_admin)
 
     def _get_meet_info_msg_id(self) -> Optional[int]:
         cfg = _load_config()
@@ -340,11 +460,82 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
         except Exception as e:
             print(f"[MeetInfoPatch] Edit failed: {e}")
 
+    async def refresh_rc_admin(self) -> None:
+        """Find the roll call admin message and edit it with the new dropdown view."""
+        import bot as _bot
+        ch = self.bot.get_channel(ROLL_CALL_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            try:
+                ch = await self.bot.fetch_channel(ROLL_CALL_CHANNEL_ID)
+            except Exception:
+                print("[MeetInfoPatch] Could not fetch roll call channel.")
+                return
+
+        # Try stored admin message ID from SQLite DB first
+        try:
+            panel = _bot._rc_db.get_panel(ch.guild.id if hasattr(ch, 'guild') else 0)
+            if panel and panel.get("admin_message_id"):
+                try:
+                    msg = await ch.fetch_message(panel["admin_message_id"])
+                    await msg.edit(embed=_rc_admin_embed(), view=self.rc_admin)
+                    print("[MeetInfoPatch] RC admin panel updated via DB ID.")
+                    return
+                except discord.NotFound:
+                    pass
+        except Exception as e:
+            print(f"[MeetInfoPatch] DB lookup failed: {e}")
+
+        # Fallback: scan channel for messages with old finalize buttons
+        bot_id = self.bot.user.id if self.bot.user else None
+        if not bot_id:
+            return
+        try:
+            async for msg in ch.history(limit=60):
+                if msg.author.id != bot_id:
+                    continue
+                for row in msg.components:
+                    for child in row.children:
+                        cid = getattr(child, "custom_id", "") or ""
+                        if cid.startswith("diff_rollcall_finalize:"):
+                            await msg.edit(embed=_rc_admin_embed(), view=self.rc_admin)
+                            print("[MeetInfoPatch] RC admin panel updated via channel scan.")
+                            return
+        except Exception as e:
+            print(f"[MeetInfoPatch] RC admin scan failed: {e}")
+
+        print("[MeetInfoPatch] RC admin panel not found — skipping.")
+
+    def _monkey_patch_bot(self) -> None:
+        """Replace bot._rc_post_new_panel so fresh resets also use the new view."""
+        import bot as _bot
+        _orig = _bot._rc_post_new_panel
+        _view_ref = self.rc_admin
+
+        async def _patched_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
+            await _orig(guild, ping_roles=ping_roles)
+            # After original posts, find the new admin message and update it
+            ch = guild.get_channel(ROLL_CALL_CHANNEL_ID)
+            if not isinstance(ch, discord.TextChannel):
+                return
+            try:
+                panel = _bot._rc_db.get_panel(guild.id)
+                if panel and panel.get("admin_message_id"):
+                    msg = await ch.fetch_message(panel["admin_message_id"])
+                    await msg.edit(embed=_rc_admin_embed(), view=_view_ref)
+                    print("[MeetInfoPatch] RC admin panel updated after fresh post.")
+            except Exception as e:
+                print(f"[MeetInfoPatch] Post-patch edit failed: {e}")
+
+        _bot._rc_post_new_panel = _patched_post_new_panel
+        print("[MeetInfoPatch] Monkey-patched _rc_post_new_panel.")
+
     @commands.Cog.listener()
     async def on_ready(self):
         import asyncio
         await asyncio.sleep(5)   # let bot.py on_ready finish first
         await self.refresh_panel()
+        await self.refresh_rc_admin()
+        self._monkey_patch_bot()
         print("[MeetInfoPatch] Cog ready.")
 
     @commands.command(name="refresh_meetinfo")
@@ -352,6 +543,13 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
     async def cmd_refresh(self, ctx: commands.Context):
         await self.refresh_panel()
         await ctx.send("Meet-info panel refreshed.", delete_after=8)
+
+    @commands.command(name="patch_rc_admin")
+    @commands.has_permissions(manage_guild=True)
+    async def cmd_patch_rc_admin(self, ctx: commands.Context):
+        """Force-update the roll call staff tools panel with the new dropdown."""
+        await self.refresh_rc_admin()
+        await ctx.send("Roll call staff tools panel updated.", delete_after=8)
 
     # ----------------------------------------------------------
     # Crew announce panel force-refresh
