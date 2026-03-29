@@ -526,7 +526,7 @@ class CrewEventsPanelView(discord.ui.View):
         ],
     )
     async def combined_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        val = self.values[0]
+        val = select.values[0]
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
 
         if val == "create_event":
