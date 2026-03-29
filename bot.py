@@ -195,6 +195,24 @@ CREW_JACKETS = [
     "diff_data/jackets/jacket_12.jpeg",
 ]
 ALT_JACKET = "diff_data/jackets/jacket_alt.jpeg"
+JACKET_URLS_FILE = "diff_data/jacket_urls.json"
+
+
+def _load_jacket_urls() -> dict:
+    if os.path.exists(JACKET_URLS_FILE):
+        try:
+            with open(JACKET_URLS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_jacket_urls(data: dict):
+    with open(JACKET_URLS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
 ROLL_CALL_URL = f"https://discord.com/channels/{GUILD_ID}/1047338695352664165"
 COLOR_CHANNEL_URL = f"https://discord.com/channels/{GUILD_ID}/1108181679308283965"
 
@@ -5944,35 +5962,37 @@ class UnifiedCrewHubView(discord.ui.View):
 
         # ── Crew Jackets ───────────────────────────────────────────────
         elif value == "jackets":
-            first = discord.Embed(
-                title="🧥 DIFF Crew Jackets",
-                description=(
-                    "**Leaders / Managers Jacket** shown below.\n"
-                    "Crew member jacket images will follow in separate messages.\n\n"
-                    "If a member cannot place the crew emblem on the new jackets, "
-                    "they must wear the alternate jacket."
-                ),
-                color=discord.Color.blue(),
-            )
-            leader_fname = os.path.basename(LEADER_JACKET)
-            leader_file = discord.File(LEADER_JACKET, filename=leader_fname)
-            first.set_image(url=f"attachment://{leader_fname}")
-            await interaction.response.send_message(embed=first, file=leader_file, ephemeral=True)
-            for index, jpath in enumerate(CREW_JACKETS, start=1):
-                fname = os.path.basename(jpath)
-                jf = discord.File(jpath, filename=fname)
-                je = discord.Embed(title=f"🧥 Crew Member Jacket {index}", color=discord.Color.blue())
-                je.set_image(url=f"attachment://{fname}")
-                await interaction.followup.send(embed=je, file=jf, ephemeral=True)
-            alt_fname = os.path.basename(ALT_JACKET)
-            alt_file = discord.File(ALT_JACKET, filename=alt_fname)
-            alt_embed = discord.Embed(
-                title="🧥 Alternate Crew Jacket",
-                description="Use this jacket only if the crew emblem cannot be placed on the new jackets.",
-                color=discord.Color.blue(),
-            )
-            alt_embed.set_image(url=f"attachment://{alt_fname}")
-            await interaction.followup.send(embed=alt_embed, file=alt_file, ephemeral=True)
+            urls = _load_jacket_urls()
+            if not urls:
+                await interaction.response.send_message(
+                    "⚠️ Jacket images haven't been set up yet. A manager can run `!setupjackets` in any channel to upload them.",
+                    ephemeral=True,
+                )
+            else:
+                first = discord.Embed(
+                    title="🧥 DIFF Crew Jackets",
+                    description=(
+                        "**Leaders / Managers Jacket** shown below.\n"
+                        "Crew member jacket images will follow in separate messages.\n\n"
+                        "If a member cannot place the crew emblem on the new jackets, "
+                        "they must wear the alternate jacket."
+                    ),
+                    color=discord.Color.blue(),
+                )
+                first.set_image(url=urls.get("leader", ""))
+                await interaction.response.send_message(embed=first, ephemeral=True)
+                for index, url in enumerate(urls.get("crew", []), start=1):
+                    je = discord.Embed(title=f"🧥 Crew Member Jacket {index}", color=discord.Color.blue())
+                    je.set_image(url=url)
+                    await interaction.followup.send(embed=je, ephemeral=True)
+                if urls.get("alt"):
+                    alt_embed = discord.Embed(
+                        title="🧥 Alternate Crew Jacket",
+                        description="Use this jacket only if the crew emblem cannot be placed on the new jackets.",
+                        color=discord.Color.blue(),
+                    )
+                    alt_embed.set_image(url=urls["alt"])
+                    await interaction.followup.send(embed=alt_embed, ephemeral=True)
 
         # ── Roles & Responsibility ─────────────────────────────────────
         elif value == "roles":
@@ -6177,6 +6197,44 @@ async def diffhub(interaction: discord.Interaction):
     await interaction.response.send_message("Control Hub posted ✅", ephemeral=True)
     embed = _build_unified_hub_embed()
     await interaction.channel.send(embed=embed, view=UnifiedCrewHubView())
+
+
+@bot.command(name="setupjackets")
+async def setup_jackets(ctx):
+    """Upload jacket images to Discord and cache their CDN URLs. Manager+ only."""
+    if not isinstance(ctx.author, discord.Member):
+        return
+    manager_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    if not any(r.id in manager_ids for r in ctx.author.roles):
+        return await ctx.send("❌ Manager+ only.", delete_after=5)
+
+    all_paths = [("leader", LEADER_JACKET)] + \
+                [(f"crew_{i}", p) for i, p in enumerate(CREW_JACKETS, start=1)] + \
+                [("alt", ALT_JACKET)]
+
+    missing = [label for label, path in all_paths if not os.path.exists(path)]
+    if missing:
+        return await ctx.send(
+            f"❌ Missing jacket files on this machine: `{', '.join(missing)}`\n"
+            "Place the jacket images in `diff_data/jackets/` and try again.",
+        )
+
+    status_msg = await ctx.send("📤 Uploading jacket images to Discord... (this may take a moment)")
+    urls: dict = {"crew": []}
+
+    for label, path in all_paths:
+        fname = os.path.basename(path)
+        msg = await ctx.send(file=discord.File(path, filename=fname))
+        url = msg.attachments[0].url
+        if label == "leader":
+            urls["leader"] = url
+        elif label == "alt":
+            urls["alt"] = url
+        else:
+            urls["crew"].append(url)
+
+    _save_jacket_urls(urls)
+    await status_msg.edit(content=f"✅ All {len(all_paths)} jacket images uploaded and cached. The **Crew Jackets** dropdown will now work from any machine.")
 
 
 # =========================
