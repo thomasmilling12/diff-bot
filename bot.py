@@ -5875,8 +5875,12 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
 class UnifiedCrewHubView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(discord.ui.Button(label="📝 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_URL, row=0))
-        self.add_item(discord.ui.Button(label="🎨 Crew Color Voting", style=discord.ButtonStyle.link, url=COLOR_CHANNEL_URL, row=0))
+        self.add_item(discord.ui.Button(
+            label="📝 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_URL, row=0,
+        ))
+        self.add_item(discord.ui.Button(
+            label="🎨 Crew Color Voting", style=discord.ButtonStyle.link, url=COLOR_CHANNEL_URL, row=0,
+        ))
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
@@ -5888,168 +5892,165 @@ class UnifiedCrewHubView(discord.ui.View):
         except Exception:
             pass
 
-    @discord.ui.button(label="⚠️ Strike System", style=discord.ButtonStyle.primary, custom_id="unified_hub_strike", row=1)
-    async def strike(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="⚠️ DIFF Strike & Warning System",
-            description=(
-                "To maintain a clean, realistic, and respectful environment, "
-                "DIFF uses a structured conduct system for all members."
-            ),
-            color=discord.Color.red(),
-        )
-        embed.add_field(
-            name="📊 System Overview",
-            value=(
+    @discord.ui.select(
+        placeholder="⚙️ Select an action...",
+        custom_id="unified_hub_select_v1",
+        row=1,
+        options=[
+            discord.SelectOption(label="Strike System",         emoji="⚠️", value="strike",      description="Review conduct rules and warnings"),
+            discord.SelectOption(label="Crew Jackets",          emoji="🧥", value="jackets",     description="View official DIFF crew outfits"),
+            discord.SelectOption(label="Roles & Responsibility",emoji="📋", value="roles",       description="Learn each role and expectations"),
+            discord.SelectOption(label="My Stats",              emoji="📈", value="my_stats",    description="Your personal DIFF activity snapshot"),
+            discord.SelectOption(label="Leaderboard",           emoji="🏆", value="leaderboard", description="See the top crew members"),
+            discord.SelectOption(label="Latest Meet",           emoji="📅", value="latest_meet", description="View the latest attendance panel"),
+            discord.SelectOption(label="Promotion Suggestions", emoji="📊", value="promotions",  description="Staff: view promotion suggestions"),
+            discord.SelectOption(label="Refresh Hub",           emoji="🔄", value="refresh",     description="Update live stats on this panel"),
+        ],
+    )
+    async def hub_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        value = select.values[0]
+
+        # ── Strike System ──────────────────────────────────────────────
+        if value == "strike":
+            embed = discord.Embed(
+                title="⚠️ DIFF Strike & Warning System",
+                description=(
+                    "To maintain a clean, realistic, and respectful environment, "
+                    "DIFF uses a structured conduct system for all members."
+                ),
+                color=discord.Color.red(),
+            )
+            embed.add_field(name="📊 System Overview", value=(
                 "• ⚠️ Warning — Minor issue (notice)\n"
                 "• 🚨 Strike 1 — Official warning\n"
                 "• ⛔ Strike 2 — Final warning\n"
                 "• ❌ Strike 3 — Removal from DIFF"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="📌 What Can Lead to Strikes",
-            value=(
+            ), inline=False)
+            embed.add_field(name="📌 What Can Lead to Strikes", value=(
                 "• Disruptive behavior during meets\n"
                 "• Unrealistic / non-compliant builds\n"
                 "• Disrespect toward members or staff\n"
                 "• Failure to follow crew rules"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="🚨 Important",
-            value=(
+            ), inline=False)
+            embed.add_field(name="🚨 Important", value=(
                 "Repeated issues will escalate quickly. "
                 "Staff decisions are final to keep the crew organized and professional."
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="✅ Stay in Good Standing",
-            value="Follow the rules, respect the community, and contribute positively to DIFF.",
-            inline=False,
-        )
-        embed.set_footer(text="— DIFF Management")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            ), inline=False)
+            embed.add_field(name="✅ Stay in Good Standing",
+                value="Follow the rules, respect the community, and contribute positively to DIFF.",
+                inline=False)
+            embed.set_footer(text="— DIFF Management")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="🧥 Crew Jackets", style=discord.ButtonStyle.secondary, custom_id="unified_hub_jackets", row=1)
-    async def jackets(self, interaction: discord.Interaction, button: discord.ui.Button):
-        first = discord.Embed(
-            title="🧥 DIFF Crew Jackets",
-            description=(
-                "**Leaders / Managers Jacket** shown below.\n"
-                "Crew member jacket images will follow in separate messages.\n\n"
-                "If a member cannot place the crew emblem on the new jackets, "
-                "they must wear the alternate jacket."
-            ),
-            color=discord.Color.blue(),
-        )
-        leader_fname = os.path.basename(LEADER_JACKET)
-        leader_file = discord.File(LEADER_JACKET, filename=leader_fname)
-        first.set_image(url=f"attachment://{leader_fname}")
-        await interaction.response.send_message(embed=first, file=leader_file, ephemeral=True)
-        for index, path in enumerate(CREW_JACKETS, start=1):
-            fname = os.path.basename(path)
-            f = discord.File(path, filename=fname)
-            jacket_embed = discord.Embed(title=f"🧥 Crew Member Jacket {index}", color=discord.Color.blue())
-            jacket_embed.set_image(url=f"attachment://{fname}")
-            await interaction.followup.send(embed=jacket_embed, file=f, ephemeral=True)
-        alt_fname = os.path.basename(ALT_JACKET)
-        alt_file = discord.File(ALT_JACKET, filename=alt_fname)
-        alt_embed = discord.Embed(
-            title="🧥 Alternate Crew Jacket",
-            description="Use this jacket only if the crew emblem cannot be placed on the new jackets.",
-            color=discord.Color.blue(),
-        )
-        alt_embed.set_image(url=f"attachment://{alt_fname}")
-        await interaction.followup.send(embed=alt_embed, file=alt_file, ephemeral=True)
+        # ── Crew Jackets ───────────────────────────────────────────────
+        elif value == "jackets":
+            first = discord.Embed(
+                title="🧥 DIFF Crew Jackets",
+                description=(
+                    "**Leaders / Managers Jacket** shown below.\n"
+                    "Crew member jacket images will follow in separate messages.\n\n"
+                    "If a member cannot place the crew emblem on the new jackets, "
+                    "they must wear the alternate jacket."
+                ),
+                color=discord.Color.blue(),
+            )
+            leader_fname = os.path.basename(LEADER_JACKET)
+            leader_file = discord.File(LEADER_JACKET, filename=leader_fname)
+            first.set_image(url=f"attachment://{leader_fname}")
+            await interaction.response.send_message(embed=first, file=leader_file, ephemeral=True)
+            for index, jpath in enumerate(CREW_JACKETS, start=1):
+                fname = os.path.basename(jpath)
+                jf = discord.File(jpath, filename=fname)
+                je = discord.Embed(title=f"🧥 Crew Member Jacket {index}", color=discord.Color.blue())
+                je.set_image(url=f"attachment://{fname}")
+                await interaction.followup.send(embed=je, file=jf, ephemeral=True)
+            alt_fname = os.path.basename(ALT_JACKET)
+            alt_file = discord.File(ALT_JACKET, filename=alt_fname)
+            alt_embed = discord.Embed(
+                title="🧥 Alternate Crew Jacket",
+                description="Use this jacket only if the crew emblem cannot be placed on the new jackets.",
+                color=discord.Color.blue(),
+            )
+            alt_embed.set_image(url=f"attachment://{alt_fname}")
+            await interaction.followup.send(embed=alt_embed, file=alt_file, ephemeral=True)
 
-    @discord.ui.button(label="📈 My Stats", style=discord.ButtonStyle.success, custom_id="unified_hub_my_stats", row=2)
-    async def member_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
-        uid = str(interaction.user.id)
-        meets_data = _load_activity_meets()
-        m_stats = meets_data.get("members", {}).get(uid, {})
-        attended = m_stats.get("attended", 0)
-        hosted = m_stats.get("hosted", 0)
-        no_shows = m_stats.get("no_shows", 0)
-        penalty_pts = m_stats.get("penalty_points", 0)
-        rep_data = _load_activity_json(REPUTATION_FILE)
-        reputation = rep_data.get("reputation", {}).get(uid, 0)
-        warnings = get_warning_count(interaction.user.id)
-        score = max(0, (attended * 5) + (hosted * 8) - (no_shows * 6) - (warnings * 4) - (penalty_pts * 2))
-        if score >= 80:
-            grade = "A"
-        elif score >= 60:
-            grade = "B"
-        elif score >= 40:
-            grade = "C"
-        else:
-            grade = "D"
-        embed = discord.Embed(
-            title=f"📈 {interaction.user.display_name} — My DIFF Stats",
-            description="Your current DIFF activity snapshot.",
-            color=discord.Color.green(),
-        )
-        embed.add_field(name="✅ Meets Attended", value=str(attended), inline=True)
-        embed.add_field(name="🎤 Meets Hosted", value=str(hosted), inline=True)
-        embed.add_field(name="❌ No-Shows", value=str(no_shows), inline=True)
-        embed.add_field(name="⭐ Reputation", value=str(reputation), inline=True)
-        embed.add_field(name="⚠️ Warnings", value=str(warnings), inline=True)
-        embed.add_field(name="🏅 Activity Score", value=f"{score} ({grade})", inline=True)
-        embed.set_footer(text="Stats are updated live from the DIFF activity systems.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # ── Roles & Responsibility ─────────────────────────────────────
+        elif value == "roles":
+            embed = discord.Embed(
+                title="📋 DIFF Roles & Responsibility",
+                description=(
+                    "**Leader** — Oversees the full crew, staff direction, and major decisions.\n\n"
+                    "**Co-Leader / Manager** — Helps run operations, reviews activity, and supports hosts and staff.\n\n"
+                    "**Host** — Runs meets, organizes the lobby, helps with attendance, and keeps events smooth.\n\n"
+                    "**Crew Member** — Represents DIFF properly, does roll calls, follows rules, votes on colors, and stays active.\n\n"
+                    "**What DIFF expects from everyone:**\n"
+                    "• Respect staff and members\n"
+                    "• Follow meet rules\n"
+                    "• Stay active and consistent\n"
+                    "• Represent the crew professionally"
+                ),
+                color=discord.Color.blurple(),
+            )
+            embed.set_footer(text="— DIFF Management")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="📋 Roles & Responsibility", style=discord.ButtonStyle.secondary, custom_id="unified_hub_crew_roles", row=2)
-    async def crew_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="📋 DIFF Roles & Responsibility",
-            description=(
-                "**Leader** — Oversees the full crew, staff direction, and major decisions.\n\n"
-                "**Co-Leader / Manager** — Helps run operations, reviews activity, and supports hosts and staff.\n\n"
-                "**Host** — Runs meets, organizes the lobby, helps with attendance, and keeps events smooth.\n\n"
-                "**Crew Member** — Represents DIFF properly, does roll calls, follows rules, votes on colors, and stays active.\n\n"
-                "**What DIFF expects from everyone:**\n"
-                "• Respect staff and members\n"
-                "• Follow meet rules\n"
-                "• Stay active and consistent\n"
-                "• Represent the crew professionally"
-            ),
-            color=discord.Color.blurple(),
-        )
-        embed.set_footer(text="— DIFF Management")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # ── My Stats ───────────────────────────────────────────────────
+        elif value == "my_stats":
+            uid = str(interaction.user.id)
+            meets_data = _load_activity_meets()
+            m_stats = meets_data.get("members", {}).get(uid, {})
+            attended   = m_stats.get("attended", 0)
+            hosted     = m_stats.get("hosted", 0)
+            no_shows   = m_stats.get("no_shows", 0)
+            penalty_pts = m_stats.get("penalty_points", 0)
+            rep_data   = _load_activity_json(REPUTATION_FILE)
+            reputation = rep_data.get("reputation", {}).get(uid, 0)
+            warnings   = get_warning_count(interaction.user.id)
+            score = max(0, (attended * 5) + (hosted * 8) - (no_shows * 6) - (warnings * 4) - (penalty_pts * 2))
+            grade = "A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "D"
+            embed = discord.Embed(
+                title=f"📈 {interaction.user.display_name} — My DIFF Stats",
+                description="Your current DIFF activity snapshot.",
+                color=discord.Color.green(),
+            )
+            embed.add_field(name="✅ Meets Attended",  value=str(attended),   inline=True)
+            embed.add_field(name="🎤 Meets Hosted",    value=str(hosted),     inline=True)
+            embed.add_field(name="❌ No-Shows",        value=str(no_shows),   inline=True)
+            embed.add_field(name="⭐ Reputation",      value=str(reputation), inline=True)
+            embed.add_field(name="⚠️ Warnings",        value=str(warnings),   inline=True)
+            embed.add_field(name="🏅 Activity Score",  value=f"{score} ({grade})", inline=True)
+            embed.set_footer(text="Stats are updated live from the DIFF activity systems.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="🏆 Leaderboard", style=discord.ButtonStyle.success, custom_id="unified_hub_leaderboard", row=3)
-    async def leaderboard(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = _rsvp_build_leaderboard_embed()
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # ── Leaderboard ────────────────────────────────────────────────
+        elif value == "leaderboard":
+            embed = _rsvp_build_leaderboard_embed()
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="📅 Latest Meet", style=discord.ButtonStyle.secondary, custom_id="unified_hub_latest_meet", row=3)
-    async def latest_meet(self, interaction: discord.Interaction, button: discord.ui.Button):
-        meet = _rsvp_get_latest_meet()
-        if not meet:
-            await interaction.response.send_message("No attendance panels have been created yet.", ephemeral=True)
-            return
-        embed = _rsvp_build_embed(meet)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # ── Latest Meet ────────────────────────────────────────────────
+        elif value == "latest_meet":
+            meet = _rsvp_get_latest_meet()
+            if not meet:
+                await interaction.response.send_message("No attendance panels have been created yet.", ephemeral=True)
+                return
+            embed = _rsvp_build_embed(meet)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="📊 Promotion Suggestions", style=discord.ButtonStyle.secondary, custom_id="unified_hub_promotions", row=3)
-    async def promotions(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-            await interaction.response.send_message("Only DIFF staff can view promotion suggestions.", ephemeral=True)
-            return
-        embed = _rsvp_build_promotions_embed()
-        if embed is None:
-            await interaction.response.send_message("No promotion suggestions yet.", ephemeral=True)
-            return
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # ── Promotion Suggestions (staff) ──────────────────────────────
+        elif value == "promotions":
+            if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+                await interaction.response.send_message("Only DIFF staff can view promotion suggestions.", ephemeral=True)
+                return
+            embed = _rsvp_build_promotions_embed()
+            if embed is None:
+                await interaction.response.send_message("No promotion suggestions yet.", ephemeral=True)
+                return
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="🔄 Refresh Hub", style=discord.ButtonStyle.secondary, custom_id="unified_hub_refresh", row=4)
-    async def refresh_hub(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = _build_unified_hub_embed()
-        await interaction.response.edit_message(embed=embed, view=UnifiedCrewHubView())
+        # ── Refresh Hub ────────────────────────────────────────────────
+        elif value == "refresh":
+            embed = _build_unified_hub_embed()
+            await interaction.response.edit_message(embed=embed, view=UnifiedCrewHubView())
 
 
 # Keep legacy aliases so nothing else breaks
@@ -6110,12 +6111,12 @@ def _build_unified_hub_embed() -> discord.Embed:
     embed.add_field(name="🏆 Top 3 Right Now", value="\n".join(top_lines), inline=False)
     embed.add_field(name="📅 Latest Meet", value=latest_value, inline=False)
     embed.add_field(
-        name="🛠️ Quick Actions",
+        name="🛠️ Available Actions",
         value=(
-            "📝 **Roll Call** / 🎨 **Color Voting** — Link buttons above\n"
-            "⚠️ **Strike** / 🧥 **Jackets** / 📋 **Roles** — Crew info\n"
-            "📈 **My Stats** / 🏆 **Leaderboard** / 📅 **Latest Meet** — Activity\n"
-            "📊 **Promotion Suggestions** *(staff)* · 🔄 **Refresh Hub** — Update stats"
+            "Use the **dropdown below** to access any feature:\n"
+            "⚠️ Strike · 🧥 Jackets · 📋 Roles · 📈 My Stats\n"
+            "🏆 Leaderboard · 📅 Latest Meet · 📊 Promotions *(staff)* · 🔄 Refresh\n\n"
+            "📝 **Crew Roll Call** and 🎨 **Color Voting** are the link buttons above."
         ),
         inline=False,
     )
