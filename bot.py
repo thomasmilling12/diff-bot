@@ -1973,70 +1973,7 @@ CREW_HUB_STATE_FILE = os.path.join(DATA_FOLDER, "diff_crew_hub_state.json")
 
 
 def _build_crew_hub_embed() -> discord.Embed:
-    entries = list(_rsvp_leaderboard.values())
-    total_tracked = len(entries)
-    active = sum(1 for e in entries if int(e.get("attendance_count", 0)) > 0)
-    total_attendance = sum(int(e.get("attendance_count", 0)) for e in entries)
-    total_hosted = sum(int(e.get("hosted_count", 0)) for e in entries)
-
-    try:
-        apps = _load_diff_json(APPLICATIONS_FILE) if os.path.exists(APPLICATIONS_FILE) else {}
-        completed_apps = sum(1 for a in apps.values() if a.get("status") == "Approved")
-    except Exception:
-        completed_apps = 0
-
-    top3 = sorted(entries, key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))), reverse=True)[:3]
-    medals = ["🥇", "🥈", "🥉"]
-    top_lines = [f"{medals[i]} <@{e['user_id']}> — {e.get('attendance_count', 0)} meet(s)" for i, e in enumerate(top3)] or ["No top members yet."]
-
-    improved = _get_most_improved()
-    if improved:
-        gain = int(improved.get("attendance_count", 0)) - int(improved.get("last_attendance_count", 0))
-        improved_text = f"<@{improved['user_id']}> (+{gain} this week)"
-    else:
-        improved_text = "No data yet"
-
-    sep = "━━━━━━━━━━━━━━━━━━━━━━"
-    desc_parts = [
-        "📌 **Live DIFF activity snapshot**",
-        "",
-        sep,
-        f"👥 **Tracked Members:** {total_tracked}",
-        f"🔥 **Active Members:** {active}",
-        f"✅ **Total Attendance Logged:** {total_attendance}",
-        f"🏁 **Total Meets Hosted:** {total_hosted}",
-        f"📋 **Approved Crew Members:** {completed_apps}",
-        f"🚀 **Most Improved:** {improved_text}",
-        sep,
-        "",
-        "🏆 **Top 3 Right Now**",
-        *top_lines,
-        "",
-        "Path: **Join → Attend → Get noticed → Crew invite**",
-    ]
-    embed = discord.Embed(
-        title="📊 DIFF Crew Hub Stats",
-        description="\n".join(desc_parts),
-        color=discord.Color.from_rgb(17, 17, 17),
-        timestamp=utc_now(),
-    )
-    embed.set_footer(text="Different Meets • Crew Hub Stats")
-    return embed
-
-
-class CrewHubRefreshButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Refresh Stats", emoji="📊", style=discord.ButtonStyle.secondary, custom_id="diff_crew_hub_refresh")
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        embed = _build_crew_hub_embed()
-        await interaction.response.edit_message(embed=embed, view=CrewHubView())
-
-
-class CrewHubView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(CrewHubRefreshButton())
+    return _build_unified_hub_embed()
 
 
 # =========================
@@ -5935,7 +5872,7 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
 # DIFF CREW PANEL
 # =========================
 
-class DiffPanel(discord.ui.View):
+class UnifiedCrewHubView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(discord.ui.Button(label="📝 Crew Roll Call", style=discord.ButtonStyle.link, url=ROLL_CALL_URL, row=0))
@@ -5951,7 +5888,7 @@ class DiffPanel(discord.ui.View):
         except Exception:
             pass
 
-    @discord.ui.button(label="⚠️ Strike System", style=discord.ButtonStyle.primary, custom_id="diff_panel_strike", row=1)
+    @discord.ui.button(label="⚠️ Strike System", style=discord.ButtonStyle.primary, custom_id="unified_hub_strike", row=1)
     async def strike(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title="⚠️ DIFF Strike & Warning System",
@@ -5997,7 +5934,7 @@ class DiffPanel(discord.ui.View):
         embed.set_footer(text="— DIFF Management")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="🧥 Crew Jackets", style=discord.ButtonStyle.secondary, custom_id="diff_panel_jackets", row=1)
+    @discord.ui.button(label="🧥 Crew Jackets", style=discord.ButtonStyle.secondary, custom_id="unified_hub_jackets", row=1)
     async def jackets(self, interaction: discord.Interaction, button: discord.ui.Button):
         first = discord.Embed(
             title="🧥 DIFF Crew Jackets",
@@ -6029,7 +5966,7 @@ class DiffPanel(discord.ui.View):
         alt_embed.set_image(url=f"attachment://{alt_fname}")
         await interaction.followup.send(embed=alt_embed, file=alt_file, ephemeral=True)
 
-    @discord.ui.button(label="📈 My Stats", style=discord.ButtonStyle.success, custom_id="diff_panel_member_stats", row=2)
+    @discord.ui.button(label="📈 My Stats", style=discord.ButtonStyle.success, custom_id="unified_hub_my_stats", row=2)
     async def member_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = str(interaction.user.id)
         meets_data = _load_activity_meets()
@@ -6064,7 +6001,7 @@ class DiffPanel(discord.ui.View):
         embed.set_footer(text="Stats are updated live from the DIFF activity systems.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="📋 Roles & Responsibility", style=discord.ButtonStyle.secondary, custom_id="diff_panel_crew_roles", row=2)
+    @discord.ui.button(label="📋 Roles & Responsibility", style=discord.ButtonStyle.secondary, custom_id="unified_hub_crew_roles", row=2)
     async def crew_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title="📋 DIFF Roles & Responsibility",
@@ -6084,30 +6021,110 @@ class DiffPanel(discord.ui.View):
         embed.set_footer(text="— DIFF Management")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @discord.ui.button(label="🏆 Leaderboard", style=discord.ButtonStyle.success, custom_id="unified_hub_leaderboard", row=3)
+    async def leaderboard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = _rsvp_build_leaderboard_embed()
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-def _build_diff_panel_embed() -> discord.Embed:
+    @discord.ui.button(label="📅 Latest Meet", style=discord.ButtonStyle.secondary, custom_id="unified_hub_latest_meet", row=3)
+    async def latest_meet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        meet = _rsvp_get_latest_meet()
+        if not meet:
+            await interaction.response.send_message("No attendance panels have been created yet.", ephemeral=True)
+            return
+        embed = _rsvp_build_embed(meet)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="📊 Promotion Suggestions", style=discord.ButtonStyle.secondary, custom_id="unified_hub_promotions", row=3)
+    async def promotions(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+            await interaction.response.send_message("Only DIFF staff can view promotion suggestions.", ephemeral=True)
+            return
+        embed = _rsvp_build_promotions_embed()
+        if embed is None:
+            await interaction.response.send_message("No promotion suggestions yet.", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🔄 Refresh Hub", style=discord.ButtonStyle.secondary, custom_id="unified_hub_refresh", row=4)
+    async def refresh_hub(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = _build_unified_hub_embed()
+        await interaction.response.edit_message(embed=embed, view=UnifiedCrewHubView())
+
+
+# Keep legacy aliases so nothing else breaks
+DiffPanel = UnifiedCrewHubView
+CrewHubView = UnifiedCrewHubView
+
+
+def _build_unified_hub_embed() -> discord.Embed:
+    entries = list(_rsvp_leaderboard.values())
+    total_tracked = len(entries)
+    active = sum(1 for e in entries if int(e.get("attendance_count", 0)) > 0)
+    total_attendance = sum(int(e.get("attendance_count", 0)) for e in entries)
+    total_hosted = sum(int(e.get("hosted_count", 0)) for e in entries)
+
+    try:
+        apps = _load_diff_json(APPLICATIONS_FILE) if os.path.exists(APPLICATIONS_FILE) else {}
+        completed_apps = sum(1 for a in apps.values() if a.get("status") == "Approved")
+    except Exception:
+        completed_apps = 0
+
+    top3 = sorted(
+        entries,
+        key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))),
+        reverse=True,
+    )[:3]
+    medals = ["🥇", "🥈", "🥉"]
+    top_lines = (
+        [f"{medals[i]} <@{e['user_id']}> — {e.get('attendance_count', 0)} meet(s)" for i, e in enumerate(top3)]
+        or ["No top members yet."]
+    )
+
+    improved = _get_most_improved()
+    if improved:
+        gain = int(improved.get("attendance_count", 0)) - int(improved.get("last_attendance_count", 0))
+        improved_text = f"<@{improved['user_id']}> (+{gain})"
+    else:
+        improved_text = "No data yet"
+
+    latest = _rsvp_get_latest_meet()
+    if latest:
+        latest_value = f"**{latest.title}**\nHost: {latest.host_name} | Date: {latest.meet_date}"
+    else:
+        latest_value = "No meet panel created yet."
+
     embed = discord.Embed(
         title="📌 DIFF Crew Control Hub",
-        description=(
-            "*The all-in-one crew hub for Different Meets.*\n\n"
-            "---\n\n"
-            "📊 **Available Systems:**\n\n"
-            "📝 **Crew Roll Call** — Confirm your attendance for upcoming meets\n"
-            "🎨 **Crew Color Voting** — Help decide crew themes & styles\n"
-            "⚠️ **Strike System** — Review conduct rules and standards\n"
-            "🧥 **Crew Jackets** — View official DIFF crew outfits\n"
-            "📋 **Crew Roles & Responsibility** — Learn each role and expectations within DIFF\n"
-            "📈 **My Stats** — View your personal DIFF activity snapshot\n\n"
-            "---\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
-            "— **Different Meets**"
-        ),
-        color=discord.Color.blue(),
+        description="*The all-in-one crew hub for Different Meets.*",
+        color=discord.Color.from_str("#0F3460"),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.set_thumbnail(url=DIFF_LOGO)
-    embed.set_image(url=DIFF_LOGO)
+    embed.add_field(name="👥 Tracked Members", value=str(total_tracked), inline=True)
+    embed.add_field(name="🔥 Active Members", value=str(active), inline=True)
+    embed.add_field(name="✅ Total Attended", value=str(total_attendance), inline=True)
+    embed.add_field(name="🏁 Meets Hosted", value=str(total_hosted), inline=True)
+    embed.add_field(name="📋 Crew Approved", value=str(completed_apps), inline=True)
+    embed.add_field(name="🚀 Most Improved", value=improved_text, inline=True)
+    embed.add_field(name="🏆 Top 3 Right Now", value="\n".join(top_lines), inline=False)
+    embed.add_field(name="📅 Latest Meet", value=latest_value, inline=False)
+    embed.add_field(
+        name="🛠️ Quick Actions",
+        value=(
+            "📝 **Roll Call** / 🎨 **Color Voting** — Link buttons above\n"
+            "⚠️ **Strike** / 🧥 **Jackets** / 📋 **Roles** — Crew info\n"
+            "📈 **My Stats** / 🏆 **Leaderboard** / 📅 **Latest Meet** — Activity\n"
+            "📊 **Promotion Suggestions** *(staff)* · 🔄 **Refresh Hub** — Update stats"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="DIFF Crew Control Hub  •  Stay active, stay consistent")
     return embed
+
+
+def _build_diff_panel_embed() -> discord.Embed:
+    return _build_unified_hub_embed()
 
 
 @bot.tree.command(name="diffpanel", description="Post the DIFF Crew Control Panel (staff only)")
@@ -6156,28 +6173,8 @@ async def diffhub(interaction: discord.Interaction):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
     if not isinstance(interaction.channel, discord.TextChannel):
         return await interaction.response.send_message("Must be used in a text channel.", ephemeral=True)
-    embed = discord.Embed(
-        title="📌 DIFF Crew Control Hub",
-        description=(
-            "*The all-in-one crew hub for Different Meets.*\n\n"
-            "---\n\n"
-            "📊 **Available Systems:**\n\n"
-            "📝 **Crew Roll Call** — Confirm your attendance for upcoming meets\n"
-            "🎨 **Crew Color Voting** — Help decide crew themes & styles\n"
-            "⚠️ **Strike System** — Review conduct rules and standards\n"
-            "🧥 **Crew Jackets** — View official DIFF crew outfits\n"
-            "📋 **Crew Roles & Responsibility** — Learn each role and expectations within DIFF\n"
-            "📈 **My Stats** — View your personal DIFF activity snapshot\n\n"
-            "---\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📊 Stay active, stay consistent, and represent DIFF the right way.\n\n"
-            "— **Different Meets**"
-        ),
-        color=discord.Color.blue(),
-    )
-    embed.set_thumbnail(url=DIFF_LOGO)
-    embed.set_image(url=DIFF_LOGO)
-    await interaction.channel.send(embed=embed, view=DiffPanel())
+    embed = _build_unified_hub_embed()
+    await interaction.channel.send(embed=embed, view=UnifiedCrewHubView())
     await interaction.response.send_message("Control Hub posted ✅", ephemeral=True)
 
 
@@ -8831,13 +8828,11 @@ async def on_ready():
         bot.add_view(DIFFDashboardView())
         bot.add_view(MeetAttendancePanelView())
         bot.add_view(LeaderboardView())
-        bot.add_view(CrewHubView())
+        bot.add_view(UnifiedCrewHubView())
         bot.add_view(MeetRSVPView(meet1="Meet 1", meet2="Meet 2", meet3="Meet 3"))
         bot.add_view(ActivityDashboardView())
-        bot.add_view(DiffPanel())
         bot.add_view(ColorSubmissionPanelView())
         bot.add_view(SubmissionActionView())
-        bot.add_view(ControlHubView())
         bot.add_view(ColorTeamPanelView())
         bot.add_view(InterviewInfoView())
         bot.add_view(InterviewOutcomeView())
@@ -12824,34 +12819,7 @@ def _rsvp_build_promotions_embed() -> Optional[discord.Embed]:
 
 
 def _rsvp_build_control_hub_embed() -> discord.Embed:
-    latest = _rsvp_get_latest_meet()
-    if latest:
-        latest_value = f"**{latest.title}**\nHost: {latest.host_name}\nDate: {latest.meet_date}"
-    else:
-        latest_value = "No meet panel created yet."
-    embed = discord.Embed(
-        title="📌 DIFF Crew Control Hub",
-        description=(
-            "*The all-in-one crew hub for Different Meets.*\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📊 **Attendance & Activity**\n"
-            "Use the buttons below to check your personal stats, open the leaderboard, "
-            "and quickly view your latest meet panel.\n\n"
-            "🎯 **What This Hub Controls**\n"
-            "• Attendance tracking\n"
-            "• My Stats\n"
-            "• Leaderboard\n"
-            "• Promotion suggestions for staff\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=discord.Color.blue(),
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Attendance Channel", value=f"<#{ATT_RSVP_CHANNEL_ID}>", inline=True)
-    embed.add_field(name="Promotion Logs", value=f"<#{STAFF_LOGS_CHANNEL_ID}>", inline=True)
-    embed.add_field(name="Latest Meet", value=latest_value, inline=False)
-    embed.set_footer(text="Different Meets • Control Hub")
-    return embed
+    return _build_unified_hub_embed()
 
 
 async def _rsvp_post_or_refresh_control_hub(channel: discord.TextChannel) -> discord.Message:
@@ -12885,77 +12853,7 @@ async def _rsvp_post_or_refresh_control_hub(channel: discord.TextChannel) -> dis
     return msg
 
 
-class ControlHubView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="My Stats", emoji="📊", style=discord.ButtonStyle.primary, custom_id="control_hub_my_stats")
-    async def my_stats_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("This button only works inside the server.", ephemeral=True)
-            return
-        entry = _rsvp_leaderboard.get(str(interaction.user.id), {
-            "user_id": interaction.user.id,
-            "name": interaction.user.display_name,
-            "attendance_count": 0,
-            "hosted_count": 0,
-            "current_role": _rsvp_top_role(interaction.user),
-            "last_attended": None,
-            "rsvp_yes": 0,
-            "rsvp_maybe": 0,
-            "rsvp_no": 0,
-            "missed_after_rsvp": 0,
-        })
-        rate = _rsvp_attendance_rate(entry)
-        sorted_entries = sorted(
-            _rsvp_leaderboard.values(),
-            key=lambda x: (int(x.get("attendance_count", 0)), int(x.get("hosted_count", 0))),
-            reverse=True,
-        )
-        rank = next((i for i, e in enumerate(sorted_entries, 1) if int(e.get("user_id", 0)) == interaction.user.id), None)
-        embed = discord.Embed(
-            title="📈 My DIFF Stats",
-            description=f"Stats for {interaction.user.mention}",
-            color=discord.Color.blurple(),
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.add_field(name="Current Role", value=entry.get("current_role", "Crew Member"), inline=True)
-        embed.add_field(name="Attendance Rank", value=f"#{rank}" if rank else "Unranked", inline=True)
-        embed.add_field(name="📊 Attendance Rate", value=f"{rate}%", inline=True)
-        embed.add_field(name="✅ Meets Attended", value=str(int(entry.get("attendance_count", 0))), inline=True)
-        embed.add_field(name="🎤 Meets Hosted", value=str(int(entry.get("hosted_count", 0))), inline=True)
-        embed.add_field(name="✅ RSVP Pulling Up", value=str(int(entry.get("rsvp_yes", 0))), inline=True)
-        embed.add_field(name="❓ RSVP Maybe", value=str(int(entry.get("rsvp_maybe", 0))), inline=True)
-        embed.add_field(name="❌ RSVP Can't Make It", value=str(int(entry.get("rsvp_no", 0))), inline=True)
-        embed.add_field(name="⚠️ No-Shows After RSVP", value=str(int(entry.get("missed_after_rsvp", 0))), inline=True)
-        last = entry.get("last_attended")
-        embed.set_footer(text=f"Last attended: {last[:10] if last else 'No check-ins yet'}")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="Leaderboard", emoji="🏆", style=discord.ButtonStyle.success, custom_id="control_hub_leaderboard")
-    async def leaderboard_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = _rsvp_build_leaderboard_embed()
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="Latest Meet", emoji="📅", style=discord.ButtonStyle.secondary, custom_id="control_hub_latest_meet")
-    async def latest_meet_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        meet = _rsvp_get_latest_meet()
-        if not meet:
-            await interaction.response.send_message("No attendance panels have been created yet.", ephemeral=True)
-            return
-        embed = _rsvp_build_embed(meet)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="Promotion Suggestions", emoji="📈", style=discord.ButtonStyle.secondary, custom_id="control_hub_promotions")
-    async def promotions_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-            await interaction.response.send_message("Only DIFF staff can view promotion suggestions.", ephemeral=True)
-            return
-        embed = _rsvp_build_promotions_embed()
-        if embed is None:
-            await interaction.response.send_message("No promotion suggestions yet.", ephemeral=True)
-            return
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+ControlHubView = UnifiedCrewHubView
 
 
 @bot.tree.command(name="attendance-create", description="Create a live RSVP attendance panel for a meet (staff only)")
