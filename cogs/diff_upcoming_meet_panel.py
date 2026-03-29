@@ -170,8 +170,8 @@ def _hub_embed() -> discord.Embed:
                 description=(
                     "**A DIFF meet is happening right now!**\n"
                     f"Head over to <#{ch_id}> for the official post and all live details.\n\n"
-                    f"📣 Use <#{MEET_CHAT_CHANNEL_ID}> to communicate during the meet.\n"
-                    f"📸 Drop your clips and photos in <#{MEET_MEDIA_CHANNEL_ID}>."
+                    f"🎙️ Active hosts → <#{MEET_CHAT_CHANNEL_ID}>\n"
+                    f"📋 Meet info → <#{MEET_MEDIA_CHANNEL_ID}>"
                 ),
                 color=discord.Color.red(),
             )
@@ -236,8 +236,8 @@ def _hub_embed() -> discord.Embed:
             value=(
                 f"🏁 Official posts → <#{OFFICIAL_MEET_CHANNEL_ID}>\n"
                 f"⚡ Pop-up posts → <#{POPUP_MEET_CHANNEL_ID}>\n"
-                f"💬 Meet chat → <#{MEET_CHAT_CHANNEL_ID}>\n"
-                f"📸 Meet media → <#{MEET_MEDIA_CHANNEL_ID}>"
+                f"🎙️ Active hosts → <#{MEET_CHAT_CHANNEL_ID}>\n"
+                f"📋 Meet info → <#{MEET_MEDIA_CHANNEL_ID}>"
             ),
             inline=False,
         )
@@ -443,8 +443,8 @@ class UpcomingMeetHubView(discord.ui.View):
         for label, ch_id in [
             ("🏁 Official Meet Posts", OFFICIAL_MEET_CHANNEL_ID),
             ("⚡ Pop-Up Meets",        POPUP_MEET_CHANNEL_ID),
-            ("💬 Meet Chat",           MEET_CHAT_CHANNEL_ID),
-            ("📸 Meet Media",          MEET_MEDIA_CHANNEL_ID),
+            ("🎙️ Active Hosts",        MEET_CHAT_CHANNEL_ID),
+            ("📋 Meet Info",           MEET_MEDIA_CHANNEL_ID),
         ]:
             self.add_item(discord.ui.Button(
                 label=label,
@@ -568,7 +568,7 @@ class UpcomingMeetCog(commands.Cog):
                 "• Use meet chat for updates\n\n"
             )
         )
-        desc += f"━━━━━━━━━━━━━━━━━━━━━━\n**Quick Links:** <#{MEET_CHAT_CHANNEL_ID}> • <#{MEET_MEDIA_CHANNEL_ID}>"
+        desc += f"━━━━━━━━━━━━━━━━━━━━━━\n**Quick Links:** 🎙️ <#{MEET_CHAT_CHANNEL_ID}> (Active Hosts) • 📋 <#{MEET_MEDIA_CHANNEL_ID}> (Meet Info)"
 
         embed = discord.Embed(title=title, description=desc, color=color)
         embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -623,8 +623,8 @@ class UpcomingMeetCog(commands.Cog):
             description=(
                 f"**Theme:** {current['theme']}\n"
                 f"**Host:** {current['host']}\n\n"
-                f"Head to <#{MEET_CHAT_CHANNEL_ID}> for live meet communication.\n"
-                f"Post your content in <#{MEET_MEDIA_CHANNEL_ID}>."
+                f"🎙️ Active hosts → <#{MEET_CHAT_CHANNEL_ID}>\n"
+                f"📋 Meet info → <#{MEET_MEDIA_CHANNEL_ID}>"
             ),
             color=discord.Color.red(),
         )
