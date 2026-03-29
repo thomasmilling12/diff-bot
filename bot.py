@@ -210,40 +210,48 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 async def _setup_hook():
-    await bot.load_extension("cogs.partner_expansion")
-    await bot.load_extension("cogs.partner_request_system")
-    await bot.load_extension("cogs.diff_welcome_join")
-    await bot.load_extension("cogs.diff_feedback_system")
-    await bot.load_extension("cogs.diff_manager_hub")
-    await bot.load_extension("cogs.diff_manager_season")
-    await bot.load_extension("cogs.diff_manager_writeups")
-    await bot.load_extension("cogs.diff_full_moderation")
-    await bot.load_extension("cogs.diff_staff_dashboard")
-    await bot.load_extension("cogs.diff_next_level_moderation")
-    await bot.load_extension("cogs.diff_memes_panel")
-    await bot.load_extension("cogs.diff_irl_car_photos_panel")
-    await bot.load_extension("cogs.diff_car_photos_panel")
-    await bot.load_extension("cogs.diff_content_support_panel")
-    await bot.load_extension("cogs.diff_case_system")
-    await bot.load_extension("cogs.diff_meet_channel_panel")
-    await bot.load_extension("cogs.diff_meet_host_system")
-    await bot.load_extension("cogs.diff_marketplace")
-    await bot.load_extension("cogs.diff_unverified_panel")
-    await bot.load_extension("cogs.diff_color_lab")
-    await bot.load_extension("cogs.diff_color_team_announcement_panel")
-    await bot.load_extension("cogs.diff_color_team_scheduler")
-    await bot.load_extension("cogs.diff_host_team_panel")
-    await bot.load_extension("cogs.diff_host_team_announcement_panel")
-    await bot.load_extension("cogs.diff_crew_events")
-    await bot.load_extension("cogs.diff_attendance")
-    await bot.load_extension("cogs.diff_announcement_panels")
-    await bot.load_extension("cogs.diff_upcoming_meet_panel")
-    await bot.load_extension("cogs.diff_mod_hub")
-    await bot.load_extension("cogs.diff_automod")
-    await bot.load_extension("cogs.diff_server_stats")
-    await bot.load_extension("cogs.diff_security")
-    await bot.load_extension("cogs.diff_smart_punishment")
-    await bot.load_extension("cogs.diff_appeal_system")
+    _cogs = [
+        "cogs.partner_expansion",
+        "cogs.partner_request_system",
+        "cogs.diff_welcome_join",
+        "cogs.diff_feedback_system",
+        "cogs.diff_manager_hub",
+        "cogs.diff_manager_season",
+        "cogs.diff_manager_writeups",
+        "cogs.diff_full_moderation",
+        "cogs.diff_staff_dashboard",
+        "cogs.diff_next_level_moderation",
+        "cogs.diff_memes_panel",
+        "cogs.diff_irl_car_photos_panel",
+        "cogs.diff_car_photos_panel",
+        "cogs.diff_content_support_panel",
+        "cogs.diff_case_system",
+        "cogs.diff_meet_channel_panel",
+        "cogs.diff_meet_host_system",
+        "cogs.diff_marketplace",
+        "cogs.diff_unverified_panel",
+        "cogs.diff_color_lab",
+        "cogs.diff_color_team_announcement_panel",
+        "cogs.diff_color_team_scheduler",
+        "cogs.diff_host_team_panel",
+        "cogs.diff_host_team_announcement_panel",
+        "cogs.diff_crew_events",
+        "cogs.diff_attendance",
+        "cogs.diff_announcement_panels",
+        "cogs.diff_upcoming_meet_panel",
+        "cogs.diff_mod_hub",
+        "cogs.diff_automod",
+        "cogs.diff_server_stats",
+        "cogs.diff_security",
+        "cogs.diff_smart_punishment",
+        "cogs.diff_appeal_system",
+    ]
+    for _cog in _cogs:
+        try:
+            await bot.load_extension(_cog)
+            print(f"[Cogs] Loaded {_cog}")
+        except Exception as _e:
+            print(f"[Cogs] FAILED to load {_cog}: {_e}")
 
 bot.setup_hook = _setup_hook
 
