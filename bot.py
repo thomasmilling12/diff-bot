@@ -9865,6 +9865,11 @@ async def on_ready():
             await _ig_panel_post_or_refresh(_g)
         except Exception as _e:
             print(f"[IGPanel] on_ready error: {_e}")
+    for _g in bot.guilds:
+        try:
+            await send_or_refresh_crew_panel(_g)
+        except Exception as _e:
+            print(f"[CrewPanel] on_ready error: {_e}")
     if not _rc_ensure_loop.is_running():
         _rc_ensure_loop.start()
 
