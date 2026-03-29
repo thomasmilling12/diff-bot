@@ -14920,20 +14920,52 @@ def _join_build_panel_embed() -> discord.Embed:
     return embed
 
 
-def _join_build_ticket_embed(member: discord.Member, psn_name: str = "", nickname_status: str = "") -> discord.Embed:
-    lines = [f"{member.mention}, your PSN name has been submitted.", ""]
+_JOIN_EXTRA_FILE = os.path.join(DATA_FOLDER, "diff_join_extra.json")
+
+
+def _join_extra_load() -> dict:
+    if os.path.exists(_JOIN_EXTRA_FILE):
+        try:
+            with open(_JOIN_EXTRA_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _join_extra_save(data: dict) -> None:
+    with open(_JOIN_EXTRA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def _join_build_ticket_embed(
+    member: discord.Member,
+    psn_name: str = "",
+    nickname_status: str = "",
+    car_type: str = "",
+    heard_from: str = "",
+) -> discord.Embed:
+    lines = [f"{member.mention}, welcome to your join application.", ""]
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("**📋 Application Details**")
     if psn_name:
-        lines.append(f"**PSN Name:** {psn_name}")
+        lines.append(f"🎮 **PSN:** {psn_name}")
     if nickname_status:
-        lines.append(f"**Nickname Status:** {nickname_status}")
+        lines.append(f"✏️ **Nickname:** {nickname_status}")
+    if car_type:
+        lines.append(f"🚗 **Car Style:** {car_type}")
+    if heard_from:
+        lines.append(f"📣 **How they found us:** {heard_from}")
     lines += [
         "",
-        "**Now only do this:**",
-        "• Send **10 car photos** showing your builds",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "**📌 Steps to Complete**",
+        "✅ PSN submitted",
+        f"📷 Send **{MIN_GARAGE_PHOTOS} car photos** showing your builds ← *do this now*",
+        "⏳ Staff review",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━",
-        "✅ Staff can review using the buttons below.",
-        "🔒 When finished, staff can close the ticket.",
+        "*Staff use the buttons below to Accept, Deny, request more info, or close the ticket.*",
     ]
     embed = discord.Embed(
         title="🎮 PlayStation Join Application",
@@ -15034,13 +15066,25 @@ class JoinPlatformSelect(discord.ui.Select):
         await interaction.response.send_modal(JoinPsnModal())
 
 
-class JoinPsnModal(discord.ui.Modal, title="PlayStation Join"):
+class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
     psn_name = discord.ui.TextInput(
-        label="Enter your PSN name",
+        label="Your PSN / Gamertag",
         placeholder="Example: Frostyy2003",
         required=True,
         max_length=28,
         min_length=2,
+    )
+    car_type = discord.ui.TextInput(
+        label="Your main car style",
+        placeholder="e.g. Stanced, JDM, Muscle, Lowrider, Open",
+        required=True,
+        max_length=80,
+    )
+    heard_from = discord.ui.TextInput(
+        label="How did you find DIFF Meets?",
+        placeholder="e.g. Friend, TikTok, YouTube, Reddit, In-game",
+        required=True,
+        max_length=100,
     )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -15048,6 +15092,8 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join"):
             return await interaction.response.send_message("Server only.", ephemeral=True)
 
         clean_psn = _join_sanitize_psn(str(self.psn_name))
+        car_type_val = str(self.car_type).strip()
+        heard_from_val = str(self.heard_from).strip()
 
         try:
             await interaction.response.defer(ephemeral=True)
@@ -15111,10 +15157,21 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join"):
                 ping_parts.append(r.mention)
         await channel.send(
             content=" ".join(ping_parts),
-            embed=_join_build_ticket_embed(interaction.user, psn_name=clean_psn, nickname_status=nickname_status),
+            embed=_join_build_ticket_embed(
+                interaction.user,
+                psn_name=clean_psn,
+                nickname_status=nickname_status,
+                car_type=car_type_val,
+                heard_from=heard_from_val,
+            ),
             view=JoinTicketView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True),
         )
+
+        # Save extra application data
+        extra = _join_extra_load()
+        extra[str(channel.id)] = {"car_type": car_type_val, "heard_from": heard_from_val}
+        _join_extra_save(extra)
 
         from datetime import timezone as _tz
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
@@ -15125,6 +15182,8 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join"):
                     f"**User:** {interaction.user.mention}",
                     f"**Platform:** PlayStation",
                     f"**PSN:** {clean_psn}",
+                    f"**Car Style:** {car_type_val}",
+                    f"**Found Us:** {heard_from_val}",
                     f"**Ticket:** {channel.mention}",
                     f"**Nickname Status:** {nickname_status}",
                     f"**Status:** Pending Review",
@@ -15186,6 +15245,138 @@ class JoinPlatformView(discord.ui.View):
             except discord.HTTPException:
                 return await interaction.response.send_message("Failed to add role. Try again.", ephemeral=True)
             await interaction.response.send_message("🔔 Meet notifications **ON** — you'll be pinged for meets.", ephemeral=True)
+
+
+class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
+    reason = discord.ui.TextInput(
+        label="Reason for denial",
+        style=discord.TextStyle.paragraph,
+        placeholder="e.g. Photos too blurry, builds don't meet standards, insufficient car variety…",
+        required=True,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Channel error.", ephemeral=True)
+        reason_text = str(self.reason).strip()
+        uid_raw = _join_parse_user_id(interaction.channel.topic)
+        if not uid_raw or not uid_raw.isdigit():
+            return await interaction.response.send_message("Could not find the applicant for this ticket.", ephemeral=True)
+
+        member = interaction.guild.get_member(int(uid_raw))
+        if not member:
+            try:
+                member = await interaction.guild.fetch_member(int(uid_raw))
+            except discord.HTTPException:
+                member = None
+
+        psn = _join_parse_psn(interaction.channel.topic)
+        await interaction.response.send_message(
+            f"Application denied.{f' {member.mention} was notified by DM.' if member else ''}",
+            ephemeral=True,
+        )
+
+        if member:
+            try:
+                await member.send(embed=discord.Embed(
+                    title="❌ DIFF Join Application — Not Accepted",
+                    description="\n".join([
+                        f"**PSN:** {psn}",
+                        "",
+                        "Your PlayStation join application was not accepted at this time.",
+                        "",
+                        f"**Reason:** {reason_text}",
+                        "",
+                        "You're welcome to improve and reapply in the future.",
+                    ]),
+                    color=discord.Color.red(),
+                ))
+            except discord.HTTPException:
+                pass
+
+        from datetime import timezone as _tz
+        now = datetime.now(_tz.utc)
+        deny_embed = discord.Embed(
+            title="❌ Application Denied",
+            description="\n".join([
+                f"{member.mention if member else f'<@{uid_raw}>'}, your PlayStation join application was **denied**.",
+                f"**PSN:** {psn}",
+                f"**Reason:** {reason_text}",
+                "",
+                "You may improve your builds and reapply in the future.",
+            ]),
+            color=discord.Color.red(),
+            timestamp=now,
+        )
+        if DIFF_LOGO_URL:
+            deny_embed.set_thumbnail(url=DIFF_LOGO_URL)
+        deny_embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
+        await interaction.channel.send(embed=deny_embed)
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            log_embed = discord.Embed(
+                title="❌ Join Application Denied",
+                description="\n".join([
+                    f"**User:** {member.mention if member else f'<@{uid_raw}>'}",
+                    f"**PSN:** {psn}",
+                    f"**Reason:** {reason_text}",
+                    f"**Reviewed by:** {interaction.user.mention}",
+                    f"**Ticket:** {interaction.channel.mention}",
+                ]),
+                color=discord.Color.red(),
+                timestamp=now,
+            )
+            if DIFF_LOGO_URL:
+                log_embed.set_thumbnail(url=DIFF_LOGO_URL)
+            log_embed.set_footer(text="Different Meets • Join Hub")
+            try:
+                await logs_channel.send(embed=log_embed)
+            except discord.HTTPException:
+                pass
+
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.delete(reason=f"Join application denied by {interaction.user}")
+        except discord.HTTPException:
+            pass
+
+
+class JoinRequestInfoModal(discord.ui.Modal, title="Request More Info"):
+    message = discord.ui.TextInput(
+        label="What do you need from the applicant?",
+        style=discord.TextStyle.paragraph,
+        placeholder="e.g. Need better angles of the front, please send photos in natural lighting…",
+        required=True,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Channel error.", ephemeral=True)
+        msg_text = str(self.message).strip()
+        uid_raw = _join_parse_user_id(interaction.channel.topic)
+        applicant_mention = f"<@{uid_raw}>" if uid_raw else "Applicant"
+
+        embed = discord.Embed(
+            title="📋 Additional Information Requested",
+            description="\n".join([
+                f"{applicant_mention}, a staff member needs the following from you:",
+                "",
+                f"> {msg_text}",
+                "",
+                "*Please respond here in the ticket.*",
+            ]),
+            color=discord.Color.orange(),
+            timestamp=utc_now(),
+        )
+        embed.set_footer(text=f"Requested by {interaction.user.display_name} • Different Meets")
+        await interaction.response.send_message(
+            content=applicant_mention,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
 
 
 class JoinTicketView(discord.ui.View):
@@ -15352,90 +15543,15 @@ class JoinTicketView(discord.ui.View):
             return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
-        uid_raw = _join_parse_user_id(interaction.channel.topic)
-        if not uid_raw or not uid_raw.isdigit():
-            return await interaction.response.send_message("Could not find the applicant for this ticket.", ephemeral=True)
+        await interaction.response.send_modal(JoinDenyModal())
 
-        member = interaction.guild.get_member(int(uid_raw))
-        if not member:
-            try:
-                member = await interaction.guild.fetch_member(int(uid_raw))
-            except discord.HTTPException:
-                member = None
-
-        psn = _join_parse_psn(interaction.channel.topic)
-
-        await interaction.response.send_message(
-            f"Application denied.{f' {member.mention} was notified by DM.' if member else ''}",
-            ephemeral=True,
-        )
-
-        if member:
-            try:
-                await member.send(embed=discord.Embed(
-                    title="❌ DIFF Join Application Update",
-                    description="\n".join([
-                        f"**PSN:** {psn}",
-                        "Your PlayStation join application was not accepted at this time.",
-                        "",
-                        "You can improve your builds, presentation, or application details and apply again later.",
-                    ]),
-                    color=discord.Color.red(),
-                ))
-            except discord.HTTPException:
-                pass
-
-        from datetime import timezone as _tz
-        now = datetime.now(_tz.utc)
-        deny_embed = discord.Embed(
-            title="❌ Application Denied",
-            description="\n".join([
-                f"{member.mention if member else f'<@{uid_raw}>'}, your PlayStation join application was **denied** at this time.",
-                f"**PSN:** {psn}",
-                "",
-                "You may improve your builds and reapply in the future.",
-            ]),
-            color=discord.Color.red(),
-            timestamp=now,
-        )
-        if DIFF_LOGO_URL:
-            deny_embed.set_thumbnail(url=DIFF_LOGO_URL)
-        deny_embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
-        await interaction.channel.send(embed=deny_embed)
-
-        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-        if isinstance(logs_channel, discord.TextChannel):
-            log_embed = discord.Embed(
-                title="❌ Join Application Denied",
-                description="\n".join([
-                    f"**User:** {member.mention if member else f'<@{uid_raw}>'}",
-                    f"**PSN:** {psn}",
-                    f"**Reviewed by:** {interaction.user.mention}",
-                    f"**Ticket:** {interaction.channel.mention}",
-                ]),
-                color=discord.Color.red(),
-                timestamp=now,
-            )
-            if DIFF_LOGO_URL:
-                log_embed.set_thumbnail(url=DIFF_LOGO_URL)
-            log_embed.set_footer(text="Different Meets • Join Hub")
-            try:
-                await logs_channel.send(embed=log_embed)
-            except discord.HTTPException:
-                pass
-
-        for child in self.children:
-            child.disabled = True
-        try:
-            await interaction.message.edit(view=self)
-        except discord.HTTPException:
-            pass
-
-        await asyncio.sleep(5)
-        try:
-            await interaction.channel.delete(reason=f"Join application denied by {interaction.user}")
-        except discord.HTTPException:
-            pass
+    @discord.ui.button(label="Request Info", emoji="📋", style=discord.ButtonStyle.primary, custom_id="diff_join_request_info")
+    async def request_info(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not self._staff_check(interaction):
+            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Channel error.", ephemeral=True)
+        await interaction.response.send_modal(JoinRequestInfoModal())
 
     @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="diff_join_close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
