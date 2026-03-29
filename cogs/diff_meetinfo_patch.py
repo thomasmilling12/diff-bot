@@ -678,7 +678,7 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
             )
 
 
-print("[MeetInfoPatch] Module loaded OK.")
+print("[MeetInfoPatch] Module loaded OK — v4.")
 
 
 async def setup(bot: commands.Bot):
