@@ -15194,36 +15194,51 @@ def _join_build_ticket_embed(
     car_type: str = "",
     heard_from: str = "",
 ) -> discord.Embed:
-    lines = [f"{member.mention}, welcome to your join application.", ""]
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("**📋 Application Details**")
-    if psn_name:
-        lines.append(f"🎮 **PSN:** {psn_name}")
-    if nickname_status:
-        lines.append(f"✏️ **Nickname:** {nickname_status}")
-    if car_type:
-        lines.append(f"🚗 **Car Style:** {car_type}")
-    if heard_from:
-        lines.append(f"📣 **How they found us:** {heard_from}")
-    lines += [
-        "",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "**📌 Steps to Complete**",
-        "✅ PSN submitted",
-        f"📷 Send **{MIN_GARAGE_PHOTOS} car photos** showing your builds ← *do this now*",
-        "⏳ Staff review",
-        "",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "*Staff use the buttons below to Accept, Deny, request more info, or close the ticket.*",
-    ]
     embed = discord.Embed(
         title="🎮 PlayStation Join Application",
-        description="\n".join(lines),
-        color=discord.Color.from_str("#111111"),
+        description=f"Welcome {member.mention}! Follow the steps below to complete your application.",
+        color=0x00439C,  # PlayStation blue
     )
+
+    embed.set_author(
+        name=f"{member.display_name}{' — ' + psn_name if psn_name else ''}",
+        icon_url=member.display_avatar.url,
+    )
+
     if DIFF_LOGO_URL:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
+
+    # ── Application Details (inline pairs) ──────────────────────
+    if psn_name:
+        embed.add_field(name="🎮 PSN",          value=psn_name,        inline=True)
+    if nickname_status:
+        embed.add_field(name="✏️ Nickname",     value=nickname_status, inline=True)
+    if car_type or heard_from:
+        embed.add_field(name="\u200b",          value="\u200b",        inline=True)  # spacer
+    if car_type:
+        embed.add_field(name="🚗 Car Style",    value=car_type,        inline=True)
+    if heard_from:
+        embed.add_field(name="📣 How Found Us", value=heard_from,      inline=True)
+
+    # ── Steps ───────────────────────────────────────────────────
+    steps = (
+        f"✅ PSN submitted\n"
+        f"▶ **Send {MIN_GARAGE_PHOTOS} car photos** — *upload your builds now*\n"
+        f"○ Staff review"
+    )
+    embed.add_field(name="📌 Steps to Complete", value=steps, inline=False)
+
+    # ── Staff note ───────────────────────────────────────────────
+    embed.add_field(
+        name="\u200b",
+        value="*Staff: use the buttons below to Accept, Deny, request info, or close the ticket.*",
+        inline=False,
+    )
+
+    footer_kwargs: dict = {"text": "Different Meets • PlayStation GTA Car Meets"}
+    if DIFF_LOGO_URL:
+        footer_kwargs["icon_url"] = DIFF_LOGO_URL
+    embed.set_footer(**footer_kwargs)
     return embed
 
 
