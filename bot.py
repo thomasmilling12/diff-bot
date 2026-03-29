@@ -13670,19 +13670,22 @@ def _supp_build_panel_embed() -> discord.Embed:
 
 def _supp_build_ticket_embed(ticket: _TicketType, user: discord.Member) -> discord.Embed:
     from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
+    color = _TICKET_COLORS.get(ticket.key, discord.Color.blue())
+    prompt = _TICKET_PROMPTS.get(ticket.key, "Please describe your situation in as much detail as possible.")
     embed = discord.Embed(
         title=f"{ticket.emoji} {ticket.title}",
         description=(
-            f"{user.mention}, your ticket has been created.\n\n"
-            f"{ticket.long_description}\n\n"
-            "**Please explain your situation clearly and include as much detail as possible.**"
+            f"{user.mention}, your ticket is open. A staff member will be with you shortly.\n\n"
+            f"{prompt}"
         ),
-        color=discord.Color.blue(),
-        timestamp=datetime.now(_tz.utc),
+        color=color,
+        timestamp=now,
     )
-    embed.add_field(name="Opened By", value=f"{user.mention} (`{user.id}`)", inline=False)
-    embed.add_field(name="Category", value=ticket.label, inline=True)
-    embed.add_field(name="Status", value="Open", inline=True)
+    embed.add_field(name="👤 Opened By", value=f"{user.mention} (`{user.id}`)", inline=True)
+    embed.add_field(name="📋 Type", value=ticket.label, inline=True)
+    embed.add_field(name="🔓 Status", value="Open — Awaiting Staff", inline=True)
+    embed.add_field(name="⏰ Opened", value=f"<t:{int(now.timestamp())}:R>", inline=True)
     return _supp_brand_embed(embed)
 
 
@@ -13771,6 +13774,53 @@ async def _supp_find_existing_ticket(
             if f"ticket_owner={member.id}" in ch.topic and f"ticket_type={ticket.key}" in ch.topic:
                 return ch
     return None
+
+
+async def _supp_find_any_open_ticket(
+    guild: discord.Guild,
+    member: discord.Member,
+) -> discord.TextChannel | None:
+    """Return ANY open ticket belonging to this user across all ticket types."""
+    for ch in guild.text_channels:
+        if ch.topic and f"ticket_owner={member.id}" in ch.topic:
+            for tk in _TICKET_TYPES.values():
+                if f"ticket_type={tk.key}" in ch.topic:
+                    return ch
+    return None
+
+
+_TICKET_COLORS: dict[str, discord.Color] = {
+    "report":  discord.Color.red(),
+    "appeal":  discord.Color.orange(),
+    "support": discord.Color.blurple(),
+    "apply":   discord.Color.green(),
+}
+
+_TICKET_PROMPTS: dict[str, str] = {
+    "report": (
+        "**Please include the following:**\n"
+        "• Who you're reporting and their PSN\n"
+        "• What happened and when\n"
+        "• Any screenshots or video evidence"
+    ),
+    "appeal": (
+        "**Please include the following:**\n"
+        "• What action was taken against you\n"
+        "• Why you believe it was unfair\n"
+        "• Any evidence or context that supports your case"
+    ),
+    "support": (
+        "**Please include the following:**\n"
+        "• A clear description of what you need help with\n"
+        "• What you have already tried\n"
+        "• Any relevant screenshots if applicable"
+    ),
+    "apply": (
+        "Welcome to the DIFF Staff Application.\n"
+        "A member of leadership will review your responses below.\n"
+        "Answer each question honestly and in detail."
+    ),
+}
 
 
 def _esc(text: str) -> str:
@@ -14015,6 +14065,30 @@ class SupportCloseButton(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
+    @discord.ui.button(label="Claim Ticket", emoji="🙋", style=discord.ButtonStyle.secondary, custom_id="diff_support_claim_ticket")
+    async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not isinstance(interaction.user, discord.Member):
+            return
+        is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in interaction.user.roles)
+        if not is_staff:
+            return await interaction.response.send_message("Only staff can claim tickets.", ephemeral=True)
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+        topic = channel.topic or ""
+        if "ticket_claimed_by=" in topic:
+            existing_claimer_id = _supp_parse_topic(topic, "ticket_claimed_by")
+            return await interaction.response.send_message(
+                f"This ticket has already been claimed by <@{existing_claimer_id}>.", ephemeral=True
+            )
+        try:
+            await channel.edit(topic=topic + f" | ticket_claimed_by={interaction.user.id}")
+        except Exception:
+            pass
+        await interaction.response.send_message(
+            f"🙋 {interaction.user.mention} has claimed this ticket and will be assisting shortly."
+        )
+
     @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="diff_support_close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
@@ -14029,36 +14103,62 @@ class SupportCloseButton(discord.ui.View):
         if not (is_owner or is_staff or member.guild_permissions.manage_channels):
             return await interaction.response.send_message("You do not have permission to close this ticket.", ephemeral=True)
 
-        await interaction.response.send_message("Closing ticket and saving transcript...", ephemeral=True)
+        await interaction.response.send_message("🔒 Closing ticket and saving transcript...", ephemeral=True)
+        await channel.send(
+            embed=discord.Embed(
+                description=f"🔒 This ticket is being closed by {member.mention}. The channel will be deleted shortly.",
+                color=discord.Color.red(),
+            )
+        )
 
         ticket_key = _supp_parse_topic(channel.topic, "ticket_type") or "support"
         ticket = _TICKET_TYPES.get(ticket_key, _TICKET_TYPES["support"])
+        claimer_id = _supp_parse_topic(channel.topic, "ticket_claimed_by")
 
         transcript_file = await _supp_export_transcript(channel)
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
             from datetime import timezone as _tz
             now = datetime.now(_tz.utc)
+            color = _TICKET_COLORS.get(ticket.key, discord.Color.red())
             close_embed = discord.Embed(
-                title="🧾 Ticket Closed",
-                description=(
-                    f"Closed By: {member.mention}\n"
-                    f"Channel: `{channel.name}`\n"
-                    f"Type: {ticket.label}\n"
-                    f"Closed At: <t:{int(now.timestamp())}:F>"
-                ),
-                color=discord.Color.red(),
+                title=f"🔒 Ticket Closed — {ticket.label}",
+                color=color,
                 timestamp=now,
             )
+            close_embed.add_field(name="📋 Type", value=ticket.label, inline=True)
+            close_embed.add_field(name="🔒 Closed By", value=member.mention, inline=True)
+            close_embed.add_field(name="⏰ Closed At", value=f"<t:{int(now.timestamp())}:F>", inline=True)
             if owner_id:
-                close_embed.add_field(name="Ticket Owner ID", value=owner_id, inline=False)
+                close_embed.add_field(name="👤 Ticket Owner", value=f"<@{owner_id}> (`{owner_id}`)", inline=True)
+            if claimer_id:
+                close_embed.add_field(name="🙋 Claimed By", value=f"<@{claimer_id}>", inline=True)
+            close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
             _supp_brand_embed(close_embed)
             try:
                 await logs_channel.send(embed=close_embed, file=transcript_file)
             except discord.HTTPException:
                 pass
 
-        await asyncio.sleep(1.5)
+        if owner_id:
+            try:
+                owner = interaction.guild.get_member(int(owner_id))
+                if owner and owner.id != member.id:
+                    dm_embed = discord.Embed(
+                        title="🔒 Your Ticket Has Been Closed",
+                        description=(
+                            f"Your **{ticket.label}** ticket (`{channel.name}`) in **{interaction.guild.name}** "
+                            f"has been closed by {member.mention}.\n\n"
+                            "If you still need help, you can open a new ticket from the support panel."
+                        ),
+                        color=_TICKET_COLORS.get(ticket.key, discord.Color.red()),
+                    )
+                    dm_embed.set_footer(text="Different Meets • Support System")
+                    await owner.send(embed=dm_embed)
+            except Exception:
+                pass
+
+        await asyncio.sleep(2)
         try:
             await channel.delete(reason=f"Ticket closed by {member} ({member.id})")
         except discord.HTTPException:
@@ -14175,10 +14275,15 @@ class SupportDropdown(discord.ui.Select):
         except discord.NotFound:
             return
 
-        existing = await _supp_find_existing_ticket(interaction.guild, interaction.user, ticket)
+        existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user)
         if existing:
+            ex_type_key = _supp_parse_topic(existing.topic, "ticket_type") or "ticket"
+            ex_ticket = _TICKET_TYPES.get(ex_type_key)
+            ex_label = ex_ticket.label if ex_ticket else "ticket"
             return await interaction.followup.send(
-                f"You already have an open {ticket.label} ticket: {existing.mention}", ephemeral=True
+                f"You already have an open {ex_label}: {existing.mention}\n"
+                "You must close your existing ticket before opening a new one.",
+                ephemeral=True,
             )
 
         staff_role_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
