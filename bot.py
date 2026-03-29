@@ -2523,7 +2523,8 @@ def _hrsvp_build_embed() -> discord.Embed:
             for e in yes_entries:
                 uid = _hrsvp_uid(e)
                 if isinstance(e, dict):
-                    desc.append(f"✅ <@{uid}> — 🕒 {e.get('time', 'TBD')} | 🎮 {e.get('theme', 'TBD')}")
+                    day_str = f"📅 {e['day']} | " if e.get("day") else ""
+                    desc.append(f"✅ <@{uid}> — {day_str}🕒 {e.get('time', 'TBD')} | 🎮 {e.get('theme', 'TBD')}")
                 else:
                     desc.append(f"✅ <@{uid}>")
         else:
@@ -2555,6 +2556,12 @@ class HostRSVPView(discord.ui.View):
 
 
 class _HostAvailModal(discord.ui.Modal):
+    day_input = discord.ui.TextInput(
+        label="What day do you want to host?",
+        placeholder="e.g. Friday  or  Saturday  or  Sunday",
+        required=True,
+        max_length=30,
+    )
     time_input = discord.ui.TextInput(
         label="What time do you want to host?",
         placeholder="e.g. 8pm EST  or  8:30pm CST",
@@ -2577,18 +2584,18 @@ class _HostAvailModal(discord.ui.Modal):
             await interaction.response.defer()
             return
         uid = str(interaction.user.id)
+        day_val = str(self.day_input).strip()
         time_val = str(self.time_input).strip()
         theme_val = str(self.theme_input).strip()
         data = _hrsvp_load()
         slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
-        # Remove from all lists first (handles old str format and new dict format)
         for c in ("yes", "no", "maybe"):
             slot[c] = [e for e in slot.get(c, []) if (e if isinstance(e, str) else e.get("uid")) != uid]
-        slot["yes"].append({"uid": uid, "time": time_val, "theme": theme_val})
+        slot["yes"].append({"uid": uid, "day": day_val, "time": time_val, "theme": theme_val})
         _hrsvp_save(data)
         await _hrsvp_update_panel(interaction.client)
         await interaction.response.send_message(
-            f"✅ **{self.day}**: you're marked available\n🕒 Time: **{time_val}** | 🎮 Theme: **{theme_val}**",
+            f"✅ **{self.day}**: you're marked available\n📅 Day: **{day_val}** | 🕒 Time: **{time_val}** | 🎮 Theme: **{theme_val}**",
             ephemeral=True,
         )
 
