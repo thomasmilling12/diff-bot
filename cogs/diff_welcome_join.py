@@ -425,15 +425,18 @@ class DiffWelcomeJoinSystem(commands.Cog):
                 embed = discord.Embed(
                     title="🔔 DIFF Check-In Reminder",
                     description=(
-                        "You still need to finish your DIFF check-in.\n\n"
-                        f"🔴 Read <#{RULES_CHANNEL_ID}> to get the <@&{VERIFIED_ROLE_ID}> role\n"
-                        f"🔵 Verify in <#{JOIN_MEETS_HUB_CHANNEL_ID}>\n"
-                        "🟢 Once verified you will be cleared to enter\n\n"
-                        "Use the **Check My Progress** button in the welcome channel to see your status."
+                        f"Hey {member.display_name}, you still haven't finished your DIFF check-in.\n\n"
+                        "Complete the steps below to get full access to the server:\n\n"
+                        f"🔴 **Step 1 —** Read the rules in <#{RULES_CHANNEL_ID}> to receive the **Verified** role\n"
+                        f"🔵 **Step 2 —** Verify your identity in <#{JOIN_MEETS_HUB_CHANNEL_ID}>\n"
+                        "🟢 **Step 3 —** Once verified, you'll be cleared to enter the meet area\n\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "Use the **Check My Progress** button in the welcome channel to track your status."
                     ),
                     color=discord.Color.orange(),
                     timestamp=utcnow(),
                 )
+                embed.set_footer(text="Different Meets • Verification System")
                 await member.send(embed=embed)
                 self.db.mark_reminder_sent(member.id)
                 await self._log(
