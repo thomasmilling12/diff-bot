@@ -16,10 +16,6 @@ externalPort = 3000
 
 [[ports]]
 localPort = 5000
-externalPort = 5000
-
-[[ports]]
-localPort = 8080
 externalPort = 80
 
 [workflows]
@@ -38,12 +34,13 @@ args = "Start application"
 name = "Start application"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "webview"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python bot.py"
-
-[workflows.workflow.metadata]
-outputType = "console"
+args = "cd /tmp/serve_bot && python3 -m http.server 5000"
+waitForPort = 5000
 
 [userenv]
 
