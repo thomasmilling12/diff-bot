@@ -37,7 +37,7 @@ LOG_CHANNEL_ID        = 1485265848099799163
 
 # !! Create a "💎 DIFF Booster" role manually in your server,
 #    then paste its ID below. Leave 0 to skip auto-role assignment.
-BOOSTER_BADGE_ROLE_ID = 0
+BOOSTER_BADGE_ROLE_ID = 990106677330194453
 
 DATA_FILE = os.path.join("diff_data", "diff_booster_hub.json")
 
