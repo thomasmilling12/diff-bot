@@ -15960,6 +15960,38 @@ class SupportDropdownView(discord.ui.View):
             pass
 
 
+def _is_old_panel_msg(msg: discord.Message) -> bool:
+    """Return True for any bot-posted panel message that should be wiped on refresh."""
+    if msg.author.id != (bot.user.id if bot.user else 0):
+        return False
+    for e in msg.embeds:
+        t = e.title or ""
+        # Current support panel
+        if t == _SUPPORT_BRAND:
+            return True
+        # Old standalone appeal panels (DIFF Appeal Center, etc.)
+        if "Appeal" in t and ("DIFF" in t or "Different" in t):
+            return True
+        # Any old support-center embed we may have posted
+        if "Support Center" in t and "DIFF" in t:
+            return True
+    return False
+
+
+async def _wipe_old_panels(channel: discord.TextChannel) -> None:
+    """Delete all old support / appeal panel messages the bot posted in the channel."""
+    try:
+        async for msg in channel.history(limit=100):
+            if _is_old_panel_msg(msg):
+                try:
+                    await msg.delete()
+                    await asyncio.sleep(0.4)
+                except (discord.HTTPException, discord.NotFound):
+                    pass
+    except discord.HTTPException:
+        pass
+
+
 @bot.tree.command(name="post-support-panel", description="Post the DIFF Support Center dropdown panel (staff only)")
 async def post_support_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild:
@@ -15973,17 +16005,9 @@ async def post_support_panel(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
     except discord.NotFound:
         return
-    try:
-        async for msg in channel.history(limit=50):
-            if msg.author.id == bot.user.id and any(e.title == _SUPPORT_BRAND for e in msg.embeds):
-                try:
-                    await msg.delete()
-                except discord.HTTPException:
-                    pass
-    except discord.HTTPException:
-        pass
+    await _wipe_old_panels(channel)
     await channel.send(embed=_supp_build_panel_embed(), view=SupportDropdownView())
-    await interaction.followup.send(f"Support panel posted in {channel.mention}.", ephemeral=True)
+    await interaction.followup.send(f"✅ Support & Appeal panel posted in {channel.mention}.", ephemeral=True)
 
 
 @bot.command(name="refreshsupportpanel")
@@ -15998,14 +16022,9 @@ async def _refresh_support_panel_cmd(ctx: commands.Context):
     if not isinstance(channel, discord.TextChannel):
         await ctx.send("Support panel channel not found.", delete_after=8)
         return
-    async for msg in channel.history(limit=50):
-        if msg.author.id == bot.user.id and any(e.title == _SUPPORT_BRAND for e in msg.embeds):
-            try:
-                await msg.delete()
-            except Exception:
-                pass
+    await _wipe_old_panels(channel)
     await channel.send(embed=_supp_build_panel_embed(), view=SupportDropdownView())
-    await ctx.send(f"✅ Support panel refreshed in {channel.mention}.", delete_after=8)
+    await ctx.send(f"✅ Support & Appeal panel refreshed in {channel.mention}.", delete_after=8)
 
 
 # =========================
