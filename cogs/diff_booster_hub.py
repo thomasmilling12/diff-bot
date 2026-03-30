@@ -41,7 +41,7 @@ BOOSTER_BADGE_ROLE_ID = 990106677330194453
 
 # Category to create showcase ticket channels in.
 # Set to 0 to create without a category (tickets appear at the top of the list).
-SHOWCASE_TICKET_CATEGORY_ID = 0
+SHOWCASE_TICKET_CATEGORY_ID = 1328457973583839282
 
 # Roles that can see and manage showcase tickets
 COLOR_TEAM_ROLE_ID = 1115495008670330902
