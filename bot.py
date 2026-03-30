@@ -17732,7 +17732,7 @@ def _wh_build_embed() -> discord.Embed:
         ),
         inline=False,
     )
-    embed.set_footer(text="DIFF Welcome Hub  •  Use the menu below to explore")
+    embed.set_footer(text="DIFF Welcome Hub  •  Explore DIFF ↓  •  💎 Booster options ↓")
     return embed
 
 
@@ -18041,6 +18041,125 @@ class WelcomeHubSelect(discord.ui.Select):
                     pass
 
 
+class _WHBoosterSelect(discord.ui.Select):
+    """Booster options embedded inside the welcome hub panel (row 2)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            custom_id="diff_wh_booster_select_v1",
+            placeholder="💎  Booster options...",
+            min_values=1,
+            max_values=1,
+            row=2,
+            options=[
+                discord.SelectOption(
+                    label="Claim Your Perks", emoji="💎", value="claim",
+                    description="Verify your boost status and receive your Booster badge role.",
+                ),
+                discord.SelectOption(
+                    label="My Booster Status", emoji="📊", value="status",
+                    description="See how long you've been boosting and which perks are active.",
+                ),
+                discord.SelectOption(
+                    label="Submit Build Showcase", emoji="📸", value="showcase",
+                    description="Submit your car to be featured in the DIFF showcase.",
+                ),
+                discord.SelectOption(
+                    label="Booster Perks Guide", emoji="📖", value="guide",
+                    description="See the full breakdown of every booster perk.",
+                ),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        import sys as _sys
+        bh = _sys.modules.get("cogs.diff_booster_hub")
+        if not bh:
+            return await interaction.response.send_message(
+                "Booster system is loading — please try again in a moment.", ephemeral=True
+            )
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            return await interaction.response.send_message(
+                "Please use this inside the server.", ephemeral=True
+            )
+
+        v = self.values[0]
+
+        # ── Claim ──────────────────────────────────────────────────────────────
+        if v == "claim":
+            if not bh._is_boosting(member):
+                return await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="💎 Not a Booster",
+                        description=(
+                            "You're not currently boosting DIFF Meets.\n\n"
+                            "Boost the server to unlock exclusive perks and come back here!"
+                        ),
+                        color=discord.Color.red(),
+                    ),
+                    ephemeral=True,
+                )
+            results = []
+            badge_role_id = getattr(bh, "BOOSTER_BADGE_ROLE_ID", 0)
+            if badge_role_id:
+                badge_role = member.guild.get_role(badge_role_id)
+                if badge_role:
+                    if badge_role not in member.roles:
+                        try:
+                            await member.add_roles(badge_role, reason="Booster perk claim")
+                            results.append("💎 **Booster Badge** role assigned!")
+                        except discord.Forbidden:
+                            results.append("⚠️ Couldn't assign badge role — missing permissions.")
+                    else:
+                        results.append("✅ Booster Badge role already active.")
+                else:
+                    results.append("⚠️ Badge role not found — contact staff.")
+            else:
+                results.append("⚠️ Badge role not configured yet — let staff know you boosted!")
+            results += [
+                "📸 **Build Showcase** — select it below to submit your build",
+                "🏁 **Priority Meet Slot** — your RSVPs are flagged as priority",
+                "📣 **Build Shoutout** — ask any staff member to post one for you",
+                "🔒 **Booster Lounge** — access granted automatically",
+            ]
+            embed = discord.Embed(
+                title="💎 Booster Perks Claimed!",
+                description="\n".join(results),
+                color=0xF47FFF,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(
+                name="Thank You",
+                value="Your support keeps DIFF growing. Every boost helps unlock more for the community.",
+                inline=False,
+            )
+            embed.set_footer(text="Different Meets • Booster Hub")
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        # ── Status ─────────────────────────────────────────────────────────────
+        if v == "status":
+            return await interaction.response.send_message(
+                embed=bh._status_embed(member), ephemeral=True
+            )
+
+        # ── Showcase ───────────────────────────────────────────────────────────
+        if v == "showcase":
+            if not bh._is_boosting(member):
+                return await interaction.response.send_message(
+                    "The build showcase is a **booster-exclusive** perk. "
+                    "Boost the server to unlock it! 💎",
+                    ephemeral=True,
+                )
+            return await interaction.response.send_modal(bh._ShowcaseModal())
+
+        # ── Guide ──────────────────────────────────────────────────────────────
+        if v == "guide":
+            return await interaction.response.send_message(
+                embed=bh._guide_embed(), ephemeral=True
+            )
+
+
 class WelcomeHubView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -18061,6 +18180,7 @@ class WelcomeHubView(discord.ui.View):
             url=f"https://discord.com/channels/{GUILD_ID}/{CREW_PANEL_CHANNEL_ID}",
         ))
         self.add_item(WelcomeHubSelect())
+        self.add_item(_WHBoosterSelect())
 
 
 async def _wh_post_or_refresh(guild: discord.Guild) -> None:

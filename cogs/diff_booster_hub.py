@@ -644,66 +644,38 @@ class BoosterHubCog(commands.Cog, name="BoosterHub"):
         except Exception as e:
             print(f"[BoosterHub] add_view failed: {e}")
 
-    async def _post_or_refresh(self) -> None:
+    async def _delete_standalone_panel(self) -> None:
+        """Delete old standalone booster panel messages from welcome-hub.
+
+        The booster options are now embedded in the combined Welcome Hub panel.
+        Call this after running !welcomehub to clean up any leftover standalone panel.
+        """
         guild = self.bot.get_guild(GUILD_ID)
         if not guild:
-            print("[BoosterHub] Guild not found.")
             return
         ch = guild.get_channel(BOOSTER_PANEL_CHANNEL)
         if not isinstance(ch, discord.TextChannel):
             try:
                 ch = await guild.fetch_channel(BOOSTER_PANEL_CHANNEL)
-            except Exception as e:
-                print(f"[BoosterHub] Channel fetch error: {e}")
+            except Exception:
                 return
-
         bot_id = self.bot.user.id if self.bot.user else None
-
-        # Scan channel history for ALL existing booster panels posted by the bot
-        found: list[discord.Message] = []
+        deleted = 0
         try:
             async for msg in ch.history(limit=100):
                 if msg.author.id != bot_id:
                     continue
-                if msg.embeds and "DIFF Booster Perks Hub" in (msg.embeds[0].title or ""):
-                    found.append(msg)
+                title = msg.embeds[0].title if msg.embeds else ""
+                if "DIFF Booster Perks Hub" in (title or ""):
+                    try:
+                        await msg.delete()
+                        deleted += 1
+                        print(f"[BoosterHub] Deleted standalone panel {msg.id}.")
+                    except Exception:
+                        pass
         except Exception as e:
-            print(f"[BoosterHub] History scan error: {e}")
-
-        if found:
-            # Keep the most recent one; delete extras
-            found.sort(key=lambda m: m.created_at, reverse=True)
-            keeper = found[0]
-            for dup in found[1:]:
-                try:
-                    await dup.delete()
-                    print(f"[BoosterHub] Deleted duplicate panel {dup.id}.")
-                except Exception:
-                    pass
-            try:
-                await keeper.edit(embed=_panel_embed(), view=self.view)
-                _set_panel_id(keeper.id)
-                print(f"[BoosterHub] Panel refreshed (msg {keeper.id}).")
-                return
-            except Exception as e:
-                print(f"[BoosterHub] Edit error: {e}")
-
-        # Also try the saved ID as a fallback before posting fresh
-        msg_id = _get_panel_id()
-        if msg_id:
-            try:
-                msg = await ch.fetch_message(msg_id)
-                await msg.edit(embed=_panel_embed(), view=self.view)
-                print(f"[BoosterHub] Panel refreshed via saved ID (msg {msg_id}).")
-                return
-            except discord.NotFound:
-                print("[BoosterHub] Saved ID gone — posting fresh.")
-            except Exception as e:
-                print(f"[BoosterHub] Saved ID edit error: {e}")
-
-        msg = await ch.send(embed=_panel_embed(), view=self.view)
-        _set_panel_id(msg.id)
-        print(f"[BoosterHub] Panel posted fresh (msg {msg.id}).")
+            print(f"[BoosterHub] Panel scan error: {e}")
+        print(f"[BoosterHub] Standalone panel cleanup done ({deleted} removed).")
 
     # ── New booster auto-welcome ──────────────────────────────────────────────
     @commands.Cog.listener()
@@ -765,25 +737,45 @@ class BoosterHubCog(commands.Cog, name="BoosterHub"):
     @commands.command(name="post_booster_panel")
     @commands.has_permissions(administrator=True)
     async def cmd_post(self, ctx: commands.Context) -> None:
-        """Post or refresh the booster hub panel in the welcome-hub channel."""
-        await ctx.send("Posting booster panel…", delete_after=5)
-        await self._post_or_refresh()
-        await ctx.send("Done.", delete_after=8)
+        """Booster options are now part of the combined !welcomehub panel.
+        This command cleans up the old standalone panel and refreshes the welcome hub."""
         try:
             await ctx.message.delete()
         except Exception:
             pass
+        await ctx.send(
+            "💎 Booster options are now built into the Welcome Hub panel.\n"
+            "Cleaning up the old standalone panel and refreshing...",
+            delete_after=8,
+        )
+        await self._delete_standalone_panel()
+        # Trigger the combined welcome hub refresh
+        import sys as _sys
+        main = _sys.modules.get("__main__")
+        wh_fn = getattr(main, "_wh_post_or_refresh", None)
+        if wh_fn and ctx.guild:
+            await wh_fn(ctx.guild)
+            await ctx.send("✅ Welcome Hub panel updated with booster options.", delete_after=8)
+        else:
+            await ctx.send("Run `!welcomehub` to refresh the combined panel.", delete_after=10)
 
     @commands.command(name="refresh_booster_panel")
     @commands.has_permissions(administrator=True)
     async def cmd_refresh(self, ctx: commands.Context) -> None:
-        """Refresh the booster hub panel embed."""
-        await self._post_or_refresh()
-        await ctx.send("Booster panel refreshed.", delete_after=8)
+        """Alias: refreshes the combined Welcome Hub panel (booster options are now inside it)."""
         try:
             await ctx.message.delete()
         except Exception:
             pass
+        await self._delete_standalone_panel()
+        import sys as _sys
+        main = _sys.modules.get("__main__")
+        wh_fn = getattr(main, "_wh_post_or_refresh", None)
+        if wh_fn and ctx.guild:
+            await wh_fn(ctx.guild)
+            await ctx.send("✅ Welcome Hub refreshed (booster options included).", delete_after=8)
+        else:
+            await ctx.send("Run `!welcomehub` to refresh the combined panel.", delete_after=10)
 
 
 print("[BoosterHub] Module loaded OK.")
