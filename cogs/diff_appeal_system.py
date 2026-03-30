@@ -930,53 +930,12 @@ class AppealSystemCog(commands.Cog):
             confirm += f"\n⚙️ Reversal: {reversal_result}"
         await interaction.response.send_message(confirm, ephemeral=True)
 
-    # ── Panel management ──────────────────────────────────
+    # ── Panel management — RETIRED ─────────────────────────
+    # Appeals are now handled through the unified DIFF Support Center panel
+    # in #support-center (bot.py SupportDropdownView + AppealDropdown).
+    # This cog no longer posts its own standalone panel.
     async def ensure_panel(self) -> None:
-        channel = self.bot.get_channel(APPEAL_PANEL_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
-            try:
-                channel = await self.bot.fetch_channel(APPEAL_PANEL_CHANNEL_ID)
-            except Exception:
-                channel = None
-        if not isinstance(channel, discord.TextChannel):
-            print(f"[AppealSystem] Channel {APPEAL_PANEL_CHANNEL_ID} not found.")
-            return
-
-        embed    = _panel_embed()
-        saved_id = _get_panel_id()
-
-        if saved_id:
-            try:
-                msg = await channel.fetch_message(saved_id)
-                await msg.edit(embed=embed, view=self.panel_view)
-                print("[AppealSystem] Panel refreshed.")
-                return
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                print(f"[AppealSystem] Edit failed: {e}")
-
-        # Scan and remove stale panels
-        bot_id = self.bot.user.id if self.bot.user else None
-        try:
-            async for msg in channel.history(limit=50):
-                if msg.author.id != bot_id:
-                    continue
-                title = msg.embeds[0].title if msg.embeds else ""
-                if "Appeal" in (title or "") and "DIFF" in (title or ""):
-                    try:
-                        await msg.delete()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-        try:
-            new_msg = await channel.send(embed=embed, view=self.panel_view)
-            _set_panel_id(new_msg.id)
-            print(f"[AppealSystem] Panel posted: {new_msg.id}")
-        except Exception as e:
-            print(f"[AppealSystem] Post failed: {e}")
+        print("[AppealSystem] Standalone appeal panel is retired — appeals now use the Support Center.")
 
     # ── Events / commands ─────────────────────────────────
     @commands.Cog.listener()
@@ -991,7 +950,7 @@ class AppealSystemCog(commands.Cog):
                 except Exception:
                     pass
         print(f"[AppealSystem] Restored {restored} pending review views.")
-        await self.ensure_panel()
+        # Panel is now in the unified Support Center — no standalone panel to post.
 
     @commands.command(name="post_appeal_panel")
     @commands.has_permissions(administrator=True)
@@ -1000,9 +959,12 @@ class AppealSystemCog(commands.Cog):
             await ctx.message.delete()
         except Exception:
             pass
-        _set_panel_id(0)
-        await self.ensure_panel()
-        await ctx.send("✅ Appeal panel refreshed.", delete_after=8)
+        await ctx.send(
+            "ℹ️ The standalone appeal panel is retired.\n"
+            "Appeals are now handled through the **DIFF Support Center** panel in <#1156363575150002226>.\n"
+            "Use `/post-support-panel` or `!refreshsupportpanel` to refresh that panel.",
+            delete_after=15,
+        )
 
     @commands.command(name="appeal_lookup")
     @commands.has_permissions(manage_messages=True)

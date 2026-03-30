@@ -10020,6 +10020,7 @@ async def on_ready():
         bot.add_view(SupportDropdownView())
         bot.add_view(SupportCloseButton())
         bot.add_view(SupportApplicationReviewView())
+        bot.add_view(_AppealActionView())
         bot.add_view(StaffReviewView())
         bot.add_view(JoinPlatformView())
         bot.add_view(JoinTicketView())
@@ -14680,73 +14681,92 @@ class _TicketType:
 _TICKET_TYPES: dict[str, _TicketType] = {
     "report": _TicketType(
         key="report",
-        label="🛡️ Report",
+        label="🛡️ Report a Member",
         emoji="🛡️",
-        description="Report behavior issues, trolling, griefing, or rule breaking.",
-        title="Report Ticket",
+        description="Report rule violations, toxic behavior, or meet disruptions.",
+        title="Member Report Ticket",
         long_description=(
-            "Report a DIFF member, meet attender, or any issue involving behavior, "
-            "rule breaking, disrespect, trolling, or meet disruption.\n\n"
-            "**Use this if you need to notify staff about:**\n"
-            "• Rule violations\n"
-            "• Toxic behavior\n"
-            "• Disrespect toward members or hosts\n"
-            "• Griefing, trolling, or disruption at meets\n"
-            "• Any situation that needs staff review"
+            "Report a DIFF member for rule breaking, toxic behavior, disrespect, "
+            "griefing, trolling, or any situation that needs immediate staff review.\n\n"
+            "**Include:**\n"
+            "• Who you're reporting (username / PSN)\n"
+            "• What happened and when\n"
+            "• Screenshots or video evidence"
         ),
         ping_role_id=MANAGER_ROLE_ID,
     ),
-    "appeal": _TicketType(
-        key="appeal",
-        label="⚠️ Appeal",
-        emoji="⚠️",
-        description="Appeal a ban, strike, warning, or other staff action.",
-        title="Appeal Ticket",
-        long_description=(
-            "Submit an appeal for a ban, strike, warning, or other staff action taken "
-            "against your account.\n\n"
-            "**Use this if you believe:**\n"
-            "• A punishment was unfair\n"
-            "• You want a second review\n"
-            "• You are ready to take accountability and request another chance\n\n"
-            "Please make sure your appeal is honest, respectful, and detailed."
-        ),
-        ping_role_id=LEADER_ROLE_ID,
-    ),
     "support": _TicketType(
         key="support",
-        label="🚗 Support",
+        label="🚗 General Support",
         emoji="🚗",
-        description="Get help with questions, rules, roles, channels, or DIFF systems.",
-        title="Support Ticket",
+        description="Get help with questions, roles, channels, or DIFF systems.",
+        title="General Support Ticket",
         long_description=(
-            "Get help with general server questions, meet information, crew systems, "
-            "channels, roles, or other DIFF-related support.\n\n"
+            "Get help with server questions, meet information, crew systems, "
+            "roles, channels, or anything else DIFF-related.\n\n"
             "**Use this for:**\n"
-            "• General questions about the server\n"
-            "• Help understanding meet rules or requirements\n"
-            "• Assistance with channels, roles, or permissions\n"
-            "• Questions about schedules, crew activities, or DIFF systems"
+            "• Server questions or confusion\n"
+            "• Help with meet rules or requirements\n"
+            "• Channel / role access issues\n"
+            "• Anything that doesn't fit another category"
         ),
         ping_role_id=HOST_ROLE_ID,
     ),
     "apply": _TicketType(
         key="apply",
-        label="📩 Apply",
+        label="📩 Staff Application",
         emoji="📩",
         description="Apply for a DIFF staff position.",
         title="Staff Application Ticket",
         long_description=(
-            "Apply for a DIFF staff position and show your interest in helping the crew "
-            "grow and improve.\n\n"
-            "**Use this if you want to:**\n"
-            "• Join the staff team\n"
-            "• Take on more responsibility in DIFF\n"
-            "• Help with hosting, management, support, or community growth\n\n"
-            "Please only apply if you are active, mature, professional, and ready to "
-            "contribute consistently."
+            "Apply for a DIFF staff role. Only apply if you are consistently active, "
+            "mature, and ready to contribute to the community.\n\n"
+            "**Leadership will review your answers and respond here.**"
         ),
         ping_role_id=CO_LEADER_ROLE_ID,
+    ),
+    # ── Appeal sub-types (handled via AppealDropdown) ──────────────────────────
+    "warning": _TicketType(
+        key="warning", label="⚠️ Warning Appeal", emoji="⚠️",
+        description="Appeal a warning or write-up you received.",
+        title="Warning Appeal Ticket",
+        long_description="Appeal a warning issued by staff.",
+        ping_role_id=LEADER_ROLE_ID,
+    ),
+    "timeout": _TicketType(
+        key="timeout", label="⏰ Timeout Appeal", emoji="⏰",
+        description="Appeal a timeout or mute applied to your account.",
+        title="Timeout Appeal Ticket",
+        long_description="Appeal a timeout or mute.",
+        ping_role_id=LEADER_ROLE_ID,
+    ),
+    "ban": _TicketType(
+        key="ban", label="🔨 Ban Appeal", emoji="🔨",
+        description="Appeal a ban and request reinstatement.",
+        title="Ban Appeal Ticket",
+        long_description="Appeal a ban from the server.",
+        ping_role_id=LEADER_ROLE_ID,
+    ),
+    "kick": _TicketType(
+        key="kick", label="👢 Kick Review", emoji="👢",
+        description="Request a review of a kick from the server.",
+        title="Kick Review Ticket",
+        long_description="Request review of a kick.",
+        ping_role_id=LEADER_ROLE_ID,
+    ),
+    "build": _TicketType(
+        key="build", label="🚗 Build Denial Appeal", emoji="🚙",
+        description="Appeal a build denial at a DIFF meet.",
+        title="Build Denial Appeal Ticket",
+        long_description="Appeal a build denial.",
+        ping_role_id=LEADER_ROLE_ID,
+    ),
+    "exclusion": _TicketType(
+        key="exclusion", label="🏁 Meet Exclusion Appeal", emoji="🏁",
+        description="Appeal being excluded from a meet or event.",
+        title="Meet Exclusion Appeal Ticket",
+        long_description="Appeal a meet exclusion.",
+        ping_role_id=LEADER_ROLE_ID,
     ),
 }
 
@@ -14762,17 +14782,40 @@ def _supp_brand_embed(embed: discord.Embed) -> discord.Embed:
 
 def _supp_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title=_SUPPORT_BRAND,
+        title="🎟️ DIFF Support Center",
         description=(
-            "Use the dropdown below to open a private ticket with the right team. "
-            "Select the option that best matches your situation and staff will be notified right away.\n\n"
-            "🛡️ **Report** — Rule violations, toxic behavior, or meet disruptions\n"
-            "⚠️ **Appeal** — Contest a ban, timeout, warning, or other staff action\n"
-            "🚗 **Support** — Help with roles, channels, meet rules, or server questions\n"
-            "📩 **Apply** — Show interest in joining the DIFF staff team\n\n"
-            "*All tickets are private between you and DIFF staff.*"
+            "Welcome to the **DIFF Support Center**. "
+            "Select the option below that best fits your situation — your ticket will be private between you and DIFF staff.\n"
+            "\u200b"
         ),
-        color=discord.Color.blue(),
+        color=discord.Color.from_rgb(88, 101, 242),
+    )
+    embed.add_field(
+        name="📋 Support Options",
+        value=(
+            "🛡️ **Report a Member** — Rule violations, toxic behavior, meet disruptions\n"
+            "🚗 **General Support** — Questions, roles, channels, meet rules\n"
+            "📩 **Staff Application** — Join the DIFF staff team"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="⚖️ Appeal Center",
+        value=(
+            "⚠️ **Warning** — Appeal a warning or write-up\n"
+            "⏰ **Timeout** — Appeal a timeout or mute\n"
+            "🔨 **Ban** — Appeal a ban and request reinstatement\n"
+            "👢 **Kick** — Request a review of a kick\n"
+            "🚙 **Build Denial** — Appeal a denied build at a meet\n"
+            "🏁 **Meet Exclusion** — Appeal being excluded from a meet\n"
+            "🔍 **Check Status** — View your current open appeal ticket"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="\u200b",
+        value="*Use the dropdowns below. All tickets are private.*",
+        inline=False,
     )
     return _supp_brand_embed(embed)
 
@@ -14899,35 +14942,79 @@ async def _supp_find_any_open_ticket(
 
 
 _TICKET_COLORS: dict[str, discord.Color] = {
-    "report":  discord.Color.red(),
-    "appeal":  discord.Color.orange(),
-    "support": discord.Color.blurple(),
-    "apply":   discord.Color.green(),
+    "report":    discord.Color.red(),
+    "support":   discord.Color.blurple(),
+    "apply":     discord.Color.green(),
+    "warning":   discord.Color.orange(),
+    "timeout":   discord.Color.from_rgb(255, 107, 107),
+    "ban":       discord.Color.red(),
+    "kick":      discord.Color.from_rgb(255, 140, 0),
+    "build":     discord.Color.blurple(),
+    "exclusion": discord.Color.from_rgb(87, 242, 135),
 }
+
+_APPEAL_TYPE_KEYS = {"warning", "timeout", "ban", "kick", "build", "exclusion"}
 
 _TICKET_PROMPTS: dict[str, str] = {
     "report": (
         "**Please include the following:**\n"
-        "• Who you're reporting and their PSN\n"
+        "• Who you're reporting (username / PSN)\n"
         "• What happened and when\n"
         "• Any screenshots or video evidence"
     ),
-    "appeal": (
-        "**Please include the following:**\n"
-        "• What action was taken against you\n"
-        "• Why you believe it was unfair\n"
-        "• Any evidence or context that supports your case"
-    ),
     "support": (
-        "**Please include the following:**\n"
-        "• A clear description of what you need help with\n"
-        "• What you have already tried\n"
+        "**Please describe your situation:**\n"
+        "• What do you need help with?\n"
+        "• What have you already tried?\n"
         "• Any relevant screenshots if applicable"
     ),
     "apply": (
         "Welcome to the DIFF Staff Application.\n"
-        "A member of leadership will review your responses below.\n"
-        "Answer each question honestly and in detail."
+        "Answer each question below honestly and in detail.\n"
+        "Leadership will review your responses here."
+    ),
+    "warning": (
+        "**Warning Appeal — please include:**\n"
+        "• Your Warning / Case ID (from your DM, e.g. WU-0001)\n"
+        "• The reason you were given for the warning\n"
+        "• Why you believe it should be removed\n"
+        "• Any evidence or context that supports your case"
+    ),
+    "timeout": (
+        "**Timeout Appeal — please include:**\n"
+        "• The reason you were given for the timeout\n"
+        "• Why you believe it was unfair\n"
+        "• Any evidence or context\n"
+        "*Note: If accepted, the timeout will be cleared automatically.*"
+    ),
+    "ban": (
+        "**Ban Appeal — please include:**\n"
+        "• The reason you were given for the ban\n"
+        "• Why you believe you should be unbanned\n"
+        "• Confirmation that you accept DIFF's rules if reinstated\n"
+        "• Any evidence that supports your case\n"
+        "*Note: If accepted, the ban will be lifted automatically.*"
+    ),
+    "kick": (
+        "**Kick Review — please include:**\n"
+        "• The reason you were given for the kick\n"
+        "• Why you believe it was unwarranted\n"
+        "• Any evidence or context\n"
+        "*Note: Kicks cannot be reversed automatically — a reinvite would be sent manually.*"
+    ),
+    "build": (
+        "**Build Denial Appeal — please include:**\n"
+        "• The car model you were trying to bring\n"
+        "• The reason your build was denied\n"
+        "• Why you believe the denial was incorrect\n"
+        "• Screenshots of your build if available"
+    ),
+    "exclusion": (
+        "**Meet Exclusion Appeal — please include:**\n"
+        "• Which meet you were excluded from\n"
+        "• The reason you were given for the exclusion\n"
+        "• Why you believe you should have been allowed to attend\n"
+        "• Any supporting context or evidence"
     ),
 }
 
@@ -15341,7 +15428,325 @@ class SupportApplicationReviewView(discord.ui.View):
             pass
 
 
+async def _supp_create_ticket_channel(
+    interaction: discord.Interaction,
+    ticket: "_TicketType",
+) -> "discord.TextChannel | None":
+    """Create the private ticket channel and return it, or None on failure (already sends error)."""
+    guild = interaction.guild
+    assert guild and isinstance(interaction.user, discord.Member)
+
+    panel_channel = guild.get_channel(SUPPORT_PANEL_CHANNEL_ID)
+    category = guild.get_channel(SUPPORT_TICKET_CATEGORY_ID) if SUPPORT_TICKET_CATEGORY_ID else None
+    if not isinstance(category, discord.CategoryChannel) and isinstance(panel_channel, discord.TextChannel):
+        category = panel_channel.category
+    if not isinstance(category, discord.CategoryChannel):
+        await interaction.followup.send(
+            "Ticket category is not configured. Please ask staff to fix this.", ephemeral=True
+        )
+        return None
+
+    staff_role_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+    overwrites: dict = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        interaction.user: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            read_message_history=True, attach_files=True, embed_links=True,
+        ),
+    }
+    me = guild.me
+    if me:
+        overwrites[me] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            read_message_history=True, manage_channels=True, manage_messages=True,
+            attach_files=True, embed_links=True,
+        )
+    for role_id in staff_role_ids:
+        role = guild.get_role(role_id)
+        if role:
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True,
+                read_message_history=True, manage_messages=True,
+                attach_files=True, embed_links=True,
+            )
+
+    channel_name = f"{ticket.channel_prefix}-{_supp_clean_name(interaction.user.name)}"
+    topic = f"ticket_owner={interaction.user.id} | ticket_type={ticket.key}"
+    channel = await guild.create_text_channel(
+        name=channel_name,
+        category=category,
+        overwrites=overwrites,
+        topic=topic,
+        reason=f"{ticket.title} opened by {interaction.user} ({interaction.user.id})",
+    )
+    return channel
+
+
+# ── Appeal ticket review view (inside appeal ticket channels) ──────────────────
+
+class _AppealDenyModal(discord.ui.Modal, title="Deny Appeal — Provide Reason"):
+    reason = discord.ui.TextInput(
+        label="Denial Reason",
+        style=discord.TextStyle.paragraph,
+        placeholder="Explain clearly why this appeal is being denied...",
+        min_length=10,
+        max_length=800,
+    )
+
+    def __init__(self, owner_id: int, appeal_type: str) -> None:
+        super().__init__()
+        self.owner_id = owner_id
+        self.appeal_type = appeal_type
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Channel error.", ephemeral=True)
+        from datetime import timezone as _tz
+        now = datetime.now(_tz.utc)
+        color = _TICKET_COLORS.get(self.appeal_type, discord.Color.red())
+        label = _TICKET_TYPES.get(self.appeal_type, _TICKET_TYPES["warning"]).label
+
+        result_embed = discord.Embed(
+            title="❌ Appeal Denied",
+            description=(
+                f"Your **{label}** has been reviewed and **denied** by {interaction.user.mention}.\n\n"
+                f"**Staff Reason:**\n{self.reason.value}\n\n"
+                "If you believe this was incorrect, contact a DIFF leader directly."
+            ),
+            color=color,
+            timestamp=now,
+        )
+        result_embed.set_footer(text="Different Meets • Appeal System")
+        await interaction.channel.send(embed=result_embed)
+
+        # DM the ticket owner
+        member = interaction.guild.get_member(self.owner_id)
+        if member:
+            try:
+                dm_embed = discord.Embed(
+                    title=f"❌ Your {label} Has Been Denied",
+                    description=(
+                        f"Your appeal was reviewed by DIFF staff and has been **denied**.\n\n"
+                        f"**Reason:** {self.reason.value}\n\n"
+                        "If you have additional information or believe this is a mistake, "
+                        "please contact a DIFF leader directly."
+                    ),
+                    color=color,
+                    timestamp=now,
+                )
+                dm_embed.set_footer(text="Different Meets • Appeal System")
+                await member.send(embed=dm_embed)
+            except Exception:
+                pass
+
+        # Disable buttons
+        try:
+            msg = await interaction.channel.fetch_message(interaction.message.id)
+            await msg.edit(view=_AppealActionView(disabled=True))
+        except Exception:
+            pass
+
+        await interaction.response.send_message("Appeal denied and user notified.", ephemeral=True)
+
+        logs_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_ch, discord.TextChannel):
+            log_e = discord.Embed(
+                title=f"⚖️ Appeal Denied — {label}",
+                color=color, timestamp=now,
+            )
+            log_e.add_field(name="Member", value=f"<@{self.owner_id}> (`{self.owner_id}`)", inline=True)
+            log_e.add_field(name="Staff", value=interaction.user.mention, inline=True)
+            log_e.add_field(name="Reason", value=self.reason.value, inline=False)
+            log_e.set_footer(text="Different Meets • Appeal System")
+            try:
+                await logs_ch.send(embed=log_e)
+            except Exception:
+                pass
+
+
+class _AppealActionView(discord.ui.View):
+    def __init__(self, *, disabled: bool = False) -> None:
+        super().__init__(timeout=None)
+        for child in self.children:
+            child.disabled = disabled  # type: ignore[union-attr]
+
+    def _is_staff(self, member: discord.Member) -> bool:
+        return any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in member.roles)
+
+    @discord.ui.button(label="Accept Appeal", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_appeal_action_accept")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not self._is_staff(interaction.user):
+            return await interaction.response.send_message("Only DIFF staff can accept appeals.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Use inside the ticket channel.", ephemeral=True)
+
+        topic = interaction.channel.topic or ""
+        owner_id_raw = _supp_parse_topic(topic, "ticket_owner")
+        appeal_type = _supp_parse_topic(topic, "ticket_type") or "warning"
+        if not owner_id_raw or not owner_id_raw.isdigit():
+            return await interaction.response.send_message("Could not detect ticket owner.", ephemeral=True)
+
+        owner_id = int(owner_id_raw)
+        member = interaction.guild.get_member(owner_id)
+        label = _TICKET_TYPES.get(appeal_type, _TICKET_TYPES["warning"]).label
+        color = _TICKET_COLORS.get(appeal_type, discord.Color.green())
+        from datetime import timezone as _tz
+        now = datetime.now(_tz.utc)
+
+        # Auto-reversal
+        reversal_note = ""
+        if member:
+            try:
+                if appeal_type == "timeout":
+                    await member.timeout(None, reason=f"Appeal accepted by {interaction.user}")
+                    reversal_note = "\n✅ Timeout cleared automatically."
+                elif appeal_type == "ban":
+                    await interaction.guild.unban(discord.Object(id=owner_id), reason=f"Appeal accepted by {interaction.user}")
+                    reversal_note = "\n✅ Ban lifted automatically."
+                elif appeal_type == "warning":
+                    cog = interaction.client.cogs.get("DiffWarningSystem") or interaction.client.cogs.get("WarningSystem")
+                    if cog and hasattr(cog, "_remove_latest_warning"):
+                        await cog._remove_latest_warning(owner_id, interaction.guild.id)
+                        reversal_note = "\n✅ Latest warning removed."
+                    else:
+                        reversal_note = "\n⚠️ Warning removal requires manual action."
+                elif appeal_type == "kick":
+                    reversal_note = "\n⚠️ Kicks must be manually reversed — please send the member a new invite."
+                elif appeal_type in {"build", "exclusion"}:
+                    reversal_note = "\n✅ Restriction lifted — please follow up with the member."
+            except discord.Forbidden:
+                reversal_note = "\n⚠️ Auto-reversal failed — insufficient permissions."
+            except Exception:
+                reversal_note = "\n⚠️ Auto-reversal could not complete — handle manually."
+
+        result_embed = discord.Embed(
+            title="✅ Appeal Accepted",
+            description=(
+                f"The **{label}** has been reviewed and **accepted** by {interaction.user.mention}.{reversal_note}"
+            ),
+            color=discord.Color.green(),
+            timestamp=now,
+        )
+        result_embed.set_footer(text="Different Meets • Appeal System")
+        await interaction.channel.send(embed=result_embed)
+
+        # DM member
+        if member:
+            try:
+                dm_embed = discord.Embed(
+                    title=f"✅ Your {label} Has Been Accepted",
+                    description=(
+                        f"Great news! Your appeal was reviewed by DIFF staff and has been **accepted**.{reversal_note}\n\n"
+                        "Welcome back to DIFF. Please follow all rules and community standards going forward."
+                    ),
+                    color=discord.Color.green(),
+                    timestamp=now,
+                )
+                dm_embed.set_footer(text="Different Meets • Appeal System")
+                await member.send(embed=dm_embed)
+            except Exception:
+                pass
+
+        # Disable buttons on the review message
+        for child in self.children:
+            child.disabled = True  # type: ignore[union-attr]
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+        await interaction.response.send_message("Appeal accepted and user notified.", ephemeral=True)
+
+        logs_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_ch, discord.TextChannel):
+            log_e = discord.Embed(
+                title=f"⚖️ Appeal Accepted — {label}",
+                color=discord.Color.green(), timestamp=now,
+            )
+            log_e.add_field(name="Member", value=f"<@{owner_id}> (`{owner_id}`)", inline=True)
+            log_e.add_field(name="Staff", value=interaction.user.mention, inline=True)
+            log_e.add_field(name="Reversal", value=reversal_note.strip() or "N/A", inline=False)
+            log_e.set_footer(text="Different Meets • Appeal System")
+            try:
+                await logs_ch.send(embed=log_e)
+            except Exception:
+                pass
+
+    @discord.ui.button(label="Deny Appeal", emoji="❌", style=discord.ButtonStyle.danger, custom_id="diff_appeal_action_deny")
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not self._is_staff(interaction.user):
+            return await interaction.response.send_message("Only DIFF staff can deny appeals.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Use inside the ticket channel.", ephemeral=True)
+
+        topic = interaction.channel.topic or ""
+        owner_id_raw = _supp_parse_topic(topic, "ticket_owner")
+        appeal_type = _supp_parse_topic(topic, "ticket_type") or "warning"
+        if not owner_id_raw or not owner_id_raw.isdigit():
+            return await interaction.response.send_message("Could not detect ticket owner.", ephemeral=True)
+
+        await interaction.response.send_modal(
+            _AppealDenyModal(owner_id=int(owner_id_raw), appeal_type=appeal_type)
+        )
+
+    @discord.ui.button(label="Need More Info", emoji="💬", style=discord.ButtonStyle.secondary, custom_id="diff_appeal_action_info")
+    async def need_info(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not self._is_staff(interaction.user):
+            return await interaction.response.send_message("Only DIFF staff can request more info.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Use inside the ticket channel.", ephemeral=True)
+
+        topic = interaction.channel.topic or ""
+        owner_id_raw = _supp_parse_topic(topic, "ticket_owner")
+        await interaction.response.send_message(
+            f"<@{owner_id_raw}> — staff need more information before they can make a decision. "
+            "Please provide additional details, screenshots, or context as requested.",
+        )
+
+
+def _supp_build_appeal_review_embed(ticket: "_TicketType", user: discord.Member) -> discord.Embed:
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
+    color = _TICKET_COLORS.get(ticket.key, discord.Color.orange())
+    embed = discord.Embed(
+        title=f"⚖️ {ticket.title} — Staff Review",
+        description=(
+            f"**{user.mention}** has submitted a **{ticket.label}**.\n\n"
+            "Read through what they've written above, then use the buttons below to make a decision."
+        ),
+        color=color,
+        timestamp=now,
+    )
+    embed.add_field(name="👤 Member", value=f"{user.mention} (`{user.id}`)", inline=True)
+    embed.add_field(name="📋 Appeal Type", value=ticket.label, inline=True)
+    embed.add_field(name="⏰ Submitted", value=f"<t:{int(now.timestamp())}:R>", inline=True)
+    embed.add_field(
+        name="⚠️ Auto-Reversal",
+        value=(
+            "✅ Warning → removed automatically\n"
+            "✅ Timeout → cleared automatically\n"
+            "✅ Ban → lifted automatically\n"
+            "⚠️ Kick → requires manual reinvite"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Appeal System")
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    return embed
+
+
+# ── Main support dropdown (Report / General Support / Staff Application) ───────
+
 class SupportDropdown(discord.ui.Select):
+    _SUPPORT_KEYS = {"report", "support", "apply"}
+
     def __init__(self) -> None:
         options = [
             discord.SelectOption(
@@ -15350,34 +15755,27 @@ class SupportDropdown(discord.ui.Select):
                 description=t.description[:100],
                 emoji=t.emoji,
             )
-            for t in _TICKET_TYPES.values()
+            for k, t in _TICKET_TYPES.items()
+            if k in self._SUPPORT_KEYS
         ]
         super().__init__(
-            placeholder="Choose the support option that best fits your situation...",
+            placeholder="📋  Support options — select category...",
             min_values=1,
             max_values=1,
             options=options,
             custom_id="diff_support_dropdown_select",
+            row=0,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
 
-        ticket = _TICKET_TYPES[self.values[0]]
+        ticket_key = self.values[0]
+        if ticket_key not in self._SUPPORT_KEYS or ticket_key not in _TICKET_TYPES:
+            return await interaction.response.send_message("Invalid selection.", ephemeral=True)
 
-        panel_channel = interaction.guild.get_channel(SUPPORT_PANEL_CHANNEL_ID)
-        category = None
-        if SUPPORT_TICKET_CATEGORY_ID:
-            category = interaction.guild.get_channel(SUPPORT_TICKET_CATEGORY_ID)
-        elif isinstance(panel_channel, discord.TextChannel):
-            category = panel_channel.category
-
-        if not isinstance(category, discord.CategoryChannel):
-            return await interaction.response.send_message(
-                "Ticket category is not set up correctly. Please ask staff to check the configuration.",
-                ephemeral=True,
-            )
+        ticket = _TICKET_TYPES[ticket_key]
 
         try:
             await interaction.response.defer(ephemeral=True)
@@ -15391,43 +15789,13 @@ class SupportDropdown(discord.ui.Select):
             ex_label = ex_ticket.label if ex_ticket else "ticket"
             return await interaction.followup.send(
                 f"You already have an open {ex_label}: {existing.mention}\n"
-                "You must close your existing ticket before opening a new one.",
+                "Please close your existing ticket before opening a new one.",
                 ephemeral=True,
             )
 
-        staff_role_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
-        overwrites: dict = {
-            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(
-                view_channel=True, send_messages=True,
-                read_message_history=True, attach_files=True, embed_links=True,
-            ),
-        }
-        me = interaction.guild.me
-        if me:
-            overwrites[me] = discord.PermissionOverwrite(
-                view_channel=True, send_messages=True,
-                read_message_history=True, manage_channels=True, manage_messages=True,
-                attach_files=True, embed_links=True,
-            )
-        for role_id in staff_role_ids:
-            role = interaction.guild.get_role(role_id)
-            if role:
-                overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True,
-                    read_message_history=True, manage_messages=True,
-                    attach_files=True, embed_links=True,
-                )
-
-        channel_name = f"{ticket.channel_prefix}-{_supp_clean_name(interaction.user.name)}"
-        topic = f"ticket_owner={interaction.user.id} | ticket_type={ticket.key}"
-        channel = await interaction.guild.create_text_channel(
-            name=channel_name,
-            category=category,
-            overwrites=overwrites,
-            topic=topic,
-            reason=f"{ticket.title} opened by {interaction.user} ({interaction.user.id})",
-        )
+        channel = await _supp_create_ticket_channel(interaction, ticket)
+        if not channel:
+            return
 
         ping = " ".join(filter(None, [interaction.user.mention, _supp_role_mention(ticket.ping_role_id)]))
         await channel.send(
@@ -15452,10 +15820,134 @@ class SupportDropdown(discord.ui.Select):
         )
 
 
+# ── Appeal dropdown (all 6 types + status check) ──────────────────────────────
+
+class AppealDropdown(discord.ui.Select):
+    _APPEAL_KEYS = ("warning", "timeout", "ban", "kick", "build", "exclusion")
+
+    def __init__(self) -> None:
+        options = [
+            discord.SelectOption(
+                label=_TICKET_TYPES[k].label,
+                value=k,
+                description=_TICKET_TYPES[k].description[:100],
+                emoji=_TICKET_TYPES[k].emoji,
+            )
+            for k in self._APPEAL_KEYS
+            if k in _TICKET_TYPES
+        ] + [
+            discord.SelectOption(
+                label="🔍 Check Appeal Status",
+                value="status",
+                description="See if you have an open appeal ticket.",
+                emoji="🔍",
+            )
+        ]
+        super().__init__(
+            placeholder="⚖️  Appeal options — select appeal type...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="diff_appeal_dropdown_v2",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
+
+        selected = self.values[0]
+
+        # ── Status check ──────────────────────────────────────────────────────
+        if selected == "status":
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except discord.NotFound:
+                return
+            appeal_ticket = None
+            for ch in interaction.guild.text_channels:
+                if ch.topic and f"ticket_owner={interaction.user.id}" in ch.topic:
+                    t_type = _supp_parse_topic(ch.topic, "ticket_type")
+                    if t_type in _APPEAL_TYPE_KEYS:
+                        appeal_ticket = ch
+                        break
+
+            if appeal_ticket:
+                type_key = _supp_parse_topic(appeal_ticket.topic, "ticket_type") or "appeal"
+                ticket_obj = _TICKET_TYPES.get(type_key)
+                type_label = ticket_obj.label if ticket_obj else "Appeal"
+                return await interaction.followup.send(
+                    f"**📂 Open Appeal Found**\n"
+                    f"You have an open **{type_label}** ticket: {appeal_ticket.mention}\n"
+                    "Staff will review and respond there. Please be patient.",
+                    ephemeral=True,
+                )
+            else:
+                return await interaction.followup.send(
+                    "You don't currently have any open appeal tickets.\n"
+                    "Select an appeal type above to submit one.",
+                    ephemeral=True,
+                )
+
+        # ── Open appeal ticket ────────────────────────────────────────────────
+        if selected not in _APPEAL_TYPE_KEYS or selected not in _TICKET_TYPES:
+            return await interaction.response.send_message("Invalid selection.", ephemeral=True)
+
+        ticket = _TICKET_TYPES[selected]
+
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
+        existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user)
+        if existing:
+            ex_type_key = _supp_parse_topic(existing.topic, "ticket_type") or "ticket"
+            ex_ticket = _TICKET_TYPES.get(ex_type_key)
+            ex_label = ex_ticket.label if ex_ticket else "ticket"
+            return await interaction.followup.send(
+                f"You already have an open {ex_label}: {existing.mention}\n"
+                "Please close your existing ticket before submitting a new appeal.",
+                ephemeral=True,
+            )
+
+        channel = await _supp_create_ticket_channel(interaction, ticket)
+        if not channel:
+            return
+
+        # Post ticket embed + close/claim buttons
+        ping = " ".join(filter(None, [interaction.user.mention, _supp_role_mention(ticket.ping_role_id)]))
+        await channel.send(
+            content=ping or None,
+            embed=_supp_build_ticket_embed(ticket, interaction.user),
+            view=SupportCloseButton(),
+        )
+
+        # Post the staff review panel with Accept/Deny/Need-Info buttons
+        await channel.send(
+            embed=_supp_build_appeal_review_embed(ticket, interaction.user),
+            view=_AppealActionView(),
+        )
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            try:
+                await logs_channel.send(embed=_supp_build_log_embed("Opened", interaction.user, ticket, channel))
+            except discord.HTTPException:
+                pass
+
+        await interaction.followup.send(
+            f"Your **{ticket.label}** has been submitted: {channel.mention}\n"
+            "DIFF staff will review your case shortly. Please be patient and honest.",
+            ephemeral=True,
+        )
+
+
 class SupportDropdownView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
         self.add_item(SupportDropdown())
+        self.add_item(AppealDropdown())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
