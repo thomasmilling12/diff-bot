@@ -39,6 +39,17 @@ LOG_CHANNEL_ID        = 1485265848099799163
 #    then paste its ID below. Leave 0 to skip auto-role assignment.
 BOOSTER_BADGE_ROLE_ID = 990106677330194453
 
+# Category to create showcase ticket channels in.
+# Set to 0 to create without a category (tickets appear at the top of the list).
+SHOWCASE_TICKET_CATEGORY_ID = 0
+
+# Roles that can see and manage showcase tickets
+COLOR_TEAM_ROLE_ID = 1115495008670330902
+LEADER_ROLE_ID     = 850391095845584937
+CO_LEADER_ROLE_ID  = 850391378559238235
+MANAGER_ROLE_ID    = 990011447193006101
+_STAFF_ROLE_IDS    = (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, COLOR_TEAM_ROLE_ID)
+
 DATA_FILE = os.path.join("diff_data", "diff_booster_hub.json")
 
 DIFF_LOGO = (
@@ -219,25 +230,13 @@ class _ShowcaseModal(discord.ui.Modal, title="Submit Your Build for Showcase"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         guild  = interaction.guild
         author = interaction.user
+        if not guild or not isinstance(author, discord.Member):
+            return await interaction.response.send_message(
+                "Please use this inside the server.", ephemeral=True
+            )
 
-        review_embed = discord.Embed(
-            title="📸 Booster Showcase Submission",
-            description=f"{author.mention} has submitted their build for the DIFF showcase.",
-            color=0xF47FFF,
-            timestamp=_utc_now(),
-        )
-        review_embed.add_field(name="🚗 Car",       value=str(self.car_name),    inline=True)
-        review_embed.add_field(name="🎨 Color",     value=str(self.color_style), inline=True)
-        review_embed.add_field(name="📝 Description",value=str(self.description), inline=False)
-        if self.image_link.value:
-            review_embed.add_field(name="🖼️ Link", value=str(self.image_link), inline=False)
-        review_embed.set_thumbnail(url=author.display_avatar.url)
-        review_embed.set_footer(text="Approve or Deny using the buttons below.")
-
-        # Store pending submission in state
-        data = _load()
-        pending = data.setdefault("pending_showcases", {})
-        pending[str(author.id)] = {
+        # Build submission data
+        sub = {
             "car":         str(self.car_name),
             "color":       str(self.color_style),
             "description": str(self.description),
@@ -245,80 +244,182 @@ class _ShowcaseModal(discord.ui.Modal, title="Submit Your Build for Showcase"):
             "avatar":      author.display_avatar.url,
             "username":    str(author),
             "mention":     author.mention,
+            "user_id":     author.id,
+        }
+
+        # ── Create private ticket channel ─────────────────────────────────────
+        safe_name = "".join(
+            c if c.isalnum() or c in ("-", "_") else "-"
+            for c in author.display_name.lower()
+        )[:28].strip("-") or "booster"
+        channel_name = f"showcase-{safe_name}"
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            author:             discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                attach_files=True,
+            ),
+        }
+        for rid in _STAFF_ROLE_IDS:
+            role = guild.get_role(rid)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True,
+                    read_message_history=True, manage_messages=True,
+                    manage_channels=True,
+                )
+
+        category = None
+        if SHOWCASE_TICKET_CATEGORY_ID:
+            category = guild.get_channel(SHOWCASE_TICKET_CATEGORY_ID)
+
+        try:
+            ticket_ch = await guild.create_text_channel(
+                name=channel_name,
+                overwrites=overwrites,
+                category=category,
+                topic=f"SHOWCASE_USER:{author.id} | Build: {sub['car']}",
+                reason=f"Booster showcase ticket for {author}",
+            )
+        except Exception as e:
+            print(f"[BoosterHub] Ticket create error: {e}")
+            return await interaction.response.send_message(
+                "❌ Could not create your showcase ticket. Please contact staff.", ephemeral=True
+            )
+
+        # Save pending entry
+        data = _load()
+        data.setdefault("pending_showcases", {})[str(author.id)] = {
+            **sub, "ticket_channel_id": ticket_ch.id
         }
         _save(data)
 
-        mod_ch = guild.get_channel(MOD_HUB_CHANNEL_ID) if guild else None
-        if isinstance(mod_ch, discord.TextChannel):
-            try:
-                await mod_ch.send(
-                    embed=review_embed,
-                    view=_ShowcaseReviewView(author.id),
-                )
-            except Exception as e:
-                print(f"[BoosterHub] Showcase send error: {e}")
+        # ── Post inside the ticket ────────────────────────────────────────────
+        ticket_embed = discord.Embed(
+            title="📸 Showcase Submission — Under Review",
+            description=(
+                f"Hey {author.mention}! Your build has been received and is being reviewed "
+                "by the DIFF Color Team and staff.\n\n"
+                "Feel free to drop additional screenshots in this channel while you wait. "
+                "Staff will approve or deny below."
+            ),
+            color=0xF47FFF,
+            timestamp=_utc_now(),
+        )
+        ticket_embed.add_field(name="🚗 Car",         value=sub["car"],         inline=True)
+        ticket_embed.add_field(name="🎨 Color",       value=sub["color"],       inline=True)
+        ticket_embed.add_field(name="📝 Description", value=sub["description"], inline=False)
+        if sub["image"]:
+            ticket_embed.add_field(name="🖼️ Screenshot", value=sub["image"], inline=False)
+        ticket_embed.set_thumbnail(url=author.display_avatar.url)
+        ticket_embed.set_footer(text="Different Meets • Booster Showcase Ticket")
 
-        await interaction.response.send_message(
-            "✅ Your build has been submitted for staff review! "
-            "We'll post it to the showcase if approved.",
-            ephemeral=True,
+        # Build staff ping
+        staff_mentions = " ".join(
+            r.mention for rid in _STAFF_ROLE_IDS
+            if (r := guild.get_role(rid))
+        )
+        await ticket_ch.send(
+            content=f"{author.mention} {staff_mentions}",
+            embed=ticket_embed,
+            view=_ShowcaseTicketView(author.id),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True),
         )
 
+        await interaction.response.send_message(
+            f"✅ Your showcase ticket has been created: {ticket_ch.mention}\n"
+            "Staff will review your build there. Feel free to add more screenshots!",
+            ephemeral=True,
+        )
+        print(f"[BoosterHub] Showcase ticket created #{ticket_ch.name} for {author}.")
 
-# ─── Showcase Staff Review Buttons ───────────────────────────────────────────
+
+# ─── Showcase Ticket Buttons (Pi-compatible — no decorators) ─────────────────
+
+def _build_showcase_embed(info: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="📸 DIFF Booster Showcase — Featured Build",
+        description=info["description"],
+        color=0xF47FFF,
+        timestamp=_utc_now(),
+    )
+    embed.add_field(name="🚗 Build",  value=info["car"],     inline=True)
+    embed.add_field(name="🎨 Color",  value=info["color"],   inline=True)
+    embed.add_field(name="💎 Member", value=info["mention"], inline=False)
+    if info.get("image"):
+        embed.set_image(url=info["image"])
+    embed.set_thumbnail(url=info["avatar"])
+    embed.set_footer(text="Different Meets • Booster Build Showcase")
+    return embed
+
+
 class _ApproveBtn(discord.ui.Button):
     def __init__(self, user_id: int):
         super().__init__(
             label="✅ Approve & Post",
             style=discord.ButtonStyle.success,
-            custom_id=f"booster_showcase_approve:{user_id}",
+            custom_id=f"bsc_approve:{user_id}",
         )
         self.user_id = user_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+
         data    = _load()
         pending = data.get("pending_showcases", {})
         info    = pending.pop(str(self.user_id), None)
-
-        if not info:
-            return await interaction.response.send_message(
-                "Submission not found (already processed?)", ephemeral=True
-            )
         _save(data)
 
-        showcase_embed = discord.Embed(
-            title="📸 DIFF Member Showcase — Booster Feature",
-            description=info["description"],
-            color=0xF47FFF,
-            timestamp=_utc_now(),
-        )
-        showcase_embed.add_field(name="🚗 Build",  value=info["car"],   inline=True)
-        showcase_embed.add_field(name="🎨 Color",  value=info["color"], inline=True)
-        showcase_embed.add_field(name="👤 Member", value=info["mention"], inline=False)
-        if info.get("image"):
-            showcase_embed.set_image(url=info["image"])
-        showcase_embed.set_thumbnail(url=info["avatar"])
-        showcase_embed.set_footer(text="Different Meets • Booster Showcase")
+        if not info:
+            return await interaction.followup.send(
+                "Submission not found — may have already been processed.", ephemeral=True
+            )
 
         guild = interaction.guild
-        if guild:
-            # Post to welcome-hub or a configured showcase channel
-            ch = guild.get_channel(BOOSTER_PANEL_CHANNEL)
-            if isinstance(ch, discord.TextChannel):
-                try:
-                    await ch.send(
-                        content=f"💎 Booster Build Showcase — <@{self.user_id}>",
-                        embed=showcase_embed,
-                        allowed_mentions=discord.AllowedMentions(users=True),
-                    )
-                except Exception as e:
-                    print(f"[BoosterHub] Showcase post error: {e}")
+        # Post showcase to welcome-hub
+        pub_ch = guild.get_channel(BOOSTER_PANEL_CHANNEL) if guild else None
+        if isinstance(pub_ch, discord.TextChannel):
+            try:
+                await pub_ch.send(
+                    content=f"💎 Booster Build Showcase — <@{self.user_id}>",
+                    embed=_build_showcase_embed(info),
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+            except Exception as e:
+                print(f"[BoosterHub] Showcase post error: {e}")
 
-        await interaction.response.edit_message(
-            content=f"✅ Showcase approved and posted by {interaction.user.mention}.",
-            embed=None,
-            view=None,
-        )
+        # DM the booster
+        try:
+            member = guild.get_member(self.user_id) if guild else None
+            if member:
+                await member.send(embed=discord.Embed(
+                    title="🎉 Your Showcase was Approved!",
+                    description=(
+                        "Your build has been featured in the DIFF showcase! "
+                        f"Check out <#{BOOSTER_PANEL_CHANNEL}> to see it posted.\n\n"
+                        "Thanks for representing the community 💎"
+                    ),
+                    color=discord.Color.green(),
+                ))
+        except Exception:
+            pass
+
+        # Close ticket channel
+        ticket_ch = interaction.channel
+        if isinstance(ticket_ch, discord.TextChannel):
+            await ticket_ch.send(
+                embed=discord.Embed(
+                    description=f"✅ Approved by {interaction.user.mention}. This ticket will close shortly.",
+                    color=discord.Color.green(),
+                )
+            )
+            import asyncio
+            await asyncio.sleep(5)
+            try:
+                await ticket_ch.delete(reason="Showcase approved — ticket closed")
+            except Exception:
+                pass
 
 
 class _DenyBtn(discord.ui.Button):
@@ -326,38 +427,74 @@ class _DenyBtn(discord.ui.Button):
         super().__init__(
             label="❌ Deny",
             style=discord.ButtonStyle.danger,
-            custom_id=f"booster_showcase_deny:{user_id}",
+            custom_id=f"bsc_deny:{user_id}",
         )
         self.user_id = user_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(_DenyReasonModal(self.user_id, interaction.channel))
+
+
+class _DenyReasonModal(discord.ui.Modal, title="Deny Showcase — Add Feedback"):
+    reason = discord.ui.TextInput(
+        label="Reason / Feedback for the member",
+        style=discord.TextStyle.paragraph,
+        placeholder="e.g. Photos are too dark, try a cleaner angle. Resubmit when ready.",
+        max_length=500,
+    )
+
+    def __init__(self, user_id: int, channel):
+        super().__init__()
+        self.user_id = user_id
+        self.channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+
         data    = _load()
         pending = data.get("pending_showcases", {})
         pending.pop(str(self.user_id), None)
         _save(data)
-        await interaction.response.edit_message(
-            content=f"❌ Showcase denied by {interaction.user.mention}.",
-            embed=None,
-            view=None,
-        )
+
+        # DM the booster with the feedback
         try:
-            member = interaction.guild.get_member(self.user_id)
+            guild  = interaction.guild
+            member = guild.get_member(self.user_id) if guild else None
             if member:
-                await member.send(
-                    embed=discord.Embed(
-                        title="📸 Showcase Submission Update",
-                        description=(
-                            "Unfortunately your build showcase submission was not approved at this time.\n"
-                            "Feel free to submit again with updated photos or details!"
-                        ),
-                        color=discord.Color.red(),
-                    )
-                )
+                await member.send(embed=discord.Embed(
+                    title="📸 Showcase Submission — Not Approved",
+                    description=(
+                        "Your showcase submission wasn't approved this time.\n\n"
+                        f"**Staff feedback:** {self.reason}\n\n"
+                        "Feel free to improve your submission and try again — we'd love to feature you! 💎"
+                    ),
+                    color=discord.Color.red(),
+                ))
         except Exception:
             pass
 
+        # Close ticket
+        ticket_ch = self.channel
+        if isinstance(ticket_ch, discord.TextChannel):
+            await ticket_ch.send(
+                embed=discord.Embed(
+                    description=(
+                        f"❌ Denied by {interaction.user.mention}.\n"
+                        f"**Feedback:** {self.reason}\n\n"
+                        "The member has been notified. Ticket closing shortly."
+                    ),
+                    color=discord.Color.red(),
+                )
+            )
+            import asyncio
+            await asyncio.sleep(5)
+            try:
+                await ticket_ch.delete(reason="Showcase denied — ticket closed")
+            except Exception:
+                pass
 
-class _ShowcaseReviewView(discord.ui.View):
+
+class _ShowcaseTicketView(discord.ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=None)
         self.add_item(_ApproveBtn(user_id))
