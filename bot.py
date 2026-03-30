@@ -287,6 +287,11 @@ async def _setup_hook():
         "cogs.diff_smart_punishment",
         "cogs.diff_appeal_system",
         "cogs.diff_staff_hub",
+        "cogs.diff_rc_admin_patch",
+        "cogs.diff_meetinfo_patch",
+        "cogs.diff_photo_reminder",
+        "cogs.diff_smart_features",
+        "cogs.diff_booster_hub",
     ]
     for _cog in _cogs:
         try:
