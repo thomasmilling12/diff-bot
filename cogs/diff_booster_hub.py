@@ -520,22 +520,53 @@ class BoosterHubCog(commands.Cog, name="BoosterHub"):
                 print(f"[BoosterHub] Channel fetch error: {e}")
                 return
 
+        bot_id = self.bot.user.id if self.bot.user else None
+
+        # Scan channel history for ALL existing booster panels posted by the bot
+        found: list[discord.Message] = []
+        try:
+            async for msg in ch.history(limit=100):
+                if msg.author.id != bot_id:
+                    continue
+                if msg.embeds and "DIFF Booster Perks Hub" in (msg.embeds[0].title or ""):
+                    found.append(msg)
+        except Exception as e:
+            print(f"[BoosterHub] History scan error: {e}")
+
+        if found:
+            # Keep the most recent one; delete extras
+            found.sort(key=lambda m: m.created_at, reverse=True)
+            keeper = found[0]
+            for dup in found[1:]:
+                try:
+                    await dup.delete()
+                    print(f"[BoosterHub] Deleted duplicate panel {dup.id}.")
+                except Exception:
+                    pass
+            try:
+                await keeper.edit(embed=_panel_embed(), view=self.view)
+                _set_panel_id(keeper.id)
+                print(f"[BoosterHub] Panel refreshed (msg {keeper.id}).")
+                return
+            except Exception as e:
+                print(f"[BoosterHub] Edit error: {e}")
+
+        # Also try the saved ID as a fallback before posting fresh
         msg_id = _get_panel_id()
         if msg_id:
             try:
                 msg = await ch.fetch_message(msg_id)
                 await msg.edit(embed=_panel_embed(), view=self.view)
-                print("[BoosterHub] Panel refreshed.")
+                print(f"[BoosterHub] Panel refreshed via saved ID (msg {msg_id}).")
                 return
             except discord.NotFound:
-                print("[BoosterHub] Panel message gone — reposting.")
+                print("[BoosterHub] Saved ID gone — posting fresh.")
             except Exception as e:
-                print(f"[BoosterHub] Edit error: {e}")
-                return
+                print(f"[BoosterHub] Saved ID edit error: {e}")
 
         msg = await ch.send(embed=_panel_embed(), view=self.view)
         _set_panel_id(msg.id)
-        print(f"[BoosterHub] Panel posted (msg {msg.id}).")
+        print(f"[BoosterHub] Panel posted fresh (msg {msg.id}).")
 
     # ── New booster auto-welcome ──────────────────────────────────────────────
     @commands.Cog.listener()
