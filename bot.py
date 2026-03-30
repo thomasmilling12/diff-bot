@@ -15960,36 +15960,49 @@ class SupportDropdownView(discord.ui.View):
             pass
 
 
-def _is_old_panel_msg(msg: discord.Message) -> bool:
-    """Return True for any bot-posted panel message that should be wiped on refresh."""
-    if msg.author.id != (bot.user.id if bot.user else 0):
-        return False
-    for e in msg.embeds:
-        t = e.title or ""
-        # Current support panel
-        if t == _SUPPORT_BRAND:
-            return True
-        # Old standalone appeal panels (DIFF Appeal Center, etc.)
-        if "Appeal" in t and ("DIFF" in t or "Different" in t):
-            return True
-        # Any old support-center embed we may have posted
-        if "Support Center" in t and "DIFF" in t:
-            return True
-    return False
-
-
 async def _wipe_old_panels(channel: discord.TextChannel) -> None:
-    """Delete all old support / appeal panel messages the bot posted in the channel."""
+    """
+    Delete every bot-posted message in the support panel channel.
+    The channel should only ever contain the one unified panel — anything
+    the bot posted there (embed or component) is an old or duplicate panel.
+    Recent messages (<14 days) use bulk-delete; older ones are deleted one-by-one.
+    """
+    from datetime import timezone as _tz
+    bot_id = bot.user.id if bot.user else 0
+    cutoff = datetime.now(_tz.utc) - timedelta(days=13, hours=23)
+
+    to_delete: list[discord.Message] = []
     try:
-        async for msg in channel.history(limit=100):
-            if _is_old_panel_msg(msg):
-                try:
-                    await msg.delete()
-                    await asyncio.sleep(0.4)
-                except (discord.HTTPException, discord.NotFound):
-                    pass
+        async for msg in channel.history(limit=500, oldest_first=False):
+            if msg.author.id == bot_id and (msg.embeds or msg.components):
+                to_delete.append(msg)
     except discord.HTTPException:
         pass
+
+    recent = [m for m in to_delete if m.created_at > cutoff]
+    aged   = [m for m in to_delete if m.created_at <= cutoff]
+
+    # Bulk-delete recent messages in chunks of 100
+    for i in range(0, len(recent), 100):
+        chunk = recent[i:i + 100]
+        try:
+            await channel.delete_messages(chunk, reason="Support panel refresh — removing old panels")
+            await asyncio.sleep(0.5)
+        except discord.HTTPException:
+            for m in chunk:
+                try:
+                    await m.delete()
+                    await asyncio.sleep(0.3)
+                except (discord.HTTPException, discord.NotFound):
+                    pass
+
+    # Individual delete for older messages
+    for m in aged:
+        try:
+            await m.delete()
+            await asyncio.sleep(0.5)
+        except (discord.HTTPException, discord.NotFound):
+            pass
 
 
 @bot.tree.command(name="post-support-panel", description="Post the DIFF Support Center dropdown panel (staff only)")
