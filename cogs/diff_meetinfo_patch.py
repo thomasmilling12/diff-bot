@@ -313,8 +313,8 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
     async def refresh_panel(self) -> None:
         ch_id  = MEET_INFO_CHANNEL_ID
         msg_id = self._get_meet_info_msg_id()
-        if not ch_id or not msg_id:
-            print("[MeetInfoPatch] No channel/message ID found in config — skipping.")
+        if not ch_id:
+            print("[MeetInfoPatch] No channel ID configured — skipping.")
             return
         ch = self.bot.get_channel(ch_id)
         if not isinstance(ch, discord.TextChannel):
@@ -323,6 +323,18 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
             except Exception:
                 print(f"[MeetInfoPatch] Could not fetch channel {ch_id}.")
                 return
+        if not msg_id:
+            print("[MeetInfoPatch] No saved message ID — posting panel for the first time.")
+            try:
+                new_msg = await ch.send(embed=_build_embed(), view=self.view)
+                cfg = _load_config()
+                cfg["meet_info_message_id"] = new_msg.id
+                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=4)
+                print("[MeetInfoPatch] Panel posted and ID saved.")
+            except Exception as e:
+                print(f"[MeetInfoPatch] Failed to post: {e}")
+            return
         try:
             msg = await ch.fetch_message(msg_id)
             await msg.edit(embed=_build_embed(), view=self.view)

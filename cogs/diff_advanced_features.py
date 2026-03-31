@@ -255,12 +255,14 @@ class DiffAdvancedFeatures(commands.Cog):
         self._reminder_check.start()
         self._sched_ann_check.start()
         self._stats_update.start()
+        self._daily_backup.start()
 
     def cog_unload(self) -> None:
         self._birthday_check.cancel()
         self._reminder_check.cancel()
         self._sched_ann_check.cancel()
         self._stats_update.cancel()
+        self._daily_backup.cancel()
 
     def _staff(self, ctx: commands.Context) -> bool:
         return isinstance(ctx.author, discord.Member) and (
@@ -475,6 +477,7 @@ class DiffAdvancedFeatures(commands.Cog):
     # 4. Birthday system
     # ──────────────────────────────────────────────────────────────────────────
 
+    @commands.cooldown(1, 86400, commands.BucketType.user)
     @commands.command(name="setbirthday")
     async def setbirthday(self, ctx: commands.Context, month: int, day: int) -> None:
         """Register your birthday (month day). e.g. !setbirthday 4 15"""
@@ -1215,6 +1218,93 @@ class DiffAdvancedFeatures(commands.Cog):
         await self._del(ctx)
         _cfg_set(birthday_channel_id=channel.id)
         await ctx.send(f"✅ Birthday channel set to {channel.mention}.", delete_after=10)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Daily JSON backup task
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @tasks.loop(hours=24)
+    async def _daily_backup(self) -> None:
+        """Zip all JSON data files once a day and keep the last 7 backups."""
+        import zipfile, glob as _glob, time as _time
+        backup_dir = "backups"
+        os.makedirs(backup_dir, exist_ok=True)
+        timestamp  = _time.strftime("%Y%m%d_%H%M%S")
+        zip_path   = os.path.join(backup_dir, f"data_{timestamp}.zip")
+        try:
+            patterns = ["*.json", "diff_data/*.json"]
+            files_to_zip = []
+            for pat in patterns:
+                files_to_zip.extend(_glob.glob(pat))
+            if not files_to_zip:
+                return
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fp in files_to_zip:
+                    zf.write(fp)
+            existing = sorted(_glob.glob(os.path.join(backup_dir, "data_*.zip")))
+            for old in existing[:-7]:
+                try:
+                    os.remove(old)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    @_daily_backup.before_loop
+    async def _before_backup(self) -> None:
+        await self.bot.wait_until_ready()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Announce new member features (!announcefeatures)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    @commands.command(name="announcefeatures")
+    async def announcefeatures(self, ctx: commands.Context, channel: discord.TextChannel = None) -> None:
+        """Post an announcement about new member commands. Staff only."""
+        if not self._staff(ctx):
+            return
+        await self._del(ctx)
+        dest = channel or ctx.channel
+        embed = discord.Embed(
+            title="✨ New Member Features Available",
+            description=(
+                "We've added some cool new commands just for you. Here's what you can do:"
+            ),
+            color=discord.Color.blurple(),
+            timestamp=_est_now(),
+        )
+        embed.add_field(
+            name="🎂 Register Your Birthday",
+            value="`!setbirthday <month> <day>` — e.g. `!setbirthday 9 6`\nThe server will celebrate your birthday with an announcement!",
+            inline=False,
+        )
+        embed.add_field(
+            name="📝 Set Your Bio",
+            value="`!setbio <text>` — Write a short bio that shows up on your profile.",
+            inline=False,
+        )
+        embed.add_field(
+            name="⭐ Check Your XP & Level",
+            value="`!xp` — See your current XP and level.\n`!levels` — View the server leaderboard.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🏆 View Achievements",
+            value="`!achievements` — See all badges and achievements you've earned.",
+            inline=False,
+        )
+        embed.add_field(
+            name="💡 Submit a Suggestion",
+            value="`!suggest <idea>` — Send your ideas straight to leadership for review.",
+            inline=False,
+        )
+        embed.add_field(
+            name="📅 View Scheduled Meets",
+            value="`!schedule` — See upcoming meets and RSVP.",
+            inline=False,
+        )
+        embed.set_footer(text="DIFF Meets • New Features")
+        await dest.send(embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:

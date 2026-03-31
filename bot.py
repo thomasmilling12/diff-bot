@@ -17510,6 +17510,51 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
 
 @bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
+    """Global prefix-command error handler."""
+    if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, commands.CheckFailure):
+        return
+    if isinstance(error, commands.CommandOnCooldown):
+        mins, secs = divmod(int(error.retry_after), 60)
+        wait = f"{mins}m {secs}s" if mins else f"{secs}s"
+        return await ctx.send(f"⏳ Slow down! You can use this again in **{wait}**.", delete_after=10)
+    if isinstance(error, commands.MissingPermissions):
+        return await ctx.send("❌ You don't have permission to use that command.", delete_after=8)
+    if isinstance(error, commands.MissingRequiredArgument):
+        return await ctx.send(
+            f"❌ Missing argument: `{error.param.name}`. Check `!help {ctx.command}` for usage.",
+            delete_after=12,
+        )
+    if isinstance(error, commands.BadArgument):
+        return await ctx.send("❌ Invalid argument. Check `!help` for correct usage.", delete_after=10)
+    if isinstance(error, commands.BotMissingPermissions):
+        return await ctx.send(
+            f"❌ I'm missing permissions to do that: `{', '.join(error.missing_permissions)}`",
+            delete_after=10,
+        )
+    import traceback as _tb
+    tb_str = "".join(_tb.format_exception(type(error), error, error.__traceback__))
+    log_ch = bot.get_channel(1485265848099799163)
+    if isinstance(log_ch, discord.TextChannel):
+        embed = discord.Embed(
+            title="⚠️ Unhandled Command Error",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Command", value=f"`{ctx.message.content[:300]}`", inline=False)
+        embed.add_field(name="User",    value=f"{ctx.author} (`{ctx.author.id}`)", inline=True)
+        embed.add_field(name="Channel", value=ctx.channel.mention, inline=True)
+        embed.add_field(name="Error",   value=f"```{str(error)[:900]}```",         inline=False)
+        embed.set_footer(text="DIFF Meets • Error Logger")
+        try:
+            await log_ch.send(embed=embed)
+        except Exception:
+            pass
+
+
+@bot.event
 async def on_message(message: discord.Message) -> None:
     await bot.process_commands(message)
 

@@ -40,13 +40,15 @@ MASS_MENTION_LIMIT  = 5
 BLOCK_INVITES   = True
 BLOCK_BAD_WORDS = True
 
-BAD_WORDS: set[str] = {
-    # Add bad words here — all lowercase
-}
+# Bad words are stored in diff_data/diff_word_filter.json
+# and managed via !filter add / !filter remove in diff_community_features.
+# Do NOT hard-code words here — use those commands instead.
+BAD_WORDS: set[str] = set()
 
 # ── Storage ───────────────────────────────────────────────
 DATA_DIR         = "diff_data"
 ROLE_BACKUP_FILE = os.path.join(DATA_DIR, "automod_role_backup.json")
+WORD_FILTER_FILE = os.path.join(DATA_DIR, "diff_word_filter.json")
 
 DIFF_LOGO_URL = (
     "https://media.discordapp.net/attachments/1107375326625005719/"
@@ -87,6 +89,20 @@ def _is_staff(member: discord.Member) -> bool:
     return any(r.id in STAFF_ROLE_IDS for r in member.roles)
 
 
+def _reload_bad_words() -> None:
+    """Read diff_word_filter.json and refresh the in-memory BAD_WORDS set."""
+    global BAD_WORDS
+    try:
+        if os.path.exists(WORD_FILTER_FILE):
+            with open(WORD_FILTER_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            BAD_WORDS = {w.lower().strip() for w in data.get("words", []) if w.strip()}
+        else:
+            BAD_WORDS = set()
+    except Exception:
+        pass
+
+
 def _normalize(content: str) -> str:
     return re.sub(r"\s+", " ", content.lower().strip())
 
@@ -119,10 +135,13 @@ class AutoModCog(commands.Cog):
         self._msg_times:  dict[int, deque] = defaultdict(deque)
         # { user_id → deque of (normalized_text, datetime) }
         self._msg_texts:  dict[int, deque] = defaultdict(deque)
+        _reload_bad_words()
         self._cache_cleanup.start()
+        self._filter_reload.start()
 
     def cog_unload(self):
         self._cache_cleanup.cancel()
+        self._filter_reload.cancel()
 
     # ── Background cleanup ────────────────────────────────
     @tasks.loop(minutes=5)
@@ -145,6 +164,15 @@ class AutoModCog(commands.Cog):
 
     @_cache_cleanup.before_loop
     async def _before_cleanup(self):
+        await self.bot.wait_until_ready()
+
+    # ── Word-filter hot-reload (every 5 min) ──────────────
+    @tasks.loop(minutes=5)
+    async def _filter_reload(self):
+        _reload_bad_words()
+
+    @_filter_reload.before_loop
+    async def _before_filter_reload(self):
         await self.bot.wait_until_ready()
 
     # ── Internal helpers ──────────────────────────────────

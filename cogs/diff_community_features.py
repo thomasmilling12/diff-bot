@@ -1013,6 +1013,7 @@ class DiffCommunityFeatures(commands.Cog):
     # 10. Suggestion box
     # ──────────────────────────────────────────────────────────────────────────
 
+    @commands.cooldown(1, 600, commands.BucketType.user)
     @commands.command(name="suggest")
     async def suggest(self, ctx: commands.Context, *, suggestion: str = "") -> None:
         """Submit a suggestion to DIFF leadership."""
