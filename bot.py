@@ -13,6 +13,9 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Set
 from zoneinfo import ZoneInfo
+
+# Eastern Time (handles EST/EDT automatically)
+_EST_TZ = ZoneInfo("America/New_York")
 import subprocess
 from dotenv import load_dotenv
 import discord
@@ -976,7 +979,8 @@ def build_member_stats_embed(member: discord.Member) -> discord.Embed:
 # HELPERS
 # =========================
 def utc_now():
-    return datetime.utcnow()
+    """Returns current Eastern Time (EST/EDT) as a timezone-aware datetime."""
+    return datetime.now(_EST_TZ)
 
 
 def make_status_emoji(status: str) -> str:
@@ -7114,7 +7118,7 @@ def _hp_has_role(member: discord.Member) -> bool:
 
 def _hp_utcnow() -> str:
     from datetime import timezone as _tz
-    return datetime.now(_tz.utc).isoformat()
+    return datetime.now(_EST_TZ).isoformat()
 
 
 def _hp_score(session: dict) -> tuple[int, list[str]]:
@@ -8896,7 +8900,7 @@ def _build_unified_lb_embed(guild: discord.Guild) -> discord.Embed:
             "━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.gold(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     embed.add_field(
         name="🎙️ Top Hosts",
@@ -14867,7 +14871,7 @@ def _supp_build_panel_embed() -> discord.Embed:
 
 def _supp_build_ticket_embed(ticket: _TicketType, user: discord.Member) -> discord.Embed:
     from datetime import timezone as _tz
-    now = datetime.now(_tz.utc)
+    now = datetime.now(_EST_TZ)
     color = _TICKET_COLORS.get(ticket.key, discord.Color.blue())
     prompt = _TICKET_PROMPTS.get(ticket.key, "Please describe your situation in as much detail as possible.")
     embed = discord.Embed(
@@ -14917,7 +14921,7 @@ def _supp_build_review_embed(applicant: discord.Member) -> discord.Embed:
             "Leadership can review this application and choose one of the actions below."
         ),
         color=discord.Color.dark_blue(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     embed.add_field(
         name="Actions",
@@ -14940,14 +14944,14 @@ def _supp_build_decision_embed(applicant: discord.Member, reviewer: discord.Memb
             f"Decision: {'Approved' if approved else 'Denied'}"
         ),
         color=discord.Color.green() if approved else discord.Color.red(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     return _supp_brand_embed(embed)
 
 
 def _supp_build_log_embed(action: str, user: discord.Member, ticket: _TicketType, channel: discord.TextChannel) -> discord.Embed:
     from datetime import timezone as _tz
-    now = datetime.now(_tz.utc)
+    now = datetime.now(_EST_TZ)
     embed = discord.Embed(
         title=f"📁 Ticket {action}",
         color=discord.Color.dark_blue(),
@@ -15468,7 +15472,7 @@ class SupportCloseButton(discord.ui.View):
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
             from datetime import timezone as _tz
-            now = datetime.now(_tz.utc)
+            now = datetime.now(_EST_TZ)
             color = _TICKET_COLORS.get(ticket.key, discord.Color.red())
             close_embed = discord.Embed(
                 title=f"🔒 Ticket Closed — {ticket.label}",
@@ -15602,7 +15606,7 @@ async def _supp_auto_close_ticket(
         close_embed = discord.Embed(
             title=f"🔒 Appeal Ticket Closed — {ticket_label}",
             color=discord.Color.dark_grey(),
-            timestamp=datetime.now(_tz.utc),
+            timestamp=datetime.now(_EST_TZ),
         )
         close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
         close_embed.add_field(name="🔒 Closed By", value=reviewer.mention, inline=True)
@@ -15705,7 +15709,7 @@ class _AppealDenyModal(discord.ui.Modal, title="Deny Appeal — Provide Reason")
         if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
         from datetime import timezone as _tz
-        now = datetime.now(_tz.utc)
+        now = datetime.now(_EST_TZ)
         color = _TICKET_COLORS.get(self.appeal_type, discord.Color.red())
         label = _TICKET_TYPES.get(self.appeal_type, _TICKET_TYPES["warning"]).label
 
@@ -15805,7 +15809,7 @@ class _AppealActionView(discord.ui.View):
         label = _TICKET_TYPES.get(appeal_type, _TICKET_TYPES["warning"]).label
         color = _TICKET_COLORS.get(appeal_type, discord.Color.green())
         from datetime import timezone as _tz
-        now = datetime.now(_tz.utc)
+        now = datetime.now(_EST_TZ)
 
         # Auto-reversal
         reversal_note = ""
@@ -15944,7 +15948,7 @@ class _AppealActionView(discord.ui.View):
 
 def _supp_build_appeal_review_embed(ticket: "_TicketType", user: discord.Member) -> discord.Embed:
     from datetime import timezone as _tz
-    now = datetime.now(_tz.utc)
+    now = datetime.now(_EST_TZ)
     color = _TICKET_COLORS.get(ticket.key, discord.Color.orange())
     embed = discord.Embed(
         title=f"⚖️ {ticket.title} — Staff Review",
@@ -16192,7 +16196,7 @@ class AppealDropdown(discord.ui.Select):
                         f"Review it here: {channel.mention}"
                     ),
                     color=_TICKET_COLORS.get(ticket.key, discord.Color.orange()),
-                    timestamp=datetime.now(_tz.utc),
+                    timestamp=datetime.now(_EST_TZ),
                 )
                 alert.add_field(name="👤 Member", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
                 alert.add_field(name="📋 Type", value=ticket.label, inline=True)
@@ -16236,7 +16240,7 @@ async def _ticket_inactivity_monitor() -> None:
     if not guild:
         return
     from datetime import timezone as _tz
-    now = datetime.now(_tz.utc)
+    now = datetime.now(_EST_TZ)
 
     for channel in guild.text_channels:
         topic = channel.topic or ""
@@ -16367,7 +16371,7 @@ async def _ticket_stats_cmd(ctx: commands.Context) -> None:
     embed = discord.Embed(
         title="📊 DIFF Open Ticket Stats",
         color=discord.Color.blurple(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
 
     support_lines = []
@@ -16419,7 +16423,7 @@ async def _ticket_note_cmd(ctx: commands.Context, *, text: str) -> None:
         title="📝 Staff Note",
         description=text,
         color=discord.Color.yellow(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     note_embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
     note_embed.set_footer(text="DIFF Staff • Internal Note")
@@ -16447,7 +16451,7 @@ async def _staffperformance_cmd(ctx: commands.Context) -> None:
     embed = discord.Embed(
         title="📊 Staff Ticket Performance",
         color=discord.Color.blurple(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     lines = []
     for _sid, _stats in sorted(_perf.items(), key=lambda x: x[1].get("closed", 0), reverse=True):
@@ -16524,7 +16528,7 @@ async def _faq_list(ctx: commands.Context) -> None:
     embed = discord.Embed(
         title="📋 DIFF FAQ Entries",
         color=discord.Color.blurple(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     for _t, _a in list(_fq.items())[:20]:
         embed.add_field(name=f"Trigger: `{_t}`", value=_a[:512], inline=False)
@@ -16580,7 +16584,7 @@ async def on_member_join(member: discord.Member) -> None:
                 "Here's everything you need to get started:"
             ),
             color=discord.Color.from_rgb(88, 101, 242),
-            timestamp=datetime.now(_tz.utc),
+            timestamp=datetime.now(_EST_TZ),
         )
         dm_embed.add_field(
             name="📋 Getting Started",
@@ -16627,7 +16631,7 @@ async def _wipe_old_panels(channel: discord.TextChannel) -> None:
     """
     from datetime import timezone as _tz
     bot_id = bot.user.id if bot.user else 0
-    cutoff = datetime.now(_tz.utc) - timedelta(days=13, hours=23)
+    cutoff = datetime.now(_EST_TZ) - timedelta(days=13, hours=23)
 
     to_delete: list[discord.Message] = []
     try:
@@ -16747,7 +16751,7 @@ class _StatsStore:
 
     def _default(self) -> dict:
         from datetime import timezone as _tz
-        return {"users": {}, "last_reset": datetime.now(_tz.utc).isoformat()}
+        return {"users": {}, "last_reset": datetime.now(_EST_TZ).isoformat()}
 
     def _load(self) -> dict:
         if not self.path.exists():
@@ -16776,7 +16780,7 @@ class _StatsStore:
                 "appeals_reviewed": 0,
                 "accepted_apps": 0,
                 "denied_apps": 0,
-                "last_updated": datetime.now(_tz.utc).isoformat(),
+                "last_updated": datetime.now(_EST_TZ).isoformat(),
             }
         return self.data["users"][key]
 
@@ -16784,7 +16788,7 @@ class _StatsStore:
         from datetime import timezone as _tz
         user = self.ensure_user(user_id)
         user[field] = int(user.get(field, 0)) + amount
-        user["last_updated"] = datetime.now(_tz.utc).isoformat()
+        user["last_updated"] = datetime.now(_EST_TZ).isoformat()
         self.save()
         return user
 
@@ -16826,7 +16830,7 @@ async def _staff_send_dm(member: discord.Member, approved: bool) -> None:
             title=_STAFF_DM_APPROVED_TITLE if approved else _STAFF_DM_DENIED_TITLE,
             description=_STAFF_DM_APPROVED_BODY if approved else _STAFF_DM_DENIED_BODY,
             color=discord.Color.green() if approved else discord.Color.red(),
-            timestamp=datetime.now(_tz.utc),
+            timestamp=datetime.now(_EST_TZ),
         )
         embed.set_footer(text="Different Meets • Staff System")
         await member.send(embed=embed)
@@ -16855,7 +16859,7 @@ async def _staff_check_promotion(guild: discord.Guild, member: discord.Member) -
     log_channel = guild.get_channel(_PROMOTION_LOG_CHANNEL_ID)
     if not isinstance(log_channel, discord.TextChannel):
         return
-    now = datetime.now(_tz.utc)
+    now = datetime.now(_EST_TZ)
     embed = discord.Embed(
         title="📈 Promotion Suggestion",
         description=(
@@ -16922,7 +16926,7 @@ class StaffReviewView(discord.ui.View):
                     pass
 
         from datetime import timezone as _tz
-        now = datetime.now(_tz.utc)
+        now = datetime.now(_EST_TZ)
         ch_embed = discord.Embed(
             title="✅ Application Approved" if approved else "❌ Application Denied",
             description=f"Applicant: {applicant.mention}\nReviewed By: {interaction.user.mention}",
@@ -16985,7 +16989,7 @@ async def staff_stats(interaction: discord.Interaction, member: discord.Member) 
         title="📊 DIFF Staff Performance Snapshot",
         description=f"Stats for {member.mention}",
         color=discord.Color.blue(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     embed.add_field(name="Tickets Handled", value=str(stats.get("tickets_handled", 0)), inline=True)
     embed.add_field(name="Apps Reviewed", value=str(stats.get("applications_reviewed", 0)), inline=True)
@@ -17069,7 +17073,7 @@ async def staff_post_leaderboard(interaction: discord.Interaction) -> None:
         title="🏆 DIFF Staff Performance Leaderboard",
         description="Top active staff members based on tickets, applications, and meets.",
         color=discord.Color.gold(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     if not rows:
         embed.add_field(name="No Data Yet", value="No staff stats recorded yet.", inline=False)
@@ -17120,7 +17124,7 @@ async def post_staff_review_panel(interaction: discord.Interaction) -> None:
             "❌ **Deny** — Deny the application, DM the applicant, and log the decision"
         ),
         color=discord.Color.blurple(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     embed.set_footer(text="Different Meets • Staff Automation")
     await interaction.channel.send(embed=embed, view=StaffReviewView())
@@ -17147,7 +17151,7 @@ class _AutoStatsStore:
 
     def _default(self) -> dict:
         from datetime import timezone as _tz
-        return {"users": {}, "weekly_history": [], "last_reset": datetime.now(_tz.utc).isoformat()}
+        return {"users": {}, "weekly_history": [], "last_reset": datetime.now(_EST_TZ).isoformat()}
 
     def _load(self) -> dict:
         if not self.path.exists():
@@ -17177,7 +17181,7 @@ class _AutoStatsStore:
                 "accepted_apps": 0,
                 "denied_apps": 0,
                 "messages_in_tickets": 0,
-                "last_updated": datetime.now(_tz.utc).isoformat(),
+                "last_updated": datetime.now(_EST_TZ).isoformat(),
             }
         return self.data["users"][key]
 
@@ -17185,7 +17189,7 @@ class _AutoStatsStore:
         from datetime import timezone as _tz
         user = self.ensure_user(user_id)
         user[field] = int(user.get(field, 0)) + amount
-        user["last_updated"] = datetime.now(_tz.utc).isoformat()
+        user["last_updated"] = datetime.now(_EST_TZ).isoformat()
         self.save()
         return user
 
@@ -17196,10 +17200,10 @@ class _AutoStatsStore:
 
     def archive_and_reset(self) -> None:
         from datetime import timezone as _tz
-        snapshot = {"ended_at": datetime.now(_tz.utc).isoformat(), "leaderboard": self.leaderboard()[:10]}
+        snapshot = {"ended_at": datetime.now(_EST_TZ).isoformat(), "leaderboard": self.leaderboard()[:10]}
         self.data["weekly_history"].append(snapshot)
         self.data["users"] = {}
-        self.data["last_reset"] = datetime.now(_tz.utc).isoformat()
+        self.data["last_reset"] = datetime.now(_EST_TZ).isoformat()
         self.save()
 
 
@@ -17236,13 +17240,13 @@ class _TicketActivityStore:
                 "ticket_type": ticket_type,
                 "owner_id": owner_id,
                 "staff_messages": {},
-                "created_at": datetime.now(_tz.utc).isoformat(),
-                "last_seen_at": datetime.now(_tz.utc).isoformat(),
+                "created_at": datetime.now(_EST_TZ).isoformat(),
+                "last_seen_at": datetime.now(_EST_TZ).isoformat(),
             }
         ticket = self.data["tickets"][key]
         uid = str(user_id)
         ticket["staff_messages"][uid] = int(ticket["staff_messages"].get(uid, 0)) + 1
-        ticket["last_seen_at"] = datetime.now(_tz.utc).isoformat()
+        ticket["last_seen_at"] = datetime.now(_EST_TZ).isoformat()
         self.save()
 
     def pop_ticket(self, channel_id: int) -> dict | None:
@@ -17278,7 +17282,7 @@ def _auto_build_weekly_embed(guild: discord.Guild, rows: list[tuple[int, dict]])
         title="🏆 Weekly DIFF Staff Report",
         description="Automatic weekly recap for DIFF staff performance.",
         color=discord.Color.gold(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     if not rows:
         embed.add_field(name="No Activity Logged", value="No staff activity was recorded this week.", inline=False)
@@ -17338,7 +17342,7 @@ async def _auto_check_promotion(guild: discord.Guild, member: discord.Member) ->
     log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if not isinstance(log_ch, discord.TextChannel):
         return
-    now = datetime.now(_tz.utc)
+    now = datetime.now(_EST_TZ)
     embed = discord.Embed(
         title="📈 Promotion Suggestion (Auto)",
         description=(
@@ -17387,7 +17391,7 @@ async def _auto_finalize_ticket(guild: discord.Guild, channel_id: int) -> None:
         await _auto_check_promotion(guild, m)
 
     if awarded:
-        now = datetime.now(_tz.utc)
+        now = datetime.now(_EST_TZ)
         lines = [f"{m.mention} — {cnt} message(s)" for m, cnt in awarded]
         embed = discord.Embed(
             title="🎫 Ticket Auto Tracking Complete",
@@ -17412,7 +17416,7 @@ async def _auto_finalize_ticket(guild: discord.Guild, channel_id: int) -> None:
 
 def _auto_seconds_until_weekly() -> float:
     from datetime import timezone as _tz, timedelta as _td
-    now = datetime.now(_tz.utc)
+    now = datetime.now(_EST_TZ)
     target = now.replace(hour=_AUTO_WEEKLY_HOUR_UTC, minute=_AUTO_WEEKLY_MINUTE_UTC, second=0, microsecond=0)
     days_ahead = (_AUTO_WEEKLY_WEEKDAY - now.weekday()) % 7
     if days_ahead == 0 and target <= now:
@@ -17456,7 +17460,7 @@ async def _auto_weekly_loop() -> None:
         _rsvp_save_all()
 
         _auto_stats.archive_and_reset()
-        now = datetime.now(_tz.utc)
+        now = datetime.now(_EST_TZ)
         log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(log_ch, discord.TextChannel):
             try:
@@ -17721,7 +17725,7 @@ async def on_interaction(interaction: discord.Interaction) -> None:
         _auto_stats.add_stat(interaction.user.id, "denied_apps", 1)
         decision = "Denied"
     from datetime import timezone as _tz
-    now = datetime.now(_tz.utc)
+    now = datetime.now(_EST_TZ)
     log_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if isinstance(log_ch, discord.TextChannel):
         embed = discord.Embed(
@@ -17758,7 +17762,7 @@ async def auto_staff_stats(interaction: discord.Interaction, member: discord.Mem
         title="📊 DIFF Auto Tracking Snapshot",
         description=f"Automatically tracked stats for {member.mention}",
         color=discord.Color.blue(),
-        timestamp=datetime.now(_tz.utc),
+        timestamp=datetime.now(_EST_TZ),
     )
     embed.add_field(name="Tickets Handled", value=str(stats.get("tickets_handled", 0)), inline=True)
     embed.add_field(name="Apps Reviewed", value=str(stats.get("applications_reviewed", 0)), inline=True)
@@ -18319,7 +18323,7 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
                     f"**Status:** Pending Review",
                 ]),
                 color=discord.Color.gold(),
-                timestamp=datetime.now(_tz.utc),
+                timestamp=datetime.now(_EST_TZ),
             )
             if DIFF_LOGO_URL:
                 log_embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -18429,7 +18433,7 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
                 pass
 
         from datetime import timezone as _tz
-        now = datetime.now(_tz.utc)
+        now = datetime.now(_EST_TZ)
         deny_embed = discord.Embed(
             title="❌ Application Denied",
             description="\n".join([
@@ -18602,7 +18606,7 @@ class JoinTicketView(discord.ui.View):
                 pass
 
         from datetime import timezone as _tz
-        now = datetime.now(_tz.utc)
+        now = datetime.now(_EST_TZ)
         approve_embed = discord.Embed(
             title="✅ Application Accepted",
             description="\n".join([
@@ -18706,7 +18710,7 @@ class JoinTicketView(discord.ui.View):
             pass
 
         from datetime import timezone as _tz
-        now = datetime.now(_tz.utc)
+        now = datetime.now(_EST_TZ)
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
             close_embed = discord.Embed(
