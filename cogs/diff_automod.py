@@ -333,7 +333,6 @@ class AutoModCog(commands.Cog):
         if not isinstance(message.author, discord.Member):
             return
         if _is_staff(message.author):
-            await self.bot.process_commands(message)
             return
 
         content = message.content or ""
@@ -393,8 +392,6 @@ class AutoModCog(commands.Cog):
                 texts.clear()
                 times.clear()
                 return
-
-        await self.bot.process_commands(message)
 
     @commands.Cog.listener()
     async def on_ready(self):

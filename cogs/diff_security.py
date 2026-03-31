@@ -244,7 +244,6 @@ class SecurityCog(commands.Cog):
         if not isinstance(message.author, discord.Member):
             return
         if _is_staff(message.author):
-            await self.bot.process_commands(message)
             return
 
         content     = message.content or ""
@@ -335,8 +334,6 @@ class SecurityCog(commands.Cog):
                 log.set_footer(text="DIFF Meets • Link Filter")
                 await self._log(log)
                 return
-
-        await self.bot.process_commands(message)
 
     @commands.Cog.listener()
     async def on_ready(self):
