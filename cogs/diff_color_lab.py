@@ -7,6 +7,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 import discord
@@ -92,8 +93,11 @@ def _clean_name(text: str) -> str:
     return text[:25] if text else "request"
 
 
+_EST_TZ = ZoneInfo("America/New_York")
+
+
 def _ts() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_UTC")
+    return datetime.now(_EST_TZ).strftime("%Y-%m-%d_%I-%M-%S_%p_EST")
 
 
 def _is_color_team(member: discord.Member) -> bool:
@@ -110,8 +114,9 @@ async def _build_transcript(channel: discord.TextChannel) -> str:
 
     rows = []
     for m in messages:
-        created = m.created_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        author  = html_lib.escape(f"{m.author} ({m.author.id})")
+        created = m.created_at.astimezone(_EST_TZ).strftime("%b %d, %Y %-I:%M %p EST")
+        display = getattr(m.author, "display_name", None) or str(m.author)
+        author  = html_lib.escape(display)
         content = html_lib.escape(m.content or "")
 
         embed_parts = []

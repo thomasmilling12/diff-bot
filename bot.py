@@ -15082,7 +15082,7 @@ def _esc(text: str) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
-def _md(text: str) -> str:
+def _md(text: str, mention_map: dict | None = None) -> str:
     import re
     t = _esc(text)
     t = re.sub(r"```(?:\w+)?\n?([\s\S]*?)```", lambda m: f"<pre><code>{m.group(1)}</code></pre>", t)
@@ -15092,7 +15092,11 @@ def _md(text: str) -> str:
     t = re.sub(r"\*(.+?)\*", r"<em>\1</em>", t)
     t = re.sub(r"__(.+?)__", r"<u>\1</u>", t)
     t = re.sub(r"~~(.+?)~~", r"<s>\1</s>", t)
-    t = re.sub(r"&lt;@!?(\d+)&gt;", r'<span class="mention">@\1</span>', t)
+    def _resolve_user(m):
+        uid = int(m.group(1))
+        name = (mention_map or {}).get(uid) or str(uid)
+        return f'<span class="mention">@{_esc(name)}</span>'
+    t = re.sub(r"&lt;@!?(\d+)&gt;", _resolve_user, t)
     t = re.sub(r"&lt;#(\d+)&gt;", r'<span class="mention">#\1</span>', t)
     t = re.sub(r"&lt;@&amp;(\d+)&gt;", r'<span class="mention">@role</span>', t)
     t = t.replace("\n", "<br>")
@@ -15111,7 +15115,7 @@ def _color_css(c) -> str:
     return f"#{c.value:06x}"
 
 
-def _render_embed(emb: discord.Embed) -> str:
+def _render_embed(emb: discord.Embed, mention_map: dict | None = None) -> str:
     color = _color_css(emb.colour)
     parts = [f'<div class="embed" style="border-color:{color}">']
     if emb.author and emb.author.name:
@@ -15124,13 +15128,13 @@ def _render_embed(emb: discord.Embed) -> str:
         url_close = "</a>" if emb.url else ""
         parts.append(f'<div class="embed-title">{url_open}{_esc(emb.title)}{url_close}</div>')
     if emb.description:
-        parts.append(f'<div class="embed-description">{_md(emb.description)}</div>')
+        parts.append(f'<div class="embed-description">{_md(emb.description, mention_map)}</div>')
     if emb.fields:
         parts.append('<div class="embed-fields">')
         for field in emb.fields:
             cls = "embed-field inline" if field.inline else "embed-field"
             parts.append(f'<div class="{cls}"><div class="embed-field-name">{_esc(field.name)}</div>'
-                         f'<div class="embed-field-value">{_md(field.value)}</div></div>')
+                         f'<div class="embed-field-value">{_md(field.value, mention_map)}</div></div>')
         parts.append("</div>")
     if emb.image and emb.image.url:
         parts.append(f'<img src="{_esc(emb.image.url)}" style="max-width:400px;max-height:300px;border-radius:4px;margin-top:8px;display:block" onerror="this.style.display=\'none\'">')
@@ -15214,7 +15218,24 @@ async def _build_html_transcript(
         msgs.append(m)
 
     server_name = _esc(channel.guild.name) if channel.guild else "Unknown Server"
-    generated = datetime.utcnow().strftime("%d %b %Y at %H:%M UTC")
+    generated = datetime.now(_EST_TZ).strftime("%d %b %Y at %I:%M %p EST")
+
+    # Build mention map: user_id → display_name, resolved from guild members
+    mention_map: dict[int, str] = {}
+    guild = channel.guild
+    if guild:
+        for msg in msgs:
+            for uid in [msg.author.id] + [u.id for u in msg.mentions]:
+                if uid not in mention_map:
+                    member = guild.get_member(uid)
+                    if member:
+                        mention_map[uid] = member.display_name
+                    else:
+                        try:
+                            fetched = await guild.fetch_member(uid)
+                            mention_map[uid] = fetched.display_name
+                        except Exception:
+                            pass
 
     rows: list[str] = []
     last_date = None
@@ -15222,7 +15243,8 @@ async def _build_html_transcript(
     last_ts = None
 
     for msg in msgs:
-        ts = msg.created_at.replace(tzinfo=timezone.utc)
+        ts_utc = msg.created_at.replace(tzinfo=timezone.utc)
+        ts = ts_utc.astimezone(_EST_TZ)
         date_label = ts.strftime("%B %d, %Y")
         if date_label != last_date:
             rows.append(
@@ -15236,14 +15258,14 @@ async def _build_html_transcript(
         same_author = (
             last_author_id == msg.author.id
             and last_ts is not None
-            and (ts - last_ts).total_seconds() < 420
+            and (ts_utc - last_ts).total_seconds() < 420
         )
         is_first = not same_author
         last_author_id = msg.author.id
-        last_ts = ts
+        last_ts = ts_utc
 
-        time_str = ts.strftime("%H:%M")
-        full_time = ts.strftime("%d %b %Y %H:%M UTC")
+        time_str = ts.strftime("%-I:%M %p")
+        full_time = ts.strftime("%d %b %Y %-I:%M %p EST")
         au_class = _author_class(msg.author)
         is_bot = getattr(msg.author, "bot", False)
         badge = '<span class="badge">APP</span>' if is_bot else ""
@@ -15252,7 +15274,11 @@ async def _build_html_transcript(
 
         if is_first:
             msg_html.append(f'<div class="av">{_avatar_html(msg.author)}</div>')
-            author_name = _esc(getattr(msg.author, "display_name", str(msg.author)))
+            author_name = _esc(
+                mention_map.get(msg.author.id)
+                or getattr(msg.author, "display_name", None)
+                or str(msg.author)
+            )
             msg_html.append(
                 f'<div><div class="mh">'
                 f'<span class="au {au_class}">{author_name}{badge}</span>'
@@ -15266,7 +15292,7 @@ async def _build_html_transcript(
 
         # Content
         if msg.content:
-            msg_html.append(f'<div class="ct">{_md(msg.content)}</div>')
+            msg_html.append(f'<div class="ct">{_md(msg.content, mention_map)}</div>')
 
         # Attachments
         for att in msg.attachments:
@@ -15287,7 +15313,7 @@ async def _build_html_transcript(
 
         # Embeds
         for emb in msg.embeds:
-            msg_html.append(_render_embed(emb))
+            msg_html.append(_render_embed(emb, mention_map))
 
         msg_html.append("</div></div>")
         rows.append("".join(msg_html))
