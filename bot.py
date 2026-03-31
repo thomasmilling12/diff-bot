@@ -5507,30 +5507,32 @@ def get_rules_embed():
         "🚫 **3.** No drifting or burnouts at the meet spot.\n\n"
         "🚫 **4.** No excessive revving or honking.\n\n"
         "🚫 **5.** No harassment or bullying.\n"
-        "→ Keep negative feedback to yourself.\n\n"
+        "↳ Keep negative feedback to yourself.\n\n"
         "✅ **6.** If you are lagging, go into passive mode and head to the back of the cruise.\n\n"
-        "🚫 **7.** If you want to stance your vehicle, do it at least 3 blocks away and call Lester.\n\n"
+        "🚫 **7.** If you want to stance your vehicle, do it at least 3 blocks away and call Lester.\n"
+        "↳ Stancing at the spot disrupts the meet flow.\n\n"
         "🚫 **8.** No guns or weapons during the car meet.\n\n"
         "✅ **9.** Be respectful to the host and DIFF crew members at all times."
     )
 
     rules_part2 = (
         "🚫 **10.** Do not stand on your vehicle or another meet-attendee's vehicle.\n\n"
-        "✅ **11.** Stay in game chat at all times.\n\n"
+        "🎙️ **11.** You must be in the Discord voice chat at all times during the meet.\n"
+        "↳ Join the meet VC before the meet starts and stay connected.\n\n"
         "🚫 **12.** Stay ground-level at all times.\n"
-        "→ No roofs or ladders.\n\n"
+        "↳ No roofs or ladders.\n\n"
         "✅ **13.** Make sure you are aware of the car class chosen for the meet.\n\n"
         "✅ **14.** If you have an issue during the meet, ask a DIFF member for assistance.\n\n"
         "🚫 **15.** If you fly to the meet, land at least 10 blocks away and land the aircraft.\n\n"
         "🚫 **16.** No modded cars or riced-out builds during DIFF meets.\n\n"
         "🚫 **17.** No CEO is allowed.\n"
-        "→ Use Motorcycle Club only during the meet.\n\n"
+        "↳ Use Motorcycle Club only during the meet.\n\n"
         "🔴 **Failure to follow these rules puts you at risk of getting blocked and banned from future DIFF Car Meets.**"
     )
 
-    embed.add_field(name="📜 Rules (1/2)", value=rules_part1, inline=False)
-    embed.add_field(name="📜 Rules (2/2)", value=rules_part2, inline=False)
-    embed.set_footer(text="Press the green button below if you understand and accept the rules.")
+    embed.add_field(name="📋 Meet Rules — Part 1 of 2", value=rules_part1, inline=False)
+    embed.add_field(name="📋 Meet Rules — Part 2 of 2", value=rules_part2, inline=False)
+    embed.set_footer(text="✅ Hit the button below to confirm you've read and accept all rules.")
     return embed
 
 
