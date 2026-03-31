@@ -160,6 +160,7 @@ DATA_FOLDER = "diff_data"
 COOLDOWN_FILE = os.path.join(DATA_FOLDER, "diff_reapply_cooldowns.json")
 MEMBER_DB_FILE = os.path.join(DATA_FOLDER, "diff_member_database.json")
 STAFF_LOGS_CHANNEL_ID = 1485265848099799163
+MOD_HUB_CHANNEL_ID    = 1486598266211664003
 MEET_ATTENDANCE_CHANNEL_ID = 1089579004517953546
 LEADERBOARD_CHANNEL_ID = 1485282044392243290
 ACTIVITY_FILE = os.path.join(DATA_FOLDER, "diff_activity_stats.json")
@@ -10055,6 +10056,8 @@ async def on_ready():
         color_ops_refresh_loop.start()
     if not ticket_scan_loop.is_running():
         ticket_scan_loop.start()
+    if not _ticket_inactivity_monitor.is_running():
+        _ticket_inactivity_monitor.start()
 
     _rsvp_load_all()
     for _rsvp_mid, _rsvp_rec in _rsvp_meets.items():
@@ -14931,13 +14934,27 @@ async def _supp_find_existing_ticket(
 async def _supp_find_any_open_ticket(
     guild: discord.Guild,
     member: discord.Member,
+    *,
+    appeal_only: bool = False,
+    support_only: bool = False,
 ) -> discord.TextChannel | None:
-    """Return ANY open ticket belonging to this user across all ticket types."""
+    """Return an open ticket belonging to this user.
+
+    appeal_only  → only look for appeal-type tickets (warning/timeout/ban/kick/build/exclusion)
+    support_only → only look for non-appeal tickets (report/support/apply)
+    """
     for ch in guild.text_channels:
-        if ch.topic and f"ticket_owner={member.id}" in ch.topic:
-            for tk in _TICKET_TYPES.values():
-                if f"ticket_type={tk.key}" in ch.topic:
-                    return ch
+        if not ch.topic or f"ticket_owner={member.id}" not in ch.topic:
+            continue
+        for tk in _TICKET_TYPES.values():
+            if f"ticket_type={tk.key}" not in ch.topic:
+                continue
+            is_appeal = tk.key in _APPEAL_TYPE_KEYS
+            if appeal_only and not is_appeal:
+                continue
+            if support_only and is_appeal:
+                continue
+            return ch
     return None
 
 
@@ -15428,6 +15445,56 @@ class SupportApplicationReviewView(discord.ui.View):
             pass
 
 
+async def _supp_auto_close_ticket(
+    channel: discord.TextChannel,
+    owner_id: int,
+    ticket_label: str,
+    reviewer: discord.Member,
+    *,
+    delay: int = 15,
+) -> None:
+    """Generate transcript, log it, DM owner, then delete the ticket channel after `delay` seconds."""
+    from datetime import timezone as _tz
+    guild = channel.guild
+
+    # Generate transcript
+    transcript = await _supp_export_transcript(channel)
+
+    # Log to staff-logs
+    logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(logs_ch, discord.TextChannel):
+        close_embed = discord.Embed(
+            title=f"🔒 Appeal Ticket Closed — {ticket_label}",
+            color=discord.Color.dark_grey(),
+            timestamp=datetime.now(_tz.utc),
+        )
+        close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
+        close_embed.add_field(name="🔒 Closed By", value=reviewer.mention, inline=True)
+        close_embed.add_field(name="👤 Member", value=f"<@{owner_id}> (`{owner_id}`)", inline=True)
+        close_embed.set_footer(text="Different Meets • Appeal System")
+        try:
+            await logs_ch.send(embed=close_embed, file=transcript)
+        except Exception:
+            pass
+
+    # Inform the ticket channel before deletion
+    try:
+        await channel.send(
+            embed=discord.Embed(
+                description=f"✅ This appeal has been resolved. The channel will close in {delay} seconds.",
+                color=discord.Color.dark_grey(),
+            )
+        )
+    except Exception:
+        pass
+
+    await asyncio.sleep(delay)
+    try:
+        await channel.delete(reason=f"Appeal resolved by {reviewer}")
+    except discord.HTTPException:
+        pass
+
+
 async def _supp_create_ticket_channel(
     interaction: discord.Interaction,
     ticket: "_TicketType",
@@ -15546,7 +15613,7 @@ class _AppealDenyModal(discord.ui.Modal, title="Deny Appeal — Provide Reason")
         except Exception:
             pass
 
-        await interaction.response.send_message("Appeal denied and user notified.", ephemeral=True)
+        await interaction.response.send_message("Appeal denied and user notified. Ticket will auto-close.", ephemeral=True)
 
         logs_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_ch, discord.TextChannel):
@@ -15562,6 +15629,12 @@ class _AppealDenyModal(discord.ui.Modal, title="Deny Appeal — Provide Reason")
                 await logs_ch.send(embed=log_e)
             except Exception:
                 pass
+
+        # Auto-close the ticket channel
+        if isinstance(interaction.channel, discord.TextChannel) and isinstance(interaction.user, discord.Member):
+            asyncio.create_task(
+                _supp_auto_close_ticket(interaction.channel, self.owner_id, label, interaction.user, delay=15)
+            )
 
 
 class _AppealActionView(discord.ui.View):
@@ -15657,7 +15730,7 @@ class _AppealActionView(discord.ui.View):
         except Exception:
             pass
 
-        await interaction.response.send_message("Appeal accepted and user notified.", ephemeral=True)
+        await interaction.response.send_message("Appeal accepted and user notified. Ticket will auto-close.", ephemeral=True)
 
         logs_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_ch, discord.TextChannel):
@@ -15673,6 +15746,26 @@ class _AppealActionView(discord.ui.View):
                 await logs_ch.send(embed=log_e)
             except Exception:
                 pass
+
+        # Alert mod-hub if reversal failed (needs manual attention)
+        if "manually" in reversal_note or "failed" in reversal_note or "insufficient" in reversal_note:
+            mod_hub = interaction.guild.get_channel(MOD_HUB_CHANNEL_ID)
+            if isinstance(mod_hub, discord.TextChannel):
+                try:
+                    await mod_hub.send(
+                        f"⚠️ **Manual Action Required** — {label} accepted for <@{owner_id}> "
+                        f"but auto-reversal could not complete.\n"
+                        f"**Reason:** {reversal_note.strip()}\n"
+                        f"Reviewed by: {interaction.user.mention}"
+                    )
+                except Exception:
+                    pass
+
+        # Auto-close the ticket channel
+        if isinstance(interaction.channel, discord.TextChannel):
+            asyncio.create_task(
+                _supp_auto_close_ticket(interaction.channel, owner_id, label, interaction.user, delay=15)
+            )
 
     @discord.ui.button(label="Deny Appeal", emoji="❌", style=discord.ButtonStyle.danger, custom_id="diff_appeal_action_deny")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -15782,14 +15875,14 @@ class SupportDropdown(discord.ui.Select):
         except discord.NotFound:
             return
 
-        existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user)
+        existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, support_only=True)
         if existing:
             ex_type_key = _supp_parse_topic(existing.topic, "ticket_type") or "ticket"
             ex_ticket = _TICKET_TYPES.get(ex_type_key)
             ex_label = ex_ticket.label if ex_ticket else "ticket"
             return await interaction.followup.send(
                 f"You already have an open {ex_label}: {existing.mention}\n"
-                "Please close your existing ticket before opening a new one.",
+                "Please close it before opening another support ticket.",
                 ephemeral=True,
             )
 
@@ -15900,14 +15993,14 @@ class AppealDropdown(discord.ui.Select):
         except discord.NotFound:
             return
 
-        existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user)
+        existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, appeal_only=True)
         if existing:
             ex_type_key = _supp_parse_topic(existing.topic, "ticket_type") or "ticket"
             ex_ticket = _TICKET_TYPES.get(ex_type_key)
-            ex_label = ex_ticket.label if ex_ticket else "ticket"
+            ex_label = ex_ticket.label if ex_ticket else "appeal"
             return await interaction.followup.send(
                 f"You already have an open {ex_label}: {existing.mention}\n"
-                "Please close your existing ticket before submitting a new appeal.",
+                "Please close it before submitting a new appeal.",
                 ephemeral=True,
             )
 
@@ -15936,9 +16029,31 @@ class AppealDropdown(discord.ui.Select):
             except discord.HTTPException:
                 pass
 
+        # ── Ping mod-hub so leaders see new appeals immediately ────────────────
+        from datetime import timezone as _tz
+        mod_hub = interaction.guild.get_channel(MOD_HUB_CHANNEL_ID)
+        if isinstance(mod_hub, discord.TextChannel):
+            try:
+                leader_mention = f"<@&{LEADER_ROLE_ID}>"
+                alert = discord.Embed(
+                    title=f"⚖️ New {ticket.label} Submitted",
+                    description=(
+                        f"{interaction.user.mention} has opened a **{ticket.label}**.\n\n"
+                        f"Review it here: {channel.mention}"
+                    ),
+                    color=_TICKET_COLORS.get(ticket.key, discord.Color.orange()),
+                    timestamp=datetime.now(_tz.utc),
+                )
+                alert.add_field(name="👤 Member", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
+                alert.add_field(name="📋 Type", value=ticket.label, inline=True)
+                alert.set_footer(text="Different Meets • Appeal System")
+                await mod_hub.send(content=leader_mention, embed=alert)
+            except Exception:
+                pass
+
         await interaction.followup.send(
             f"Your **{ticket.label}** has been submitted: {channel.mention}\n"
-            "DIFF staff will review your case shortly. Please be patient and honest.",
+            "DIFF leadership has been notified and will review your case shortly. Please be patient and honest.",
             ephemeral=True,
         )
 
@@ -15958,6 +16073,234 @@ class SupportDropdownView(discord.ui.View):
                 await interaction.followup.send("Something went wrong. Please try again.", ephemeral=True)
         except Exception:
             pass
+
+
+# ── Ticket inactivity monitor ─────────────────────────────────────────────────
+
+_TICKET_WARN_HOURS  = 48   # warn after this many hours of silence
+_TICKET_CLOSE_HOURS = 72   # auto-close after this many hours of silence
+
+@tasks.loop(minutes=30)
+async def _ticket_inactivity_monitor() -> None:
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
+
+    for channel in guild.text_channels:
+        topic = channel.topic or ""
+        if "ticket_owner=" not in topic or "ticket_type=" not in topic:
+            continue
+        # Skip channels already marked as warned
+        ticket_type = _supp_parse_topic(topic, "ticket_type") or ""
+        if ticket_type not in _TICKET_TYPES:
+            continue
+
+        # Find last message timestamp
+        last_msg: discord.Message | None = None
+        try:
+            async for m in channel.history(limit=1):
+                last_msg = m
+        except Exception:
+            continue
+
+        if not last_msg:
+            continue
+
+        age_hours = (now - last_msg.created_at.replace(tzinfo=_tz.utc)).total_seconds() / 3600
+
+        # Already sent a warning? Don't double-warn (check for our warning message)
+        if age_hours >= _TICKET_CLOSE_HOURS:
+            owner_id_raw = _supp_parse_topic(topic, "ticket_owner")
+            owner_id = int(owner_id_raw) if owner_id_raw and owner_id_raw.isdigit() else 0
+            ticket_obj = _TICKET_TYPES.get(ticket_type, _TICKET_TYPES["support"])
+            reviewer_member = guild.me or guild.get_member(guild.owner_id)
+            if reviewer_member:
+                try:
+                    await channel.send(
+                        embed=discord.Embed(
+                            description="⏰ This ticket has been inactive for over 72 hours and is being automatically closed.",
+                            color=discord.Color.dark_grey(),
+                        )
+                    )
+                    await asyncio.sleep(3)
+                    transcript = await _supp_export_transcript(channel)
+                    logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+                    if isinstance(logs_ch, discord.TextChannel):
+                        idle_embed = discord.Embed(
+                            title=f"⏰ Ticket Auto-Closed (Inactive) — {ticket_obj.label}",
+                            color=discord.Color.dark_grey(),
+                            timestamp=now,
+                        )
+                        idle_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
+                        idle_embed.add_field(name="👤 Owner", value=f"<@{owner_id}> (`{owner_id}`)", inline=True)
+                        idle_embed.add_field(name="⏰ Inactive For", value=f"{age_hours:.0f}h", inline=True)
+                        idle_embed.set_footer(text="Different Meets • Ticket System")
+                        try:
+                            await logs_ch.send(embed=idle_embed, file=transcript)
+                        except Exception:
+                            pass
+                    await channel.delete(reason="Ticket auto-closed: 72h inactivity")
+                except Exception:
+                    pass
+
+        elif age_hours >= _TICKET_WARN_HOURS:
+            # Send a single inactivity warning (check if we already sent one)
+            warning_sent = False
+            try:
+                async for m in channel.history(limit=10):
+                    if m.author.id == (bot.user.id if bot.user else 0) and m.embeds:
+                        if any("inactive" in (e.description or "").lower() for e in m.embeds):
+                            warning_sent = True
+                            break
+            except Exception:
+                pass
+
+            if not warning_sent:
+                owner_id_raw = _supp_parse_topic(topic, "ticket_owner")
+                try:
+                    await channel.send(
+                        content=f"<@{owner_id_raw}>" if owner_id_raw else None,
+                        embed=discord.Embed(
+                            title="⏰ Inactivity Warning",
+                            description=(
+                                "This ticket has been **inactive for 48 hours**.\n\n"
+                                "If no response is received within the next **24 hours**, "
+                                "this ticket will be automatically closed.\n\n"
+                                "Please respond or ask staff to close it if your issue is resolved."
+                            ),
+                            color=discord.Color.orange(),
+                        )
+                    )
+                except Exception:
+                    pass
+
+
+@_ticket_inactivity_monitor.before_loop
+async def _before_ticket_monitor():
+    await bot.wait_until_ready()
+
+
+# ── Ticket stats command ──────────────────────────────────────────────────────
+
+@bot.command(name="ticketstats")
+async def _ticket_stats_cmd(ctx: commands.Context) -> None:
+    """Show a count of all currently open tickets by type."""
+    if not isinstance(ctx.author, discord.Member):
+        return
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    if not is_staff:
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    guild = ctx.guild
+    if not guild:
+        return
+
+    counts: dict[str, int] = {k: 0 for k in _TICKET_TYPES}
+    total = 0
+    for channel in guild.text_channels:
+        topic = channel.topic or ""
+        if "ticket_owner=" not in topic or "ticket_type=" not in topic:
+            continue
+        for key in _TICKET_TYPES:
+            if f"ticket_type={key}" in topic:
+                counts[key] += 1
+                total += 1
+                break
+
+    from datetime import timezone as _tz
+    embed = discord.Embed(
+        title="📊 DIFF Open Ticket Stats",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_tz.utc),
+    )
+
+    support_lines = []
+    appeal_lines = []
+    for key, count in counts.items():
+        if count == 0:
+            continue
+        t = _TICKET_TYPES[key]
+        line = f"{t.emoji} **{t.label}** — `{count}`"
+        if key in _APPEAL_TYPE_KEYS:
+            appeal_lines.append(line)
+        else:
+            support_lines.append(line)
+
+    embed.add_field(
+        name="📋 Support Tickets",
+        value="\n".join(support_lines) or "*None open*",
+        inline=False,
+    )
+    embed.add_field(
+        name="⚖️ Appeal Tickets",
+        value="\n".join(appeal_lines) or "*None open*",
+        inline=False,
+    )
+    embed.add_field(name="🔢 Total Open", value=f"`{total}`", inline=True)
+    embed.set_footer(text="Different Meets • Support System")
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    await ctx.send(embed=embed, delete_after=60)
+
+
+# ── Welcome DM on member join ─────────────────────────────────────────────────
+
+@bot.event
+async def on_member_join(member: discord.Member) -> None:
+    if member.bot:
+        return
+    from datetime import timezone as _tz
+    try:
+        dm_embed = discord.Embed(
+            title="👋 Welcome to DIFF Meets!",
+            description=(
+                f"Hey {member.mention}, welcome to **Different Meets** — the #1 PlayStation GTA car meet community!\n\n"
+                "Here's everything you need to get started:"
+            ),
+            color=discord.Color.from_rgb(88, 101, 242),
+            timestamp=datetime.now(_tz.utc),
+        )
+        dm_embed.add_field(
+            name="📋 Getting Started",
+            value=(
+                "• Read the server rules in **#rules** before anything else\n"
+                "• Use **#verify** or the join panel to get your Verified role\n"
+                "• Check **#meet-info** to see upcoming meet schedules"
+            ),
+            inline=False,
+        )
+        dm_embed.add_field(
+            name="🎟️ Need Help?",
+            value=(
+                "Open a private ticket any time from **#support-center** — "
+                "our staff team will respond quickly."
+            ),
+            inline=False,
+        )
+        dm_embed.add_field(
+            name="🚗 About DIFF Meets",
+            value=(
+                "We host regular car meets on PlayStation GTA. "
+                "Bring your best builds, follow meet etiquette, and have fun!"
+            ),
+            inline=False,
+        )
+        dm_embed.set_footer(text="Different Meets • EST. 2020")
+        if DIFF_LOGO_URL:
+            dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
+        if DIFF_BANNER_URL:
+            dm_embed.set_image(url=DIFF_BANNER_URL)
+
+        await member.send(embed=dm_embed)
+    except (discord.Forbidden, discord.HTTPException):
+        pass  # Member has DMs disabled — silently ignore
 
 
 async def _wipe_old_panels(channel: discord.TextChannel) -> None:
