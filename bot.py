@@ -1662,12 +1662,6 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Application"):
                 await applicant.send(embed=denied_embed, view=denied_view)
             except Exception:
                 await safe_dm(applicant, f"Your DIFF application **#{self.app_id}** was denied.\n\nReason: {deny_reason}")
-        ticket_channel = interaction.guild.get_channel(record.get("ticket_channel_id")) if record.get("ticket_channel_id") else None
-        if isinstance(ticket_channel, discord.TextChannel):
-            try:
-                await ticket_channel.send(embed=denied_embed)
-            except Exception:
-                pass
         dashboard_ch = interaction.guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
         if isinstance(dashboard_ch, discord.TextChannel):
             dash_embed = discord.Embed(title="DIFF Application Denied", color=discord.Color.red(), timestamp=utc_now())
@@ -1765,7 +1759,8 @@ class TicketAcceptModal(discord.ui.Modal, title="Accept Applicant"):
             except Exception:
                 pass
         try:
-            await interaction.channel.edit(name=f"closed-{interaction.channel.name[:80]}")
+            _cn = interaction.channel.name
+            await interaction.channel.edit(name=_cn if _cn.startswith("closed-") else f"closed-{_cn[:80]}")
             await interaction.channel.set_permissions(guild.default_role, view_channel=False)
             if applicant in guild.members:
                 await interaction.channel.set_permissions(applicant, view_channel=False)
@@ -1829,10 +1824,6 @@ class TicketDenyModal(discord.ui.Modal, title="Deny Applicant"):
                 await applicant.send(f"Your DIFF application **#{app_id}** was denied.\n\nReason: {deny_reason}")
             except Exception:
                 pass
-        try:
-            await interaction.channel.send(embed=denied_embed)
-        except Exception:
-            pass
         dashboard_ch = guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
         if isinstance(dashboard_ch, discord.TextChannel):
             dash = discord.Embed(title="DIFF Application Denied", color=discord.Color.red(), timestamp=utc_now())
@@ -1845,7 +1836,8 @@ class TicketDenyModal(discord.ui.Modal, title="Deny Applicant"):
             except Exception:
                 pass
         try:
-            await interaction.channel.edit(name=f"closed-{interaction.channel.name[:80]}")
+            _cn = interaction.channel.name
+            await interaction.channel.edit(name=_cn if _cn.startswith("closed-") else f"closed-{_cn[:80]}")
             await interaction.channel.set_permissions(guild.default_role, view_channel=False)
             if isinstance(applicant, discord.Member):
                 await interaction.channel.set_permissions(applicant, view_channel=False)
@@ -1927,7 +1919,8 @@ class TicketCloseButton(discord.ui.Button):
         await interaction.response.send_message("🔒 Closing ticket in 5 seconds...", ephemeral=True)
         await asyncio.sleep(5)
         try:
-            await interaction.channel.edit(name=f"closed-{interaction.channel.name[:80]}")
+            _cn = interaction.channel.name
+            await interaction.channel.edit(name=_cn if _cn.startswith("closed-") else f"closed-{_cn[:80]}")
             await interaction.channel.set_permissions(interaction.guild.default_role, view_channel=False)
         except Exception:
             pass
@@ -10250,7 +10243,8 @@ async def application_timeout_loop():
                     except Exception:
                         pass
                     try:
-                        await ticket_channel.edit(name=f"closed-{ticket_channel.name[:80]}")
+                        _tcn = ticket_channel.name
+                        await ticket_channel.edit(name=_tcn if _tcn.startswith("closed-") else f"closed-{_tcn[:80]}")
                     except Exception:
                         pass
                     try:
