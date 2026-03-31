@@ -303,6 +303,7 @@ async def _setup_hook():
         "cogs.diff_smart_features",
         "cogs.diff_booster_hub",
         "cogs.diff_server_improvements",
+        "cogs.diff_community_features",
     ]
     for _cog in _cogs:
         try:
