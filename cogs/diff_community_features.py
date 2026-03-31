@@ -859,6 +859,33 @@ class DiffCommunityFeatures(commands.Cog):
         embed.add_field(name="🎟️ Open Tickets",    value=str(open_tickets),                             inline=True)
         embed.add_field(name="⚖️ Appeal Denials",  value=str(appeal_denials),                           inline=True)
         embed.add_field(name="🏷️ Top Roles",       value=roles_str,                                     inline=False)
+
+        # Bio (from diff_advanced_features data)
+        bio_txt = _load(os.path.join("diff_data", "diff_bios.json")).get(uid, "")
+        if bio_txt:
+            embed.add_field(name="📝 Bio", value=bio_txt[:200], inline=False)
+
+        # Achievements
+        ach_db  = _load(os.path.join("diff_data", "diff_achievements.json"))
+        earned  = ach_db.get(uid, [])
+        _ACH_DEF = {
+            "first_meet":  ("🚗", "First Wheel"),  "ten_meets":   ("🎯", "10 Meets Club"),
+            "twenty_five": ("🏅", "Road Veteran"),  "fifty_meets": ("🏆", "Legend"),
+            "first_host":  ("🎮", "First Time Host"), "five_host": ("⭐", "Experienced Host"),
+            "ten_host":    ("👑", "Master Host"),
+        }
+        if earned:
+            badge_str = "  ".join(f"{_ACH_DEF[k][0]}{_ACH_DEF[k][1]}" for k in earned if k in _ACH_DEF)
+            embed.add_field(name="🏅 Achievements", value=badge_str or "None", inline=False)
+
+        # XP / Level
+        xp_entry = _load(os.path.join("diff_data", "diff_xp.json")).get(uid, {})
+        if xp_entry:
+            import math as _math
+            xp_val  = xp_entry.get("xp", 0)
+            xp_lvl  = max(1, int(_math.sqrt(max(xp_val, 0) / 50)))
+            embed.add_field(name="⭐ XP / Level", value=f"{xp_val:,} XP · Level {xp_lvl}", inline=True)
+
         if warn_list:
             lw = warn_list[-1]
             embed.add_field(
