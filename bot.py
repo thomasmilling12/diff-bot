@@ -181,7 +181,13 @@ ROLL_CALL_CHANNEL_ID = 1047338695352664165
 _OFFICIAL_MEET_CHANNEL_ID = 1485870611069796374
 _OFFICIAL_MEET_TZ = "America/New_York"
 SUPPORT_CHANNEL_ID = 1156363575150002226
-ACTIVITY_MEETS_FILE = os.path.join(DATA_FOLDER, "diff_activity_meets.json")
+ACTIVITY_MEETS_FILE    = os.path.join(DATA_FOLDER, "diff_activity_meets.json")
+_APPEAL_DENIAL_FILE    = os.path.join(DATA_FOLDER, "diff_appeal_denials.json")
+_TICKET_PERF_FILE      = os.path.join(DATA_FOLDER, "diff_ticket_perf.json")
+_FAQ_FILE              = os.path.join(DATA_FOLDER, "diff_faq.json")
+_CREW_LB_CHANNEL_ID    = 1485282044392243290   # reuse leaderboard channel
+_PHOTO_SUBMIT_CHANNEL_ID = 1485274945473871903  # member-database channel for now; override in cog
+_raid_join_times: list = []   # rolling timestamps for anti-raid detection
 DIFF_PANEL_CHANNEL_ID = 1103086800458760262
 DIFF_PANEL_STATE_FILE = os.path.join(DATA_FOLDER, "diff_panel_state.json")
 INTERVIEW_PANEL_CHANNEL_ID = 1103849042296963112
@@ -293,6 +299,7 @@ async def _setup_hook():
         "cogs.diff_photo_reminder",
         "cogs.diff_smart_features",
         "cogs.diff_booster_hub",
+        "cogs.diff_server_improvements",
     ]
     for _cog in _cogs:
         try:
@@ -10777,6 +10784,41 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     add_warning(member.id, interaction.user.id, reason)
     total_warnings = get_warning_count(member.id)
 
+    # ── Auto-escalation ──────────────────────────────────────────────────────
+    async def _run_warn_escalation(_member=member, _total=total_warnings, _reason=reason, _by=interaction.user, _guild=interaction.guild):
+        if _guild is None:
+            return
+        _mod_hub = _guild.get_channel(MOD_HUB_CHANNEL_ID)
+        _action = None
+        try:
+            if _total == 2:
+                await _member.timeout(timedelta(hours=24), reason=f"Auto-escalation: {_total} warnings — {_reason}")
+                _action = "🕐 **Auto-Timeout (24 h)** applied"
+            elif _total == 3:
+                await _member.kick(reason=f"Auto-escalation: {_total} warnings — {_reason}")
+                _action = "🦵 **Auto-Kick** applied"
+            elif _total >= 5:
+                await _member.ban(delete_message_days=0, reason=f"Auto-escalation: {_total} warnings — {_reason}")
+                _action = "🔨 **Auto-Ban** applied"
+            if _action and isinstance(_mod_hub, discord.TextChannel):
+                _e = discord.Embed(
+                    title="⚠️ Warning Escalation Triggered",
+                    description=f"{_action} for {_member.mention} ({_member})",
+                    color=discord.Color.red(),
+                )
+                _e.add_field(name="Warnings", value=str(_total), inline=True)
+                _e.add_field(name="Last Reason", value=_reason, inline=True)
+                _e.add_field(name="Warned By", value=_by.mention, inline=True)
+                _e.set_footer(text="DIFF Auto-Escalation • Different Meets")
+                await _mod_hub.send(embed=_e)
+        except Exception as _esc_err:
+            if isinstance(_mod_hub, discord.TextChannel):
+                try:
+                    await _mod_hub.send(f"⚠️ Escalation failed for {_member.mention} ({_total} warnings): `{_esc_err}`")
+                except Exception:
+                    pass
+    asyncio.create_task(_run_warn_escalation())
+
     embed = discord.Embed(
         title="⚠️ Member Warned",
         description=(
@@ -15274,6 +15316,97 @@ async def _supp_export_transcript(channel: discord.TextChannel) -> discord.File:
     return await _build_html_transcript(channel, limit=None)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Appeal denial cooldown helpers (30-day cooldown after a denial per type)
+# ─────────────────────────────────────────────────────────────────────────────
+def _appeal_denial_load() -> dict:
+    try:
+        with open(_APPEAL_DENIAL_FILE, "r") as _f:
+            return json.load(_f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _appeal_denial_save(_d: dict) -> None:
+    with open(_APPEAL_DENIAL_FILE, "w") as _f:
+        json.dump(_d, _f)
+
+def _appeal_denial_set(user_id: int, appeal_type: str) -> None:
+    _d = _appeal_denial_load()
+    _d.setdefault(str(user_id), {})[appeal_type] = datetime.utcnow().isoformat()
+    _appeal_denial_save(_d)
+
+def _appeal_denial_check(user_id: int, appeal_type: str):
+    """Returns remaining timedelta if still in cooldown, else None."""
+    _d = _appeal_denial_load()
+    record = _d.get(str(user_id), {}).get(appeal_type)
+    if not record:
+        return None
+    try:
+        denied_at = datetime.fromisoformat(record)
+    except ValueError:
+        return None
+    remaining = timedelta(days=30) - (datetime.utcnow() - denied_at)
+    return remaining if remaining.total_seconds() > 0 else None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Staff ticket performance tracking helpers
+# ─────────────────────────────────────────────────────────────────────────────
+def _tperf_load() -> dict:
+    try:
+        with open(_TICKET_PERF_FILE, "r") as _f:
+            return json.load(_f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _tperf_save(_d: dict) -> None:
+    with open(_TICKET_PERF_FILE, "w") as _f:
+        json.dump(_d, _f)
+
+def _tperf_record_claim(staff_id: int, channel_name: str) -> None:
+    _d = _tperf_load()
+    _s = _d.setdefault(str(staff_id), {"claimed": 0, "closed": 0, "total_seconds": 0, "claim_times": {}})
+    _s["claimed"] = _s.get("claimed", 0) + 1
+    _s.setdefault("claim_times", {})[channel_name] = datetime.utcnow().isoformat()
+    _tperf_save(_d)
+
+def _tperf_record_close(staff_id: int, channel_name: str) -> None:
+    _d = _tperf_load()
+    _s = _d.setdefault(str(staff_id), {"claimed": 0, "closed": 0, "total_seconds": 0, "claim_times": {}})
+    _s["closed"] = _s.get("closed", 0) + 1
+    _claim_str = _s.get("claim_times", {}).pop(channel_name, None)
+    if _claim_str:
+        try:
+            _elapsed = (datetime.utcnow() - datetime.fromisoformat(_claim_str)).total_seconds()
+            _s["total_seconds"] = _s.get("total_seconds", 0) + max(0, _elapsed)
+        except Exception:
+            pass
+    _tperf_save(_d)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FAQ helpers
+# ─────────────────────────────────────────────────────────────────────────────
+def _faq_load() -> dict:
+    try:
+        with open(_FAQ_FILE, "r") as _f:
+            return json.load(_f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _faq_save(_d: dict) -> None:
+    with open(_FAQ_FILE, "w") as _f:
+        json.dump(_d, _f)
+
+def _faq_lookup(text: str) -> "list[tuple[str,str]]":
+    """Return list of (trigger, answer) tuples whose trigger keywords appear in text."""
+    _fq = _faq_load()
+    _matches = []
+    _lower = text.lower()
+    for _trigger, _answer in _fq.items():
+        if _trigger.lower() in _lower:
+            _matches.append((_trigger, _answer))
+    return _matches
+
+
 class SupportCloseButton(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -15298,6 +15431,7 @@ class SupportCloseButton(discord.ui.View):
             await channel.edit(topic=topic + f" | ticket_claimed_by={interaction.user.id}")
         except Exception:
             pass
+        _tperf_record_claim(interaction.user.id, channel.name)
         await interaction.response.send_message(
             f"🙋 {interaction.user.mention} has claimed this ticket and will be assisting shortly."
         )
@@ -15327,6 +15461,8 @@ class SupportCloseButton(discord.ui.View):
         ticket_key = _supp_parse_topic(channel.topic, "ticket_type") or "support"
         ticket = _TICKET_TYPES.get(ticket_key, _TICKET_TYPES["support"])
         claimer_id = _supp_parse_topic(channel.topic, "ticket_claimed_by")
+        if claimer_id and claimer_id.isdigit():
+            _tperf_record_close(int(claimer_id), channel.name)
 
         transcript_file = await _supp_export_transcript(channel)
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
@@ -15629,6 +15765,9 @@ class _AppealDenyModal(discord.ui.Modal, title="Deny Appeal — Provide Reason")
                 await logs_ch.send(embed=log_e)
             except Exception:
                 pass
+
+        # Record 30-day resubmission cooldown for this appeal type
+        _appeal_denial_set(self.owner_id, self.appeal_type)
 
         # Auto-close the ticket channel
         if isinstance(interaction.channel, discord.TextChannel) and isinstance(interaction.user, discord.Member):
@@ -15993,6 +16132,17 @@ class AppealDropdown(discord.ui.Select):
         except discord.NotFound:
             return
 
+        # ── Appeal resubmission cooldown check ───────────────────────────────
+        _remaining_cd = _appeal_denial_check(interaction.user.id, selected)
+        if _remaining_cd is not None:
+            _days_left = int(_remaining_cd.total_seconds() // 86400) + 1
+            return await interaction.followup.send(
+                f"⏳ Your **{ticket.label}** was recently denied.\n"
+                f"You may resubmit in **{_days_left} day(s)**.\n"
+                "If you believe this is a mistake, contact a DIFF leader directly.",
+                ephemeral=True,
+            )
+
         existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, appeal_only=True)
         if existing:
             ex_type_key = _supp_parse_topic(existing.topic, "ticket_type") or "ticket"
@@ -16250,12 +16400,177 @@ async def _ticket_stats_cmd(ctx: commands.Context) -> None:
     await ctx.send(embed=embed, delete_after=60)
 
 
+# ── Staff note command — post a styled note inside any ticket channel ─────────
+
+@bot.command(name="note")
+async def _ticket_note_cmd(ctx: commands.Context, *, text: str) -> None:
+    """Post a visible staff note inside the current ticket channel."""
+    if not isinstance(ctx.author, discord.Member):
+        return
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    if not is_staff:
+        return await ctx.send("Only staff can post ticket notes.", delete_after=8)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    from datetime import timezone as _tz
+    note_embed = discord.Embed(
+        title="📝 Staff Note",
+        description=text,
+        color=discord.Color.yellow(),
+        timestamp=datetime.now(_tz.utc),
+    )
+    note_embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+    note_embed.set_footer(text="DIFF Staff • Internal Note")
+    await ctx.send(embed=note_embed)
+
+
+# ── Staff ticket performance ──────────────────────────────────────────────────
+
+@bot.command(name="staffperformance")
+async def _staffperformance_cmd(ctx: commands.Context) -> None:
+    """Show per-staff ticket stats (claimed, closed, avg response time)."""
+    if not isinstance(ctx.author, discord.Member):
+        return
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    if not is_staff:
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    _perf = _tperf_load()
+    if not _perf:
+        return await ctx.send("No ticket performance data yet.", delete_after=15)
+    from datetime import timezone as _tz
+    embed = discord.Embed(
+        title="📊 Staff Ticket Performance",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_tz.utc),
+    )
+    lines = []
+    for _sid, _stats in sorted(_perf.items(), key=lambda x: x[1].get("closed", 0), reverse=True):
+        _claimed = _stats.get("claimed", 0)
+        _closed  = _stats.get("closed",  0)
+        _secs    = _stats.get("total_seconds", 0)
+        _avg_str = f"{int(_secs // _closed // 60)} min" if _closed > 0 and _secs > 0 else "N/A"
+        lines.append(f"<@{_sid}> — 🙋 {_claimed} claimed · 🔒 {_closed} closed · ⏱ avg {_avg_str}")
+    embed.description = "\n".join(lines) or "*No data*"
+    embed.set_footer(text="Different Meets • Ticket System")
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    await ctx.send(embed=embed, delete_after=90)
+
+
+# ── Custom FAQ command group ──────────────────────────────────────────────────
+
+@bot.group(name="faq", invoke_without_command=True)
+async def _faq_group(ctx: commands.Context) -> None:
+    """FAQ management. Use: !faq add <trigger> | <answer>  |  !faq remove <trigger>  |  !faq list"""
+    await ctx.send("Usage: `!faq add <trigger> | <answer>` · `!faq remove <trigger>` · `!faq list`", delete_after=20)
+
+@_faq_group.command(name="add")
+async def _faq_add(ctx: commands.Context, *, args: str) -> None:
+    if not isinstance(ctx.author, discord.Member):
+        return
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    if not is_staff:
+        return await ctx.send("Only staff can manage FAQs.", delete_after=8)
+    if "|" not in args:
+        return await ctx.send("Format: `!faq add <trigger> | <answer>`", delete_after=10)
+    _trigger, _answer = [p.strip() for p in args.split("|", 1)]
+    if not _trigger or not _answer:
+        return await ctx.send("Trigger and answer cannot be empty.", delete_after=10)
+    _fq = _faq_load()
+    _fq[_trigger.lower()] = _answer
+    _faq_save(_fq)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await ctx.send(f"✅ FAQ added for trigger `{_trigger.lower()}`.", delete_after=10)
+
+@_faq_group.command(name="remove")
+async def _faq_remove(ctx: commands.Context, *, trigger: str) -> None:
+    if not isinstance(ctx.author, discord.Member):
+        return
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    if not is_staff:
+        return await ctx.send("Only staff can manage FAQs.", delete_after=8)
+    _fq = _faq_load()
+    _key = trigger.strip().lower()
+    if _key not in _fq:
+        return await ctx.send(f"No FAQ found for `{_key}`.", delete_after=10)
+    del _fq[_key]
+    _faq_save(_fq)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await ctx.send(f"🗑️ FAQ `{_key}` removed.", delete_after=10)
+
+@_faq_group.command(name="list")
+async def _faq_list(ctx: commands.Context) -> None:
+    if not isinstance(ctx.author, discord.Member):
+        return
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    if not is_staff:
+        return
+    _fq = _faq_load()
+    if not _fq:
+        return await ctx.send("No FAQs configured yet. Use `!faq add`.", delete_after=15)
+    from datetime import timezone as _tz
+    embed = discord.Embed(
+        title="📋 DIFF FAQ Entries",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_tz.utc),
+    )
+    for _t, _a in list(_fq.items())[:20]:
+        embed.add_field(name=f"Trigger: `{_t}`", value=_a[:512], inline=False)
+    embed.set_footer(text=f"{len(_fq)} total entries • !faq add / remove to manage")
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await ctx.send(embed=embed, delete_after=60)
+
+
 # ── Welcome DM on member join ─────────────────────────────────────────────────
 
 @bot.event
 async def on_member_join(member: discord.Member) -> None:
     if member.bot:
         return
+
+    # ── Anti-raid join-flood detection ────────────────────────────────────────
+    import time as _time_mod
+    _now_ts = _time_mod.time()
+    _raid_join_times.append(_now_ts)
+    _raid_join_times[:] = [_t for _t in _raid_join_times if _now_ts - _t < 30]
+    if len(_raid_join_times) >= 5:
+        _mod_hub_ch = member.guild.get_channel(MOD_HUB_CHANNEL_ID)
+        if isinstance(_mod_hub_ch, discord.TextChannel):
+            try:
+                _raid_e = discord.Embed(
+                    title="🚨 Possible Raid Detected",
+                    description=(
+                        f"**{len(_raid_join_times)} members** joined in the last 30 seconds.\n"
+                        "Consider enabling slowmode or raising verification requirements."
+                    ),
+                    color=discord.Color.red(),
+                )
+                _raid_e.set_footer(text="DIFF Anti-Raid System")
+                await _mod_hub_ch.send(content=f"<@&{LEADER_ROLE_ID}>", embed=_raid_e)
+            except Exception:
+                pass
+        for _ch in member.guild.text_channels:
+            try:
+                if _ch.permissions_for(member.guild.default_role).read_messages and _ch.slowmode_delay < 30:
+                    await _ch.edit(slowmode_delay=30, reason="Anti-raid: join flood detected")
+            except Exception:
+                pass
+
     from datetime import timezone as _tz
     try:
         dm_embed = discord.Embed(
