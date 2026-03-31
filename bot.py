@@ -1443,7 +1443,7 @@ class ReviewView(discord.ui.View):
         except Exception:
             pass
         await add_member_to_database(interaction.guild, applicant, accepted_by=interaction.user, nickname=final_name)
-        dashboard_ch = interaction.guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        dashboard_ch = interaction.guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
         if isinstance(dashboard_ch, discord.TextChannel):
             dash_embed = discord.Embed(title="DIFF Application Accepted", color=discord.Color.green(), timestamp=utc_now())
             dash_embed.add_field(name="Applicant", value=f"{applicant.mention} (`{applicant.id}`)", inline=False)
@@ -1668,7 +1668,7 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Application"):
                 await ticket_channel.send(embed=denied_embed)
             except Exception:
                 pass
-        dashboard_ch = interaction.guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        dashboard_ch = interaction.guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
         if isinstance(dashboard_ch, discord.TextChannel):
             dash_embed = discord.Embed(title="DIFF Application Denied", color=discord.Color.red(), timestamp=utc_now())
             dash_embed.add_field(name="Applicant", value=f"<@{self.applicant_id}> (`{self.applicant_id}`)", inline=False)
@@ -1754,7 +1754,7 @@ class TicketAcceptModal(discord.ui.Modal, title="Accept Applicant"):
             ))
         except Exception:
             pass
-        dashboard_ch = guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        dashboard_ch = guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
         if isinstance(dashboard_ch, discord.TextChannel):
             dash = discord.Embed(title="DIFF Application Accepted", color=discord.Color.green(), timestamp=utc_now())
             dash.add_field(name="Applicant", value=f"{applicant.mention} (`{applicant.id}`)", inline=False)
@@ -1833,7 +1833,7 @@ class TicketDenyModal(discord.ui.Modal, title="Deny Applicant"):
             await interaction.channel.send(embed=denied_embed)
         except Exception:
             pass
-        dashboard_ch = guild.get_channel(STAFF_DASHBOARD_CHANNEL_ID)
+        dashboard_ch = guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
         if isinstance(dashboard_ch, discord.TextChannel):
             dash = discord.Embed(title="DIFF Application Denied", color=discord.Color.red(), timestamp=utc_now())
             dash.add_field(name="Applicant", value=f"{applicant.mention} (`{applicant.id}`)", inline=False)
