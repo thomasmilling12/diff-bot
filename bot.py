@@ -8332,71 +8332,83 @@ class _RcFinalizeModal(discord.ui.Modal):
         )
 
 
-class _RcRollCallView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+class _RcBtn(discord.ui.Button):
+    """Pi-compatible button for the roll call RSVP panel."""
+    _LABELS  = {"yes": "✅", "maybe": "❓", "no": "❌"}
+    _STYLES  = {
+        "yes":   discord.ButtonStyle.success,
+        "maybe": discord.ButtonStyle.secondary,
+        "no":    discord.ButtonStyle.danger,
+    }
+    _DISPLAY = {
+        "yes":   "✅ marked as attending",
+        "maybe": "❓ marked as maybe",
+        "no":    "❌ marked as not attending",
+    }
 
-    async def _handle(self, interaction: discord.Interaction, meet_number: int, status: str):
+    def __init__(self, meet_number: int, status: str, row: int) -> None:
+        super().__init__(
+            label=f"Meet {meet_number} {self._LABELS[status]}",
+            style=self._STYLES[status],
+            custom_id=f"diff_rollcall:{meet_number}:{status}",
+            row=row,
+        )
+        self.meet_number = meet_number
+        self.status = status
+
+    async def callback(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("Server only.", ephemeral=True)
-            return
+            return await interaction.response.send_message("Server only.", ephemeral=True)
         try:
-            previous = _rc_db.set_response(interaction.guild.id, interaction.user.id, meet_number, status)
+            previous = _rc_db.set_response(
+                interaction.guild.id, interaction.user.id, self.meet_number, self.status
+            )
         except Exception:
             previous = None
-        labels = {"yes": "✅ marked as attending", "maybe": "❓ marked as maybe", "no": "❌ marked as not attending"}
         await interaction.response.send_message(
-            f"You are {labels.get(status, status)} for **Meet {meet_number}**.", ephemeral=True
+            f"You are {self._DISPLAY.get(self.status, self.status)} for **Meet {self.meet_number}**.",
+            ephemeral=True,
         )
-        asyncio.create_task(_rc_refresh_panel(interaction.guild))
-        await _rc_log_rsvp(interaction.guild, interaction.user, meet_number, previous or "none", status)
+        try:
+            asyncio.create_task(_rc_refresh_panel(interaction.guild))
+            await _rc_log_rsvp(
+                interaction.guild, interaction.user,
+                self.meet_number, previous or "none", self.status,
+            )
+        except Exception:
+            pass
 
-    @discord.ui.button(label="Meet 1 ✅", style=discord.ButtonStyle.success, custom_id="diff_rollcall:1:yes", row=0)
-    async def m1_yes(self, i, b): await self._handle(i, 1, "yes")
 
-    @discord.ui.button(label="Meet 1 ❓", style=discord.ButtonStyle.secondary, custom_id="diff_rollcall:1:maybe", row=0)
-    async def m1_maybe(self, i, b): await self._handle(i, 1, "maybe")
+class _RcRollCallView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        for meet_num, row_idx in ((1, 0), (2, 1), (3, 2)):
+            for status in ("yes", "maybe", "no"):
+                self.add_item(_RcBtn(meet_num, status, row_idx))
 
-    @discord.ui.button(label="Meet 1 ❌", style=discord.ButtonStyle.danger, custom_id="diff_rollcall:1:no", row=0)
-    async def m1_no(self, i, b): await self._handle(i, 1, "no")
 
-    @discord.ui.button(label="Meet 2 ✅", style=discord.ButtonStyle.success, custom_id="diff_rollcall:2:yes", row=1)
-    async def m2_yes(self, i, b): await self._handle(i, 2, "yes")
+class _RcFinalizeBtn(discord.ui.Button):
+    """Pi-compatible button for the admin finalize panel."""
+    def __init__(self, meet_number: int) -> None:
+        super().__init__(
+            label=f"Finalize Meet {meet_number}",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"diff_rollcall_finalize:{meet_number}",
+            row=0,
+        )
+        self.meet_number = meet_number
 
-    @discord.ui.button(label="Meet 2 ❓", style=discord.ButtonStyle.secondary, custom_id="diff_rollcall:2:maybe", row=1)
-    async def m2_maybe(self, i, b): await self._handle(i, 2, "maybe")
-
-    @discord.ui.button(label="Meet 2 ❌", style=discord.ButtonStyle.danger, custom_id="diff_rollcall:2:no", row=1)
-    async def m2_no(self, i, b): await self._handle(i, 2, "no")
-
-    @discord.ui.button(label="Meet 3 ✅", style=discord.ButtonStyle.success, custom_id="diff_rollcall:3:yes", row=2)
-    async def m3_yes(self, i, b): await self._handle(i, 3, "yes")
-
-    @discord.ui.button(label="Meet 3 ❓", style=discord.ButtonStyle.secondary, custom_id="diff_rollcall:3:maybe", row=2)
-    async def m3_maybe(self, i, b): await self._handle(i, 3, "maybe")
-
-    @discord.ui.button(label="Meet 3 ❌", style=discord.ButtonStyle.danger, custom_id="diff_rollcall:3:no", row=2)
-    async def m3_no(self, i, b): await self._handle(i, 3, "no")
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not _rc_is_admin(interaction.user):
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
+        await interaction.response.send_modal(_RcFinalizeModal(self.meet_number))
 
 
 class _RcAdminView(discord.ui.View):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(timeout=None)
-
-    async def _finalize(self, interaction: discord.Interaction, meet_number: int):
-        if not _rc_is_admin(interaction.user):
-            await interaction.response.send_message("Staff only.", ephemeral=True)
-            return
-        await interaction.response.send_modal(_RcFinalizeModal(meet_number))
-
-    @discord.ui.button(label="Finalize Meet 1", style=discord.ButtonStyle.primary, custom_id="diff_rollcall_finalize:1", row=0)
-    async def fin1(self, i, b): await self._finalize(i, 1)
-
-    @discord.ui.button(label="Finalize Meet 2", style=discord.ButtonStyle.primary, custom_id="diff_rollcall_finalize:2", row=0)
-    async def fin2(self, i, b): await self._finalize(i, 2)
-
-    @discord.ui.button(label="Finalize Meet 3", style=discord.ButtonStyle.primary, custom_id="diff_rollcall_finalize:3", row=0)
-    async def fin3(self, i, b): await self._finalize(i, 3)
+        for n in (1, 2, 3):
+            self.add_item(_RcFinalizeBtn(n))
 
 
 def _rc_classify_msg(msg: discord.Message, bot_id: int) -> str | None:
@@ -10043,6 +10055,8 @@ async def on_ready():
     _safe_add_view(StaffDashboardView(),                                 "StaffDashboardView")
     _safe_add_view(MeetInfoView(),                                       "MeetInfoView")
     _safe_add_view(HostFeedbackRequestView(),                            "HostFeedbackRequestView")
+    _safe_add_view(_RcRollCallView(),                                    "_RcRollCallView")
+    _safe_add_view(_RcAdminView(),                                       "_RcAdminView")
 
     try:
         _tab_state = _tab_load()
