@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import sqlite3
+from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands
@@ -66,6 +67,38 @@ def _build_embed() -> discord.Embed:
         inline=False,
     )
     embed.set_footer(text="DIFF Roll Call • Staff Tools V2")
+    return embed
+
+
+def _build_responses_embed(responses: dict) -> discord.Embed:
+    """Build an ephemeral embed listing every member who voted for each meet."""
+    embed = discord.Embed(
+        title="📋 Roll Call — Who Voted",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    def _fmt(uids: list, limit: int = 20) -> str:
+        if not uids:
+            return "*Nobody yet*"
+        mentions = " ".join(f"<@{uid}>" for uid in uids[:limit])
+        if len(uids) > limit:
+            mentions += f"  *+{len(uids) - limit} more*"
+        return mentions
+
+    for n in (1, 2, 3):
+        r       = responses.get(n, {"yes": [], "maybe": [], "no": []})
+        yes_l   = r["yes"]
+        maybe_l = r["maybe"]
+        no_l    = r["no"]
+        value   = (
+            f"✅ **Attending ({len(yes_l)}):** {_fmt(yes_l)}\n"
+            f"❓ **Maybe ({len(maybe_l)}):** {_fmt(maybe_l)}\n"
+            f"❌ **Not Attending ({len(no_l)}):** {_fmt(no_l)}"
+        )
+        embed.add_field(name=f"━━ Meet {n} ━━", value=value[:1024], inline=False)
+
+    embed.set_footer(text="DIFF Roll Call • Staff View — visible only to you")
     return embed
 
 
@@ -182,6 +215,10 @@ class _StaffSelect(discord.ui.Select):
                     description="See current RSVP counts for all meets.",
                 ),
                 discord.SelectOption(
+                    label="View Who Voted", value="responses",
+                    description="See every member's ✅❓❌ vote for each meet.",
+                ),
+                discord.SelectOption(
                     label="Reset Roll Call", value="reset",
                     description="Clear all responses and post a fresh roll call.",
                 ),
@@ -214,6 +251,19 @@ class _StaffSelect(discord.ui.Select):
             except Exception as e:
                 return await interaction.response.send_message(
                     f"Error fetching stats: {e}", ephemeral=True
+                )
+
+        if v == "responses":
+            try:
+                m = _main()
+                responses = m._rc_db.get_all_responses(interaction.guild.id)
+                embed = _build_responses_embed(responses)
+                return await interaction.response.send_message(
+                    embed=embed, ephemeral=True
+                )
+            except Exception as e:
+                return await interaction.response.send_message(
+                    f"Error fetching responses: {e}", ephemeral=True
                 )
 
         if v == "reset":

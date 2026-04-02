@@ -8207,6 +8207,21 @@ class _RollCallDB:
     def get_all_counts(self, guild_id):
         return {n: self.get_counts(guild_id, n) for n in (1, 2, 3)}
 
+    def get_all_responses(self, guild_id) -> dict:
+        """Returns {meet_number: {status: [user_id, ...]}} for meets 1-3."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT meet_number, status, user_id FROM rollcall_responses "
+            "WHERE guild_id=? ORDER BY meet_number, status, updated_at",
+            (guild_id,),
+        )
+        result: dict = {n: {"yes": [], "maybe": [], "no": []} for n in (1, 2, 3)}
+        for row in cur.fetchall():
+            n, s, uid = row["meet_number"], row["status"], row["user_id"]
+            if n in result and s in result[n]:
+                result[n][s].append(uid)
+        return result
+
     def set_actual_attendees(self, guild_id, meet_number, user_ids):
         now = datetime.now(timezone.utc).isoformat()
         cur = self.conn.cursor()
