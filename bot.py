@@ -8282,7 +8282,7 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
         title="📋 DIFF Auto Roll Call",
         description="\n".join(lines),
         color=discord.Color.blurple(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.set_author(name="Different Meets")
     embed.set_footer(text="DIFF • Auto Roll Call System")
@@ -8363,20 +8363,30 @@ class _RcBtn(discord.ui.Button):
             previous = _rc_db.set_response(
                 interaction.guild.id, interaction.user.id, self.meet_number, self.status
             )
-        except Exception:
+        except Exception as e:
+            print(f"[RcBtn] DB error for {interaction.user} meet {self.meet_number}: {e}")
             previous = None
-        await interaction.response.send_message(
-            f"You are {self._DISPLAY.get(self.status, self.status)} for **Meet {self.meet_number}**.",
-            ephemeral=True,
-        )
+
+        # Build a contextual response message
+        prev_clean = previous if previous and previous != "none" else None
+        new_icon   = self._LABELS[self.status]
+        if prev_clean is None:
+            msg = f"{new_icon} Marked as **{self._DISPLAY[self.status].split(' ', 1)[1]}** for **Meet {self.meet_number}**."
+        elif prev_clean == self.status:
+            msg = f"Already {new_icon} **{self._DISPLAY[self.status].split(' ', 1)[1]}** for **Meet {self.meet_number}** — no change."
+        else:
+            old_icon = self._LABELS.get(prev_clean, "⬜")
+            msg = f"Updated **Meet {self.meet_number}**: {old_icon} → {new_icon}"
+
+        await interaction.response.send_message(msg, ephemeral=True)
         try:
-            asyncio.create_task(_rc_refresh_panel(interaction.guild))
+            await _rc_refresh_panel(interaction.guild)
             await _rc_log_rsvp(
                 interaction.guild, interaction.user,
                 self.meet_number, previous or "none", self.status,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[RcBtn] Post-response error for {interaction.user}: {e}")
 
 
 class _RcRollCallView(discord.ui.View):
@@ -8463,34 +8473,46 @@ async def _rc_scan_and_recover(channel: discord.TextChannel, guild_id: int, bot_
 
 
 async def _rc_refresh_panel(guild: discord.Guild):
-    panel = _rc_db.get_panel(guild.id)
-    channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
-    if not isinstance(channel, discord.TextChannel):
-        return
+    """Update the live roll call embed.  Debounced per-guild to prevent rate-limit storms."""
+    # --- debounce: cancel any already-queued refresh for this guild ---
+    existing = _rc_refresh_tasks.get(guild.id)
+    if existing and not existing.done():
+        existing.cancel()
 
-    # --- try stored ID first ---
-    if panel:
-        try:
-            msg = await channel.fetch_message(panel["message_id"])
-            await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
-            return
-        except discord.NotFound:
-            pass
-        except Exception:
+    async def _do_refresh():
+        await asyncio.sleep(0.5)          # brief wait to coalesce rapid clicks
+        panel   = _rc_db.get_panel(guild.id)
+        channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
             return
 
-    # --- stored ID stale: scan channel and recover ---
-    rc_msg_id, admin_msg_id = await _rc_scan_and_recover(channel, guild.id, guild.me.id)
-    if rc_msg_id:
-        try:
-            msg = await channel.fetch_message(rc_msg_id)
-            await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
-            return
-        except Exception:
-            pass
+        # --- try stored ID first ---
+        if panel:
+            try:
+                msg = await channel.fetch_message(panel["message_id"])
+                await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
+                return
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"[RcPanel] refresh error (stored msg): {e}")
+                return
 
-    # --- nothing found: post fresh ---
-    await _rc_post_new_panel(guild, ping_roles=False)
+        # --- stored ID stale: scan channel and recover ---
+        rc_msg_id, _ = await _rc_scan_and_recover(channel, guild.id, guild.me.id)
+        if rc_msg_id:
+            try:
+                msg = await channel.fetch_message(rc_msg_id)
+                await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
+                return
+            except Exception as e:
+                print(f"[RcPanel] refresh error (scanned msg): {e}")
+
+        # --- nothing found: post fresh ---
+        await _rc_post_new_panel(guild, ping_roles=False)
+
+    task = asyncio.create_task(_do_refresh())
+    _rc_refresh_tasks[guild.id] = task
 
 
 async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
@@ -8568,8 +8590,9 @@ _RC_LOG_ICONS: dict[str, str] = {
     "maybe": "❓ Maybe",
     "no": "❌ No",
 }
-_rc_log_buffer: dict[int, list] = {}
-_rc_log_tasks:  dict[int, "asyncio.Task[None]"] = {}
+_rc_log_buffer:     dict[int, list] = {}
+_rc_log_tasks:      dict[int, "asyncio.Task[None]"] = {}
+_rc_refresh_tasks:  dict[int, "asyncio.Task[None]"] = {}   # per-guild debounce
 
 
 async def _rc_flush_log(guild: discord.Guild, member: discord.Member) -> None:
