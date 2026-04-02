@@ -13663,7 +13663,7 @@ async def link_application_ticket(interaction: discord.Interaction, member: disc
     )
 
 
-@bot.tree.command(name="unlink-application-ticket", description="Remove the application link from this ticket channel (staff only)")
+@bot.tree.command(name="unlink-application-ticket", description="Remove the application link from this ticket channel (staff only)", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(manage_guild=True)
 async def unlink_application_ticket(interaction: discord.Interaction):
     if not isinstance(interaction.channel, discord.TextChannel):
