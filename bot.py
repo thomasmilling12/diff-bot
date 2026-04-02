@@ -14916,24 +14916,33 @@ def _supp_build_questions_embed(user: discord.Member) -> discord.Embed:
 
 
 def _supp_build_review_embed(applicant: discord.Member) -> discord.Embed:
-    from datetime import timezone as _tz
+    now = datetime.now(_EST_TZ)
     embed = discord.Embed(
-        title="🧾 Staff Review Panel",
+        title="🧾 Staff Application Review",
         description=(
-            f"Applicant: {applicant.mention}\n\n"
-            "Leadership can review this application and choose one of the actions below."
+            f"**{applicant.display_name}** has submitted a staff application.\n"
+            "Review their profile and use the buttons below to make a decision.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━"
         ),
-        color=discord.Color.dark_blue(),
-        timestamp=datetime.now(_EST_TZ),
+        color=0x3B6FE8,
+        timestamp=now,
     )
+    embed.set_author(
+        name=applicant.display_name,
+        icon_url=applicant.display_avatar.url,
+    )
+    embed.add_field(name="👤 Applicant",       value=applicant.mention,                              inline=True)
+    embed.add_field(name="🆔 User ID",         value=f"`{applicant.id}`",                            inline=True)
+    embed.add_field(name="📅 Applied",         value=f"<t:{int(now.timestamp())}:R>",                inline=True)
     embed.add_field(
-        name="Actions",
+        name="━━━━━━━━━━━━━━━━━━━━\n👮 Available Actions",
         value=(
-            "✅ **Accept** — Approve the application and assign the configured staff role\n"
+            "✅ **Accept** — Approve and assign the configured staff role\n"
             "❌ **Deny** — Deny the application and log the decision"
         ),
         inline=False,
     )
+    embed.add_field(name="⏱️ Response Time", value="Review ASAP — applicant is waiting", inline=False)
     return _supp_brand_embed(embed)
 
 
@@ -17581,6 +17590,52 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError) 
             pass
 
 
+async def _update_join_ticket_complete(channel: discord.TextChannel) -> None:
+    """Edit the pinned ticket embed to show all steps complete when photos reach the minimum."""
+    try:
+        async for msg in channel.history(oldest_first=True, limit=8):
+            if msg.author.id != bot.user.id or not msg.embeds:
+                continue
+            emb = msg.embeds[0]
+            if not emb.title or "PlayStation Join Application" not in emb.title:
+                continue
+            updated = discord.Embed(
+                title=emb.title,
+                description=emb.description,
+                color=discord.Color.green(),
+                timestamp=emb.timestamp,
+            )
+            a = emb.author
+            if a.name:
+                updated.set_author(name=a.name, icon_url=a.icon_url)
+            if emb.thumbnail.url:
+                updated.set_thumbnail(url=emb.thumbnail.url)
+            for f in emb.fields:
+                if "Steps to Complete" in (f.name or ""):
+                    updated.add_field(
+                        name=f.name,
+                        value=(
+                            f"✅ PSN submitted\n"
+                            f"✅ **{MIN_GARAGE_PHOTOS}/{MIN_GARAGE_PHOTOS} photos received**\n"
+                            f"⏳ Staff review & decision — *staff have been notified*"
+                        ),
+                        inline=f.inline,
+                    )
+                else:
+                    updated.add_field(
+                        name=f.name or "\u200b",
+                        value=f.value or "\u200b",
+                        inline=f.inline,
+                    )
+            ft = emb.footer
+            if ft.text:
+                updated.set_footer(text=ft.text, icon_url=ft.icon_url)
+            await msg.edit(embed=updated)
+            return
+    except Exception:
+        pass
+
+
 @bot.event
 async def on_message(message: discord.Message) -> None:
     await bot.process_commands(message)
@@ -17743,6 +17798,7 @@ async def on_message(message: discord.Message) -> None:
                             ))
                         except Exception:
                             pass
+                    await _update_join_ticket_complete(message.channel)
         return
 
     # --- Staff ticket message tracking ---
@@ -18033,9 +18089,9 @@ def _join_extra_save(data: dict) -> None:
 
 
 async def _join_idle_timer(channel: discord.TextChannel, applicant: discord.Member) -> None:
-    """Auto-closes a join ticket if the applicant sends no photos within 30 minutes."""
-    _JOIN_IDLE_WARN  = 25 * 60   # 25 minutes — send reminder
-    _JOIN_IDLE_CLOSE = 5  * 60   # 5 more minutes — then delete
+    """Auto-closes a join ticket if the applicant sends no photos within 60 minutes."""
+    _JOIN_IDLE_WARN  = 50 * 60   # 50 minutes — send reminder
+    _JOIN_IDLE_CLOSE = 10 * 60   # 10 more minutes — then delete
 
     await asyncio.sleep(_JOIN_IDLE_WARN)
 
@@ -18060,7 +18116,7 @@ async def _join_idle_timer(channel: discord.TextChannel, applicant: discord.Memb
         warn_embed = discord.Embed(
             title="⏳ Ticket Closing Soon",
             description="\n".join([
-                f"{applicant.mention}, your join application ticket will be **automatically closed in 5 minutes** if no photos are sent.",
+                f"{applicant.mention}, your join application ticket will be **automatically closed in 10 minutes** if no photos are sent.",
                 "",
                 f"Please send your **{MIN_GARAGE_PHOTOS} car photos** now to keep this ticket open.",
                 "",
@@ -18090,7 +18146,7 @@ async def _join_idle_timer(channel: discord.TextChannel, applicant: discord.Memb
         close_embed = discord.Embed(
             title="🔒 Ticket Auto-Closed",
             description="\n".join([
-                f"{applicant.mention}, this ticket has been automatically closed due to **30 minutes of inactivity** (no photos sent).",
+                f"{applicant.mention}, this ticket has been automatically closed due to **60 minutes of inactivity** (no photos sent).",
                 "",
                 "You can open a new application any time when you're ready.",
             ]),
@@ -18685,23 +18741,34 @@ class JoinTicketView(discord.ui.View):
 
         welcome_channel = interaction.guild.get_channel(JOIN_WELCOME_CHANNEL_ID)
         if isinstance(welcome_channel, discord.TextChannel):
+            _join_dt = member.joined_at or datetime.now(_EST_TZ)
             welcome_embed = discord.Embed(
-                title="Welcome to DIFF Meets",
-                description="\n".join([
-                    f"{member.mention} has joined the DIFF car meet community.",
-                    "",
-                    f"**PSN:** {psn}",
-                    "Stay ready for meet posts, announcements, and instructions.",
-                ]),
-                color=discord.Color.green(),
+                title="🏁 New Member — Welcome to DIFF Meets!",
+                description=(
+                    f"Give it up for {member.mention} — they just got accepted into the crew! 🎉\n\n"
+                    f"React with 🏎️ to welcome them in!"
+                ),
+                color=0x3B6FE8,
+                timestamp=datetime.now(_EST_TZ),
             )
+            welcome_embed.set_author(
+                name=member.display_name,
+                icon_url=member.display_avatar.url,
+            )
+            welcome_embed.add_field(name="🎮 PSN",        value=f"`{psn}`",                                     inline=True)
+            welcome_embed.add_field(name="📅 Joined",     value=f"<t:{int(_join_dt.timestamp())}:R>",           inline=True)
+            welcome_embed.add_field(name="👥 Member #",   value=f"`{interaction.guild.member_count}`",          inline=True)
             if DIFF_BANNER_URL:
                 welcome_embed.set_image(url=DIFF_BANNER_URL)
             if DIFF_LOGO_URL:
-                welcome_embed.set_thumbnail(url=DIFF_LOGO_URL)
-            welcome_embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
+                welcome_embed.set_thumbnail(url=member.display_avatar.url)
+            welcome_embed.set_footer(text="Different Meets • PlayStation GTA Car Meets", icon_url=DIFF_LOGO_URL or discord.utils.MISSING)
             try:
-                await welcome_channel.send(content=member.mention, embed=welcome_embed)
+                wm = await welcome_channel.send(content=member.mention, embed=welcome_embed)
+                try:
+                    await wm.add_reaction("🏎️")
+                except Exception:
+                    pass
             except discord.HTTPException:
                 pass
 
@@ -18725,17 +18792,39 @@ class JoinTicketView(discord.ui.View):
         await interaction.channel.send(embed=approve_embed)
 
         try:
-            await member.send(embed=discord.Embed(
-                title="✅ You were accepted into DIFF Meets",
-                description="\n".join([
-                    f"**PSN:** {psn}",
-                    "Your PlayStation join application was approved.",
-                    "",
-                    "Welcome in.",
-                    "Keep your builds clean and stay ready for meet updates.",
-                ]),
+            onboard_embed = discord.Embed(
+                title="✅ You're in — Welcome to DIFF Meets!",
+                description=(
+                    "Your PlayStation join application was **approved**. "
+                    "You're officially part of the crew — here's what to do next:"
+                ),
                 color=discord.Color.green(),
-            ))
+                timestamp=datetime.now(_EST_TZ),
+            )
+            onboard_embed.add_field(
+                name="📢 Step 1 — Check Announcements",
+                value="Keep an eye on the announcements channel for meet schedules, rules updates, and important news.",
+                inline=False,
+            )
+            onboard_embed.add_field(
+                name="🎤 Step 2 — Introduce Yourself",
+                value="Drop a message in the intro channel and let the crew know who you are and what you drive.",
+                inline=False,
+            )
+            onboard_embed.add_field(
+                name="🚗 Step 3 — Show Up to a Meet",
+                value="Stay ready. When a meet drops, join the voice chat and follow the host's instructions.",
+                inline=False,
+            )
+            onboard_embed.add_field(
+                name="❓ Questions?",
+                value="Open a support ticket in the server or DM a Leader/Co-Leader directly.",
+                inline=False,
+            )
+            onboard_embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
+            if DIFF_LOGO_URL:
+                onboard_embed.set_thumbnail(url=DIFF_LOGO_URL)
+            await member.send(embed=onboard_embed)
         except discord.HTTPException:
             pass
 

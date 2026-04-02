@@ -251,6 +251,7 @@ class DiffAdvancedFeatures(commands.Cog):
         self._spam_tracker: dict[int, list[float]] = {}
         self._xp_cd:        dict[int, float]       = {}
         self._reminded:     set[str]               = set()
+        self._reminded_1h:  set[str]               = set()
         self._birthday_check.start()
         self._reminder_check.start()
         self._sched_ann_check.start()
@@ -392,14 +393,35 @@ class DiffAdvancedFeatures(commands.Cog):
     async def _reminder_check(self) -> None:
         now_ts = int(_est_now().timestamp())
         sched  = _load(_SCHEDULE_FILE)
+        guild  = self.bot.get_guild(_GUILD_ID())
         for mid, m in sched.items():
-            if m.get("cancelled") or mid in self._reminded:
+            if m.get("cancelled"):
                 continue
             dt_ts = m.get("dt_ts", 0)
             diff  = dt_ts - now_ts
-            if 1740 <= diff <= 1860:  # 29–31 minutes window
+
+            # ── 1-hour reminder ──────────────────────────────────────────
+            if mid not in self._reminded_1h and 3540 <= diff <= 3660:
+                self._reminded_1h.add(mid)
+                for uid in m.get("rsvps", []):
+                    member = guild.get_member(int(uid)) if guild else None
+                    if member:
+                        try:
+                            await member.send(embed=_brand(discord.Embed(
+                                title="🔔 Meet Starting in 1 Hour!",
+                                description=(
+                                    f"**{m['description']}** is starting <t:{dt_ts}:R>.\n\n"
+                                    "Start getting your car ready — see you there! 🚗"
+                                ),
+                                color=discord.Color.blurple(),
+                                timestamp=_est_now(),
+                            )))
+                        except Exception:
+                            pass
+
+            # ── 30-minute reminder ────────────────────────────────────────
+            if mid not in self._reminded and 1740 <= diff <= 1860:
                 self._reminded.add(mid)
-                guild = self.bot.get_guild(_GUILD_ID())
                 for uid in m.get("rsvps", []):
                     member = guild.get_member(int(uid)) if guild else None
                     if member:
@@ -536,24 +558,53 @@ class DiffAdvancedFeatures(commands.Cog):
                 continue
             if isinstance(bday_ch, discord.TextChannel):
                 try:
-                    await bday_ch.send(embed=_brand(discord.Embed(
+                    _joined_ts = int(member.joined_at.timestamp()) if member.joined_at else None
+                    bday_embed = discord.Embed(
                         title="🎂 Happy Birthday!",
                         description=(
-                            f"Everyone wish {member.mention} a happy birthday! 🎉🎈\n\n"
-                            f"Thanks for being part of DIFF Meets! 🚗💨"
+                            f"Today is **{member.display_name}'s** birthday! 🎉\n\n"
+                            f"Everyone show some love for {member.mention} — "
+                            f"they've been a part of DIFF Meets and we're glad to have them! 🚗💨"
                         ),
                         color=discord.Color.from_rgb(255, 182, 193),
                         timestamp=now,
-                    )))
+                    )
+                    bday_embed.set_author(
+                        name=member.display_name,
+                        icon_url=member.display_avatar.url,
+                    )
+                    bday_embed.set_thumbnail(url=member.display_avatar.url)
+                    if _joined_ts:
+                        bday_embed.add_field(
+                            name="📅 Member Since",
+                            value=f"<t:{_joined_ts}:D>",
+                            inline=True,
+                        )
+                    bday_embed.add_field(name="\u200b", value="React with 🎉 to wish them a happy birthday!", inline=False)
+                    bday_embed.set_footer(text="Different Meets • Birthday Celebration")
+                    bm = await bday_ch.send(content=member.mention, embed=_brand(bday_embed))
+                    try:
+                        await bm.add_reaction("🎉")
+                        await bm.add_reaction("🎂")
+                        await bm.add_reaction("🚗")
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             try:
-                await member.send(embed=discord.Embed(
+                dm_embed = discord.Embed(
                     title="🎂 Happy Birthday from DIFF Meets!",
-                    description="Wishing you an amazing day! Thank you for being part of our community. 🎉🚗",
+                    description=(
+                        f"Wishing you an amazing birthday, **{member.display_name}**! 🎉\n\n"
+                        "Thank you for being part of our community — enjoy your day! 🚗💨"
+                    ),
                     color=discord.Color.from_rgb(255, 182, 193),
                     timestamp=now,
-                ))
+                )
+                dm_embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
+                if _LOGO():
+                    dm_embed.set_thumbnail(url=_LOGO())
+                await member.send(embed=dm_embed)
             except Exception:
                 pass
         if changed:
