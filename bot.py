@@ -10416,10 +10416,18 @@ async def on_ready():
 
     print(f"Logged in as {bot.user}")
     try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash command(s)")
+        # Guild sync is instant; global sync can take up to 1 hour
+        guild_obj = discord.Object(id=GUILD_ID)
+        bot.tree.copy_global_to(guild=guild_obj)
+        guild_synced = await bot.tree.sync(guild=guild_obj)
+        print(f"Guild-synced {len(guild_synced)} slash command(s) to {GUILD_ID}")
     except Exception as e:
-        print(f"Sync error: {e}")
+        print(f"Guild sync error: {e}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Global-synced {len(synced)} slash command(s)")
+    except Exception as e:
+        print(f"Global sync error: {e}")
 
     def _safe_add_view(view, label: str = "") -> None:
         try:
