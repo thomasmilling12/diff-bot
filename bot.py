@@ -18116,10 +18116,17 @@ def _join_build_ticket_embed(
     car_type: str = "",
     heard_from: str = "",
 ) -> discord.Embed:
+    now = datetime.now(_EST_TZ)
     embed = discord.Embed(
         title="🎮 PlayStation Join Application",
-        description=f"Welcome {member.mention}! Follow the steps below to complete your application.",
-        color=0x00439C,  # PlayStation blue
+        description=(
+            f"**Welcome {member.mention}!**\n"
+            "Your application has been received — you're one step closer to joining DIFF! "
+            f"Upload your **{MIN_GARAGE_PHOTOS} car photos** below and a staff member will review you shortly.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=0x3B6FE8,
+        timestamp=now,
     )
 
     embed.set_author(
@@ -18130,30 +18137,49 @@ def _join_build_ticket_embed(
     if DIFF_LOGO_URL:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
 
-    # ── Application Details (inline pairs) ──────────────────────
+    # ── Application Details ──────────────────────────────────────
     if psn_name:
-        embed.add_field(name="🎮 PSN",          value=psn_name,        inline=True)
+        embed.add_field(name="🎮 PSN",          value=f"`{psn_name}`",  inline=True)
     if nickname_status:
-        embed.add_field(name="✏️ Nickname",     value=nickname_status, inline=True)
+        embed.add_field(name="✏️ Nickname",     value=nickname_status,  inline=True)
     if car_type or heard_from:
-        embed.add_field(name="\u200b",          value="\u200b",        inline=True)  # spacer
+        embed.add_field(name="\u200b",          value="\u200b",         inline=True)
     if car_type:
-        embed.add_field(name="🚗 Car Style",    value=car_type,        inline=True)
+        embed.add_field(name="🚗 Car Style",    value=car_type,         inline=True)
     if heard_from:
-        embed.add_field(name="📣 How Found Us", value=heard_from,      inline=True)
+        embed.add_field(name="📣 How Found Us", value=heard_from,       inline=True)
+    if car_type and not heard_from or heard_from and not car_type:
+        embed.add_field(name="\u200b",          value="\u200b",         inline=True)
 
     # ── Steps ───────────────────────────────────────────────────
     steps = (
         f"✅ PSN submitted\n"
-        f"▶ **Send {MIN_GARAGE_PHOTOS} car photos** — *upload your builds now*\n"
-        f"○ Staff review"
+        f"📸 **Send {MIN_GARAGE_PHOTOS} car photos** — upload your best builds right here\n"
+        f"⏳ Staff review & decision"
     )
-    embed.add_field(name="📌 Steps to Complete", value=steps, inline=False)
+    embed.add_field(
+        name="━━━━━━━━━━━━━━━━━━━━\n📋 Steps to Complete",
+        value=steps,
+        inline=False,
+    )
+
+    # ── Info row ────────────────────────────────────────────────
+    embed.add_field(
+        name="⏱️ Response Time",
+        value="24–48 hours",
+        inline=True,
+    )
+    embed.add_field(
+        name="📅 Applied",
+        value=now.strftime("%-I:%M %p EST"),
+        inline=True,
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
 
     # ── Staff note ───────────────────────────────────────────────
     embed.add_field(
-        name="\u200b",
-        value="*Staff: use the buttons below to Accept, Deny, request info, or close the ticket.*",
+        name="👮 Staff Actions",
+        value="Use the buttons below to **Accept**, **Deny**, request more info, or close this ticket.",
         inline=False,
     )
 
