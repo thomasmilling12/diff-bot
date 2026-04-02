@@ -7502,15 +7502,28 @@ class HostSessionView(discord.ui.View):
                 await staff_ch.send(embed=warn_embed)
 
         await interaction.response.send_message(
-            f"Meet session ended. Score: **{score}** | Warnings: **{len(warnings)}**", ephemeral=True
+            f"Meet session ended. Score: **{score}** | Warnings: **{len(warnings)}**\n"
+            f"This channel will be deleted in **10 seconds**.",
+            ephemeral=True,
         )
         try:
             await interaction.channel.send(
-                f"Session closed for <@{session['host_id']}>.\n"
-                f"Final Score: **{score}** | Warnings: **{len(warnings)}**"
+                f"✅ Session closed for <@{session['host_id']}>.\n"
+                f"**Final Score: {score}** | Warnings: **{len(warnings)}**\n\n"
+                f"*This channel will be deleted in 10 seconds.*"
             )
         except Exception:
             pass
+
+        async def _delete_thread():
+            await asyncio.sleep(10)
+            try:
+                if isinstance(interaction.channel, discord.Thread):
+                    await interaction.channel.delete()
+            except Exception as e:
+                print(f"[HostSession] Could not delete thread: {e}")
+
+        asyncio.create_task(_delete_thread())
 
 
 class HostPerformanceHubView(discord.ui.View):
