@@ -8115,7 +8115,7 @@ class _RollCallDB:
         self.conn.commit()
 
     def upsert_panel(self, guild_id, channel_id, message_id, admin_message_id=None):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO rollcall_panels (guild_id, channel_id, message_id, admin_message_id, created_at, updated_at)
@@ -8136,6 +8136,17 @@ class _RollCallDB:
     def clear_panel(self, guild_id):
         cur = self.conn.cursor()
         cur.execute("DELETE FROM rollcall_panels WHERE guild_id=?", (guild_id,))
+        self.conn.commit()
+
+    def reset_week(self, guild_id):
+        """Full weekly reset: clears RSVP responses, meet details, finalization state,
+        and actual-attendance records for the guild.  Cumulative career stats are kept."""
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM rollcall_responses  WHERE guild_id=?", (guild_id,))
+        cur.execute("DELETE FROM rollcall_meets       WHERE guild_id=?", (guild_id,))
+        cur.execute("DELETE FROM attendance_actual    WHERE guild_id=?", (guild_id,))
+        cur.execute("DELETE FROM meet_state           WHERE guild_id=?", (guild_id,))
+        cur.execute("DELETE FROM rollcall_panels      WHERE guild_id=?", (guild_id,))
         self.conn.commit()
 
     def upsert_meets(self, guild_id, meets: list):
@@ -8163,7 +8174,7 @@ class _RollCallDB:
         return cur.fetchall()
 
     def set_response(self, guild_id, user_id, meet_number, status):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         cur = self.conn.cursor()
         cur.execute("SELECT status FROM rollcall_responses WHERE guild_id=? AND user_id=? AND meet_number=?",
                     (guild_id, user_id, meet_number))
@@ -8197,7 +8208,7 @@ class _RollCallDB:
         return {n: self.get_counts(guild_id, n) for n in (1, 2, 3)}
 
     def set_actual_attendees(self, guild_id, meet_number, user_ids):
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         cur = self.conn.cursor()
         cur.execute("DELETE FROM attendance_actual WHERE guild_id=? AND meet_number=?", (guild_id, meet_number))
         for uid in user_ids:
@@ -8533,7 +8544,7 @@ async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
         except Exception:
             pass
 
-    _rc_db.clear_panel(guild.id)
+    _rc_db.reset_week(guild.id)   # wipe responses, meets, finalized flags → fresh slate
 
     ping_text = None
     if ping_roles:
