@@ -9779,18 +9779,101 @@ class _PopupDB:
                 PRIMARY KEY (guild_id, panel_name)
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS popup_rsvps (
+                guild_id INTEGER NOT NULL,
+                meet_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pullup',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, meet_id, user_id)
+            )
+        """)
+        # Non-destructive column migrations for existing installs
+        for col, defn in (
+            ("message_id",         "INTEGER"),
+            ("is_ended",           "INTEGER NOT NULL DEFAULT 0"),
+            ("host_display_name",  "TEXT"),
+            ("host_avatar_url",    "TEXT"),
+        ):
+            try:
+                cur.execute(f"ALTER TABLE popup_meets ADD COLUMN {col} {defn}")
+            except Exception:
+                pass
         self.conn.commit()
 
-    def add_meet(self, guild_id, host_id, theme, location, time_text, extra_notes, ping_ps, ping_cm) -> int:
+    def add_meet(self, guild_id, host_id, theme, location, time_text, extra_notes,
+                 ping_ps, ping_cm, host_display_name: str = "", host_avatar_url: str = "") -> int:
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO popup_meets (guild_id, host_user_id, theme, location, time_text, extra_notes,
-                ping_playstation, ping_carmeet, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ping_playstation, ping_carmeet, created_at, host_display_name, host_avatar_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (guild_id, host_id, theme, location, time_text, extra_notes,
-              1 if ping_ps else 0, 1 if ping_cm else 0, datetime.utcnow().isoformat()))
+              1 if ping_ps else 0, 1 if ping_cm else 0,
+              datetime.now(timezone.utc).isoformat(), host_display_name, host_avatar_url))
         self.conn.commit()
         return int(cur.lastrowid)
+
+    def set_message_id(self, meet_id: int, message_id: int) -> None:
+        self.conn.execute("UPDATE popup_meets SET message_id=? WHERE id=?", (message_id, meet_id))
+        self.conn.commit()
+
+    def end_meet(self, meet_id: int) -> None:
+        self.conn.execute("UPDATE popup_meets SET is_ended=1 WHERE id=?", (meet_id,))
+        self.conn.commit()
+
+    def get_meet(self, meet_id: int):
+        return self.conn.execute("SELECT * FROM popup_meets WHERE id=?", (meet_id,)).fetchone()
+
+    def get_active_meets(self, guild_id: int):
+        """Returns active (non-ended) meets that have a message_id stored."""
+        return self.conn.execute(
+            "SELECT * FROM popup_meets WHERE guild_id=? AND is_ended=0 AND message_id IS NOT NULL",
+            (guild_id,)
+        ).fetchall()
+
+    # ── RSVP helpers ──────────────────────────────────────────────────────────
+
+    def set_rsvp(self, guild_id: int, meet_id: int, user_id: int, status: str) -> str | None:
+        """Upsert RSVP; returns previous status or None."""
+        cur = self.conn.cursor()
+        prev = cur.execute(
+            "SELECT status FROM popup_rsvps WHERE guild_id=? AND meet_id=? AND user_id=?",
+            (guild_id, meet_id, user_id),
+        ).fetchone()
+        previous = prev[0] if prev else None
+        cur.execute("""
+            INSERT INTO popup_rsvps (guild_id, meet_id, user_id, status, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, meet_id, user_id)
+            DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at
+        """, (guild_id, meet_id, user_id, status, datetime.now(timezone.utc).isoformat()))
+        self.conn.commit()
+        return previous
+
+    def remove_rsvp(self, guild_id: int, meet_id: int, user_id: int) -> None:
+        self.conn.execute(
+            "DELETE FROM popup_rsvps WHERE guild_id=? AND meet_id=? AND user_id=?",
+            (guild_id, meet_id, user_id),
+        )
+        self.conn.commit()
+
+    def get_user_rsvp(self, guild_id: int, meet_id: int, user_id: int) -> str | None:
+        row = self.conn.execute(
+            "SELECT status FROM popup_rsvps WHERE guild_id=? AND meet_id=? AND user_id=?",
+            (guild_id, meet_id, user_id),
+        ).fetchone()
+        return row[0] if row else None
+
+    def get_rsvp_counts(self, guild_id: int, meet_id: int) -> dict:
+        counts = {"pullup": 0, "cantmake": 0}
+        for row in self.conn.execute(
+            "SELECT status, COUNT(*) FROM popup_rsvps WHERE guild_id=? AND meet_id=? GROUP BY status",
+            (guild_id, meet_id),
+        ):
+            counts[row[0]] = row[1]
+        return counts
 
     def save_panel(self, guild_id, channel_id, message_id):
         cur = self.conn.cursor()
@@ -9853,6 +9936,186 @@ def _popup_parse_time(raw: str) -> str:
         return raw
 
 
+_POPUP_STAFF_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+
+
+def _popup_build_meet_embed(
+    theme: str,
+    location: str,
+    time_text: str,
+    notes: str,
+    meet_id: int,
+    host_id: int,
+    host_display_name: str,
+    host_avatar_url: str | None,
+    pullup_count: int = 0,
+    cantmake_count: int = 0,
+    is_ended: bool = False,
+) -> discord.Embed:
+    if is_ended:
+        title = "🏁 DIFF Pop-Up Meet — ENDED"
+        color = discord.Color.from_rgb(80, 80, 80)
+        description = f"This meet has wrapped up. It was hosted by <@{host_id}>."
+    else:
+        title = "⚡ DIFF Pop-Up Meet"
+        color = discord.Color.from_rgb(255, 140, 0)
+        description = (
+            f"A spontaneous meet is live — pull up fast!\n"
+            f"<@{host_id}> is hosting."
+        )
+
+    embed = discord.Embed(
+        title=title,
+        color=color,
+        description=description,
+        timestamp=datetime.now(timezone.utc),
+    )
+    if host_avatar_url:
+        embed.set_thumbnail(url=host_avatar_url)
+
+    embed.add_field(name="🎨 Theme",       value=theme or "Open Class", inline=True)
+    embed.add_field(name="📍 Location",    value=location,              inline=True)
+    embed.add_field(name="\u200b",         value="\u200b",              inline=True)
+    embed.add_field(name="🕒 Time",        value=time_text,             inline=True)
+    embed.add_field(name="👤 Host",        value=f"<@{host_id}>",       inline=True)
+    embed.add_field(
+        name="🚗 Pulling Up",
+        value=f"**{pullup_count}** confirmed" + (f"  •  {cantmake_count} can't make it" if cantmake_count else ""),
+        inline=True,
+    )
+    if notes:
+        embed.add_field(name="📝 Notes", value=notes, inline=False)
+
+    footer = f"DIFF Pop-Up Meet #{meet_id}"
+    if is_ended:
+        footer += " • Ended"
+    else:
+        footer += " • Click below to RSVP"
+    embed.set_footer(text=footer)
+    return embed
+
+
+# ── Pop-Up Meet RSVP buttons (Pi-compatible Button subclasses) ────────────────
+
+class _PopupPullUpBtn(discord.ui.Button):
+    def __init__(self, meet_id: int):
+        super().__init__(
+            label="🚗 Pulling Up!",
+            style=discord.ButtonStyle.success,
+            custom_id=f"diff_popup:{meet_id}:pullup",
+            row=0,
+        )
+        self.meet_id = meet_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        meet = _popup_db.get_meet(self.meet_id)
+        if not meet or meet["is_ended"]:
+            return await interaction.response.send_message("This meet has already ended.", ephemeral=True)
+
+        existing = _popup_db.get_user_rsvp(interaction.guild.id, self.meet_id, interaction.user.id)
+        if existing == "pullup":
+            _popup_db.remove_rsvp(interaction.guild.id, self.meet_id, interaction.user.id)
+            reply = "Removed your RSVP — you're no longer listed as pulling up."
+        else:
+            _popup_db.set_rsvp(interaction.guild.id, self.meet_id, interaction.user.id, "pullup")
+            reply = "🚗 You're pulling up! See you there."
+
+        counts  = _popup_db.get_rsvp_counts(interaction.guild.id, self.meet_id)
+        new_emb = _popup_build_meet_embed(
+            meet["theme"] or "", meet["location"], meet["time_text"],
+            meet["extra_notes"] or "", self.meet_id, meet["host_user_id"],
+            meet["host_display_name"] or "", meet["host_avatar_url"],
+            counts["pullup"], counts["cantmake"],
+        )
+        await interaction.response.edit_message(embed=new_emb)
+        await interaction.followup.send(reply, ephemeral=True)
+
+
+class _PopupCantMakeBtn(discord.ui.Button):
+    def __init__(self, meet_id: int):
+        super().__init__(
+            label="❌ Can't Make It",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"diff_popup:{meet_id}:cantmake",
+            row=0,
+        )
+        self.meet_id = meet_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        meet = _popup_db.get_meet(self.meet_id)
+        if not meet or meet["is_ended"]:
+            return await interaction.response.send_message("This meet has already ended.", ephemeral=True)
+
+        existing = _popup_db.get_user_rsvp(interaction.guild.id, self.meet_id, interaction.user.id)
+        if existing == "cantmake":
+            _popup_db.remove_rsvp(interaction.guild.id, self.meet_id, interaction.user.id)
+            reply = "Removed your response."
+        else:
+            _popup_db.set_rsvp(interaction.guild.id, self.meet_id, interaction.user.id, "cantmake")
+            reply = "Got it — marked as can't make it."
+
+        counts  = _popup_db.get_rsvp_counts(interaction.guild.id, self.meet_id)
+        new_emb = _popup_build_meet_embed(
+            meet["theme"] or "", meet["location"], meet["time_text"],
+            meet["extra_notes"] or "", self.meet_id, meet["host_user_id"],
+            meet["host_display_name"] or "", meet["host_avatar_url"],
+            counts["pullup"], counts["cantmake"],
+        )
+        await interaction.response.edit_message(embed=new_emb)
+        await interaction.followup.send(reply, ephemeral=True)
+
+
+class _PopupEndMeetBtn(discord.ui.Button):
+    def __init__(self, meet_id: int):
+        super().__init__(
+            label="🏁 End Meet",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"diff_popup:{meet_id}:end",
+            row=1,
+        )
+        self.meet_id = meet_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        meet = _popup_db.get_meet(self.meet_id)
+        if not meet:
+            return await interaction.response.send_message("Meet not found.", ephemeral=True)
+        if meet["is_ended"]:
+            return await interaction.response.send_message("Already ended.", ephemeral=True)
+
+        is_host  = interaction.user.id == meet["host_user_id"]
+        is_staff = interaction.user.guild_permissions.administrator or \
+                   any(r.id in _POPUP_STAFF_ROLES for r in interaction.user.roles)
+        if not (is_host or is_staff):
+            return await interaction.response.send_message(
+                "Only the host or staff can end this meet.", ephemeral=True
+            )
+
+        _popup_db.end_meet(self.meet_id)
+        counts  = _popup_db.get_rsvp_counts(interaction.guild.id, self.meet_id)
+        end_emb = _popup_build_meet_embed(
+            meet["theme"] or "", meet["location"], meet["time_text"],
+            meet["extra_notes"] or "", self.meet_id, meet["host_user_id"],
+            meet["host_display_name"] or "", meet["host_avatar_url"],
+            counts["pullup"], counts["cantmake"], is_ended=True,
+        )
+        await interaction.response.edit_message(embed=end_emb, view=None)
+
+
+class _PopupMeetView(discord.ui.View):
+    """Persistent per-meet RSVP view.  meet_id is encoded in each button's custom_id."""
+    def __init__(self, meet_id: int):
+        super().__init__(timeout=None)
+        self.add_item(_PopupPullUpBtn(meet_id))
+        self.add_item(_PopupCantMakeBtn(meet_id))
+        self.add_item(_PopupEndMeetBtn(meet_id))
+
+
 class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
     theme_field = discord.ui.TextInput(
         label="Meet Theme (optional)",
@@ -9910,8 +10173,11 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
         time_text = _popup_parse_time(self.time_field.value.strip())
         notes = self.notes_field.value.strip()
 
+        avatar_url = str(user.display_avatar.url)
         meet_id = _popup_db.add_meet(
-            guild.id, user.id, theme, location, time_text, notes, ping_ps, ping_cm
+            guild.id, user.id, theme, location, time_text, notes, ping_ps, ping_cm,
+            host_display_name=user.display_name,
+            host_avatar_url=avatar_url,
         )
 
         ping_parts = []
@@ -9923,62 +10189,69 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
             ping_parts.append(r.mention if r else "@CarMeet")
         ping_text = " ".join(ping_parts) or None
 
-        embed = discord.Embed(
-            title="⚡ DIFF Pop-Up Meet",
-            color=discord.Color.orange(),
-            timestamp=datetime.utcnow(),
-            description=f"A spontaneous meet is live. Pull up fast — {user.mention} is hosting.",
-        )
-        embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="🎨 Theme",    value=theme or "Open theme", inline=True)
-        embed.add_field(name="📍 Location", value=location,              inline=True)
-        embed.add_field(name="\u200b",      value="\u200b",              inline=True)
-        embed.add_field(name="🕒 Time",     value=time_text,             inline=True)
-        embed.add_field(name="👤 Host",     value=user.mention,          inline=True)
-        if notes:
-            embed.add_field(name="📝 Notes", value=notes, inline=False)
-        embed.set_footer(text=f"DIFF Pop-Up Meet #{meet_id}")
+        meet_view = _PopupMeetView(meet_id)
+        bot.add_view(meet_view)   # register immediately so buttons work after restart
 
-        await panel_ch.send(
+        embed = _popup_build_meet_embed(
+            theme, location, time_text, notes, meet_id,
+            user.id, user.display_name, avatar_url,
+            pullup_count=0, cantmake_count=0,
+        )
+
+        meet_msg = await panel_ch.send(
             content=ping_text,
             embed=embed,
+            view=meet_view,
             allowed_mentions=discord.AllowedMentions(roles=True, users=False),
         )
+        _popup_db.set_message_id(meet_id, meet_msg.id)
 
         log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(log_ch, discord.TextChannel):
             log_embed = discord.Embed(
                 title="📋 Pop-Up Meet Created",
                 color=discord.Color.green(),
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 description=f"{user.mention} created a new pop-up meet.",
             )
-            log_embed.add_field(name="Meet ID", value=str(meet_id), inline=True)
-            log_embed.add_field(name="Location", value=location, inline=True)
-            log_embed.add_field(name="Theme", value=theme or "Open theme", inline=True)
+            log_embed.add_field(name="Meet ID",   value=str(meet_id),       inline=True)
+            log_embed.add_field(name="Location",  value=location,           inline=True)
+            log_embed.add_field(name="Theme",     value=theme or "Open Class", inline=True)
             try:
                 await log_ch.send(embed=log_embed)
             except Exception:
                 pass
 
-        await interaction.response.send_message(f"Pop-up meet #{meet_id} posted successfully.", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ Pop-up meet #{meet_id} posted! Members can now click **🚗 Pulling Up!** to RSVP.",
+            ephemeral=True,
+        )
+
+
+class _PopupCreateBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="⚡ Create Pop-Up Meet",
+            style=discord.ButtonStyle.success,
+            custom_id="diff_popup:create",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        user = interaction.user
+        if not isinstance(user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        host_role = interaction.guild.get_role(HOST_ROLE_ID) if interaction.guild else None
+        if not user.guild_permissions.administrator and (not host_role or host_role not in user.roles):
+            return await interaction.response.send_message(
+                "Only users with the **Host** role can create pop-up meets.", ephemeral=True
+            )
+        await interaction.response.send_modal(_PopupMeetModal())
 
 
 class _PopupMeetPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
-    @discord.ui.button(label="⚡ Create Pop-Up Meet", style=discord.ButtonStyle.success, custom_id="diff_popup:create")
-    async def create_popup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user = interaction.user
-        if not isinstance(user, discord.Member):
-            await interaction.response.send_message("Server only.", ephemeral=True)
-            return
-        host_role = interaction.guild.get_role(HOST_ROLE_ID) if interaction.guild else None
-        if not user.guild_permissions.administrator and (not host_role or host_role not in user.roles):
-            await interaction.response.send_message("Only users with the Host role can use this.", ephemeral=True)
-            return
-        await interaction.response.send_modal(_PopupMeetModal())
+        self.add_item(_PopupCreateBtn())
 
 
 def _popup_build_panel_embed() -> discord.Embed:
@@ -10174,6 +10447,13 @@ async def on_ready():
     _safe_add_view(_OmAttendanceView(),     "_OmAttendanceView")
     asyncio.create_task(_om_restore_on_ready())
     _safe_add_view(_PopupMeetPanelView(),   "_PopupMeetPanelView")
+    # Re-register per-meet RSVP views for any active popup meets (survives restarts)
+    for _guild in bot.guilds:
+        try:
+            for _pm in _popup_db.get_active_meets(_guild.id):
+                _safe_add_view(_PopupMeetView(int(_pm["id"])), f"_PopupMeetView({_pm['id']})")
+        except Exception as _pe:
+            print(f"[Popup] Could not re-register meet views for guild {_guild.id}: {_pe}")
     for _g in bot.guilds:
         try:
             await _om_panel_post_or_refresh(_g)
