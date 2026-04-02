@@ -13696,6 +13696,33 @@ async def unlink_application_ticket(interaction: discord.Interaction):
         await interaction.followup.send("This ticket has no active application link.", ephemeral=True)
 
 
+@bot.command(name="unlink")
+@commands.has_permissions(manage_guild=True)
+async def prefix_unlink_ticket(ctx: commands.Context):
+    """!unlink — remove the application link from the current ticket channel."""
+    if not isinstance(ctx.channel, discord.TextChannel):
+        return await ctx.send("Run this command inside the ticket channel.")
+    state = _tab_load()
+    ticket_key = str(ctx.channel.id)
+    link = state.get("ticket_links", {}).pop(ticket_key, None)
+    _tab_save(state)
+    if link:
+        member_id = link.get("member_id")
+        member_mention = f"<@{member_id}>" if member_id else "*unknown*"
+        await _tab_post_staff_log(
+            "🔗 Ticket Unlinked",
+            (
+                f"**Applicant:** {member_mention}\n"
+                f"**Ticket:** {ctx.channel.mention}\n"
+                f"**Unlinked By:** {ctx.author.mention}"
+            ),
+            discord.Color.red(),
+        )
+        await ctx.send(f"✅ Ticket unlinked from {member_mention}'s application.")
+    else:
+        await ctx.send("This ticket has no active application link.")
+
+
 @bot.tree.command(name="setup-application-ticket", description="Auto-detect the applicant in this ticket and attach the review panel (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def setup_application_ticket(interaction: discord.Interaction):
