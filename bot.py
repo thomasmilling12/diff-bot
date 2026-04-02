@@ -2508,10 +2508,12 @@ def _hrsvp_build_embed() -> discord.Embed:
     for day in _HRSVP_DAYS:
         d = data.get(day, {"yes": [], "no": [], "maybe": []})
         yes_entries = d.get("yes", [])
-        no_count = len(d.get("no", []))
+        no_entries  = d.get("no", [])
         maybe_entries = d.get("maybe", [])
 
         desc.append(f"**{day}**")
+
+        # ✅ Available — show each host's details
         if yes_entries:
             for e in yes_entries:
                 uid = _hrsvp_uid(e)
@@ -2521,13 +2523,20 @@ def _hrsvp_build_embed() -> discord.Embed:
                 else:
                     desc.append(f"✅ <@{uid}>")
         else:
-            desc.append("✅ `0` → —")
-        if no_count:
-            desc.append(f"❌ `{no_count}` unavailable")
+            desc.append("✅ *No hosts yet*")
+
+        # ❌ Unavailable — show names instead of just a count
+        if no_entries:
+            no_tags = " ".join(f"<@{_hrsvp_uid(u)}>" for u in no_entries)
+            desc.append(f"❌ Unavailable: {no_tags}")
+
+        # ❓ Maybe — show count + names clearly
         if maybe_entries:
             maybe_tags = " ".join(f"<@{_hrsvp_uid(u)}>" for u in maybe_entries)
-            desc.append(f"❓ `{len(maybe_entries)}` → {maybe_tags}")
+            desc.append(f"❓ Maybe ({len(maybe_entries)}): {maybe_tags}")
+
         desc.append("")
+
     desc.append("━━━━━━━━━━━━━━━━━━━━━━")
     desc.append("🌐 Convert times: https://hammertime.cyou/en")
     embed = discord.Embed(
@@ -2539,6 +2548,32 @@ def _hrsvp_build_embed() -> discord.Embed:
     return embed
 
 
+class _HrsvpResetBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Reset Responses",
+            emoji="🗑️",
+            style=discord.ButtonStyle.danger,
+            custom_id="hrsvp_reset_all",
+            row=4,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        is_staff = any(
+            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+            for r in getattr(interaction.user, "roles", [])
+        )
+        if not getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False) and not is_staff:
+            return await interaction.response.send_message(
+                "Only leadership can reset availability responses.", ephemeral=True
+            )
+        _hrsvp_reset()
+        await _hrsvp_update_panel(interaction.client)
+        await interaction.response.send_message(
+            "🗑️ All host availability responses have been cleared for the new week.", ephemeral=True
+        )
+
+
 class HostRSVPView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -2546,6 +2581,7 @@ class HostRSVPView(discord.ui.View):
             self.add_item(_HostRSVPBtn(day, "yes",   "✅", discord.ButtonStyle.success))
             self.add_item(_HostRSVPBtn(day, "no",    "❌", discord.ButtonStyle.danger))
             self.add_item(_HostRSVPBtn(day, "maybe", "❓", discord.ButtonStyle.secondary))
+        self.add_item(_HrsvpResetBtn())
 
 
 class _HostAvailModal(discord.ui.Modal):
@@ -2753,38 +2789,67 @@ def _asched_build() -> dict:
 
 def _asched_build_embed() -> discord.Embed:
     schedule = _asched_load()
-    lines = [
-        "📋 **DIFF Auto Meet Host Schedule**",
-        "*Built automatically from host availability responses.*",
-        "",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-    ]
-    for day in _HRSVP_DAYS:
-        entry = schedule["days"].get(day, {})
-        host_id = entry.get("host_id")
-        host_status = entry.get("host_status", "none")
-        if host_id:
-            host_str = f"<@{host_id}>" + (" *(maybe)*" if host_status == "maybe" else "")
-        else:
-            host_str = "*No host assigned*"
-        lines += [
-            f"**{day}**",
-            f"🎮 Class: {entry.get('class', 'TBD')}",
-            f"🕒 Time: {entry.get('time', 'TBD')}",
-            f"👤 Host: {host_str}",
-            "",
-        ]
-    lines += [
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        "🌐 Time conversion: https://hammertime.cyou/en",
-        "⚠ Schedule may be adjusted by leadership.",
-    ]
+    rsvp = _hrsvp_load()
+
+    updated_at = schedule.get("updated_at")
+    if updated_at:
+        try:
+            ts = int(datetime.fromisoformat(updated_at).timestamp())
+            rebuilt_str = f"<t:{ts}:R> (<t:{ts}:f>)"
+        except Exception:
+            rebuilt_str = "recently"
+    else:
+        rebuilt_str = "*never — press Rebuild Schedule*"
+
     embed = discord.Embed(
-        description="\n".join(lines),
+        title="📋 DIFF Auto Meet Host Schedule",
+        description=(
+            "*Built automatically from host availability responses.*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 **Last rebuilt:** {rebuilt_str}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ),
         color=discord.Color.blurple(),
         timestamp=utc_now(),
     )
     embed.set_author(name="Different Meets")
+
+    for day in _HRSVP_DAYS:
+        entry = schedule["days"].get(day, {})
+        host_id = entry.get("host_id")
+        host_status = entry.get("host_status", "none")
+        rsvp_slot = rsvp.get(day, {})
+
+        if host_id:
+            host_str = f"<@{host_id}>" + (" *(maybe)*" if host_status == "maybe" else "")
+        else:
+            available = [_hrsvp_uid(e) for e in rsvp_slot.get("yes", [])]
+            maybe_av  = [_hrsvp_uid(e) for e in rsvp_slot.get("maybe", [])]
+            if available:
+                host_str = (
+                    "*No host assigned*\n"
+                    f"✅ Available: {' '.join(f'<@{u}>' for u in available)}"
+                )
+            elif maybe_av:
+                host_str = (
+                    "*No host assigned*\n"
+                    f"❓ Maybe: {' '.join(f'<@{u}>' for u in maybe_av)}"
+                )
+            else:
+                host_str = "*No host assigned — no availability yet*"
+
+        field_val = (
+            f"🎮 **Class:** {entry.get('class', 'TBD')}\n"
+            f"🕒 **Time:** {entry.get('time', 'TBD')}\n"
+            f"👤 **Host:** {host_str}"
+        )
+        embed.add_field(name=f"━━ {day}", value=field_val, inline=False)
+
+    embed.add_field(
+        name="\u200b",
+        value="🌐 [Time conversion](https://hammertime.cyou/en)  •  ⚠ Schedule may be adjusted by leadership.",
+        inline=False,
+    )
     embed.set_footer(text="DIFF • Auto Host Schedule Builder")
     return embed
 
