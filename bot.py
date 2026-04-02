@@ -19101,7 +19101,7 @@ class JoinTicketView(discord.ui.View):
             welcome_embed = discord.Embed(
                 title="🏁 New Member — Welcome to DIFF Meets!",
                 description=(
-                    f"Give it up for {member.mention} — they just got accepted into the crew! 🎉\n\n"
+                    f"Give it up for {member.mention} — they just joined the DIFF Meets community! 🎉\n\n"
                     f"React with 🏎️ to welcome them in!"
                 ),
                 color=0x3B6FE8,
