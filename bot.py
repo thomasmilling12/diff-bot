@@ -3941,6 +3941,34 @@ async def _cmd_attendlb(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="refreshboard")
+@commands.has_permissions(manage_guild=True)
+async def _cmd_refreshboard(ctx: commands.Context):
+    """!refreshboard — force-refresh the DIFF Host Activity Board embed."""
+    guild = ctx.guild
+    if not guild:
+        return
+    channel_id = data.get("status_channel_id")
+    channel = guild.get_channel(channel_id) if channel_id else None
+    if not isinstance(channel, discord.TextChannel):
+        return await ctx.send("Host activity board channel not found.", ephemeral=True)
+    embed = build_status_embed(guild)
+    msg_id = data.get("panel_message_id")
+    target = None
+    if msg_id:
+        try:
+            target = await channel.fetch_message(msg_id)
+        except discord.NotFound:
+            target = None
+    if target is None:
+        target = await find_existing_status_panel_message(channel)
+    if target:
+        await target.edit(embed=embed)
+        await ctx.send("✅ Host Activity Board refreshed.", delete_after=5)
+    else:
+        await ctx.send("Couldn't find the board message to edit.", delete_after=5)
+
+
 # =========================
 # HOST FLOW SYSTEM
 # =========================
