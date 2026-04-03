@@ -12396,6 +12396,29 @@ async def _cs_post_winner_announcement(guild: discord.Guild, winner: Dict[str, A
     except Exception as _dme:
         print(f"[ColorWinner] DM to winner failed: {_dme}")
 
+    # DM Azi and Chris to update the crew color on Rockstar Social Club
+    _COLOR_CHANGE_ADMINS = [983557795767021578, 531671176976662532]
+    admin_embed = discord.Embed(
+        title="🎨 Update the Crew Color on Rockstar Social Club",
+        description=(
+            f"This week's winning crew color is:\n\n"
+            f"**{winner['color_name']}**\n"
+            f"HEX: `{winner['hex_code']}`\n\n"
+            "Please update the crew color on **Rockstar Social Club** to match."
+        ),
+        color=embed_color,
+        timestamp=datetime.now(COLOR_TZ),
+    )
+    admin_embed.set_image(url=winner["image_url"])
+    admin_embed.set_footer(text="DIFF Meets • Crew Color System")
+    for admin_id in _COLOR_CHANGE_ADMINS:
+        try:
+            admin_member = guild.get_member(admin_id) or await guild.fetch_member(admin_id)
+            if admin_member:
+                await admin_member.send(embed=admin_embed)
+        except Exception as _ae:
+            print(f"[ColorWinner] Admin DM to {admin_id} failed: {_ae}")
+
     return msg
 
 
