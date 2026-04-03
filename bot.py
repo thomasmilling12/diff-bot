@@ -9317,6 +9317,90 @@ async def _rc_log_attendance(guild, meet_number, attended, no_shows, action_by):
         pass
 
 
+_CREW_CHAT_CHANNEL_ID = 990097781798613063
+
+
+async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
+    """Post roll call reminder to crew chat and DM crew members who haven't responded yet."""
+    # Build a short schedule summary for the embed
+    summary_lines = []
+    for m in sorted(meets, key=lambda x: x["meet_number"]):
+        n = m["meet_number"]
+        host_id = m.get("host_id")
+        host_str = f"<@{host_id}>" if host_id else "*TBD*"
+        cls = m.get("class_name", "TBD")
+        t   = m.get("start_time", "TBD")
+        summary_lines.append(f"**Meet {n}** — 🎮 {cls} | 🕒 {t} | 👤 {host_str}")
+
+    embed = discord.Embed(
+        title="📋 Roll Call is Open — Mark Your Attendance!",
+        description=(
+            "The meet schedule has been updated. Head to the roll call and mark whether you're attending each meet.\n\n"
+            + "\n".join(summary_lines)
+            + f"\n\n📌 **[Open the Roll Call]({ROLL_CALL_URL})**\n\n"
+            "✅ Attending  •  ❓ Maybe  •  ❌ Not Attending\n\n"
+            "⚠️ No-shows are tracked — make sure your response is accurate."
+        ),
+        color=discord.Color.green(),
+        timestamp=utc_now(),
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text="DIFF Meets • Roll Call System")
+
+    # ── Channel post ──────────────────────────────────────────
+    crew_ch = guild.get_channel(_CREW_CHAT_CHANNEL_ID)
+    if isinstance(crew_ch, discord.TextChannel):
+        crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+        ps5_role  = guild.get_role(PS5_ROLE_ID)
+        pings = " ".join(r.mention for r in [crew_role, ps5_role] if r)
+        try:
+            await crew_ch.send(content=pings or None, embed=embed)
+        except Exception as _ce:
+            print(f"[RollCallNotify] Channel post failed: {_ce}")
+
+    # ── DM crew members who haven't responded to any meet yet ─
+    crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+    if not crew_role:
+        return
+    # Collect user IDs who already have any response in the DB
+    all_responses = _rc_db.get_all_responses(guild.id)
+    responded_ids: set = set()
+    for meet_responses in all_responses.values():
+        for uid_list in meet_responses.values():
+            for uid in uid_list:
+                responded_ids.add(str(uid))
+
+    dm_embed = discord.Embed(
+        title="📋 Roll Call is Open — Mark Your Attendance!",
+        description=(
+            "Hey! The DIFF Meet schedule has been set. Don't forget to mark your attendance in the roll call.\n\n"
+            + "\n".join(summary_lines)
+            + f"\n\n📌 **[Open the Roll Call]({ROLL_CALL_URL})**\n\n"
+            "✅ Attending  •  ❓ Maybe  •  ❌ Not Attending\n\n"
+            "⚠️ No-shows are tracked — make sure your response is accurate."
+        ),
+        color=discord.Color.green(),
+        timestamp=utc_now(),
+    )
+    dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
+    dm_embed.set_footer(text="DIFF Meets • Roll Call System")
+
+    sent = failed = skipped = 0
+    for member in crew_role.members:
+        if str(member.id) in responded_ids:
+            skipped += 1
+            continue
+        try:
+            await member.send(embed=dm_embed)
+            sent += 1
+        except discord.Forbidden:
+            failed += 1
+        except Exception as _e:
+            print(f"[RollCallNotify] DM to {member.id} failed: {_e}")
+            failed += 1
+    print(f"[RollCallNotify] {sent} DMs sent, {failed} failed, {skipped} already responded.")
+
+
 async def _rc_sync_from_schedule(guild: discord.Guild, meets: list):
     present = {m["meet_number"] for m in meets}
     for n in (1, 2, 3):
@@ -9325,6 +9409,7 @@ async def _rc_sync_from_schedule(guild: discord.Guild, meets: list):
     meets.sort(key=lambda x: x["meet_number"])
     _rc_db.upsert_meets(guild.id, meets)
     await _rc_refresh_panel(guild)
+    asyncio.create_task(_rc_notify_crew_of_schedule(guild, meets))
 
 
 @tasks.loop(minutes=10)
