@@ -3119,9 +3119,24 @@ async def _asched_update_panel(bot_client) -> None:
 # -------------------------------------------------------
 # Weekly host DM reminder — every Sunday at 12 PM ET
 # -------------------------------------------------------
+_HOST_TEAM_CHANNEL_ID = 1486228191243669646
+
+
+def _hrsvp_responded_uids() -> set:
+    """Return set of user IDs who have responded to any meet slot this week."""
+    data = _hrsvp_load()
+    uids: set = set()
+    for day in _HRSVP_DAYS:
+        slot = data.get(day, {})
+        for bucket in ("yes", "no", "maybe"):
+            for entry in slot.get(bucket, []):
+                uids.add(_hrsvp_uid(entry))
+    return uids
+
+
 @tasks.loop(minutes=30)
 async def _host_weekly_reminder_loop():
-    """DM every host on Sunday at 12 PM ET to mark availability for the new week."""
+    """Sunday 12 PM ET: post to host team channel + DM hosts who haven't responded."""
     try:
         from zoneinfo import ZoneInfo
         now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -3130,28 +3145,65 @@ async def _host_weekly_reminder_loop():
     # Only fire on Sunday (weekday 6) between 12:00–12:29 PM
     if now_et.weekday() != 6 or now_et.hour != 12:
         return
-    # Deduplicate — one DM blast per Sunday max
+    # Deduplicate — one blast per Sunday max
     today_str = now_et.strftime("%Y-%m-%d")
     sched = _asched_load()
     if sched.get("_reminder_last_sent") == today_str:
         return
     sched["_reminder_last_sent"] = today_str
     _asched_save(sched)
-    # Locate guild and host role
+
     guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
     if not guild:
         return
     host_role = guild.get_role(HOST_ROLE_ID)
     if not host_role:
         return
+
     panel_url = f"https://discord.com/channels/{GUILD_ID}/{HOST_RSVP_CHANNEL_ID}"
-    embed = discord.Embed(
+
+    # Hosts who haven't responded yet
+    responded = _hrsvp_responded_uids()
+    pending = [m for m in host_role.members if str(m.id) not in {str(u) for u in responded}]
+
+    # ── Channel post ──────────────────────────────────────────
+    host_ch = guild.get_channel(_HOST_TEAM_CHANNEL_ID)
+    if isinstance(host_ch, discord.TextChannel):
+        ch_embed = discord.Embed(
+            title="📅 New Week — Mark Your Availability!",
+            description=(
+                "A new DIFF Meet week has started **(Sunday–Saturday)**.\n\n"
+                f"📌 **[Open the Host Availability Panel]({panel_url})**\n\n"
+                "Use the buttons to mark:\n"
+                "✅ **Available** — include your time, day, and class\n"
+                "❌ **Unavailable** — can't host this week\n"
+                "❓ **Maybe** — unsure, check back later\n\n"
+                "*Leadership will rebuild the schedule once responses are in.*"
+            ),
+            color=discord.Color.blurple(),
+            timestamp=utc_now(),
+        )
+        ch_embed.set_thumbnail(url=DIFF_LOGO_URL)
+        ch_embed.set_footer(text="DIFF Meets • Weekly Host Reminder — Sunday 12 PM ET")
+        if pending:
+            pending_mentions = " ".join(m.mention for m in pending)
+            ch_embed.add_field(
+                name="⏳ Still needs to respond",
+                value=pending_mentions,
+                inline=False,
+            )
+        try:
+            await host_ch.send(embed=ch_embed)
+        except Exception as _ce:
+            print(f"[HostReminder] Channel post failed: {_ce}")
+
+    # ── DM only hosts who haven't responded ──────────────────
+    dm_embed = discord.Embed(
         title="📅 New Week — Mark Your Availability!",
         description=(
             "Hey! A new DIFF Meet week has started **(Sunday–Saturday)**.\n\n"
-            "Please head to the host availability panel and mark which meets you're available for.\n\n"
+            "You haven't marked your availability yet — please do so when you can.\n\n"
             f"📌 **[Open the Host Availability Panel]({panel_url})**\n\n"
-            "Use the buttons to mark yourself:\n"
             "✅ **Available** — include your time, day, and class\n"
             "❌ **Unavailable** — can't host this week\n"
             "❓ **Maybe** — unsure, check back later\n\n"
@@ -3160,19 +3212,20 @@ async def _host_weekly_reminder_loop():
         color=discord.Color.blurple(),
         timestamp=utc_now(),
     )
-    embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text="DIFF Meets • Weekly Host Reminder — Sunday 12 PM ET")
+    dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
+    dm_embed.set_footer(text="DIFF Meets • Weekly Host Reminder — Sunday 12 PM ET")
+
     sent = failed = 0
-    for member in host_role.members:
+    for member in pending:
         try:
-            await member.send(embed=embed)
+            await member.send(embed=dm_embed)
             sent += 1
         except discord.Forbidden:
             failed += 1
         except Exception as _e:
             print(f"[HostReminder] DM to {member.id} failed: {_e}")
             failed += 1
-    print(f"[HostReminder] Weekly reminder — {sent} delivered, {failed} failed.")
+    print(f"[HostReminder] Weekly reminder — {sent} DMs delivered, {failed} failed, {len(host_role.members) - len(pending)} already responded.")
 
 
 @_host_weekly_reminder_loop.before_loop
