@@ -2538,7 +2538,7 @@ def _hrsvp_build_embed() -> discord.Embed:
         desc.append("")
 
     desc.append("━━━━━━━━━━━━━━━━━━━━━━")
-    desc.append("🌐 Convert times: https://hammertime.cyou/en")
+    desc.append("🕒 Times shown in your local timezone automatically.")
     embed = discord.Embed(
         description="\n".join(desc),
         color=discord.Color.dark_gray(),
@@ -2614,8 +2614,10 @@ class _HostAvailModal(discord.ui.Modal):
             return
         uid = str(interaction.user.id)
         day_val = str(self.day_input).strip()
-        time_val = str(self.time_input).strip()
+        time_raw = str(self.time_input).strip()
         theme_val = str(self.theme_input).strip()
+        # Convert "8pm EST" → Discord auto-timezone timestamp
+        time_val = _popup_parse_time(time_raw)
         data = _hrsvp_load()
         slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
         for c in ("yes", "no", "maybe"):
@@ -2624,7 +2626,7 @@ class _HostAvailModal(discord.ui.Modal):
         _hrsvp_save(data)
         await _hrsvp_update_panel(interaction.client)
         await interaction.response.send_message(
-            f"✅ **{self.day}**: you're marked available\n📅 Day: **{day_val}** | 🕒 Time: **{time_val}** | 🎮 Theme: **{theme_val}**",
+            f"✅ **{self.day}**: you're marked available\n📅 Day: **{day_val}** | 🕒 Time: {time_val} | 🎮 Theme: **{theme_val}**",
             ephemeral=True,
         )
 
@@ -2847,7 +2849,7 @@ def _asched_build_embed() -> discord.Embed:
 
     embed.add_field(
         name="\u200b",
-        value="🌐 [Time conversion](https://hammertime.cyou/en)  •  ⚠ Schedule may be adjusted by leadership.",
+        value="🕒 Times shown in your local timezone automatically.  •  ⚠ Schedule may be adjusted by leadership.",
         inline=False,
     )
     embed.set_footer(text="DIFF • Auto Host Schedule Builder")
@@ -11053,7 +11055,7 @@ class StartMeetModal(discord.ui.Modal, title="Start a DIFF Meet"):
             description=(
                 f"**Theme / Type:** {self.theme.value}\n"
                 f"**Location:** {self.location.value}\n"
-                f"**Time:** {self.meet_time.value}\n\n"
+                f"**Time:** {_popup_parse_time(self.meet_time.value)}\n\n"
                 f"{self.details.value or 'Pull up clean and follow the rules.'}\n\n"
                 f"📍 Check <#{MEET_RULES_CHANNEL_ID}> before joining\n"
                 f"📥 Join steps: <#{JOIN_MEETS_CHANNEL_ID}>\n"
