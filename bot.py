@@ -2923,10 +2923,58 @@ async def _asched_post_finalized(bot_client) -> None:
         print(f"[AutoSched] Announce post failed: {e}")
 
 
+class _ASchedReminderBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Send Reminders",
+            emoji="📣",
+            style=discord.ButtonStyle.danger,
+            custom_id="diff_auto_sched_remind",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        is_staff = any(
+            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+            for r in getattr(interaction.user, "roles", [])
+        )
+        if not is_staff:
+            return await interaction.response.send_message("Only staff can send meet reminders.", ephemeral=True)
+        schedule = _asched_load()
+        lines = []
+        for day in _HRSVP_DAYS:
+            entry = schedule["days"].get(day, {})
+            host_id = entry.get("host_id")
+            host_str = f"<@{host_id}>" if host_id else "*TBD*"
+            lines.append(
+                f"**{day}** — 🎮 {entry.get('class', 'TBD')} | 🕒 {entry.get('time', 'TBD')} | 👤 {host_str}"
+            )
+        remind_embed = discord.Embed(
+            title="📅 Upcoming DIFF Meets — This Week's Schedule",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+            timestamp=utc_now(),
+        )
+        remind_embed.set_footer(text="DIFF Meets • Check the schedule channel for full details")
+        announce_ch = bot.get_channel(MEET_ANNOUNCEMENT_CHANNEL_ID)
+        if isinstance(announce_ch, discord.TextChannel):
+            guild = interaction.guild
+            notify_role = guild.get_role(NOTIFY_ROLE_ID) if guild else None
+            ping = notify_role.mention if notify_role else ""
+            try:
+                await announce_ch.send(content=ping or None, embed=remind_embed)
+                await interaction.response.send_message("✅ Meet reminders posted to the announcement channel.", ephemeral=True)
+            except Exception as _e:
+                await interaction.response.send_message(f"Failed to post reminder: {_e}", ephemeral=True)
+        else:
+            await interaction.response.send_message("Announcement channel not found.", ephemeral=True)
+
+
 class AutoScheduleView(discord.ui.View):
     def __init__(self, bot_ref=None):
         super().__init__(timeout=None)
         self._bot_ref = bot_ref
+        self.add_item(_ASchedReminderBtn())
 
     @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id=_ASCHED_REFRESH_ID)
     async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2958,7 +3006,34 @@ class AutoScheduleView(discord.ui.View):
                     "is_finalized": entry.get("host_id") is not None,
                 })
             await _rc_sync_from_schedule(interaction.guild, rc_meets)
-        await interaction.response.send_message("Schedule rebuilt and posted to the announcement channel.", ephemeral=True)
+
+            # DM each assigned host their meet details
+            for day in _HRSVP_DAYS:
+                entry = schedule["days"].get(day, {})
+                host_id = entry.get("host_id")
+                if not host_id:
+                    continue
+                host_member = interaction.guild.get_member(int(host_id))
+                if not host_member:
+                    continue
+                try:
+                    dm_embed = discord.Embed(
+                        title=f"📅 You've Been Assigned — {day}",
+                        description="You have been assigned as the host for the upcoming meet schedule.",
+                        color=discord.Color.blurple(),
+                        timestamp=utc_now(),
+                    )
+                    dm_embed.add_field(name="🗓 Day", value=entry.get("day", "TBD"), inline=True)
+                    dm_embed.add_field(name="🕒 Time", value=entry.get("time", "TBD"), inline=True)
+                    dm_embed.add_field(name="🎮 Class", value=entry.get("class", "TBD"), inline=True)
+                    dm_embed.set_footer(text="DIFF Meets • Host Schedule — questions? Contact leadership.")
+                    await host_member.send(embed=dm_embed)
+                except discord.Forbidden:
+                    pass
+                except Exception as _dme:
+                    print(f"[AutoSched] DM to host {host_id} failed: {_dme}")
+
+        await interaction.response.send_message("Schedule rebuilt, posted to the announcement channel, and hosts have been DM'd their assignments.", ephemeral=True)
 
 
 def _asched_is_sched_msg(msg: discord.Message, bot_id: int) -> bool:
@@ -3773,6 +3848,95 @@ async def _cmd_hostpoints(ctx: commands.Context, user: Optional[discord.Member] 
         f"✅ Updated {user.mention}. Points: **{new_total}** | Tier: **{host_performance_tier(new_total)}**"
     )
     await _hauto_update_leaderboard(ctx.guild)
+
+
+@bot.command(name="appstats")
+@commands.has_permissions(manage_guild=True)
+async def _cmd_appstats(ctx: commands.Context):
+    """!appstats — show application statistics breakdown."""
+    apps = load_apps().get("applications", {})
+    pending  = sum(1 for a in apps.values() if a.get("status") in {"Pending", "More Info Requested"})
+    approved = sum(1 for a in apps.values() if a.get("status") == "Approved")
+    denied   = sum(1 for a in apps.values() if a.get("status") == "Denied")
+    total    = len(apps)
+    # Count reviewers
+    reviewer_counts: dict = {}
+    for a in apps.values():
+        rv = a.get("reviewed_by")
+        if rv:
+            reviewer_counts[rv] = reviewer_counts.get(rv, 0) + 1
+    top_reviewer = max(reviewer_counts, key=reviewer_counts.get) if reviewer_counts else "N/A"
+    embed = discord.Embed(
+        title="📋 Application Statistics",
+        color=discord.Color.blurple(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="📥 Total",    value=str(total),    inline=True)
+    embed.add_field(name="🟡 Pending",  value=str(pending),  inline=True)
+    embed.add_field(name="🟢 Approved", value=str(approved), inline=True)
+    embed.add_field(name="🔴 Denied",   value=str(denied),   inline=True)
+    rate = f"{approved / (approved + denied) * 100:.1f}%" if (approved + denied) > 0 else "N/A"
+    embed.add_field(name="✅ Approval Rate", value=rate, inline=True)
+    embed.add_field(name="🏆 Top Reviewer", value=top_reviewer, inline=True)
+    embed.set_footer(text="DIFF Meets • Application Tracker")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="noshowcheck")
+@commands.has_permissions(manage_guild=True)
+async def _cmd_noshowcheck(ctx: commands.Context):
+    """!noshowcheck — list scheduled hosts who haven't started a session yet."""
+    schedule = _asched_load()
+    hp_data = _hp_load()
+    lines = []
+    for day in _HRSVP_DAYS:
+        entry = schedule["days"].get(day, {})
+        host_id = entry.get("host_id")
+        if not host_id:
+            lines.append(f"**{day}**: ❓ No host assigned")
+            continue
+        # Check if this host has any active or recently ended session
+        has_session = any(
+            str(s.get("host_id")) == str(host_id)
+            for s in hp_data.get("active_sessions", {}).values()
+        )
+        status = "✅ Session started" if has_session else "⚠ No session started"
+        lines.append(f"**{day}**: <@{host_id}> — {status}")
+    embed = discord.Embed(
+        title="👁 Host No-Show Check",
+        description="\n".join(lines) or "*No schedule data found.*",
+        color=discord.Color.orange(),
+        timestamp=utc_now(),
+    )
+    embed.set_footer(text="Hosts with no session started may need a follow-up.")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="attendlb")
+async def _cmd_attendlb(ctx: commands.Context):
+    """!attendlb — DIFF attendance leaderboard across all host sessions."""
+    hp_data = _hp_load()
+    stats = hp_data.get("host_stats", {})
+    if not stats:
+        return await ctx.send("No host session data yet.")
+    sorted_hosts = sorted(stats.items(), key=lambda x: x[1].get("diff_attendance_sum", 0), reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, (uid, s) in enumerate(sorted_hosts[:10]):
+        medal = medals[i] if i < 3 else f"`{i + 1}.`"
+        name = s.get("host_name", f"<@{uid}>")
+        diff_att = s.get("diff_attendance_sum", 0)
+        total_att = s.get("total_attendance_sum", 0)
+        meets = s.get("meets_hosted", 0)
+        lines.append(f"{medal} **{name}** — 🏅 {diff_att} DIFF | 👥 {total_att} Total | 🎮 {meets} meets")
+    embed = discord.Embed(
+        title="🏆 Host Attendance Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+        timestamp=utc_now(),
+    )
+    embed.set_footer(text="Ranked by total DIFF attendance across all sessions")
+    await ctx.send(embed=embed)
 
 
 # =========================
@@ -7397,6 +7561,70 @@ class _HPAttendanceModal(discord.ui.Modal, title="Submit Attendance"):
             await interaction.channel.send(embed=_hp_session_embed(session), view=HostSessionView())
 
 
+# ── Warning appeal ────────────────────────────────────────────────────────────
+
+class _HostWarnAppealBtn(discord.ui.Button):
+    def __init__(self, session_id: str, issue: str):
+        super().__init__(label="📩 Appeal This Warning", style=discord.ButtonStyle.primary)
+        self._session_id = session_id
+        self._issue = issue
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.disabled = True
+        self.label = "✓ Appeal Submitted"
+        try:
+            await interaction.response.edit_message(view=self.view)
+        except Exception:
+            await interaction.response.defer()
+        staff_ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(staff_ch, discord.TextChannel):
+            appeal_embed = discord.Embed(
+                title="📩 Host Warning Appeal",
+                description=f"{interaction.user.mention} is appealing a host performance warning.",
+                color=discord.Color.gold(),
+            )
+            appeal_embed.add_field(name="Warning", value=self._issue, inline=False)
+            appeal_embed.add_field(name="Session ID", value=f"`{self._session_id}`", inline=False)
+            appeal_embed.set_footer(text="Review and clear the warning if you agree with the appeal.")
+            guild = bot.get_guild(GUILD_ID)
+            leader_role = guild.get_role(LEADER_ROLE_ID) if guild else None
+            ping = leader_role.mention if leader_role else None
+            await staff_ch.send(content=ping, embed=appeal_embed)
+
+
+class _HostWarnAppealView(discord.ui.View):
+    def __init__(self, session_id: str, issue: str):
+        super().__init__(timeout=86400)  # 24h to appeal
+        self.add_item(_HostWarnAppealBtn(session_id, issue))
+
+
+def _hp_recap_embed(session: dict, score: int, warnings: list[str]) -> discord.Embed:
+    """Public recap embed posted to the recap channel after a session ends."""
+    color = discord.Color.green() if not warnings else discord.Color.orange()
+    embed = discord.Embed(
+        title=f"🏁 Meet Recap — {session['meet_name']}",
+        color=color,
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="🎮 Host", value=f"<@{session['host_id']}>", inline=True)
+    embed.add_field(name="👥 Total Attendance", value=str(session.get("total_attendance", 0)), inline=True)
+    embed.add_field(name="🏅 DIFF Attendance", value=str(session.get("diff_attendance", 0)), inline=True)
+    embed.add_field(name="📊 Score", value=f"**{score}**", inline=True)
+    embed.add_field(name="⚠ Warnings", value=str(len(warnings)) if warnings else "None", inline=True)
+    embed.add_field(
+        name="✅ Compliance",
+        value=(
+            f"Blacklist Checked: {'✅' if session.get('blacklist_checked') else '❌'}\n"
+            f"Checklist Complete: {'✅' if session.get('checklist_completed') else '❌'}\n"
+            f"Lobby Proof Posted: {'✅' if session.get('lobby_proof_posted') else '❌'}\n"
+            f"Today's Meet Posted: {'✅' if session.get('todays_meet_posted') else '❌'}"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="DIFF Host Performance System")
+    return embed
+
+
 class HostSessionView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -7565,6 +7793,56 @@ class HostSessionView(discord.ui.View):
                 ), inline=False)
                 warn_embed.set_footer(text="Logged automatically for staff review")
                 await staff_ch.send(embed=warn_embed)
+
+        # ── Public recap post ────────────────────────────────────────────
+        recap_ch = bot.get_channel(RECAP_CHANNEL_ID)
+        if isinstance(recap_ch, discord.TextChannel):
+            try:
+                await recap_ch.send(embed=_hp_recap_embed(session, score, warnings))
+            except Exception as _re:
+                print(f"[HostSession] Recap post failed: {_re}")
+
+        # ── DM the host with session summary + appeal buttons ────────────
+        host_member = interaction.guild.get_member(session["host_id"]) if interaction.guild else None
+        if host_member:
+            try:
+                dm_embed = discord.Embed(
+                    title=f"📋 Your Session Summary — {session['meet_name']}",
+                    color=discord.Color.green() if not warnings else discord.Color.orange(),
+                    timestamp=utc_now(),
+                )
+                dm_embed.add_field(name="📊 Score", value=str(score), inline=True)
+                dm_embed.add_field(name="👥 Total Attendance", value=str(session.get("total_attendance", 0)), inline=True)
+                dm_embed.add_field(name="🏅 DIFF Attendance", value=str(session.get("diff_attendance", 0)), inline=True)
+                dm_embed.add_field(
+                    name="✅ Compliance",
+                    value=(
+                        f"Blacklist Checked: {'✅' if session.get('blacklist_checked') else '❌'}\n"
+                        f"Checklist Complete: {'✅' if session.get('checklist_completed') else '❌'}\n"
+                        f"Lobby Proof Posted: {'✅' if session.get('lobby_proof_posted') else '❌'}\n"
+                        f"Today's Meet Posted: {'✅' if session.get('todays_meet_posted') else '❌'}"
+                    ),
+                    inline=False,
+                )
+                if warnings:
+                    dm_embed.add_field(
+                        name="⚠ Warnings",
+                        value="\n".join(f"• {w}" for w in warnings),
+                        inline=False,
+                    )
+                    dm_embed.set_footer(text="You may appeal any warning below within 24 hours.")
+                else:
+                    dm_embed.set_footer(text="Great session — no warnings issued!")
+                await host_member.send(embed=dm_embed)
+                for issue in warnings:
+                    await host_member.send(
+                        content=f"⚠ Warning: **{issue}**",
+                        view=_HostWarnAppealView(session["session_id"], issue),
+                    )
+            except discord.Forbidden:
+                pass
+            except Exception as _de:
+                print(f"[HostSession] DM to host failed: {_de}")
 
         await interaction.response.send_message(
             f"Meet session ended. Score: **{score}** | Warnings: **{len(warnings)}**\n"
