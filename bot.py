@@ -12372,7 +12372,31 @@ async def _cs_post_winner_announcement(guild: discord.Guild, winner: Dict[str, A
     embed = discord.Embed(color=embed_color, timestamp=datetime.now(COLOR_TZ))
     embed.set_image(url=winner["image_url"])
     embed.set_footer(text="DIFF • Crew Color Announcement" + (" • Manual Approval" if manual else ""))
-    return await channel.send("\n".join(lines), embed=embed)
+    msg = await channel.send("\n".join(lines), embed=embed)
+
+    # DM the winning color team member
+    try:
+        winner_member = guild.get_member(int(winner["author_id"]))
+        if winner_member is None:
+            winner_member = await guild.fetch_member(int(winner["author_id"]))
+        if winner_member:
+            dm_embed = discord.Embed(
+                title="🏆 Your Color Won This Week!",
+                description=(
+                    f"Congratulations! Your submission **{winner['color_name']}** (`{winner['hex_code']}`) "
+                    f"has been chosen as the DIFF Crew Color for this week.\n\n"
+                    "The crew will be rocking your color — great pick! 🎨"
+                ),
+                color=embed_color,
+                timestamp=datetime.now(COLOR_TZ),
+            )
+            dm_embed.set_image(url=winner["image_url"])
+            dm_embed.set_footer(text="DIFF Meets • Crew Color System")
+            await winner_member.send(embed=dm_embed)
+    except Exception as _dme:
+        print(f"[ColorWinner] DM to winner failed: {_dme}")
+
+    return msg
 
 
 async def _cs_post_vote_announcement(guild: discord.Guild, candidates: List[Dict[str, Any]]):
