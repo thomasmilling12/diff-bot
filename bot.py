@@ -2714,6 +2714,7 @@ async def _hrsvp_update_panel(bot_client) -> None:
 _ASCHED_FILE = os.path.join("diff_data", "diff_auto_schedule.json")
 _ASCHED_REFRESH_ID = "diff_auto_sched_refresh"
 _ASCHED_REBUILD_ID = "diff_auto_sched_rebuild"
+_ASCHED_SUBMIT_ID  = "diff_auto_sched_submit"
 _ASCHED_DEFAULT_TEMPLATE = {day: {"class": "TBD", "time": "TBD"} for day in _HRSVP_DAYS}
 _ASCHED_ANNOUNCE_CHANNEL_ID = 1485861257708834836
 
@@ -2972,11 +2973,53 @@ class _ASchedReminderBtn(discord.ui.Button):
             await interaction.response.send_message("Everyone chat channel not found.", ephemeral=True)
 
 
+class _ASchedSubmitBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Submit to Roll Call",
+            emoji="📤",
+            style=discord.ButtonStyle.success,
+            custom_id=_ASCHED_SUBMIT_ID,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        is_staff = any(
+            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+            for r in getattr(interaction.user, "roles", [])
+        ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
+        if not is_staff:
+            await interaction.response.send_message("Only staff can submit the schedule to the roll call.", ephemeral=True)
+            return
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("Server not found.", ephemeral=True)
+            return
+        schedule = _asched_load()
+        rc_meets = []
+        for idx, day in enumerate(_HRSVP_DAYS, 1):
+            entry = schedule["days"].get(day, {})
+            rc_meets.append({
+                "meet_number": idx,
+                "class_name": entry.get("class", "TBD"),
+                "start_time": entry.get("time", "TBD"),
+                "host_id": entry.get("host_id"),
+                "date_text": entry.get("day", day),
+                "is_finalized": entry.get("host_id") is not None,
+            })
+        await _rc_sync_from_schedule(guild, rc_meets)
+        await interaction.response.send_message(
+            "✅ Schedule submitted to the roll call — class, time, and host updated for all 3 meets.",
+            ephemeral=True,
+        )
+
+
 class AutoScheduleView(discord.ui.View):
     def __init__(self, bot_ref=None):
         super().__init__(timeout=None)
         self._bot_ref = bot_ref
         self.add_item(_ASchedReminderBtn())
+        self.add_item(_ASchedSubmitBtn())
 
     @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id=_ASCHED_REFRESH_ID)
     async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
