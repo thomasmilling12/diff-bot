@@ -2956,18 +2956,18 @@ class _ASchedReminderBtn(discord.ui.Button):
             timestamp=utc_now(),
         )
         remind_embed.set_footer(text="DIFF Meets • Check the schedule channel for full details")
-        announce_ch = bot.get_channel(MEET_ANNOUNCEMENT_CHANNEL_ID)
-        if isinstance(announce_ch, discord.TextChannel):
+        everyone_ch = bot.get_channel(1047335231826436166)
+        if isinstance(everyone_ch, discord.TextChannel):
             guild = interaction.guild
             notify_role = guild.get_role(NOTIFY_ROLE_ID) if guild else None
             ping = notify_role.mention if notify_role else ""
             try:
-                await announce_ch.send(content=ping or None, embed=remind_embed)
-                await interaction.response.send_message("✅ Meet reminders posted to the announcement channel.", ephemeral=True)
+                await everyone_ch.send(content=ping or None, embed=remind_embed)
+                await interaction.response.send_message("✅ Meet reminders posted to everyone chat.", ephemeral=True)
             except Exception as _e:
                 await interaction.response.send_message(f"Failed to post reminder: {_e}", ephemeral=True)
         else:
-            await interaction.response.send_message("Announcement channel not found.", ephemeral=True)
+            await interaction.response.send_message("Everyone chat channel not found.", ephemeral=True)
 
 
 class AutoScheduleView(discord.ui.View):
