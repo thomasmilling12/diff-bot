@@ -3984,6 +3984,14 @@ async def _cmd_attendlb(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="refreshschedule")
+@commands.has_permissions(manage_guild=True)
+async def _cmd_refreshschedule(ctx: commands.Context):
+    """!refreshschedule — force-refresh the Auto Schedule panel with the latest view."""
+    await _asched_update_panel(ctx.bot)
+    await ctx.send("✅ Schedule panel refreshed.", delete_after=5)
+
+
 @bot.command(name="refreshboard")
 @commands.has_permissions(manage_guild=True)
 async def _cmd_refreshboard(ctx: commands.Context):
