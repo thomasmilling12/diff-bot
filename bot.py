@@ -5395,10 +5395,47 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
     online_hosts: list[str] = []
     offline_hosts: list[str] = []
 
+    hp_data = _hp_load()
+    host_stats = hp_data.get("host_stats", {})
+
+    def _custom_status(member: discord.Member):
+        for act in (member.activities or []):
+            if isinstance(act, discord.CustomActivity) and act.name:
+                return act.name
+        return None
+
+    def _last_session_str(uid: int) -> str:
+        s = host_stats.get(str(uid), {})
+        last = s.get("last_session_at")
+        if last:
+            try:
+                ts = int(datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp())
+                return f"<t:{ts}:R>"
+            except Exception:
+                pass
+        return "never"
+
+    def _tier_badge(uid: int) -> str:
+        s = host_stats.get(str(uid), {})
+        pts = s.get("score_total", 0)
+        meets = s.get("meets_hosted", 0)
+        if pts >= 30:
+            badge = "💎 Elite"
+        elif pts >= 15:
+            badge = "🔥 Senior"
+        elif pts >= 0:
+            badge = "⭐ Junior"
+        else:
+            badge = "⚠️ At Risk"
+        return f"{badge} • {meets} meets"
+
     for host in data["hosts"]:
         member = guild.get_member(host["discord_id"])
         profile = host.get("profile_url", "")
         link = f" [↗]({profile})" if profile else ""
+        uid = host["discord_id"]
+        badge = _tier_badge(uid)
+        last = _last_session_str(uid)
 
         if member:
             is_online = member.status != discord.Status.offline
@@ -5413,35 +5450,42 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
 
         if is_online:
             if "grand theft auto" in activity_lower or "gta" in activity_lower:
-                gta_hosts.append(f"🟢 **{name}** — `{activity}`{link}")
+                gta_hosts.append(f"🟢 **{name}** — `{activity}` • {badge}{link}")
             else:
                 act_label = activity if activity not in ("", "Idle") else "Idle"
-                online_hosts.append(f"🟡 **{name}** — `{act_label}`{link}")
+                online_hosts.append(f"🟡 **{name}** — `{act_label}` • {badge}{link}")
         else:
-            offline_hosts.append(f"🔴 **{name}**{link}")
+            custom = _custom_status(member) if member else None
+            cust_str = f" `{custom}`" if custom else ""
+            offline_hosts.append(
+                f"🔴 **{name}**{cust_str} • {badge} • last hosted {last}{link}"
+            )
 
-    # Summary bar
-    parts = []
+    # Online ratio progress bar
+    total = max(len(gta_hosts) + len(online_hosts) + len(offline_hosts), 1)
+    online_count = len(gta_hosts) + len(online_hosts)
+    filled = round(online_count / total * 10)
+    bar = "🟩" * filled + "🟥" * (10 - filled)
+    summary_line = f"{bar}  **{online_count}/{total}** online"
+
+    # Dynamic embed color
     if gta_hosts:
-        parts.append(f"🟢 **{len(gta_hosts)}** in GTA")
-    if online_hosts:
-        parts.append(f"🟡 **{len(online_hosts)}** online")
-    if offline_hosts:
-        parts.append(f"🔴 **{len(offline_hosts)}** parked")
-    summary = "  •  ".join(parts) if parts else "No hosts being tracked yet."
+        color = 0x43B581   # green — hosts in GTA
+    elif online_hosts:
+        color = 0xFAA61A   # yellow — hosts online elsewhere
+    else:
+        color = 0xED4245   # red — everyone offline
 
     embed = discord.Embed(
         title="🏁 DIFF Host Activity Board",
         description=(
             "Real-time status of your DIFF host team.\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{summary}"
+            f"{summary_line}"
         ),
-        color=0xC9A227,
+        color=color,
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
-    if DIFF_BANNER_URL:
-        embed.set_image(url=DIFF_BANNER_URL)
 
     if gta_hosts:
         embed.add_field(
@@ -5457,7 +5501,7 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
         )
     if offline_hosts:
         embed.add_field(
-            name=f"🔴 Parked  ({len(offline_hosts)})",
+            name=f"🔴 Offline  ({len(offline_hosts)})",
             value="\n".join(offline_hosts),
             inline=False,
         )
