@@ -3227,6 +3227,51 @@ async def _host_weekly_reminder_loop():
             failed += 1
     print(f"[HostReminder] Weekly reminder — {sent} DMs delivered, {failed} failed, {len(host_role.members) - len(pending)} already responded.")
 
+    # ── Color team reminder ───────────────────────────────────
+    color_role = guild.get_role(COLOR_TEAM_ROLE_ID)
+    color_ch   = guild.get_channel(COLOR_TEAM_POST_CHANNEL_ID)
+    color_panel_url = f"https://discord.com/channels/{GUILD_ID}/{COLOR_SUBMISSION_CHANNEL_ID}"
+
+    color_embed = discord.Embed(
+        title="🎨 New Week — Submit Your Crew Color!",
+        description=(
+            "Hey! A new week has started. If you have a color to submit for crew review, now's the time.\n\n"
+            f"📌 **[Open the Color Submission Panel]({color_panel_url})**\n\n"
+            "**What to include:**\n"
+            "• Color name\n"
+            "• HEX code (e.g. `#FF9742`)\n"
+            "• Image link of your preview car\n\n"
+            "Voting goes live **Tuesday ~12 PM ET** and the winner is announced **Monday ~12 PM ET**.\n\n"
+            "*Keep it clean, realistic, and meet-ready.*"
+        ),
+        color=discord.Color.og_blurple(),
+        timestamp=utc_now(),
+    )
+    color_embed.set_thumbnail(url=DIFF_LOGO_URL)
+    color_embed.set_footer(text="DIFF Meets • Color Team — Weekly Submission Reminder")
+
+    # Channel post
+    if isinstance(color_ch, discord.TextChannel):
+        ping = color_role.mention if color_role else ""
+        try:
+            await color_ch.send(content=ping or None, embed=color_embed)
+        except Exception as _cce:
+            print(f"[ColorReminder] Channel post failed: {_cce}")
+
+    # DM color team members
+    if color_role:
+        cs = cd = 0
+        for member in color_role.members:
+            try:
+                await member.send(embed=color_embed)
+                cs += 1
+            except discord.Forbidden:
+                cd += 1
+            except Exception as _dme:
+                print(f"[ColorReminder] DM to {member.id} failed: {_dme}")
+                cd += 1
+        print(f"[ColorReminder] Weekly reminder — {cs} delivered, {cd} failed.")
+
 
 @_host_weekly_reminder_loop.before_loop
 async def _before_host_weekly_reminder():
