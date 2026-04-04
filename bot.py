@@ -4161,10 +4161,11 @@ async def _cmd_refreshboard(ctx: commands.Context):
     guild = ctx.guild
     if not guild:
         return
+    status_msg = await ctx.send("⏳ Refreshing the Host Activity Board...")
     channel_id = data.get("status_channel_id")
     channel = guild.get_channel(channel_id) if channel_id else None
     if not isinstance(channel, discord.TextChannel):
-        return await ctx.send("Host activity board channel not found.", ephemeral=True)
+        return await status_msg.edit(content="❌ Host activity board channel not found.")
     embed = build_status_embed(guild)
     msg_id = data.get("panel_message_id")
     target = None
@@ -4177,9 +4178,138 @@ async def _cmd_refreshboard(ctx: commands.Context):
         target = await find_existing_status_panel_message(channel)
     if target:
         await target.edit(embed=embed)
-        await ctx.send("✅ Host Activity Board refreshed.", delete_after=5)
+        await status_msg.edit(content=f"✅ Host Activity Board refreshed in {channel.mention}.")
+        await asyncio.sleep(6)
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
     else:
-        await ctx.send("Couldn't find the board message to edit.", delete_after=5)
+        await status_msg.edit(content="❌ Couldn't find the board message to edit.")
+
+
+@bot.command(name="hoststats")
+@commands.has_permissions(manage_guild=True)
+async def _cmd_hoststats(ctx: commands.Context, member: discord.Member = None):
+    """!hoststats @user — full host stats for a specific member."""
+    if member is None:
+        return await ctx.reply("Usage: `!hoststats @user`", mention_author=False)
+    hp_data = _hp_load()
+    uid = str(member.id)
+    stats = hp_data.get("host_stats", {}).get(uid, {})
+    if not stats:
+        return await ctx.reply(f"No host stats found for {member.mention}.", mention_author=False)
+    meets = stats.get("meets_hosted", 0)
+    total_att = stats.get("total_attendance_sum", 0)
+    diff_att = stats.get("diff_attendance_sum", 0)
+    score = stats.get("score_total", 0)
+    warnings = stats.get("warning_count", 0)
+    last = stats.get("last_session_at")
+    if last:
+        try:
+            ts = int(datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp())
+            last_str = f"<t:{ts}:F>"
+        except Exception:
+            last_str = str(last)
+    else:
+        last_str = "Never"
+    avg = round(total_att / meets, 1) if meets > 0 else 0
+    pts = stats.get("score_total", 0)
+    if pts >= 30:
+        tier = "💎 Elite"
+    elif pts >= 15:
+        tier = "🔥 Senior"
+    elif pts >= 0:
+        tier = "⭐ Junior"
+    else:
+        tier = "⚠️ At Risk"
+    embed = discord.Embed(
+        title=f"📊 Host Stats — {member.display_name}",
+        color=0xC9A227,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="🏆 Tier",            value=tier,          inline=True)
+    embed.add_field(name="🏁 Meets Hosted",    value=str(meets),    inline=True)
+    embed.add_field(name="🎯 Score",           value=str(score),    inline=True)
+    embed.add_field(name="👥 Total Attendance", value=str(total_att), inline=True)
+    embed.add_field(name="📊 Avg Attendance",  value=str(avg),      inline=True)
+    embed.add_field(name="🔢 DIFF Attendance", value=str(diff_att), inline=True)
+    embed.add_field(name="⚠️ Warnings",        value=str(warnings), inline=True)
+    embed.add_field(name="🕒 Last Session",    value=last_str,      inline=False)
+    embed.set_footer(text="DIFF Meets • Host Stats")
+    await ctx.reply(embed=embed, mention_author=False)
+
+
+@bot.command(name="feedbacksummary")
+@commands.has_permissions(manage_guild=True)
+async def _cmd_feedbacksummary(ctx: commands.Context, *, name: str = None):
+    """!feedbacksummary <host name> — view aggregated feedback ratings for a host."""
+    if not name:
+        return await ctx.reply("Usage: `!feedbacksummary Host Name`", mention_author=False)
+    ratings_file = os.path.join("diff_data", "host_feedback_ratings.json")
+    if not os.path.exists(ratings_file):
+        return await ctx.reply("No feedback data found yet.", mention_author=False)
+    try:
+        with open(ratings_file, "r", encoding="utf-8") as f:
+            ratings_data = json.load(f)
+    except Exception:
+        return await ctx.reply("Failed to read feedback data.", mention_author=False)
+    # Match by name (case-insensitive, partial)
+    name_lower = name.lower()
+    matched_key = None
+    for key in ratings_data:
+        if name_lower in key.lower():
+            matched_key = key
+            break
+    if not matched_key:
+        keys = ", ".join(f"`{k}`" for k in list(ratings_data.keys())[:10])
+        return await ctx.reply(
+            f"No feedback found for **{name}**.\nKnown hosts: {keys or 'none yet'}",
+            mention_author=False,
+        )
+    host_data = ratings_data[matched_key]
+    avg = host_data.get("average_rating", 0)
+    count = host_data.get("feedback_count", 0)
+    total = host_data.get("rating_sum", 0)
+    last_updated = host_data.get("last_updated", "Unknown")
+    try:
+        ts = int(datetime.fromisoformat(str(last_updated).replace("Z", "+00:00")).timestamp())
+        last_str = f"<t:{ts}:R>"
+    except Exception:
+        last_str = str(last_updated)
+    stars = "⭐" * round(avg) if avg else "—"
+    # Load recent raw feedback comments for this host
+    feedback_file = os.path.join("diff_data", "meet_feedback.json")
+    recent_comments = []
+    if os.path.exists(feedback_file):
+        try:
+            with open(feedback_file, "r", encoding="utf-8") as f:
+                fb_data = json.load(f)
+            entries = fb_data.get("entries", []) if isinstance(fb_data, dict) else fb_data
+            relevant = [e for e in entries if matched_key.lower() in str(e.get("host_name", "")).lower()]
+            relevant.sort(key=lambda e: e.get("submitted_at", ""), reverse=True)
+            recent_comments = relevant[:3]
+        except Exception:
+            pass
+    embed = discord.Embed(
+        title=f"📝 Feedback Summary — {matched_key}",
+        color=0x1F6FEB,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="⭐ Avg Rating", value=f"{avg}/5  {stars}", inline=True)
+    embed.add_field(name="📊 Submissions", value=str(count), inline=True)
+    embed.add_field(name="🔢 Rating Total", value=str(total), inline=True)
+    embed.add_field(name="🕒 Last Feedback", value=last_str, inline=False)
+    if recent_comments:
+        lines = []
+        for e in recent_comments:
+            r = e.get("rating", "?")
+            fb = str(e.get("feedback", ""))[:120]
+            lines.append(f"**{r}/5** — {fb}")
+        embed.add_field(name="💬 Recent Comments", value="\n\n".join(lines), inline=False)
+    embed.set_footer(text="DIFF Meets • Feedback Summary")
+    await ctx.reply(embed=embed, mention_author=False)
 
 
 # =========================
@@ -7554,6 +7684,27 @@ async def meet_close(interaction: discord.Interaction, meet_id: str):
             penalty_embed.add_field(name="Meet", value=f"{meet.get('title', meet_id)} (`{meet_id}`)", inline=False)
             penalty_embed.add_field(name="Members Penalised", value="\n".join(lines), inline=False)
             await logs_ch.send(embed=penalty_embed)
+        # DM each no-show member
+        for uid in no_show_ids:
+            try:
+                ns_member = interaction.guild.get_member(uid) or await interaction.guild.fetch_member(uid)
+                if ns_member:
+                    ns_embed = discord.Embed(
+                        title="⚠️ No-Show Recorded",
+                        description=(
+                            f"You were marked as a **no-show** for tonight's DIFF Meet "
+                            f"(**{meet.get('title', meet_id)}**).\n\n"
+                            "You had RSVPed as going but did not attend. "
+                            "A penalty point has been added to your record.\n\n"
+                            "If you believe this was a mistake, please open a ticket in the DIFF Discord."
+                        ),
+                        color=discord.Color.red(),
+                        timestamp=utc_now(),
+                    )
+                    ns_embed.set_footer(text="DIFF Meets • Attendance System")
+                    await ns_member.send(embed=ns_embed)
+            except Exception as _nse:
+                print(f"[NoShow] DM to {uid} failed: {_nse}")
     if interaction.guild:
         await _refresh_activity_dashboard(interaction.guild, data)
     msg = f"Closed `{meet_id}`."
@@ -8502,6 +8653,48 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                     await log_ch.send(
                         f"🛑 **Meet Ended**\nHost: {interaction.user.mention}\nChannel: {ch.mention}"
                     )
+
+                # ── Auto-post recap to recap channel ───────────────────────────
+                recap_ch = interaction.client.get_channel(RECAP_CHANNEL_ID)
+                if isinstance(recap_ch, discord.TextChannel):
+                    try:
+                        hp_data = _hp_load()
+                        hstats = hp_data.get("host_stats", {}).get(str(interaction.user.id), {})
+                        meets_total = hstats.get("meets_hosted", 0)
+                        score = hstats.get("score_total", 0)
+                        avg_att = round(
+                            hstats.get("total_attendance_sum", 0) / meets_total, 1
+                        ) if meets_total else 0
+                        recap_embed = discord.Embed(
+                            title="📋 DIFF Meet Recap",
+                            color=0x5865F2,
+                            timestamp=datetime.now(timezone.utc),
+                        )
+                        recap_embed.add_field(name="Host", value=interaction.user.mention, inline=True)
+                        recap_embed.add_field(name="Meets Hosted (lifetime)", value=str(meets_total), inline=True)
+                        recap_embed.add_field(name="Host Score", value=str(score), inline=True)
+                        recap_embed.add_field(name="Avg Attendance", value=str(avg_att), inline=True)
+                        recap_embed.set_footer(text="DIFF Meets • Official Meet Recap")
+                        await recap_ch.send(embed=recap_embed)
+                    except Exception as _re:
+                        print(f"[Recap] Post failed: {_re}")
+
+                # ── Post roll call lock notice ──────────────────────────────────
+                try:
+                    rc_channel = interaction.client.get_channel(ROLL_CALL_CHANNEL_ID)
+                    if isinstance(rc_channel, discord.TextChannel):
+                        panel = _rc_db.get_panel(interaction.guild.id)
+                        rc_msg_id = panel["message_id"] if panel else None
+                        notice_embed = discord.Embed(
+                            description="🛑 **The meet has ended — the roll call is now closed.**",
+                            color=0xe74c3c,
+                            timestamp=datetime.now(timezone.utc),
+                        )
+                        notice_embed.set_footer(text="DIFF Meets • Roll Call System")
+                        await rc_channel.send(embed=notice_embed)
+                except Exception as _rce:
+                    print(f"[RCNotice] Failed: {_rce}")
+
                 await interaction.followup.send(f"✅ Meet end message sent in {ch.mention}.", ephemeral=True)
             else:
                 await interaction.followup.send("Meet channel not found.", ephemeral=True)
@@ -12689,6 +12882,14 @@ class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not isinstance(interaction.user, discord.Member) or not _cs_is_color_team(interaction.user):
             return await interaction.response.send_message("Only the Color Team can submit crew colors.", ephemeral=True)
+        # Block submissions on Monday — voting/pick is processed Monday at 12 PM ET
+        _now_et = datetime.now(COLOR_TZ)
+        if _now_et.weekday() == 0:  # 0 = Monday
+            return await interaction.response.send_message(
+                "🔒 Color submissions are closed on **Mondays** while the crew vote is being tallied.\n"
+                "Submissions reopen on **Tuesday** after the winner is announced.",
+                ephemeral=True,
+            )
         submit_channel = await _cs_fetch_channel(COLOR_SUBMISSION_CHANNEL_ID)
         color_name_val = str(self.color_name.value).strip()
         hex_val = str(self.hex_code.value).strip().upper()
