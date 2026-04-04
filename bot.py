@@ -8,6 +8,7 @@ import random
 import re
 import sqlite3
 import sys
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict, field
@@ -166,6 +167,7 @@ COOLDOWN_FILE = os.path.join(DATA_FOLDER, "diff_reapply_cooldowns.json")
 MEMBER_DB_FILE = os.path.join(DATA_FOLDER, "diff_member_database.json")
 STAFF_LOGS_CHANNEL_ID = 1485265848099799163
 MOD_HUB_CHANNEL_ID    = 1486598266211664003
+GTA_WEATHER_CHANNEL_ID = 1489823828652720248
 MEET_ATTENDANCE_CHANNEL_ID = 1089579004517953546
 LEADERBOARD_CHANNEL_ID = 1485282044392243290
 ACTIVITY_FILE = os.path.join(DATA_FOLDER, "diff_activity_stats.json")
@@ -5733,6 +5735,182 @@ async def host_board_auto_refresh_loop():
 
 @host_board_auto_refresh_loop.before_loop
 async def before_host_board_auto_refresh_loop():
+    await bot.wait_until_ready()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  GTA ONLINE WEATHER  —  live-refreshing embed (edit-only, no spam)
+# ════════════════════════════════════════════════════════════════════
+
+# Full 14-state GTA Online weather cycle (repeats)
+_GTA_WEATHER_CYCLE: list[tuple[str, str]] = [
+    ("Extra Sunny",   "☀️"),
+    ("Clear",         "🌤️"),
+    ("Clouds",        "⛅"),
+    ("Smog",          "🌫️"),
+    ("Foggy",         "🌁"),
+    ("Overcast",      "☁️"),
+    ("Clouds",        "⛅"),
+    ("Clear",         "🌤️"),
+    ("Mostly Cloudy", "🌥️"),
+    ("Rain",          "🌧️"),
+    ("Thunder",       "⛈️"),
+    ("Clear",         "🌤️"),
+    ("Clouds",        "⛅"),
+    ("Mostly Cloudy", "🌥️"),
+]
+
+# 1 in-game hour = 2 real minutes = 120 real seconds
+_GTA_HOUR_SECS  = 120
+_GTA_DAY_SECS   = _GTA_HOUR_SECS * 24        # 2 880 s = 48 real minutes
+_GTA_WEEK_SECS  = _GTA_DAY_SECS  * 7         # 20 160 s
+
+# Day-of-week epoch offset (tunable — 0 = anchor at Unix epoch)
+# 0 = Sun, 1 = Mon … 6 = Sat
+_GTA_DAY_OFFSET = 0
+
+_GTA_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+_GTA_SUNNY_CLEAR = {"Extra Sunny", "Clear"}
+
+def _gta_in_game_time(ts: float) -> tuple[int, int, str]:
+    """Return (hour, minute, day_name) for the given UTC unix timestamp."""
+    now = int(ts)
+    gta_hour   = (now // _GTA_HOUR_SECS) % 24
+    gta_minute = ((now % _GTA_HOUR_SECS) * 60) // _GTA_HOUR_SECS
+    gta_day    = _GTA_DAYS[(now // _GTA_DAY_SECS + _GTA_DAY_OFFSET) % 7]
+    return gta_hour, gta_minute, gta_day
+
+
+def _gta_slot(ts: float) -> int:
+    """Current weather slot index into _GTA_WEATHER_CYCLE."""
+    return (int(ts) // _GTA_HOUR_SECS) % len(_GTA_WEATHER_CYCLE)
+
+
+def _gta_weather_at(slot: int) -> tuple[str, str]:
+    return _GTA_WEATHER_CYCLE[slot % len(_GTA_WEATHER_CYCLE)]
+
+
+def _gta_weather_description(name: str) -> str:
+    return {
+        "Extra Sunny":   "It's an extra sunny day in Los Santos.",
+        "Clear":         "Skies are clear over Los Santos.",
+        "Clouds":        "There are clouds rolling in.",
+        "Smog":          "Smog is hanging over the city.",
+        "Foggy":         "A thick fog has settled in.",
+        "Overcast":      "The sky is completely overcast.",
+        "Mostly Cloudy": "It's mostly cloudy with some breaks.",
+        "Rain":          "It's raining in Los Santos.",
+        "Thunder":       "A thunderstorm is rolling through.",
+    }.get(name, "Weather conditions are changing.")
+
+
+def _gta_build_weather_embed(ts: float) -> discord.Embed:
+    now       = int(ts)
+    cur_slot  = _gta_slot(now)
+    cur_name, cur_emoji = _gta_weather_at(cur_slot)
+    ig_h, ig_m, ig_day  = _gta_in_game_time(now)
+
+    # Seconds until next slot boundary
+    secs_left = _GTA_HOUR_SECS - (now % _GTA_HOUR_SECS)
+
+    # "Rain/Thunder begins in…" — look ahead up to full cycle
+    rain_msg = ""
+    for i in range(1, len(_GTA_WEATHER_CYCLE) + 1):
+        fut_name, _ = _gta_weather_at(cur_slot + i)
+        if fut_name in ("Rain", "Thunder"):
+            total_secs = secs_left + (i - 1) * _GTA_HOUR_SECS
+            if total_secs < 60:
+                rain_msg = "Rain begins in less than a minute."
+            else:
+                mins  = total_secs // 60
+                hours = mins // 60
+                mins  = mins % 60
+                if hours:
+                    rain_msg = f"Rain will begin in {hours} hour{'s' if hours != 1 else ''}" + (f" and {mins} minute{'s' if mins != 1 else ''}." if mins else ".")
+                else:
+                    rain_msg = f"Rain will begin in {mins} minute{'s' if mins != 1 else ''}."
+            break
+    if not rain_msg and cur_name in ("Rain", "Thunder"):
+        rain_msg = "☔ It's currently raining — clear skies coming soon."
+
+    # Forecast — next 4 in-game hours (next 4 slots)
+    forecast_lines: list[str] = []
+    for i in range(1, 5):
+        slot_ts   = now + secs_left + (i - 1) * _GTA_HOUR_SECS
+        real_time = datetime.utcfromtimestamp(slot_ts).strftime("%I:%M %p")
+        f_name, f_emoji = _gta_weather_at(cur_slot + i)
+        forecast_lines.append(f"{real_time} — {f_emoji} **{f_name}**")
+
+    # Choose embed colour
+    if cur_name in ("Rain", "Thunder"):
+        colour = 0x5865F2
+    elif cur_name in ("Foggy", "Smog", "Overcast"):
+        colour = 0x99AAB5
+    else:
+        colour = 0xFAA61A
+
+    embed = discord.Embed(
+        title=f"{cur_emoji} It is {cur_name.lower()} at {ig_h:02d}:{ig_m:02d} on {ig_day}!",
+        description=(_gta_weather_description(cur_name) + (f"\n{rain_msg}" if rain_msg else "")),
+        color=colour,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="Upcoming Forecast (Next 4 In-Game Hours):",
+        value="\n".join(forecast_lines),
+        inline=False,
+    )
+    embed.set_footer(text=f"Current real time: {datetime.utcnow().strftime('%B %-d, %Y %I:%M %p')} UTC  •  GTA Online Weather")
+    return embed
+
+
+async def _gta_post_or_refresh(channel: discord.TextChannel) -> None:
+    """Edit the pinned weather message; create one if it doesn't exist yet."""
+    embed  = _gta_build_weather_embed(time.time())
+    msg_id = data.get("gta_weather_message_id")
+    target = None
+    if msg_id:
+        try:
+            target = await channel.fetch_message(int(msg_id))
+        except (discord.NotFound, discord.HTTPException):
+            target = None
+
+    if target is not None:
+        try:
+            await target.edit(embed=embed)
+        except Exception as _e:
+            print(f"[GTAWeather] edit failed: {_e}")
+    else:
+        # Fresh post — pin and save ID
+        async for msg in channel.history(limit=10):
+            if msg.author == channel.guild.me and msg.embeds:
+                try:
+                    await msg.edit(embed=embed)
+                    data["gta_weather_message_id"] = msg.id
+                    save_data(data)
+                    return
+                except Exception:
+                    pass
+        new_msg = await channel.send(embed=embed)
+        data["gta_weather_message_id"] = new_msg.id
+        save_data(data)
+
+
+@tasks.loop(seconds=120)
+async def gta_weather_refresh_loop():
+    """Edit the GTA weather embed every 2 minutes (= 1 in-game hour)."""
+    ch = bot.get_channel(GTA_WEATHER_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return
+    try:
+        await _gta_post_or_refresh(ch)
+    except Exception as _e:
+        print(f"[GTAWeather] loop error: {_e}")
+
+
+@gta_weather_refresh_loop.before_loop
+async def before_gta_weather_refresh_loop():
     await bot.wait_until_ready()
 
 
@@ -11518,6 +11696,8 @@ async def on_ready():
         hierarchy_attendance_loop.start()
     if not host_board_auto_refresh_loop.is_running():
         host_board_auto_refresh_loop.start()
+    if not gta_weather_refresh_loop.is_running():
+        gta_weather_refresh_loop.start()
 
     status_message_id = data.get("panel_message_id")
 
