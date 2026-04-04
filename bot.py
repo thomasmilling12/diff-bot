@@ -10697,16 +10697,16 @@ def _popup_build_meet_embed(
     is_ended: bool = False,
 ) -> discord.Embed:
     if is_ended:
-        title = "🏁 DIFF Pop-Up Meet — ENDED"
-        color = discord.Color.from_rgb(80, 80, 80)
-        description = f"This meet has wrapped up. It was hosted by <@{host_id}>."
+        title = "🛑 DIFF Pop-Up Meet — Ended"
+        color = discord.Color.from_rgb(231, 76, 60)
+        attendance_line = f"**{pullup_count}** member{'s' if pullup_count != 1 else ''} pulled up"
+        if cantmake_count:
+            attendance_line += f"  •  {cantmake_count} couldn't make it"
+        description = f"This meet has ended. Hosted by <@{host_id}>.\n{attendance_line}"
     else:
-        title = "⚡ DIFF Pop-Up Meet"
+        title = "⚡ DIFF Pop-Up Meet — Live Now"
         color = discord.Color.from_rgb(255, 140, 0)
-        description = (
-            f"A spontaneous meet is live — pull up fast!\n"
-            f"<@{host_id}> is hosting."
-        )
+        description = f"A spontaneous meet is live — <@{host_id}> is hosting. Pull up!"
 
     embed = discord.Embed(
         title=title,
@@ -10717,11 +10717,12 @@ def _popup_build_meet_embed(
     if host_avatar_url:
         embed.set_thumbnail(url=host_avatar_url)
 
-    embed.add_field(name="🎨 Theme",       value=theme or "Open Class", inline=True)
-    embed.add_field(name="📍 Location",    value=location,              inline=True)
-    embed.add_field(name="\u200b",         value="\u200b",              inline=True)
-    embed.add_field(name="🕒 Time",        value=time_text,             inline=True)
-    embed.add_field(name="👤 Host",        value=f"<@{host_id}>",       inline=True)
+    # Row 1: Theme + Location (2 columns, no spacer needed)
+    embed.add_field(name="🎨 Theme",    value=theme or "Open Class", inline=True)
+    embed.add_field(name="📍 Location", value=location,              inline=True)
+    # Row 2: Time + Host + Pulling Up (3 columns)
+    embed.add_field(name="🕒 Time",  value=time_text,         inline=True)
+    embed.add_field(name="👤 Host",  value=f"<@{host_id}>",   inline=True)
     embed.add_field(
         name="🚗 Pulling Up",
         value=f"**{pullup_count}** confirmed" + (f"  •  {cantmake_count} can't make it" if cantmake_count else ""),
