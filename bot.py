@@ -10347,8 +10347,8 @@ async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | No
     channel = bot.get_channel(MEET_ATTENDANCE_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         return None
-    return await channel.send(
-        f"<@&{PS5_ROLE_ID}>\n\n"
+
+    _att_body = (
         f"📊 **DIFF Meet Attendance — {record.theme}**\n\n"
         f"Host: <@{record.host_id}>\n"
         f"Date: <t:{record.timestamp}:F>\n\n"
@@ -10356,10 +10356,28 @@ async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | No
         f"• **Present** — you're here\n"
         f"• **Late** — joining a bit late\n"
         f"• **Unable to Join** — can't make it\n\n"
-        f"Your check-in is recorded for attendance stats and no-show tracking.",
+        f"Your check-in is recorded for attendance stats and no-show tracking."
+    )
+
+    att_msg = await channel.send(
+        f"<@&{PS5_ROLE_ID}>\n\n" + _att_body,
         view=_OmAttendanceView(),
         allowed_mentions=discord.AllowedMentions(roles=True, users=False),
     )
+
+    # Mirror into crew chat with a @Crew Member ping
+    crew_ch = bot.get_channel(_CREW_CHAT_CHANNEL_ID)
+    if isinstance(crew_ch, discord.TextChannel):
+        try:
+            await crew_ch.send(
+                f"<@&{CREW_MEMBER_ROLE_ID}>\n\n" + _att_body,
+                view=_OmAttendanceView(),
+                allowed_mentions=discord.AllowedMentions(roles=True, users=False),
+            )
+        except Exception:
+            pass
+
+    return att_msg
 
 
 def _om_get_counts(msg_id: int) -> dict:
