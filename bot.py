@@ -4324,6 +4324,30 @@ _HOSTFLOW_STATE_FILE = os.path.join("diff_data", "diff_host_flow_state.json")
 _MEET_QA_COOLDOWNS: dict[int, float] = {}   # uid → last replied timestamp
 _MEET_QA_COOLDOWN_SECS = 3600              # 1 hour per user
 
+_NEWMEMBER_COOLDOWNS: dict[int, float] = {}   # uid → last replied timestamp
+_NEWMEMBER_COOLDOWN_SECS = 7200               # 2 hours — won't spam new members
+
+_NEWMEMBER_TRIGGERS = [
+    # Confusion / new arrival
+    "just joined", "just joined the server", "i joined", "i have made it",
+    "i've made it", "i made it", "hello i'm new", "hello im new",
+    "new to the server", "new here", "new member",
+    "confusing me", "confused me", "this is confusing", "server confusing",
+    "server looks different", "server changed", "looks different",
+    "don't understand", "dont understand", "idk how", "i don't know how",
+    "how do i navigate", "how does this work", "how does the server work",
+    # Role / PS5 questions
+    "ps5 role", "playstation role", "how do i get my role", "how do i claim",
+    "claim my role", "claim the role", "get verified", "how do i verify",
+    "how to verify", "where do i verify", "where do i get", "where can i get",
+    "join meets hub", "join-meets-hub", "join meets",
+    # Meets / channels
+    "where is the meets tab", "where is the meet tab", "meets tab",
+    "where do i find meets", "where are the meets", "where to find meets",
+    "where can i find meets", "how do i find a meet", "find a meet",
+    "where is everything", "where do i go", "where do i start",
+]
+
 _MEET_QA_TRIGGERS = [
     "when is the meet", "when's the meet", "whens the meet",
     "when is meet", "next meet", "is there a meet", "meet tonight",
@@ -18451,38 +18475,48 @@ async def on_member_join(member: discord.Member) -> None:
         dm_embed = discord.Embed(
             title="👋 Welcome to DIFF Meets!",
             description=(
-                f"Hey {member.mention}, welcome to **Different Meets** — the #1 PlayStation GTA car meet community!\n\n"
-                "Here's everything you need to get started:"
+                f"Hey **{member.display_name}**, welcome to **Different Meets** — "
+                "the #1 PlayStation GTA car meet community on Discord!\n\n"
+                "Here's a quick guide so you know exactly where everything is."
             ),
-            color=discord.Color.from_rgb(88, 101, 242),
+            color=0x5865F2,
             timestamp=datetime.now(_EST_TZ),
         )
         dm_embed.add_field(
-            name="📋 Getting Started",
+            name="🎮 Step 1 — Claim Your PS5 Role",
             value=(
-                "• Read the server rules in **#rules** before anything else\n"
-                "• Use **#verify** or the join panel to get your Verified role\n"
-                "• Check **#meet-info** to see upcoming meet schedules"
+                f"Head to <#{JOIN_MEETS_CHANNEL_ID}> and follow the steps to verify your "
+                "platform and update your name. You won't be able to join meets until this is done."
+            ),
+            inline=False,
+        )
+        dm_embed.add_field(
+            name="📅 Step 2 — Find the Meets",
+            value=(
+                f"• <#{MEET_ANNOUNCEMENT_CHANNEL_ID}> — official meet announcements\n"
+                f"• <#{MEET_INFO_CHANNEL_ID}> — meet rules & info\n"
+                f"• <#{UPCOMING_MEET_CHANNEL_ID}> — upcoming scheduled meets\n"
+                f"• <#{DIFF_HOSTS_CHANNEL_ID}> — host schedule & who's running each meet"
+            ),
+            inline=False,
+        )
+        dm_embed.add_field(
+            name="📖 Step 3 — Read the Rules",
+            value=(
+                f"Check <#{RULES_CHANNEL_ID}> before anything else. "
+                "Two warnings = a ban, so it's worth the read."
             ),
             inline=False,
         )
         dm_embed.add_field(
             name="🎟️ Need Help?",
             value=(
-                "Open a private ticket any time from **#support-center** — "
-                "our staff team will respond quickly."
+                "Open a ticket from the support center in the server anytime. "
+                "Staff will get back to you quickly."
             ),
             inline=False,
         )
-        dm_embed.add_field(
-            name="🚗 About DIFF Meets",
-            value=(
-                "We host regular car meets on PlayStation GTA. "
-                "Bring your best builds, follow meet etiquette, and have fun!"
-            ),
-            inline=False,
-        )
-        dm_embed.set_footer(text="Different Meets • EST. 2020")
+        dm_embed.set_footer(text="Different Meets • EST. 2020  •  If you have questions just ask in the server!")
         if DIFF_LOGO_URL:
             dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
         if DIFF_BANNER_URL:
@@ -19501,6 +19535,49 @@ async def on_message(message: discord.Message) -> None:
                     bot_reply = await message.reply(reply, mention_author=False)
                     await asyncio.sleep(45)
                     await bot_reply.delete()
+                except Exception:
+                    pass
+
+    # --- Everyone-chat new-member confusion auto-responder ---
+    if message.channel.id == EVERYONE_CHAT_CHANNEL_ID and not message.author.bot:
+        import time as _time_mod2
+        _content_lc = message.content.lower()
+        if any(t in _content_lc for t in _NEWMEMBER_TRIGGERS):
+            _uid2    = message.author.id
+            _now2    = _time_mod2.monotonic()
+            _last2   = _NEWMEMBER_COOLDOWNS.get(_uid2, 0)
+            if _now2 - _last2 >= _NEWMEMBER_COOLDOWN_SECS:
+                _NEWMEMBER_COOLDOWNS[_uid2] = _now2
+                _nm_embed = discord.Embed(
+                    title="👋 Quick Server Guide",
+                    description=(
+                        f"Hey {message.author.mention}! Here's everything you need to get started:"
+                    ),
+                    color=0x5865F2,
+                )
+                _nm_embed.add_field(
+                    name="🎮 Step 1 — Claim Your PS5 Role",
+                    value=(
+                        f"Go to <#{JOIN_MEETS_CHANNEL_ID}> and follow the steps to "
+                        "verify your platform and update your name."
+                    ),
+                    inline=False,
+                )
+                _nm_embed.add_field(
+                    name="📅 Step 2 — Find the Meets",
+                    value=(
+                        f"• <#{MEET_ANNOUNCEMENT_CHANNEL_ID}> — official announcements\n"
+                        f"• <#{MEET_INFO_CHANNEL_ID}> — rules & info\n"
+                        f"• <#{UPCOMING_MEET_CHANNEL_ID}> — upcoming meets\n"
+                        f"• <#{DIFF_HOSTS_CHANNEL_ID}> — host schedule"
+                    ),
+                    inline=False,
+                )
+                _nm_embed.set_footer(text="This message auto-deletes in 60 seconds • Different Meets")
+                try:
+                    _nm_reply = await message.reply(embed=_nm_embed, mention_author=False)
+                    await asyncio.sleep(60)
+                    await _nm_reply.delete()
                 except Exception:
                     pass
 
