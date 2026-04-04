@@ -5540,6 +5540,40 @@ async def before_hierarchy_attendance_loop():
     await bot.wait_until_ready()
 
 
+@tasks.loop(minutes=2)
+async def host_board_auto_refresh_loop():
+    """Edit the Host Activity Board embed every 2 minutes — never posts new messages."""
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return
+    channel_id = data.get("status_channel_id")
+    if not channel_id:
+        return
+    channel = guild.get_channel(channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return
+    embed = build_status_embed(guild)
+    msg_id = data.get("panel_message_id")
+    target = None
+    if msg_id:
+        try:
+            target = await channel.fetch_message(int(msg_id))
+        except discord.NotFound:
+            target = None
+    if target is None:
+        target = await find_existing_status_panel_message(channel)
+    if target is not None:
+        try:
+            await target.edit(embed=embed)
+        except Exception as _e:
+            print(f"[BoardLoop] edit failed: {_e}")
+
+
+@host_board_auto_refresh_loop.before_loop
+async def before_host_board_auto_refresh_loop():
+    await bot.wait_until_ready()
+
+
 async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
     channel = guild.get_channel(HIERARCHY_CHANNEL_ID)
     if channel is None:
@@ -5656,27 +5690,28 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
                 pass
         return "never"
 
-    def _tier_badge(uid: int) -> str:
+    def _tier_info(uid: int) -> tuple[str, int]:
         s = host_stats.get(str(uid), {})
         pts = s.get("score_total", 0)
         meets = s.get("meets_hosted", 0)
         if pts >= 30:
-            badge = "💎 Elite"
+            tier = "💎 Elite"
         elif pts >= 15:
-            badge = "🔥 Senior"
+            tier = "🔥 Senior"
         elif pts >= 0:
-            badge = "⭐ Junior"
+            tier = "⭐ Junior"
         else:
-            badge = "⚠️ At Risk"
-        return f"{badge} • {meets} meets"
+            tier = "⚠️ At Risk"
+        return tier, meets
 
     for host in data["hosts"]:
         member = guild.get_member(host["discord_id"])
         profile = host.get("profile_url", "")
         link = f" [↗]({profile})" if profile else ""
         uid = host["discord_id"]
-        badge = _tier_badge(uid)
+        tier, meets = _tier_info(uid)
         last = _last_session_str(uid)
+        meets_str = f"{meets} meet{'s' if meets != 1 else ''}"
 
         if member:
             is_online = member.status != discord.Status.offline
@@ -5691,16 +5726,16 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
 
         if is_online:
             if "grand theft auto" in activity_lower or "gta" in activity_lower:
-                gta_hosts.append(f"🟢 **{name}** — `{activity}` • {badge}{link}")
+                # In GTA — show tier + meet count, no activity label needed
+                gta_hosts.append(f"🎮 **{name}** • {tier} • {meets_str}{link}")
             else:
-                act_label = activity if activity not in ("", "Idle") else "Idle"
-                online_hosts.append(f"🟡 **{name}** — `{act_label}` • {badge}{link}")
+                # Online but not in GTA — show activity (truncated), just tier
+                act_label = (activity[:22] + "…") if len(activity) > 24 else activity
+                act_label = act_label or "Online"
+                online_hosts.append(f"🟡 **{name}** — `{act_label}` • {tier}{link}")
         else:
-            custom = _custom_status(member) if member else None
-            cust_str = f" `{custom}`" if custom else ""
-            offline_hosts.append(
-                f"🔴 **{name}**{cust_str} • {badge} • last hosted {last}{link}"
-            )
+            # Offline — show tier and last session only (no custom status, no meet count)
+            offline_hosts.append(f"🔴 **{name}** • {tier} • last {last}{link}")
 
     # Online ratio progress bar
     total = max(len(gta_hosts) + len(online_hosts) + len(offline_hosts), 1)
@@ -11251,6 +11286,8 @@ async def on_ready():
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
+    if not host_board_auto_refresh_loop.is_running():
+        host_board_auto_refresh_loop.start()
 
     status_message_id = data.get("panel_message_id")
 
