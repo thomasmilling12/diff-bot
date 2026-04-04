@@ -18483,28 +18483,28 @@ async def on_member_join(member: discord.Member) -> None:
             timestamp=datetime.now(_EST_TZ),
         )
         dm_embed.add_field(
-            name="🎮 Step 1 — Claim Your PS5 Role",
+            name="✅ Step 1 — Get Your Verified Role",
             value=(
-                f"Head to <#{JOIN_MEETS_CHANNEL_ID}> and follow the steps to verify your "
-                "platform and update your name. You won't be able to join meets until this is done."
+                f"Go to <#{RULES_CHANNEL_ID}>, read the rules, and click the button at the bottom. "
+                "This gives you your **Verified** role and unlocks the rest of the server."
             ),
             inline=False,
         )
         dm_embed.add_field(
-            name="📅 Step 2 — Find the Meets",
+            name="🎮 Step 2 — Claim Your PS5 Role",
+            value=(
+                f"Once verified, head to <#{JOIN_MEETS_CHANNEL_ID}> and follow the steps to "
+                "confirm your platform and update your name. You need this before you can join any meets."
+            ),
+            inline=False,
+        )
+        dm_embed.add_field(
+            name="📅 Step 3 — Find the Meets",
             value=(
                 f"• <#{MEET_ANNOUNCEMENT_CHANNEL_ID}> — official meet announcements\n"
                 f"• <#{MEET_INFO_CHANNEL_ID}> — meet rules & info\n"
                 f"• <#{UPCOMING_MEET_CHANNEL_ID}> — upcoming scheduled meets\n"
                 f"• <#{DIFF_HOSTS_CHANNEL_ID}> — host schedule & who's running each meet"
-            ),
-            inline=False,
-        )
-        dm_embed.add_field(
-            name="📖 Step 3 — Read the Rules",
-            value=(
-                f"Check <#{RULES_CHANNEL_ID}> before anything else. "
-                "Two warnings = a ban, so it's worth the read."
             ),
             inline=False,
         )
@@ -19556,15 +19556,23 @@ async def on_message(message: discord.Message) -> None:
                     color=0x5865F2,
                 )
                 _nm_embed.add_field(
-                    name="🎮 Step 1 — Claim Your PS5 Role",
+                    name="✅ Step 1 — Get Verified",
                     value=(
-                        f"Go to <#{JOIN_MEETS_CHANNEL_ID}> and follow the steps to "
-                        "verify your platform and update your name."
+                        f"Go to <#{RULES_CHANNEL_ID}>, read the rules, and click the button "
+                        "to unlock the server."
                     ),
                     inline=False,
                 )
                 _nm_embed.add_field(
-                    name="📅 Step 2 — Find the Meets",
+                    name="🎮 Step 2 — Claim Your PS5 Role",
+                    value=(
+                        f"Head to <#{JOIN_MEETS_CHANNEL_ID}> to confirm your platform "
+                        "and update your name — required before joining meets."
+                    ),
+                    inline=False,
+                )
+                _nm_embed.add_field(
+                    name="📅 Step 3 — Find the Meets",
                     value=(
                         f"• <#{MEET_ANNOUNCEMENT_CHANNEL_ID}> — official announcements\n"
                         f"• <#{MEET_INFO_CHANNEL_ID}> — rules & info\n"
