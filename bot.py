@@ -5740,136 +5740,195 @@ async def before_host_board_auto_refresh_loop():
 
 # ════════════════════════════════════════════════════════════════════
 #  GTA ONLINE WEATHER  —  live-refreshing embed (edit-only, no spam)
+#  Algorithm ported directly from gtalens.com module 48733
 # ════════════════════════════════════════════════════════════════════
 
-# Full 14-state GTA Online weather cycle (repeats)
-_GTA_WEATHER_CYCLE: list[tuple[str, str]] = [
-    ("Extra Sunny",   "☀️"),
-    ("Clear",         "🌤️"),
-    ("Clouds",        "⛅"),
-    ("Smog",          "🌫️"),
-    ("Foggy",         "🌁"),
-    ("Overcast",      "☁️"),
-    ("Clouds",        "⛅"),
-    ("Clear",         "🌤️"),
-    ("Mostly Cloudy", "🌥️"),
-    ("Rain",          "🌧️"),
-    ("Thunder",       "⛈️"),
-    ("Clear",         "🌤️"),
-    ("Clouds",        "⛅"),
-    ("Mostly Cloudy", "🌥️"),
+# Core timing constants (verified from gtalens.com source)
+_GTA_SECS_PER_HOUR = 120          # 120 real seconds = 1 in-game hour
+_GTA_SECS_PER_DAY  = 2880         # 2880 real seconds = 1 in-game day (24 h)
+_GTA_CYCLE_HOURS   = 384          # full weather cycle = 384 in-game hours = 16 in-game days
+
+# Weather state IDs (matches gtalens enum)
+_W_CLEAR         = 0
+_W_RAIN          = 1
+_W_DRIZZLE       = 2
+_W_MIST          = 3
+_W_FOG           = 4
+_W_HAZE          = 5
+_W_CLOUDY        = 6
+_W_MOSTLY_CLOUDY = 7
+_W_PARTLY_CLOUDY = 8
+_W_MOSTLY_CLEAR  = 9
+
+# Emoji + display name per state
+_GTA_WEATHER_MAP: dict[int, tuple[str, str]] = {
+    _W_CLEAR:         ("☀️",  "Clear"),
+    _W_RAIN:          ("🌧️", "Raining"),
+    _W_DRIZZLE:       ("🌦️", "Drizzling"),
+    _W_MIST:          ("🌫️", "Misty"),
+    _W_FOG:           ("🌁",  "Foggy"),
+    _W_HAZE:          ("🌫️", "Hazy"),
+    _W_CLOUDY:        ("☁️",  "Cloudy"),
+    _W_MOSTLY_CLOUDY: ("⛅",  "Mostly Cloudy"),
+    _W_PARTLY_CLOUDY: ("⛅",  "Partly Cloudy"),
+    _W_MOSTLY_CLEAR:  ("⛅",  "Mostly Clear"),
+}
+
+# Exact 54-entry weather schedule from gtalens module 48733
+# Each entry: (startHour in cycle, weatherState)
+_GTA_SCHEDULE: list[tuple[int, int]] = [
+    (0,   _W_PARTLY_CLOUDY), (4,   _W_MIST),         (7,   _W_MOSTLY_CLOUDY),
+    (11,  _W_CLEAR),         (14,  _W_MIST),          (16,  _W_CLEAR),
+    (28,  _W_MIST),          (31,  _W_CLEAR),         (41,  _W_HAZE),
+    (45,  _W_PARTLY_CLOUDY), (52,  _W_MIST),          (55,  _W_CLOUDY),
+    (62,  _W_FOG),           (66,  _W_CLOUDY),         (72,  _W_PARTLY_CLOUDY),
+    (78,  _W_FOG),           (82,  _W_CLOUDY),         (92,  _W_MOSTLY_CLEAR),
+    (104, _W_PARTLY_CLOUDY), (105, _W_DRIZZLE),       (108, _W_PARTLY_CLOUDY),
+    (125, _W_MIST),          (128, _W_PARTLY_CLOUDY), (131, _W_RAIN),
+    (134, _W_DRIZZLE),       (137, _W_CLOUDY),        (148, _W_MIST),
+    (151, _W_MOSTLY_CLOUDY), (155, _W_FOG),           (159, _W_CLEAR),
+    (176, _W_MOSTLY_CLEAR),  (196, _W_FOG),           (201, _W_PARTLY_CLOUDY),
+    (220, _W_MIST),          (222, _W_MOSTLY_CLEAR),  (244, _W_MIST),
+    (246, _W_MOSTLY_CLEAR),  (247, _W_RAIN),          (250, _W_DRIZZLE),
+    (252, _W_PARTLY_CLOUDY), (268, _W_MIST),          (270, _W_PARTLY_CLOUDY),
+    (272, _W_CLOUDY),        (277, _W_PARTLY_CLOUDY), (292, _W_MIST),
+    (295, _W_PARTLY_CLOUDY), (300, _W_MOSTLY_CLOUDY), (306, _W_PARTLY_CLOUDY),
+    (318, _W_MOSTLY_CLOUDY), (330, _W_PARTLY_CLOUDY), (337, _W_CLEAR),
+    (367, _W_PARTLY_CLOUDY), (369, _W_RAIN),          (376, _W_DRIZZLE),
+    (377, _W_PARTLY_CLOUDY),
 ]
 
-# 1 in-game hour = 2 real minutes = 120 real seconds
-_GTA_HOUR_SECS  = 120
-_GTA_DAY_SECS   = _GTA_HOUR_SECS * 24        # 2 880 s = 48 real minutes
-_GTA_WEEK_SECS  = _GTA_DAY_SECS  * 7         # 20 160 s
+_GTA_RAINY = {_W_RAIN, _W_DRIZZLE}
 
-# Day-of-week epoch offset (tunable — 0 = anchor at Unix epoch)
-# 0 = Sun, 1 = Mon … 6 = Sat
-_GTA_DAY_OFFSET = 0
-
-_GTA_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-
-_GTA_SUNNY_CLEAR = {"Extra Sunny", "Clear"}
-
-def _gta_in_game_time(ts: float) -> tuple[int, int, str]:
-    """Return (hour, minute, day_name) for the given UTC unix timestamp."""
-    now = int(ts)
-    gta_hour   = (now // _GTA_HOUR_SECS) % 24
-    gta_minute = ((now % _GTA_HOUR_SECS) * 60) // _GTA_HOUR_SECS
-    gta_day    = _GTA_DAYS[(now // _GTA_DAY_SECS + _GTA_DAY_OFFSET) % 7]
-    return gta_hour, gta_minute, gta_day
+_GTA_WEATHER_DESCRIPTIONS: dict[int, str] = {
+    _W_CLEAR:         "Skies are clear over Los Santos.",
+    _W_RAIN:          "It's raining in Los Santos.",
+    _W_DRIZZLE:       "Light drizzle is falling across the city.",
+    _W_MIST:          "A thin mist has settled over the city.",
+    _W_FOG:           "A thick fog has rolled in.",
+    _W_HAZE:          "A haze is hanging low over the streets.",
+    _W_CLOUDY:        "The sky is overcast with heavy clouds.",
+    _W_MOSTLY_CLOUDY: "It's mostly cloudy with little sunshine.",
+    _W_PARTLY_CLOUDY: "It's partly cloudy over Los Santos.",
+    _W_MOSTLY_CLEAR:  "Mostly clear skies with a few clouds.",
+}
 
 
-def _gta_slot(ts: float) -> int:
-    """Current weather slot index into _GTA_WEATHER_CYCLE."""
-    return (int(ts) // _GTA_HOUR_SECS) % len(_GTA_WEATHER_CYCLE)
+def _gta_in_game_time(unix_secs: int) -> tuple[int, int]:
+    """Return (hour 0-23, minute 0-59) of current GTA Online in-game time."""
+    total_game_hours = unix_secs // _GTA_SECS_PER_HOUR
+    total_game_days  = total_game_hours // 24
+    secs_in_day      = unix_secs - _GTA_SECS_PER_DAY * total_game_days
+    game_hour        = secs_in_day // _GTA_SECS_PER_HOUR
+    game_minute      = (secs_in_day % _GTA_SECS_PER_HOUR) // 2
+    return int(game_hour), int(game_minute)
 
 
-def _gta_weather_at(slot: int) -> tuple[str, str]:
-    return _GTA_WEATHER_CYCLE[slot % len(_GTA_WEATHER_CYCLE)]
+def _gta_get_weather(unix_secs: int) -> dict:
+    """
+    Returns current weather info using the exact gtalens.com algorithm.
+    Keys: state, emoji, name, is_raining, seg_end_ts, next_rain_ts, cycle_hour
+    """
+    total_game_hours = unix_secs // _GTA_SECS_PER_HOUR
+    cycle_hour       = total_game_hours % _GTA_CYCLE_HOURS
 
+    # Walk the schedule — keep the last entry where start_hour <= cycle_hour
+    state     = _W_PARTLY_CLOUDY
+    seg_idx   = 0
+    seg_start = 0
+    for idx, (start_h, w_state) in enumerate(_GTA_SCHEDULE):
+        if cycle_hour >= start_h:
+            state     = w_state
+            seg_idx   = idx
+            seg_start = start_h
+        else:
+            break
 
-def _gta_weather_description(name: str) -> str:
+    # End of this segment = start of next (or end of full cycle)
+    if seg_idx == len(_GTA_SCHEDULE) - 1:
+        seg_end = _GTA_CYCLE_HOURS
+    else:
+        seg_end = _GTA_SCHEDULE[seg_idx + 1][0]
+
+    hours_until_change = seg_end - cycle_hour
+    seg_end_ts         = unix_secs + hours_until_change * _GTA_SECS_PER_HOUR
+
+    emoji, name = _GTA_WEATHER_MAP[state]
+    is_raining  = state in _GTA_RAINY
+
+    # Find next rain event
+    next_rain_ts = None
+    i = seg_idx
+    for _ in range(len(_GTA_SCHEDULE)):
+        i = (i + 1) % len(_GTA_SCHEDULE)
+        rain_start, rain_state = _GTA_SCHEDULE[i]
+        if rain_state in _GTA_RAINY and (not is_raining or i != seg_idx + 1):
+            if i > seg_idx:
+                hours_away = rain_start - cycle_hour
+            else:
+                hours_away = _GTA_CYCLE_HOURS - cycle_hour + rain_start
+            next_rain_ts = unix_secs + hours_away * _GTA_SECS_PER_HOUR
+            break
+
     return {
-        "Extra Sunny":   "It's an extra sunny day in Los Santos.",
-        "Clear":         "Skies are clear over Los Santos.",
-        "Clouds":        "There are clouds rolling in.",
-        "Smog":          "Smog is hanging over the city.",
-        "Foggy":         "A thick fog has settled in.",
-        "Overcast":      "The sky is completely overcast.",
-        "Mostly Cloudy": "It's mostly cloudy with some breaks.",
-        "Rain":          "It's raining in Los Santos.",
-        "Thunder":       "A thunderstorm is rolling through.",
-    }.get(name, "Weather conditions are changing.")
+        "state":        state,
+        "emoji":        emoji,
+        "name":         name,
+        "is_raining":   is_raining,
+        "seg_end_ts":   int(seg_end_ts),
+        "next_rain_ts": int(next_rain_ts) if next_rain_ts else None,
+        "cycle_hour":   cycle_hour,
+    }
 
 
 def _gta_build_weather_embed(ts: float) -> discord.Embed:
-    now       = int(ts)
-    cur_slot  = _gta_slot(now)
-    cur_name, cur_emoji = _gta_weather_at(cur_slot)
-    ig_h, ig_m, ig_day  = _gta_in_game_time(now)
+    now = int(ts)
+    w   = _gta_get_weather(now)
+    ig_h, ig_m = _gta_in_game_time(now)
 
-    # Seconds until next slot boundary
-    secs_left = _GTA_HOUR_SECS - (now % _GTA_HOUR_SECS)
+    # "Rain begins in…" line using next_rain_ts
+    rain_line = ""
+    if w["is_raining"]:
+        rain_line = "☔ It's currently raining in Los Santos."
+    elif w["next_rain_ts"]:
+        rain_line = f"🌧️ Rain begins <t:{w['next_rain_ts']}:R> (<t:{w['next_rain_ts']}:t>)."
 
-    # "Rain/Thunder begins in…" — look ahead up to full cycle
-    rain_msg = ""
-    for i in range(1, len(_GTA_WEATHER_CYCLE) + 1):
-        fut_name, _ = _gta_weather_at(cur_slot + i)
-        if fut_name in ("Rain", "Thunder"):
-            total_secs = secs_left + (i - 1) * _GTA_HOUR_SECS
-            if total_secs < 60:
-                rain_msg = "Rain begins in less than a minute."
-            else:
-                mins  = total_secs // 60
-                hours = mins // 60
-                mins  = mins % 60
-                if hours:
-                    rain_msg = f"Rain will begin in {hours} hour{'s' if hours != 1 else ''}" + (f" and {mins} minute{'s' if mins != 1 else ''}." if mins else ".")
-                else:
-                    rain_msg = f"Rain will begin in {mins} minute{'s' if mins != 1 else ''}."
-            break
-    if not rain_msg and cur_name in ("Rain", "Thunder"):
-        rain_msg = "☔ It's currently raining — clear skies coming soon."
-
-    # Forecast — next 4 in-game hours (next 4 slots)
-    # Use Discord timestamps so every member sees their own local time & day
+    # Forecast: walk the schedule forward, show Discord local times + in-game duration
     forecast_lines: list[str] = []
-    for i in range(1, 5):
-        slot_ts  = now + secs_left + (i - 1) * _GTA_HOUR_SECS
-        f_name, f_emoji = _gta_weather_at(cur_slot + i)
-        forecast_lines.append(f"<t:{int(slot_ts)}:t> — {f_emoji} **{f_name}**")
+    next_ts = w["seg_end_ts"]
+    for _ in range(4):
+        fw = _gta_get_weather(next_ts)
+        dur_ig_hours = (fw["seg_end_ts"] - next_ts) // _GTA_SECS_PER_HOUR
+        forecast_lines.append(
+            f"<t:{next_ts}:t> — {fw['emoji']} **{fw['name']}** "
+            f"*({dur_ig_hours} hr{'s' if dur_ig_hours != 1 else ''})*"
+        )
+        next_ts = fw["seg_end_ts"]
 
-    # Choose embed colour
-    if cur_name in ("Rain", "Thunder"):
+    # Embed colour
+    if w["state"] in _GTA_RAINY:
         colour = 0x5865F2
-    elif cur_name in ("Foggy", "Smog", "Overcast"):
+    elif w["state"] in {_W_FOG, _W_MIST, _W_HAZE, _W_CLOUDY, _W_MOSTLY_CLOUDY}:
         colour = 0x99AAB5
     else:
         colour = 0xFAA61A
 
+    desc = _GTA_WEATHER_DESCRIPTIONS.get(w["state"], "Weather is changing in Los Santos.")
+    if rain_line:
+        desc += f"\n{rain_line}"
+
     embed = discord.Embed(
-        title=f"{cur_emoji} It is {cur_name.lower()} at {ig_h:02d}:{ig_m:02d} on {ig_day}!",
-        description=(_gta_weather_description(cur_name) + (f"\n{rain_msg}" if rain_msg else "")),
+        title=f"{w['emoji']} It is {w['name'].lower()} at {ig_h:02d}:{ig_m:02d} in Los Santos!",
+        description=desc,
         color=colour,
     )
     embed.add_field(
-        name="Upcoming Forecast (Next 4 In-Game Hours):",
+        name="Upcoming Forecast (Next 4 Weather Changes):",
         value="\n".join(forecast_lines),
         inline=False,
     )
-    embed.add_field(
-        name="Your local time",
-        value=f"<t:{now}:F>",
-        inline=True,
-    )
-    embed.add_field(
-        name="Last updated",
-        value=f"<t:{now}:R>",
-        inline=True,
-    )
+    embed.add_field(name="Your local time", value=f"<t:{now}:F>", inline=True)
+    embed.add_field(name="Last updated",    value=f"<t:{now}:R>", inline=True)
     embed.set_footer(text="GTA Online Weather • Different Meets")
     return embed
 
