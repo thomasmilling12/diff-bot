@@ -4233,7 +4233,7 @@ def _hostflow_start_msg(host_mention: str, guild: discord.Guild) -> str:
         "*If you have any questions or need help during the meet, please contact the host.*\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "🚗 **Meet Status**\n"
-        "*We will be heading out shortly — please get your vehicles ready and positioned properly.*\n\n"
+        "*The meet is now underway — please get your vehicles ready and positioned properly.*\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "⚠️ **Important Notice**\n"
         "*If you have any problems with another player during the meet, please create a ticket in the DIFF Discord so DIFF Management can handle it properly.*\n\n"
@@ -8402,23 +8402,34 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                 ps_role = f"<@&{PS5_ROLE_ID}>"
                 cm_role = f"<@&{NOTIFY_ROLE_ID}>"
                 embed = discord.Embed(
-                    title="DIFF Official Meet Started",
-                    description=(
-                        f"{ps_role} {cm_role}\n\n"
-                        f"The meet is now **live**.\n\n"
-                        f"**Host:** {interaction.user.mention}\n\n"
-                        "**Use this channel for:**\n"
+                    title="🏁  DIFF Official Meet — Now Live",
+                    color=0x2ecc71,
+                    timestamp=datetime.now(timezone.utc),
+                )
+                embed.add_field(name="Host", value=interaction.user.mention, inline=True)
+                embed.add_field(name="Status", value="🟢 Live", inline=True)
+                embed.add_field(
+                    name="Use this channel for",
+                    value=(
                         "• Meet start updates\n"
                         "• Meet locations\n"
                         "• Host instructions\n"
-                        "• Movement between spots\n\n"
-                        "Please stay ready and follow host directions."
+                        "• Movement between spots"
                     ),
-                    color=0x111111,
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Important",
+                    value="Stay ready and follow host directions at all times.",
+                    inline=False,
                 )
                 embed.set_image(url=DIFF_LOGO_URL)
                 embed.set_footer(text="DIFF Meet Start Notice")
-                await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions(roles=True))
+                await ch.send(
+                    content=f"{ps_role} {cm_role}",
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
                 log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
                 if isinstance(log_ch, discord.TextChannel):
                     await log_ch.send(
@@ -8434,14 +8445,19 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
             ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
             if isinstance(ch, discord.TextChannel):
                 embed = discord.Embed(
-                    title="DIFF Meet Ended",
-                    description=(
-                        f"The meet has now **ended**.\n\n"
-                        f"**Host:** {interaction.user.mention}\n\n"
+                    title="🛑  DIFF Meet — Ended",
+                    color=0xe74c3c,
+                    timestamp=datetime.now(timezone.utc),
+                )
+                embed.add_field(name="Host", value=interaction.user.mention, inline=True)
+                embed.add_field(name="Status", value="🔴 Ended", inline=True)
+                embed.add_field(
+                    name="Thank You",
+                    value=(
                         "Thank you to everyone who attended and helped keep the meet clean.\n"
                         "Watch for the next official announcement and future events."
                     ),
-                    color=0x111111,
+                    inline=False,
                 )
                 embed.set_image(url=DIFF_LOGO_URL)
                 embed.set_footer(text="DIFF Meet End Notice")
