@@ -141,7 +141,8 @@ ELITE_ROLE_ID = 1485826784132857958
 STRIKE_1_ROLE_ID = 990105742663106570
 STRIKE_2_ROLE_ID = 990105837223698443
 STRIKE_3_ROLE_ID = 990106011664793600
-WARNING_1_ROLE_ID = 1266950150123950091
+WARNING_1_ROLE_ID  = 1266950150123950091
+WARNS_CHANNEL_ID   = 1486599502834958366
 RECAP_CHANNEL_ID = 1485829235258953928
 SEASON_CHANNEL_ID = 0
 HOST_RSVP_CHANNEL_ID = 1485830232270307410
@@ -5287,12 +5288,27 @@ def get_warning_count(member_id: int) -> int:
     return len(data.get("warnings", {}).get(str(member_id), []))
 
 
-def add_warning(member_id: int, moderator_id: int, reason: str):
+def _ordinal(n: int) -> str:
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
+    return f"{n}" + {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+
+def _next_warn_id() -> int:
+    data.setdefault("warn_id_counter", 0)
+    data["warn_id_counter"] += 1
+    save_data(data)
+    return data["warn_id_counter"]
+
+
+def add_warning(member_id: int, moderator_id: int, reason: str, proof: str = "", warn_id: int = 0):
     warnings = data.setdefault("warnings", {})
     member_warnings = warnings.setdefault(str(member_id), [])
     member_warnings.append(
         {
+            "warn_id": warn_id,
             "reason": reason,
+            "proof": proof,
             "moderator_id": moderator_id,
             "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
         }
@@ -11376,6 +11392,11 @@ async def on_ready():
     _safe_add_view(HostFeedbackRequestView(),                            "HostFeedbackRequestView")
     _safe_add_view(_RcRollCallView(),                                    "_RcRollCallView")
     _safe_add_view(_RcAdminView(),                                       "_RcAdminView")
+    # Re-register persistent warn proof buttons for all stored warnings
+    for _wp_uid, _wp_entries in data.get("warnings", {}).items():
+        for _wp_entry in _wp_entries:
+            if isinstance(_wp_entry, dict) and _wp_entry.get("warn_id") and _wp_entry.get("proof"):
+                _safe_add_view(_WarnProofView(_wp_entry["warn_id"]), f"WarnProofView:{_wp_entry['warn_id']}")
 
     try:
         _tab_state = _tab_load()
@@ -12121,22 +12142,144 @@ async def meethistory_error(interaction: discord.Interaction, error: app_command
 
 
 
-@bot.tree.command(name="warn", description="Warn a member and log it")
+class _WarnProofBtn(discord.ui.Button):
+    """Persistent button — staff-only proof viewer on warn posts."""
+    def __init__(self, warn_id: int):
+        super().__init__(
+            label="🔗 View Proof",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"diff_warn_proof:{warn_id}",
+        )
+        self.warn_id = warn_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+        if not interaction.user.guild_permissions.administrator and not any(
+            r.id in allowed for r in interaction.user.roles
+        ):
+            return await interaction.response.send_message(
+                "Only staff can view proof.", ephemeral=True
+            )
+        # Find the proof string from stored warnings
+        proof_text = None
+        for uid, entries in data.get("warnings", {}).items():
+            for e in entries:
+                if e.get("warn_id") == self.warn_id:
+                    proof_text = e.get("proof", "")
+                    break
+            if proof_text is not None:
+                break
+        if not proof_text:
+            return await interaction.response.send_message(
+                "No proof was attached to this warning.", ephemeral=True
+            )
+        await interaction.response.send_message(
+            f"**Proof for Warn #{self.warn_id}:**\n{proof_text}", ephemeral=True
+        )
+
+
+class _WarnProofView(discord.ui.View):
+    def __init__(self, warn_id: int):
+        super().__init__(timeout=None)
+        self.add_item(_WarnProofBtn(warn_id))
+
+
+@bot.tree.command(name="warn", description="Warn a member and log it to the warns channel")
+@app_commands.describe(
+    member="The member to warn",
+    reason="Reason for the warning",
+    proof="Optional proof link or description (staff-only viewable)",
+)
 @app_commands.checks.has_permissions(administrator=True)
-async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
+async def warn(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str,
+    proof: str = "",
+):
     if interaction.guild is None:
-        await interaction.response.send_message("Use this in the server.", ephemeral=True)
-        return
-
+        return await interaction.response.send_message("Use this in the server.", ephemeral=True)
     if member.bot:
-        await interaction.response.send_message("You can't warn bots.", ephemeral=True)
-        return
+        return await interaction.response.send_message("You can't warn bots.", ephemeral=True)
 
-    add_warning(member.id, interaction.user.id, reason)
+    warn_id      = _next_warn_id()
+    add_warning(member.id, interaction.user.id, reason, proof=proof, warn_id=warn_id)
     total_warnings = get_warning_count(member.id)
+    ordinal      = _ordinal(total_warnings)
+
+    # ── DM the warned member ─────────────────────────────────────────────────
+    dm_sent = False
+    try:
+        dm_embed = discord.Embed(
+            title=f"⚠️ You received your {ordinal} warning in DIFF Meets",
+            color=0xFF4444,
+            timestamp=datetime.now(timezone.utc),
+        )
+        dm_embed.add_field(name="Reason", value=reason, inline=False)
+        dm_embed.add_field(name="Total Warnings", value=str(total_warnings), inline=True)
+        dm_embed.add_field(
+            name="What happens next?",
+            value=(
+                "• **2 warnings** — 24-hour timeout\n"
+                "• **3 warnings** — Kick\n"
+                "• **5 warnings** — Ban\n\n"
+                "If you believe this is a mistake, please open a ticket."
+            ),
+            inline=False,
+        )
+        dm_embed.set_footer(text="DIFF Meets • Warning System")
+        await member.send(embed=dm_embed)
+        dm_sent = True
+    except discord.Forbidden:
+        dm_sent = False
+
+    # ── Post to public warns channel ─────────────────────────────────────────
+    warns_ch = interaction.client.get_channel(WARNS_CHANNEL_ID)
+    if isinstance(warns_ch, discord.TextChannel):
+        pub_embed = discord.Embed(
+            title=f"Warn [{warn_id:04d}]",
+            color=0xFF4444,
+            timestamp=datetime.now(timezone.utc),
+        )
+        pub_embed.set_thumbnail(url=member.display_avatar.url)
+        pub_embed.add_field(
+            name="Target",
+            value=f"{member.mention}\n`{member.id}`",
+            inline=True,
+        )
+        pub_embed.add_field(
+            name="DM",
+            value="✅ Sent" if dm_sent else "❌ Failed",
+            inline=True,
+        )
+        pub_embed.add_field(
+            name="Status",
+            value=f"**{ordinal.upper()} WARN**",
+            inline=True,
+        )
+        pub_embed.add_field(name="Reason",    value=reason,                    inline=True)
+        pub_embed.add_field(name="Moderator", value=interaction.user.mention,  inline=True)
+        pub_embed.add_field(
+            name="Warnings",
+            value=f"{total_warnings} total",
+            inline=True,
+        )
+        pub_embed.set_footer(text=f"DIFF Meets • Warning System")
+        view = _WarnProofView(warn_id) if proof else discord.ui.View()
+        await warns_ch.send(
+            content=f"{member.mention} you received your **{ordinal} warn!**",
+            embed=pub_embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
 
     # ── Auto-escalation ──────────────────────────────────────────────────────
-    async def _run_warn_escalation(_member=member, _total=total_warnings, _reason=reason, _by=interaction.user, _guild=interaction.guild):
+    async def _run_warn_escalation(
+        _member=member, _total=total_warnings, _reason=reason,
+        _by=interaction.user, _guild=interaction.guild,
+    ):
         if _guild is None:
             return
         _mod_hub = _guild.get_channel(MOD_HUB_CHANNEL_ID)
@@ -12157,48 +12300,27 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
                     description=f"{_action} for {_member.mention} ({_member})",
                     color=discord.Color.red(),
                 )
-                _e.add_field(name="Warnings", value=str(_total), inline=True)
-                _e.add_field(name="Last Reason", value=_reason, inline=True)
-                _e.add_field(name="Warned By", value=_by.mention, inline=True)
+                _e.add_field(name="Warnings",   value=str(_total),   inline=True)
+                _e.add_field(name="Last Reason", value=_reason,       inline=True)
+                _e.add_field(name="Warned By",   value=_by.mention,   inline=True)
                 _e.set_footer(text="DIFF Auto-Escalation • Different Meets")
                 await _mod_hub.send(embed=_e)
         except Exception as _esc_err:
             if isinstance(_mod_hub, discord.TextChannel):
                 try:
-                    await _mod_hub.send(f"⚠️ Escalation failed for {_member.mention} ({_total} warnings): `{_esc_err}`")
+                    await _mod_hub.send(
+                        f"⚠️ Escalation failed for {_member.mention} ({_total} warnings): `{_esc_err}`"
+                    )
                 except Exception:
                     pass
     asyncio.create_task(_run_warn_escalation())
 
-    embed = discord.Embed(
-        title="⚠️ Member Warned",
-        description=(
-            f"**Member:** {member.mention}\n"
-            f"**Reason:** {reason}\n"
-            f"**Warned By:** {interaction.user.mention}\n"
-            f"**Total Warnings:** {total_warnings}"
-        ),
-        color=discord.Color.orange(),
+    # ── Confirm to moderator ─────────────────────────────────────────────────
+    await interaction.response.send_message(
+        f"✅ Warn `#{warn_id:04d}` issued to {member.mention} — "
+        f"**{ordinal} warning** posted in <#{WARNS_CHANNEL_ID}>.",
+        ephemeral=True,
     )
-    embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text="DIFF Warning System")
-
-    await interaction.response.send_message(embed=embed)
-
-    try:
-        dm_embed = discord.Embed(
-            title="⚠️ You received a warning in DIFF Meets",
-            description=(
-                f"**Reason:** {reason}\n"
-                f"**Total Warnings:** {total_warnings}\n\n"
-                "Please correct the behavior to avoid stronger punishment."
-            ),
-            color=discord.Color.orange(),
-        )
-        dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
-        await member.send(embed=dm_embed)
-    except discord.Forbidden:
-        pass
 
 
 @bot.tree.command(name="warnings", description="Check a member's warnings")
@@ -12212,18 +12334,22 @@ async def warnings(interaction: discord.Interaction, member: discord.Member):
 
     lines = []
     for index, entry in enumerate(member_warnings[-10:], start=1):
+        wid = entry.get("warn_id")
+        id_tag = f"`#{wid:04d}`  " if wid else ""
+        has_proof = "🔗 " if entry.get("proof") else ""
         lines.append(
-            f"**{index}.** {entry['reason']}\n"
+            f"{has_proof}**{_ordinal(index)} Warn** {id_tag}— {entry['reason']}\n"
             f"→ By <@{entry['moderator_id']}> on {entry['timestamp']}"
         )
 
     embed = discord.Embed(
         title=f"⚠️ Warning History • {member.display_name}",
         description="\n\n".join(lines),
-        color=discord.Color.orange(),
+        color=0xFF4444,
+        timestamp=datetime.now(timezone.utc),
     )
-    embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text=f"Total warnings: {len(member_warnings)}")
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text=f"Total warnings: {len(member_warnings)} • DIFF Warning System")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
