@@ -262,7 +262,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 async def _setup_hook():
     _cogs = [
-        "cogs.partner_expansion",
+        # "cogs.partner_expansion",  # removed — replaced by Partnership Hub
         "cogs.partner_request_system",
         "cogs.diff_welcome_join",
         "cogs.diff_feedback_system",
