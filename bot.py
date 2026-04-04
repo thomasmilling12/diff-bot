@@ -148,6 +148,7 @@ HOST_RSVP_CHANNEL_ID = 1485830232270307410
 HOST_HUB_CHANNEL_ID = 1485840926612918383
 HOST_PERFORMANCE_CHANNEL_ID = 1134690348220825730
 MEET_FLOW_CHANNEL_ID = 1485684577073758378
+EVERYONE_CHAT_CHANNEL_ID = 1047335231826436166
 BLACKLIST_CHANNEL_ID = 1057016810261712938
 IG_CONTENT_CHANNEL_ID = 1485830678980333568
 TOP1_ROLE_ID = 1485828728683757669
@@ -4317,6 +4318,21 @@ async def _cmd_feedbacksummary(ctx: commands.Context, *, name: str = None):
 # =========================
 
 _HOSTFLOW_STATE_FILE = os.path.join("diff_data", "diff_host_flow_state.json")
+_MEET_QA_COOLDOWNS: dict[int, float] = {}   # uid → last replied timestamp
+_MEET_QA_COOLDOWN_SECS = 3600              # 1 hour per user
+
+_MEET_QA_TRIGGERS = [
+    "when is the meet", "when's the meet", "whens the meet",
+    "when is meet", "next meet", "is there a meet", "meet tonight",
+    "meet today", "meet happening", "any meet", "is there meet",
+    "what time is the meet", "what time is meet", "what time meet",
+    "what time is it", "meet time", "time of the meet",
+    "where do we go", "where is the meet", "where's the meet",
+    "where we meeting", "where is meet", "meet location", "location of the meet",
+    "how do i join", "how to join", "how do you join", "how do i get",
+    "join the meet", "get to the meet", "get in the meet",
+]
+
 _HOSTFLOW_COOLDOWNS: dict[int, float] = {}
 _HOSTFLOW_COOLDOWN_SECS = 5
 _HOSTFLOW_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
@@ -19089,6 +19105,30 @@ async def on_message(message: discord.Message) -> None:
         return
     if not isinstance(message.channel, discord.TextChannel):
         return
+
+    # --- Everyone-chat meet Q&A auto-responder ---
+    if message.channel.id == EVERYONE_CHAT_CHANNEL_ID:
+        import time as _time_mod
+        content_lower = message.content.lower()
+        if any(trigger in content_lower for trigger in _MEET_QA_TRIGGERS):
+            uid = message.author.id
+            now_ts = _time_mod.monotonic()
+            last = _MEET_QA_COOLDOWNS.get(uid, 0)
+            if now_ts - last >= _MEET_QA_COOLDOWN_SECS:
+                _MEET_QA_COOLDOWNS[uid] = now_ts
+                reply = (
+                    f"{message.author.mention} Check the channels below for everything meet-related:\n\n"
+                    f"📣 **Announcements** → <#{MEET_ANNOUNCEMENT_CHANNEL_ID}>\n"
+                    f"📅 **Upcoming Meets** → <#{UPCOMING_MEET_CHANNEL_ID}>\n"
+                    f"📘 **Meet Info & Rules** → <#{MEET_INFO_CHANNEL_ID}>\n"
+                    f"🎮 **Live Meet Updates** → <#{MEET_FLOW_CHANNEL_ID}>"
+                )
+                try:
+                    bot_reply = await message.reply(reply, mention_author=False)
+                    await asyncio.sleep(45)
+                    await bot_reply.delete()
+                except Exception:
+                    pass
 
     # --- Social feed auto-post (Instagram / TikTok / YouTube) ---
     if message.channel.id == _IG_CHANNEL_ID:
