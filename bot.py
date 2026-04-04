@@ -5835,12 +5835,12 @@ def _gta_build_weather_embed(ts: float) -> discord.Embed:
         rain_msg = "☔ It's currently raining — clear skies coming soon."
 
     # Forecast — next 4 in-game hours (next 4 slots)
+    # Use Discord timestamps so every member sees their own local time & day
     forecast_lines: list[str] = []
     for i in range(1, 5):
-        slot_ts   = now + secs_left + (i - 1) * _GTA_HOUR_SECS
-        real_time = datetime.utcfromtimestamp(slot_ts).strftime("%I:%M %p")
+        slot_ts  = now + secs_left + (i - 1) * _GTA_HOUR_SECS
         f_name, f_emoji = _gta_weather_at(cur_slot + i)
-        forecast_lines.append(f"{real_time} — {f_emoji} **{f_name}**")
+        forecast_lines.append(f"<t:{int(slot_ts)}:t> — {f_emoji} **{f_name}**")
 
     # Choose embed colour
     if cur_name in ("Rain", "Thunder"):
@@ -5854,14 +5854,23 @@ def _gta_build_weather_embed(ts: float) -> discord.Embed:
         title=f"{cur_emoji} It is {cur_name.lower()} at {ig_h:02d}:{ig_m:02d} on {ig_day}!",
         description=(_gta_weather_description(cur_name) + (f"\n{rain_msg}" if rain_msg else "")),
         color=colour,
-        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(
         name="Upcoming Forecast (Next 4 In-Game Hours):",
         value="\n".join(forecast_lines),
         inline=False,
     )
-    embed.set_footer(text=f"Current real time: {datetime.utcnow().strftime('%B %-d, %Y %I:%M %p')} UTC  •  GTA Online Weather")
+    embed.add_field(
+        name="Your local time",
+        value=f"<t:{now}:F>",
+        inline=True,
+    )
+    embed.add_field(
+        name="Last updated",
+        value=f"<t:{now}:R>",
+        inline=True,
+    )
+    embed.set_footer(text="GTA Online Weather • Different Meets")
     return embed
 
 
