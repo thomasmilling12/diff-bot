@@ -9994,38 +9994,75 @@ def _rc_is_admin(member) -> bool:
 
 
 def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
-    meets = _rc_db.get_meets(guild.id)
+    meets        = _rc_db.get_meets(guild.id)
     meets_by_num = {row["meet_number"]: row for row in meets}
-    counts = _rc_db.get_all_counts(guild.id)
-    lines = ["*Use the buttons below to mark your attendance for each meet.*", ""]
-    for n in (1, 2, 3):
-        meet = meets_by_num.get(n)
-        c = counts[n]
-        class_name = meet["class_name"] if meet else "TBD"
-        start_time = meet["start_time"] if meet else "TBD"
-        date_text = meet["date_text"] if meet else "TBD"
-        host_id = meet["host_id"] if meet else None
-        host_text = f"<@{host_id}>" if host_id else "*No host assigned*"
-        is_finalized = meet and meet["is_finalized"]
-        status_icon = "✅" if is_finalized else "⏳"
-        status_label = "Finalized" if is_finalized else "Pending"
-        lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"**Meet {n}** {status_icon} {status_label}")
-        lines.append(f"📅 **Day:** {date_text}  🕒 **Time:** {start_time}")
-        lines.append(f"🎮 **Class:** {class_name}")
-        lines.append(f"👤 **Host:** {host_text}")
-        lines.append(f"✅ `{c['yes']}` Attending  ❓ `{c['maybe']}` Maybe  ❌ `{c['no']}` Not Attending")
-        lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🧥 Wear your crew jacket  •  🎙️ Join voice if required  •  ⚠️ No-shows are tracked")
+    counts       = _rc_db.get_all_counts(guild.id)
+
+    finalized_count = sum(1 for n in (1, 2, 3)
+                          if meets_by_num.get(n) and meets_by_num[n]["is_finalized"])
+
+    color = (0x57F287 if finalized_count == 3
+             else 0xFEE75C if finalized_count > 0
+             else 0x5865F2)
+
     embed = discord.Embed(
         title="📋 DIFF Auto Roll Call",
-        description="\n".join(lines),
-        color=discord.Color.blurple(),
+        description=(
+            "Mark your attendance for each meet below.\n"
+            "*No-shows are tracked — respond even if you can't make it.*"
+        ),
+        color=color,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.set_author(name="Different Meets")
-    embed.set_footer(text="DIFF • Auto Roll Call System")
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_author(
+        name="Different Meets",
+        icon_url=DIFF_LOGO_URL if DIFF_LOGO_URL else discord.utils.MISSING,
+    )
+
+    for n in (1, 2, 3):
+        meet        = meets_by_num.get(n)
+        c           = counts[n]
+        class_name  = meet["class_name"] if meet else "TBD"
+        start_time  = meet["start_time"] if meet else "TBD"
+        date_text   = meet["date_text"]  if meet else "TBD"
+        host_id     = meet["host_id"]    if meet else None
+        host_text   = f"<@{host_id}>"   if host_id else "*No host assigned*"
+        is_finalized = bool(meet and meet["is_finalized"])
+
+        if is_finalized:
+            status = "✅ Finalized"
+        elif class_name == "TBD" or start_time == "TBD":
+            status = "⏳ Awaiting schedule"
+        else:
+            status = "📝 Open for RSVP"
+
+        # Attendance bar (up to 10 slots)
+        scale       = max(c["yes"] + c["maybe"] + c["no"], 10)
+        yes_blocks  = round(c["yes"]   / scale * 10)
+        maybe_blocks= round(c["maybe"] / scale * 10)
+        bar         = "🟩" * yes_blocks + "🟨" * maybe_blocks + "⬜" * (10 - yes_blocks - maybe_blocks)
+
+        field_lines = [
+            f"**{status}**",
+            f"📅 {date_text}  🕒 {start_time}  🎮 {class_name}",
+            f"👤 **Host:** {host_text}",
+            f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`  {bar}",
+        ]
+        # Countdown
+        ts = _parse_meet_ts(date_text, start_time)
+        if ts:
+            field_lines.append(f"⏱️ <t:{ts}:F>  (<t:{ts}:R>)")
+
+        embed.add_field(name=f"〔{n}〕 Meet {n}", value="\n".join(field_lines), inline=False)
+
+    embed.add_field(
+        name="\u200b",
+        value="🧥 Wear your crew jacket  •  🎙️ Join voice if required  •  ⚠️ No-shows are tracked",
+        inline=False,
+    )
+    embed.set_footer(text="DIFF • Auto Roll Call System  •  Use 📊 My RSVP to see your responses")
     return embed
 
 
@@ -10129,12 +10166,46 @@ class _RcBtn(discord.ui.Button):
             print(f"[RcBtn] Post-response error for {interaction.user}: {e}")
 
 
+class _RcMyRsvpBtn(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            label="My RSVP",
+            emoji="📊",
+            style=discord.ButtonStyle.secondary,
+            custom_id="diff_rollcall:my_rsvp",
+            row=3,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        uid       = interaction.user.id
+        guild     = interaction.guild
+        responses = _rc_db.get_all_responses(guild.id)
+        meets     = _rc_db.get_meets(guild.id)
+        meets_by_num = {row["meet_number"]: row for row in meets}
+        status_labels = {"yes": "✅ Attending", "maybe": "❓ Maybe", "no": "❌ Not Attending"}
+        lines = []
+        for n in (1, 2, 3):
+            r    = responses.get(n, {})
+            meet = meets_by_num.get(n)
+            info = ""
+            if meet and meet["class_name"] != "TBD":
+                info = f" — {meet['date_text']} · {meet['start_time']} · {meet['class_name']}"
+            found = next((s for s in ("yes", "maybe", "no") if uid in r.get(s, [])), None)
+            lines.append(f"**Meet {n}**{info}\n　{status_labels.get(found, '⬜ No response yet')}")
+        await interaction.response.send_message(
+            "**Your current RSVP:**\n\n" + "\n\n".join(lines)
+            + "\n\n*Update anytime by clicking the buttons above.*",
+            ephemeral=True,
+        )
+
+
 class _RcRollCallView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
         for meet_num, row_idx in ((1, 0), (2, 1), (3, 2)):
             for status in ("yes", "maybe", "no"):
                 self.add_item(_RcBtn(meet_num, status, row_idx))
+        self.add_item(_RcMyRsvpBtn())
 
 
 class _RcFinalizeBtn(discord.ui.Button):
