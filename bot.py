@@ -3374,11 +3374,15 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
         host_id = int(m.group(1))
         guild   = interaction.guild
         member  = guild.get_member(host_id) if guild else None
+
+        # Defer before any async network calls
+        await interaction.response.defer(ephemeral=True)
+
         if not member:
             try:
                 member = await guild.fetch_member(host_id)
             except Exception:
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     f"❌ Member {host_id} not found in this server.", ephemeral=True
                 )
 
@@ -3416,7 +3420,7 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
             pass
 
         fin_note = "\n📢 All slots confirmed — schedule posted to #upcoming-meet." if all_filled else ""
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ **{slot_name}** overridden → {member.mention}\n"
             f"📅 {day_val}  🕒 {time_val}  🎮 {class_val}{fin_note}",
             ephemeral=True,
@@ -3486,6 +3490,9 @@ class _ASchedPingNonRespondersBtn(discord.ui.Button):
                 "✅ All hosts have submitted their availability this week!", ephemeral=True
             )
 
+        # Defer immediately — DM loop can take several seconds
+        await interaction.response.defer(ephemeral=True)
+
         dm_embed = discord.Embed(
             title="📋 Host Availability Reminder",
             description=(
@@ -3510,7 +3517,7 @@ class _ASchedPingNonRespondersBtn(discord.ui.Button):
             except Exception:
                 failed += 1
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"📩 Reminded **{sent}** host{'s' if sent != 1 else ''} via DM."
             + (f" ({failed} had DMs closed)" if failed else ""),
             ephemeral=True,
