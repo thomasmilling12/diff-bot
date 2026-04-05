@@ -2932,6 +2932,7 @@ def _asched_build_embed() -> discord.Embed:
             value="\n".join(field_lines),
             inline=False,
         )
+        embed.add_field(name="─" * 36, value="\u200b", inline=False)
 
     embed.add_field(
         name="📌 Important Information",
