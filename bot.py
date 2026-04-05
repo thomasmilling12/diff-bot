@@ -2809,14 +2809,16 @@ def _asched_build_embed() -> discord.Embed:
     else:
         rebuilt_str = "*never — press Rebuild Schedule*"
 
-    # Dynamic sidebar colour based on how many slots have a confirmed host
-    filled = sum(
-        1 for d in _HRSVP_DAYS
-        if schedule["days"].get(d, {}).get("host_id")
+    # Dynamic sidebar colour: green = all filled, yellow = partial, pink = none
+    filled = sum(1 for d in _HRSVP_DAYS if schedule["days"].get(d, {}).get("host_id"))
+    embed_color = (
+        0x57F287 if filled == len(_HRSVP_DAYS)
+        else 0xFEE75C if filled > 0
+        else 0xEB459E
     )
-    embed_color = 0x57F287 if filled == len(_HRSVP_DAYS) else (0xFEE75C if filled > 0 else 0xEB459E)
 
-    _DIV = "─" * 32
+    _DIV  = "─" * 34
+    _NUMS = {day: num for day, num in zip(_HRSVP_DAYS, ["〔1〕", "〔2〕", "〔3〕"])}
 
     lines: list[str] = [
         "__**DIFF PS5 Weekly Schedule**__",
@@ -2824,33 +2826,43 @@ def _asched_build_embed() -> discord.Embed:
         _DIV,
     ]
 
-    for day in _HRSVP_DAYS:
+    for idx, day in enumerate(_HRSVP_DAYS, start=1):
         entry       = schedule["days"].get(day, {})
         host_id     = entry.get("host_id")
         host_status = entry.get("host_status", "none")
         rsvp_slot   = rsvp.get(day, {})
         class_val   = entry.get("class", "-")
         time_val    = entry.get("time",  "-")
+        date_val    = entry.get("day",   "-")   # day the host submitted (e.g. "Sunday")
+        num_tag     = _NUMS.get(day, f"〔{idx}〕")
 
+        # Status badge
         if host_id:
-            host_val = f"<@{host_id}>" + (" *(tentative)*" if host_status == "maybe" else "")
+            status_tag = "🟢 Confirmed" if host_status != "maybe" else "🟡 Tentative"
+            host_val   = f"<@{host_id}>" + (" *(tentative)*" if host_status == "maybe" else "")
+            avail_line = None
         else:
             available = [_hrsvp_uid(e) for e in rsvp_slot.get("yes", [])]
             maybe_av  = [_hrsvp_uid(e) for e in rsvp_slot.get("maybe", [])]
+            host_val  = "-"
             if available:
-                host_val = f"*TBD* — {', '.join(f'<@{u}>' for u in available[:3])} available"
+                status_tag = "⏳ Awaiting Assignment"
+                avail_line = "✅ **Available:** " + "  ".join(f"<@{u}>" for u in available[:5])
             elif maybe_av:
-                host_val = f"*TBD* — {', '.join(f'<@{u}>' for u in maybe_av[:3])} maybe"
+                status_tag = "❓ Possible Hosts"
+                avail_line = "❓ **Maybe:** " + "  ".join(f"<@{u}>" for u in maybe_av[:5])
             else:
-                host_val = "-"
+                status_tag = "🔴 Open Slot"
+                avail_line = None
 
-        lines += [
-            f"**Date**",
-            f"**Starting Class —** {class_val}",
-            f"**Time —** {time_val}",
-            f"**Host —** {host_val}",
-            _DIV,
-        ]
+        lines.append(f"**{num_tag}  Meet {idx}** — {status_tag}")
+        lines.append(f"**Date —** {date_val}")
+        lines.append(f"**Starting Class —** {class_val}")
+        lines.append(f"**Time —** {time_val}")
+        lines.append(f"**Host —** {host_val}")
+        if avail_line:
+            lines.append(avail_line)
+        lines.append(_DIV)
 
     lines += [
         "**Important Information:**",
@@ -2866,7 +2878,12 @@ def _asched_build_embed() -> discord.Embed:
         color=embed_color,
         timestamp=utc_now(),
     )
-    embed.set_author(name="Different Meets")
+    embed.set_author(
+        name="Different Meets",
+        icon_url=DIFF_LOGO_URL if DIFF_LOGO_URL else discord.utils.MISSING,
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text="DIFF • Auto Host Schedule Builder")
     return embed
 
