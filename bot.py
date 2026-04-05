@@ -2597,9 +2597,16 @@ def _hrsvp_build_embed() -> discord.Embed:
             for e in yes_entries:
                 uid = _hrsvp_uid(e)
                 if isinstance(e, dict):
+                    dv = e.get('day', 'TBD')
+                    tv = e.get('time', 'TBD')
+                    ts = _parse_meet_ts(dv, tv) if not tv.startswith("<t:") else None
+                    time_display = (
+                        f"<t:{ts}:F>  (<t:{ts}:R>)" if ts
+                        else tv if tv.startswith("<t:") else tv
+                    )
                     lines.append(
                         f"✅ <@{uid}>\n"
-                        f"　📅 {e.get('day', 'TBD')}  🕒 {e.get('time', 'TBD')}  🎮 {e.get('theme', 'TBD')}"
+                        f"　📅 {dv}  🕒 {time_display}  🎮 {e.get('theme', 'TBD')}"
                     )
                 else:
                     lines.append(f"✅ <@{uid}>")
@@ -2746,11 +2753,11 @@ class _HostAvailModal(discord.ui.Modal):
         raw_dt    = str(self.day_time_input).strip()
         theme_val = str(self.theme_input).strip() or "Open Class"
 
-        # Split "Sunday 8:00 PM EST" → day_val + time_val
+        # Split "Sunday 8:00 PM EST" → day_val + time_val (store plain text)
         parts     = raw_dt.split(None, 1)
         day_val   = parts[0].capitalize() if parts else raw_dt
         time_raw  = parts[1] if len(parts) > 1 else raw_dt
-        time_val  = _popup_parse_time(time_raw)
+        time_val  = time_raw.strip()   # keep as plain text; timestamps computed at display time
 
         data = _hrsvp_load()
         slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
@@ -2760,9 +2767,11 @@ class _HostAvailModal(discord.ui.Modal):
         _hrsvp_save(data)
         _hrel_track_rsvp(uid)
         await _hrsvp_update_panel(interaction.client)
+        ts = _parse_meet_ts(day_val, time_val)
+        time_display = f"<t:{ts}:F>  (<t:{ts}:R>)" if ts else time_val
         await interaction.response.send_message(
             f"✅ **{self.day}** — you're marked available!\n"
-            f"📅 **Day:** {day_val}  🕒 **Time:** {time_val}  🎮 **Class:** {theme_val}\n\n"
+            f"📅 **Day:** {day_val}  🕒 **Time:** {time_display}  🎮 **Class:** {theme_val}\n\n"
             f"*You can update this anytime by clicking the button again.*",
             ephemeral=True,
         )
@@ -3389,7 +3398,7 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
         parts    = dt_raw.split(None, 1)
         day_val  = parts[0].capitalize() if parts else dt_raw
         time_raw = parts[1] if len(parts) > 1 else dt_raw
-        time_val = _popup_parse_time(time_raw)
+        time_val = time_raw.strip()   # plain text; timestamp computed at display time
 
         schedule = _asched_load()
         slot     = schedule["days"].setdefault(slot_name, {})
