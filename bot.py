@@ -2778,18 +2778,54 @@ def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple:
     return None, "none", "TBD", "TBD", "TBD"
 
 
+def _parse_meet_ts(date_val: str, time_val: str) -> int | None:
+    """Try to compute a Unix timestamp for the next occurrence of day+time. Returns None on failure."""
+    import re as _re
+    _DAY_MAP = {
+        "monday": 0, "mon": 0, "tuesday": 1, "tue": 1, "wednesday": 2, "wed": 2,
+        "thursday": 3, "thu": 3, "friday": 4, "fri": 4, "saturday": 5, "sat": 5,
+        "sunday": 6, "sun": 6,
+    }
+    day_num = next((n for k, n in _DAY_MAP.items() if k in date_val.lower()), None)
+    if day_num is None:
+        return None
+    m = _re.search(r"(\d{1,2})(?::(\d{2}))?\s*(AM|PM|am|pm)?", time_val)
+    if not m:
+        return None
+    hour, minute, ampm = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").upper()
+    if ampm == "PM" and hour != 12:
+        hour += 12
+    elif ampm == "AM" and hour == 12:
+        hour = 0
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        tz = _ZI("US/Pacific") if any(x in time_val.upper() for x in ("PST", "PDT")) else \
+             _ZI("US/Central")  if any(x in time_val.upper() for x in ("CST", "CDT")) else \
+             _ZI("US/Eastern")
+    except Exception:
+        return None
+    now = datetime.now(tz)
+    days_until = (day_num - now.weekday()) % 7
+    if days_until == 0 and (now.hour > hour or (now.hour == hour and now.minute >= minute)):
+        days_until = 7
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=days_until)
+    return int(target.timestamp())
+
+
 def _asched_build() -> dict:
     rsvp = _hrsvp_load()
     schedule = _asched_load()
     assigned_counts: dict = {}
     for day in _HRSVP_DAYS:
-        host_id, host_status, day_val, time_val, theme_val = _asched_pick_host(day, rsvp, assigned_counts)
         slot = schedule["days"].setdefault(day, {})
-        slot["host_id"] = int(host_id) if host_id else None
+        if slot.get("locked"):          # 🔒 locked — skip auto-assignment
+            continue
+        host_id, host_status, day_val, time_val, theme_val = _asched_pick_host(day, rsvp, assigned_counts)
+        slot["host_id"]     = int(host_id) if host_id else None
         slot["host_status"] = host_status
-        slot["day"] = day_val
-        slot["time"] = time_val
-        slot["class"] = theme_val
+        slot["day"]         = day_val
+        slot["time"]        = time_val
+        slot["class"]       = theme_val
     schedule["updated_at"] = utc_now().isoformat()
     _asched_save(schedule)
     return schedule
@@ -2809,22 +2845,32 @@ def _asched_build_embed() -> discord.Embed:
     else:
         rebuilt_str = "*never — press Rebuild Schedule*"
 
-    # Dynamic sidebar colour: green = all filled, yellow = partial, pink = none
+    # Progress counter + sidebar colour
     filled = sum(1 for d in _HRSVP_DAYS if schedule["days"].get(d, {}).get("host_id"))
-    embed_color = (
-        0x57F287 if filled == len(_HRSVP_DAYS)
-        else 0xFEE75C if filled > 0
-        else 0xEB459E
+    total  = len(_HRSVP_DAYS)
+    embed_color = 0x57F287 if filled == total else (0xFEE75C if filled > 0 else 0xEB459E)
+
+    progress_bar = "🟩" * filled + "⬜" * (total - filled)
+    progress_str = f"{progress_bar}  **{filled}/{total} slots filled**"
+
+    embed = discord.Embed(
+        title="📋 DIFF PS5 Weekly Schedule",
+        description=(
+            f"*Built automatically from host availability responses.*\n\n"
+            f"📊 {progress_str}\n"
+            f"🕐 **Last rebuilt:** {rebuilt_str}"
+        ),
+        color=embed_color,
+        timestamp=utc_now(),
     )
+    embed.set_author(
+        name="Different Meets",
+        icon_url=DIFF_LOGO_URL if DIFF_LOGO_URL else discord.utils.MISSING,
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
 
-    _DIV  = "─" * 34
-    _NUMS = {day: num for day, num in zip(_HRSVP_DAYS, ["〔1〕", "〔2〕", "〔3〕"])}
-
-    lines: list[str] = [
-        "__**DIFF PS5 Weekly Schedule**__",
-        "Schedule Posted",
-        _DIV,
-    ]
+    _NUMS = ["〔1〕", "〔2〕", "〔3〕"]
 
     for idx, day in enumerate(_HRSVP_DAYS, start=1):
         entry       = schedule["days"].get(day, {})
@@ -2833,8 +2879,10 @@ def _asched_build_embed() -> discord.Embed:
         rsvp_slot   = rsvp.get(day, {})
         class_val   = entry.get("class", "-")
         time_val    = entry.get("time",  "-")
-        date_val    = entry.get("day",   "-")   # day the host submitted (e.g. "Sunday")
-        num_tag     = _NUMS.get(day, f"〔{idx}〕")
+        date_val    = entry.get("day",   "-")
+        locked      = entry.get("locked", False)
+        lock_tag    = " 🔒" if locked else ""
+        num_tag     = _NUMS[idx - 1]
 
         # Status badge
         if host_id:
@@ -2847,44 +2895,53 @@ def _asched_build_embed() -> discord.Embed:
             host_val  = "-"
             if available:
                 status_tag = "⏳ Awaiting Assignment"
-                avail_line = "✅ **Available:** " + "  ".join(f"<@{u}>" for u in available[:5])
+                avail_line = (
+                    f"✅ **Available ({len(available)} host{'s' if len(available) != 1 else ''}):** "
+                    + "  ".join(f"<@{u}>" for u in available[:5])
+                )
             elif maybe_av:
                 status_tag = "❓ Possible Hosts"
-                avail_line = "❓ **Maybe:** " + "  ".join(f"<@{u}>" for u in maybe_av[:5])
+                avail_line = (
+                    f"❓ **Maybe ({len(maybe_av)}):** "
+                    + "  ".join(f"<@{u}>" for u in maybe_av[:5])
+                )
             else:
                 status_tag = "🔴 Open Slot"
                 avail_line = None
 
-        lines.append(f"**{num_tag}  Meet {idx}** — {status_tag}")
-        lines.append(f"**Date —** {date_val}")
-        lines.append(f"**Starting Class —** {class_val}")
-        lines.append(f"**Time —** {time_val}")
-        lines.append(f"**Host —** {host_val}")
+        # Countdown line
+        countdown_line = ""
+        meet_ts = _parse_meet_ts(date_val, time_val)
+        if meet_ts:
+            countdown_line = f"\n⏱️ **Starts:** <t:{meet_ts}:F>  (<t:{meet_ts}:R>)"
+
+        field_lines = [
+            f"**Status:** {status_tag}{lock_tag}",
+            f"📅 **Date —** {date_val}",
+            f"🎮 **Starting Class —** {class_val}",
+            f"🕒 **Time —** {time_val}",
+            f"👤 **Host —** {host_val}",
+        ]
         if avail_line:
-            lines.append(avail_line)
-        lines.append(_DIV)
+            field_lines.append(avail_line)
+        if countdown_line:
+            field_lines.append(countdown_line)
 
-    lines += [
-        "**Important Information:**",
-        "*All DIFF Meets are based on the host's work & IRL schedule.*",
-        "",
-        "*Meet details are all subject to change.*",
-        "",
-        f"🕐 **Last rebuilt:** {rebuilt_str}",
-    ]
+        embed.add_field(
+            name=f"{num_tag}  Meet {idx}",
+            value="\n".join(field_lines),
+            inline=False,
+        )
 
-    embed = discord.Embed(
-        description="\n".join(lines),
-        color=embed_color,
-        timestamp=utc_now(),
+    embed.add_field(
+        name="📌 Important Information",
+        value=(
+            "*All DIFF Meets are based on the host's work & IRL schedule.*\n"
+            "*Meet details are all subject to change.*"
+        ),
+        inline=False,
     )
-    embed.set_author(
-        name="Different Meets",
-        icon_url=DIFF_LOGO_URL if DIFF_LOGO_URL else discord.utils.MISSING,
-    )
-    if DIFF_LOGO_URL:
-        embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text="DIFF • Auto Host Schedule Builder")
+    embed.set_footer(text="DIFF • Auto Host Schedule Builder  •  🔒 = slot locked by leadership")
     return embed
 
 
@@ -3068,7 +3125,10 @@ class AutoScheduleView(discord.ui.View):
             return
         schedule = _asched_build()
         await _asched_update_panel(interaction.client)
-        await _asched_post_finalized(interaction.client)
+        # Only auto-post to upcoming-meet when every slot has a confirmed host
+        all_filled = all(schedule["days"].get(d, {}).get("host_id") for d in _HRSVP_DAYS)
+        if all_filled:
+            await _asched_post_finalized(interaction.client)
         if interaction.guild:
             rc_meets = []
             for idx, day in enumerate(_HRSVP_DAYS, 1):
@@ -3109,7 +3169,13 @@ class AutoScheduleView(discord.ui.View):
                 except Exception as _dme:
                     print(f"[AutoSched] DM to host {host_id} failed: {_dme}")
 
-        await interaction.response.send_message("Schedule rebuilt, posted to the announcement channel, and hosts have been DM'd their assignments.", ephemeral=True)
+        _slots_filled = sum(1 for d in _HRSVP_DAYS if schedule["days"].get(d, {}).get("host_id"))
+        _rebuild_msg = "✅ Schedule rebuilt and hosts have been DM'd their assignments."
+        if all_filled:
+            _rebuild_msg += f"\n📢 All 3 slots confirmed — schedule auto-posted to <#{UPCOMING_MEET_CHANNEL_ID}>."
+        else:
+            _rebuild_msg += f"\n⚠️ {_slots_filled}/{len(_HRSVP_DAYS)} slots filled — schedule will auto-post to <#{UPCOMING_MEET_CHANNEL_ID}> once all slots are confirmed."
+        await interaction.response.send_message(_rebuild_msg, ephemeral=True)
 
 
 def _asched_is_sched_msg(msg: discord.Message, bot_id: int) -> bool:
@@ -20063,6 +20129,56 @@ async def post_auto_staff_leaderboard(interaction: discord.Interaction) -> None:
         return
     await _upsert_unified_leaderboard(interaction.guild)
     await interaction.followup.send(f"Leaderboard refreshed in {lb_channel.mention}.", ephemeral=True)
+
+
+# ── /lockslot — freeze or unfreeze an individual schedule slot ───────────────
+
+@bot.tree.command(
+    name="lockslot",
+    description="Lock or unlock a meet slot so Rebuild Schedule won't overwrite it (leadership only)",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    slot="Which meet slot to lock/unlock",
+    action="Lock (freeze current assignment) or Unlock (allow Rebuild to reassign)",
+)
+@app_commands.choices(
+    slot=[
+        app_commands.Choice(name="Meet 1", value="Meet 1"),
+        app_commands.Choice(name="Meet 2", value="Meet 2"),
+        app_commands.Choice(name="Meet 3", value="Meet 3"),
+    ],
+    action=[
+        app_commands.Choice(name="Lock 🔒", value="lock"),
+        app_commands.Choice(name="Unlock 🔓", value="unlock"),
+    ],
+)
+async def lockslot_cmd(
+    interaction: discord.Interaction,
+    slot: str,
+    action: str,
+) -> None:
+    if not isinstance(interaction.user, discord.Member) or not any(
+        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles
+    ):
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+
+    schedule = _asched_load()
+    entry = schedule["days"].setdefault(slot, {})
+    locking = action == "lock"
+    entry["locked"] = locking
+    _asched_save(schedule)
+    await _asched_update_panel(interaction.client)
+
+    host_id = entry.get("host_id")
+    host_str = f"<@{host_id}>" if host_id else "*unassigned*"
+    icon = "🔒" if locking else "🔓"
+    msg = (
+        f"{icon} **{slot}** is now **{'locked' if locking else 'unlocked'}**.\n"
+        + (f"Current host: {host_str} — Rebuild will skip this slot." if locking
+           else f"Rebuild Schedule can now reassign this slot.")
+    )
+    await interaction.response.send_message(msg, ephemeral=True)
 
 
 # =========================
