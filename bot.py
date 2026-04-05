@@ -2986,6 +2986,63 @@ class _ASchedAnnounceView(discord.ui.View):
             print(f"[AutoSched] Notify ping failed: {e}")
 
 
+def _asched_build_finalized_embed() -> discord.Embed:
+    """Clean, community-facing embed for the upcoming-meet channel. No management details."""
+    schedule = _asched_load()
+    _DIV = "━" * 34
+
+    embed = discord.Embed(
+        title="📅 DIFF PS5 Weekly Schedule",
+        description=_DIV,
+        color=0x57F287,   # always green — only posted when all 3 slots confirmed
+        timestamp=utc_now(),
+    )
+    embed.set_author(
+        name="Different Meets",
+        icon_url=DIFF_LOGO_URL if DIFF_LOGO_URL else discord.utils.MISSING,
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    _NUMS = ["〔1〕", "〔2〕", "〔3〕"]
+
+    for idx, day in enumerate(_HRSVP_DAYS, start=1):
+        entry     = schedule["days"].get(day, {})
+        host_id   = entry.get("host_id")
+        class_val = entry.get("class", "TBD")
+        time_val  = entry.get("time",  "TBD")
+        date_val  = entry.get("day",   "TBD")
+        num_tag   = _NUMS[idx - 1]
+
+        host_str = f"<@{host_id}>" if host_id else "*TBD*"
+
+        # Countdown timestamp
+        meet_ts   = _parse_meet_ts(date_val, time_val)
+        time_line = f"🕒  {time_val}"
+        if meet_ts:
+            time_line += f"  (<t:{meet_ts}:R>)"
+
+        field_val = (
+            f"📅  {date_val}\n"
+            f"🎮  Starting Class — {class_val}\n"
+            f"{time_line}\n"
+            f"👤  {host_str}"
+        )
+        embed.add_field(name=f"{num_tag} Meet {idx}", value=field_val, inline=False)
+        embed.add_field(name=_DIV, value="\u200b", inline=False)
+
+    embed.add_field(
+        name="\u200b",
+        value=(
+            "*All meets are based on host work & IRL schedules.*\n"
+            "*Meet details are subject to change.*"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets")
+    return embed
+
+
 async def _asched_post_finalized(bot_client) -> None:
     channel = bot_client.get_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
@@ -2998,19 +3055,18 @@ async def _asched_post_finalized(bot_client) -> None:
 
     guild = channel.guild
     ping_parts = []
-    ps5_role = guild.get_role(PS5_ROLE_ID)
+    ps5_role   = guild.get_role(PS5_ROLE_ID)
+    notify_role = guild.get_role(NOTIFY_ROLE_ID)
     if ps5_role:
         ping_parts.append(ps5_role.mention)
-    notify_role = guild.get_role(NOTIFY_ROLE_ID)
     if notify_role:
         ping_parts.append(notify_role.mention)
     ping_content = " ".join(ping_parts) if ping_parts else None
 
-    embed = _asched_build_embed()
-    embed.title = "📅 DIFF Meet Host Schedule — Finalized"
+    embed = _asched_build_finalized_embed()
 
     try:
-        await channel.send(content=ping_content, embed=embed, view=_ASchedAnnounceView())
+        await channel.send(content=ping_content, embed=embed)
     except Exception as e:
         print(f"[AutoSched] Announce post failed: {e}")
 
