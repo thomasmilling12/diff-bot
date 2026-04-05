@@ -2809,53 +2809,76 @@ def _asched_build_embed() -> discord.Embed:
     else:
         rebuilt_str = "*never — press Rebuild Schedule*"
 
+    _MEET_ICONS = {"Meet 1": "1️⃣", "Meet 2": "2️⃣", "Meet 3": "3️⃣"}
+    _STATUS_COLORS = {
+        "assigned": 0x57F287,   # green  — host confirmed
+        "maybe":    0xFEE75C,   # yellow — tentative
+        "open":     0xED4245,   # red    — no host yet
+    }
+
+    # Pick embed colour based on how many slots are filled
+    filled = sum(
+        1 for d in _HRSVP_DAYS
+        if schedule["days"].get(d, {}).get("host_id")
+    )
+    if filled == len(_HRSVP_DAYS):
+        embed_color = 0x57F287   # all slots filled — green
+    elif filled > 0:
+        embed_color = 0xFEE75C   # partially filled — yellow
+    else:
+        embed_color = 0xEB459E   # nothing assigned — pink/red
+
     embed = discord.Embed(
         title="📋 DIFF Auto Meet Host Schedule",
         description=(
-            "*Built automatically from host availability responses.*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🕐 **Last rebuilt:** {rebuilt_str}\n"
-            "━━━━━━━━━━━━━━━━━━━━━━"
+            f"*Built automatically from host availability responses.*\n\n"
+            f"🕐 **Last rebuilt:** {rebuilt_str}"
         ),
-        color=discord.Color.blurple(),
+        color=embed_color,
         timestamp=utc_now(),
     )
     embed.set_author(name="Different Meets")
 
     for day in _HRSVP_DAYS:
+        icon  = _MEET_ICONS.get(day, "🗓️")
         entry = schedule["days"].get(day, {})
-        host_id = entry.get("host_id")
+        host_id     = entry.get("host_id")
         host_status = entry.get("host_status", "none")
-        rsvp_slot = rsvp.get(day, {})
+        rsvp_slot   = rsvp.get(day, {})
 
         if host_id:
-            host_str = f"<@{host_id}>" + (" *(maybe)*" if host_status == "maybe" else "")
+            host_str   = f"<@{host_id}>" + (" *(tentative)*" if host_status == "maybe" else "")
+            status_tag = "✅ Host Assigned"
         else:
             available = [_hrsvp_uid(e) for e in rsvp_slot.get("yes", [])]
             maybe_av  = [_hrsvp_uid(e) for e in rsvp_slot.get("maybe", [])]
             if available:
-                host_str = (
-                    "*No host assigned*\n"
-                    f"✅ Available: {' '.join(f'<@{u}>' for u in available)}"
-                )
+                host_str   = f"*Unassigned* — {', '.join(f'<@{u}>' for u in available[:3])} available"
+                status_tag = "⏳ Awaiting Assignment"
             elif maybe_av:
-                host_str = (
-                    "*No host assigned*\n"
-                    f"❓ Maybe: {' '.join(f'<@{u}>' for u in maybe_av)}"
-                )
+                host_str   = f"*Unassigned* — {', '.join(f'<@{u}>' for u in maybe_av[:3])} maybe"
+                status_tag = "❓ Possible Hosts"
             else:
-                host_str = "*No host assigned — no availability yet*"
+                host_str   = "*No availability submitted yet*"
+                status_tag = "🔴 Open Slot"
+
+        class_val = entry.get("class", "TBD")
+        time_val  = entry.get("time",  "TBD")
 
         field_val = (
-            f"🎮 **Class:** {entry.get('class', 'TBD')}\n"
-            f"🕒 **Time:** {entry.get('time', 'TBD')}\n"
+            f"**Status:** {status_tag}\n"
+            f"🎮 **Class:** {class_val}\n"
+            f"🕒 **Time:** {time_val}\n"
             f"👤 **Host:** {host_str}"
         )
-        embed.add_field(name=f"━━ {day}", value=field_val, inline=False)
+        embed.add_field(name=f"{icon}  {day}", value=field_val, inline=False)
 
     embed.add_field(
         name="\u200b",
-        value="🕒 Times shown in your local timezone automatically.  •  ⚠ Schedule may be adjusted by leadership.",
+        value=(
+            "🕒 Times shown in your local timezone automatically.\n"
+            "⚠️ Schedule may be adjusted by leadership."
+        ),
         inline=False,
     )
     embed.set_footer(text="DIFF • Auto Host Schedule Builder")
