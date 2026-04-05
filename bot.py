@@ -23700,11 +23700,13 @@ async def run_bot():
         except Exception:
             pass
 
-_log_handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+_log_handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='a')
 _log_handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
 _discord_logger = logging.getLogger('discord')
 _discord_logger.setLevel(logging.DEBUG)
 _discord_logger.addHandler(_log_handler)
+with open('discord.log', 'a', encoding='utf-8') as _lf:
+    _lf.write(f"\n{'='*60}\n[BOT STARTED] {datetime.now(_EST_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}\n{'='*60}\n")
 
 asyncio.run(run_bot())
 
