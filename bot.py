@@ -4358,6 +4358,13 @@ _MEET_QA_TRIGGERS = [
     "where we meeting", "where is meet", "meet location", "location of the meet",
     "how do i join", "how to join", "how do you join", "how do i get",
     "join the meet", "get to the meet", "get in the meet",
+    # "any meets rn / right now / tonight / today" variations
+    "any meets rn", "any meets right now", "any meets tonight", "any meets today",
+    "any meets going on", "any meets happening", "any meets atm",
+    "are there meets", "are there any meets", "is there a meet rn",
+    "is there a meet going on", "meet rn", "meet going on", "meets rn",
+    "meets going on", "meet happening rn", "meet happening now",
+    "is a meet happening", "any meet rn", "any meet tonight", "any meet today",
 ]
 
 _HOSTFLOW_COOLDOWNS: dict[int, float] = {}
