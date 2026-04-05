@@ -2797,90 +2797,76 @@ def _asched_build() -> dict:
 
 def _asched_build_embed() -> discord.Embed:
     schedule = _asched_load()
-    rsvp = _hrsvp_load()
+    rsvp     = _hrsvp_load()
 
     updated_at = schedule.get("updated_at")
     if updated_at:
         try:
             ts = int(datetime.fromisoformat(updated_at).timestamp())
-            rebuilt_str = f"<t:{ts}:R> (<t:{ts}:f>)"
+            rebuilt_str = f"<t:{ts}:R>  (<t:{ts}:f>)"
         except Exception:
             rebuilt_str = "recently"
     else:
         rebuilt_str = "*never — press Rebuild Schedule*"
 
-    _MEET_ICONS = {"Meet 1": "1️⃣", "Meet 2": "2️⃣", "Meet 3": "3️⃣"}
-    _STATUS_COLORS = {
-        "assigned": 0x57F287,   # green  — host confirmed
-        "maybe":    0xFEE75C,   # yellow — tentative
-        "open":     0xED4245,   # red    — no host yet
-    }
-
-    # Pick embed colour based on how many slots are filled
+    # Dynamic sidebar colour based on how many slots have a confirmed host
     filled = sum(
         1 for d in _HRSVP_DAYS
         if schedule["days"].get(d, {}).get("host_id")
     )
-    if filled == len(_HRSVP_DAYS):
-        embed_color = 0x57F287   # all slots filled — green
-    elif filled > 0:
-        embed_color = 0xFEE75C   # partially filled — yellow
-    else:
-        embed_color = 0xEB459E   # nothing assigned — pink/red
+    embed_color = 0x57F287 if filled == len(_HRSVP_DAYS) else (0xFEE75C if filled > 0 else 0xEB459E)
 
-    embed = discord.Embed(
-        title="📋 DIFF Auto Meet Host Schedule",
-        description=(
-            f"*Built automatically from host availability responses.*\n\n"
-            f"🕐 **Last rebuilt:** {rebuilt_str}"
-        ),
-        color=embed_color,
-        timestamp=utc_now(),
-    )
-    embed.set_author(name="Different Meets")
+    _DIV = "─" * 32
+
+    lines: list[str] = [
+        "__**DIFF PS5 Weekly Schedule**__",
+        "Schedule Posted",
+        _DIV,
+    ]
 
     for day in _HRSVP_DAYS:
-        icon  = _MEET_ICONS.get(day, "🗓️")
-        entry = schedule["days"].get(day, {})
+        entry       = schedule["days"].get(day, {})
         host_id     = entry.get("host_id")
         host_status = entry.get("host_status", "none")
         rsvp_slot   = rsvp.get(day, {})
+        class_val   = entry.get("class", "-")
+        time_val    = entry.get("time",  "-")
 
         if host_id:
-            host_str   = f"<@{host_id}>" + (" *(tentative)*" if host_status == "maybe" else "")
-            status_tag = "✅ Host Assigned"
+            host_val = f"<@{host_id}>" + (" *(tentative)*" if host_status == "maybe" else "")
         else:
             available = [_hrsvp_uid(e) for e in rsvp_slot.get("yes", [])]
             maybe_av  = [_hrsvp_uid(e) for e in rsvp_slot.get("maybe", [])]
             if available:
-                host_str   = f"*Unassigned* — {', '.join(f'<@{u}>' for u in available[:3])} available"
-                status_tag = "⏳ Awaiting Assignment"
+                host_val = f"*TBD* — {', '.join(f'<@{u}>' for u in available[:3])} available"
             elif maybe_av:
-                host_str   = f"*Unassigned* — {', '.join(f'<@{u}>' for u in maybe_av[:3])} maybe"
-                status_tag = "❓ Possible Hosts"
+                host_val = f"*TBD* — {', '.join(f'<@{u}>' for u in maybe_av[:3])} maybe"
             else:
-                host_str   = "*No availability submitted yet*"
-                status_tag = "🔴 Open Slot"
+                host_val = "-"
 
-        class_val = entry.get("class", "TBD")
-        time_val  = entry.get("time",  "TBD")
+        lines += [
+            f"**Date**",
+            f"**Starting Class —** {class_val}",
+            f"**Time —** {time_val}",
+            f"**Host —** {host_val}",
+            _DIV,
+        ]
 
-        field_val = (
-            f"**Status:** {status_tag}\n"
-            f"🎮 **Class:** {class_val}\n"
-            f"🕒 **Time:** {time_val}\n"
-            f"👤 **Host:** {host_str}"
-        )
-        embed.add_field(name=f"{icon}  {day}", value=field_val, inline=False)
+    lines += [
+        "**Important Information:**",
+        "*All DIFF Meets are based on the host's work & IRL schedule.*",
+        "",
+        "*Meet details are all subject to change.*",
+        "",
+        f"🕐 **Last rebuilt:** {rebuilt_str}",
+    ]
 
-    embed.add_field(
-        name="\u200b",
-        value=(
-            "🕒 Times shown in your local timezone automatically.\n"
-            "⚠️ Schedule may be adjusted by leadership."
-        ),
-        inline=False,
+    embed = discord.Embed(
+        description="\n".join(lines),
+        color=embed_color,
+        timestamp=utc_now(),
     )
+    embed.set_author(name="Different Meets")
     embed.set_footer(text="DIFF • Auto Host Schedule Builder")
     return embed
 
