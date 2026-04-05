@@ -2502,6 +2502,69 @@ def _hrsvp_uid(entry) -> str:
     return entry if isinstance(entry, str) else entry.get("uid", "")
 
 
+# ── Host Reliability Tracking ────────────────────────────────────────────────
+_HREL_FILE = os.path.join("diff_data", "diff_host_reliability.json")
+
+
+def _hrel_load() -> dict:
+    if os.path.exists(_HREL_FILE):
+        try:
+            with open(_HREL_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _hrel_save(data: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    with open(_HREL_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def _hrel_entry(data: dict, uid: str) -> dict:
+    return data.setdefault(uid, {
+        "rsvp_count": 0, "confirmed_count": 0,
+        "last_rsvp": None, "last_confirmed": None,
+    })
+
+
+def _hrel_track_rsvp(uid: str) -> None:
+    data = _hrel_load()
+    e = _hrel_entry(data, uid)
+    e["rsvp_count"] += 1
+    e["last_rsvp"] = utc_now().isoformat()
+    _hrel_save(data)
+
+
+def _hrel_track_confirmed(uid: str) -> None:
+    data = _hrel_load()
+    e = _hrel_entry(data, uid)
+    e["confirmed_count"] += 1
+    e["last_confirmed"] = utc_now().isoformat()
+    _hrel_save(data)
+
+
+# ── HRSVP weekly auto-reset state ────────────────────────────────────────────
+_HRSVP_RESET_FILE = os.path.join("diff_data", "diff_hrsvp_reset.json")
+
+
+def _hrsvp_reset_ts_load() -> str | None:
+    if os.path.exists(_HRSVP_RESET_FILE):
+        try:
+            with open(_HRSVP_RESET_FILE) as f:
+                return json.load(f).get("last_reset")
+        except Exception:
+            pass
+    return None
+
+
+def _hrsvp_reset_ts_save(date_str: str) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    with open(_HRSVP_RESET_FILE, "w") as f:
+        json.dump({"last_reset": date_str}, f)
+
+
 def _hrsvp_build_embed() -> discord.Embed:
     data = _hrsvp_load()
     _DIV = "─" * 30
@@ -2695,6 +2758,7 @@ class _HostAvailModal(discord.ui.Modal):
             slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
         slot["yes"].append({"uid": uid, "day": day_val, "time": time_val, "theme": theme_val})
         _hrsvp_save(data)
+        _hrel_track_rsvp(uid)
         await _hrsvp_update_panel(interaction.client)
         await interaction.response.send_message(
             f"✅ **{self.day}** — you're marked available!\n"
@@ -3264,11 +3328,202 @@ class _ASchedSubmitBtn(discord.ui.Button):
         )
 
 
+class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Slot"):
+    slot_input = discord.ui.TextInput(
+        label="Which slot? (Meet 1 / Meet 2 / Meet 3)",
+        placeholder="e.g. Meet 1",
+        required=True,
+        max_length=10,
+    )
+    host_input = discord.ui.TextInput(
+        label="Host user ID or @mention",
+        placeholder="e.g. 123456789012345678",
+        required=True,
+        max_length=32,
+    )
+    day_time_input = discord.ui.TextInput(
+        label="Day & Time",
+        placeholder="e.g. Sunday 8:00 PM EST",
+        required=True,
+        max_length=60,
+    )
+    class_input = discord.ui.TextInput(
+        label="Starting Class / Theme (leave blank = Open Class)",
+        placeholder="e.g. JDM  |  Muscle  |  Euro  |  Open Class",
+        required=False,
+        max_length=100,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        import re as _re
+        slot_raw  = str(self.slot_input).strip()
+        host_raw  = str(self.host_input).strip()
+        dt_raw    = str(self.day_time_input).strip()
+        class_val = str(self.class_input).strip() or "Open Class"
+
+        slot_name = next((d for d in _HRSVP_DAYS if slot_raw.lower() in d.lower()), None)
+        if not slot_name:
+            return await interaction.response.send_message(
+                f"❌ Unknown slot '{slot_raw}'. Use: Meet 1, Meet 2, or Meet 3.", ephemeral=True
+            )
+        m = _re.search(r"(\d{15,20})", host_raw)
+        if not m:
+            return await interaction.response.send_message(
+                "❌ Couldn't parse a user ID. Paste their ID or @mention.", ephemeral=True
+            )
+        host_id = int(m.group(1))
+        guild   = interaction.guild
+        member  = guild.get_member(host_id) if guild else None
+        if not member:
+            try:
+                member = await guild.fetch_member(host_id)
+            except Exception:
+                return await interaction.response.send_message(
+                    f"❌ Member {host_id} not found in this server.", ephemeral=True
+                )
+
+        parts    = dt_raw.split(None, 1)
+        day_val  = parts[0].capitalize() if parts else dt_raw
+        time_raw = parts[1] if len(parts) > 1 else dt_raw
+        time_val = _popup_parse_time(time_raw)
+
+        schedule = _asched_load()
+        slot     = schedule["days"].setdefault(slot_name, {})
+        slot.update({"host_id": host_id, "host_status": "yes",
+                     "day": day_val, "time": time_val, "class": class_val})
+        schedule["updated_at"] = utc_now().isoformat()
+        _asched_save(schedule)
+        await _asched_update_panel(interaction.client)
+
+        all_filled = all(schedule["days"].get(d, {}).get("host_id") for d in _HRSVP_DAYS)
+        if all_filled:
+            await _asched_post_finalized(interaction.client)
+
+        _hrel_track_confirmed(str(host_id))
+        try:
+            ov_embed = discord.Embed(
+                title=f"📅 You've Been Manually Assigned — {slot_name}",
+                description="Leadership has assigned you to host this meet slot.",
+                color=discord.Color.blurple(),
+                timestamp=utc_now(),
+            )
+            ov_embed.add_field(name="🗓 Day",   value=day_val,   inline=True)
+            ov_embed.add_field(name="🕒 Time",  value=time_val,  inline=True)
+            ov_embed.add_field(name="🎮 Class", value=class_val, inline=True)
+            ov_embed.set_footer(text="DIFF Meets • Host Schedule — questions? Contact leadership.")
+            await member.send(embed=ov_embed)
+        except (discord.Forbidden, Exception):
+            pass
+
+        fin_note = "\n📢 All slots confirmed — schedule posted to #upcoming-meet." if all_filled else ""
+        await interaction.response.send_message(
+            f"✅ **{slot_name}** overridden → {member.mention}\n"
+            f"📅 {day_val}  🕒 {time_val}  🎮 {class_val}{fin_note}",
+            ephemeral=True,
+        )
+
+
+class _ASchedOverrideBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Override Slot",
+            emoji="🛠️",
+            style=discord.ButtonStyle.secondary,
+            custom_id="diff_asched_override",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        is_staff = any(
+            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+            for r in getattr(interaction.user, "roles", [])
+        ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
+        if not is_staff:
+            return await interaction.response.send_message(
+                "Only leadership can override schedule slots.", ephemeral=True
+            )
+        await interaction.response.send_modal(_ASchedOverrideModal())
+
+
+class _ASchedPingNonRespondersBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Ping Non-Responders",
+            emoji="📩",
+            style=discord.ButtonStyle.secondary,
+            custom_id="diff_asched_ping_nonresponders",
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        is_staff = any(
+            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+            for r in getattr(interaction.user, "roles", [])
+        )
+        if not is_staff:
+            return await interaction.response.send_message(
+                "Only leadership can ping non-responders.", ephemeral=True
+            )
+        guild = interaction.guild
+        if not guild:
+            return await interaction.response.send_message("Server not found.", ephemeral=True)
+
+        data   = _hrsvp_load()
+        responded_uids: set = set()
+        for day in _HRSVP_DAYS:
+            slot = data.get(day, {})
+            for status in ("yes", "no", "maybe"):
+                for e in slot.get(status, []):
+                    responded_uids.add(_hrsvp_uid(e))
+
+        host_role = guild.get_role(HOST_ROLE_ID)
+        if not host_role:
+            return await interaction.response.send_message("Host role not found.", ephemeral=True)
+
+        non_responders = [m for m in host_role.members if str(m.id) not in responded_uids and not m.bot]
+        if not non_responders:
+            return await interaction.response.send_message(
+                "✅ All hosts have submitted their availability this week!", ephemeral=True
+            )
+
+        dm_embed = discord.Embed(
+            title="📋 Host Availability Reminder",
+            description=(
+                "Hey! You haven't submitted your availability for this week's meet schedule yet.\n\n"
+                f"Please head to <#{HOST_RSVP_CHANNEL_ID}> and mark your availability "
+                "for **Meet 1, Meet 2, and Meet 3**.\n\n"
+                "• ✅ **Available** — mark which slots you can host\n"
+                "• ❌ **Unavailable** — let leadership know you can't this week\n"
+                "• ❓ **Maybe** — note your preference and we'll follow up\n\n"
+                "Tap **My Status** on the panel to see what you've already submitted."
+            ),
+            color=discord.Color.orange(),
+            timestamp=utc_now(),
+        )
+        dm_embed.set_footer(text="DIFF Meets • Host Availability Reminder")
+
+        sent, failed = 0, 0
+        for member in non_responders:
+            try:
+                await member.send(embed=dm_embed)
+                sent += 1
+            except Exception:
+                failed += 1
+
+        await interaction.response.send_message(
+            f"📩 Reminded **{sent}** host{'s' if sent != 1 else ''} via DM."
+            + (f" ({failed} had DMs closed)" if failed else ""),
+            ephemeral=True,
+        )
+
+
 class AutoScheduleView(discord.ui.View):
     def __init__(self, bot_ref=None):
         super().__init__(timeout=None)
         self._bot_ref = bot_ref
         self.add_item(_ASchedReminderBtn())
+        self.add_item(_ASchedOverrideBtn())
+        self.add_item(_ASchedPingNonRespondersBtn())
         self.add_item(_ASchedSubmitBtn())
 
     @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id=_ASCHED_REFRESH_ID)
@@ -3330,6 +3585,7 @@ class AutoScheduleView(discord.ui.View):
                     pass
                 except Exception as _dme:
                     print(f"[AutoSched] DM to host {host_id} failed: {_dme}")
+                _hrel_track_confirmed(str(host_id))
 
         _slots_filled = sum(1 for d in _HRSVP_DAYS if schedule["days"].get(d, {}).get("host_id"))
         _rebuild_msg = "✅ Schedule rebuilt and hosts have been DM'd their assignments."
@@ -11995,6 +12251,8 @@ async def on_ready():
     bot.loop.create_task(_daily_crew_invite_check())
     bot.loop.create_task(_ft_auto_progression_loop())
     bot.loop.create_task(_season_loop())
+    bot.loop.create_task(_hrsvp_auto_reset_loop())
+    bot.loop.create_task(_hrsvp_escalation_loop())
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
     await _hrsvp_update_panel(bot)
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
@@ -12103,6 +12361,87 @@ async def on_guild_join(guild: discord.Guild):
             await guild.leave()
         except Exception as _e:
             print(f"[ServerLock] Could not leave {guild.id}: {_e}")
+
+
+# =========================
+# HRSVP AUTO-RESET LOOP
+# =========================
+async def _hrsvp_auto_reset_loop() -> None:
+    """Every 30 min: wipe RSVP panel on Monday midnight EST, ping @Meet Hosts."""
+    await bot.wait_until_ready()
+    from zoneinfo import ZoneInfo as _ZI
+    while not bot.is_closed():
+        await asyncio.sleep(1800)
+        try:
+            now_est   = datetime.now(_ZI("US/Eastern"))
+            if now_est.weekday() == 0 and now_est.hour == 0:
+                today_str = now_est.strftime("%Y-%m-%d")
+                if _hrsvp_reset_ts_load() == today_str:
+                    continue
+                _hrsvp_reset()
+                _hrsvp_reset_ts_save(today_str)
+                await _hrsvp_update_panel(bot)
+                ch = bot.get_channel(HOST_RSVP_CHANNEL_ID)
+                if isinstance(ch, discord.TextChannel):
+                    host_role = ch.guild.get_role(HOST_ROLE_ID) if ch.guild else None
+                    ping      = host_role.mention if host_role else "@Meet Hosts"
+                    await ch.send(
+                        f"{ping} 📋 **New week — availability panel reset!**\n"
+                        "Please mark your availability for Meet 1, Meet 2, and Meet 3 above. "
+                        "Leadership builds the schedule from your responses."
+                    )
+        except Exception as _e:
+            print(f"[HRSVP AutoReset] {_e}")
+
+
+# =========================
+# HRSVP ESCALATION LOOP
+# =========================
+_HRSVP_ESCALATED: set = set()   # tracks which slots have already been alerted this week
+
+
+async def _hrsvp_escalation_loop() -> None:
+    """Every 6 h: if a meet slot is ≤3 days away with no host, alert #host-team."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(21600)
+        try:
+            schedule = _asched_load()
+            guild    = discord.utils.get(bot.guilds, id=GUILD_ID)
+            if not guild:
+                continue
+            ch = bot.get_channel(_HOST_TEAM_CHANNEL_ID)
+            if not isinstance(ch, discord.TextChannel):
+                continue
+            rsvp = _hrsvp_load()
+            for day in _HRSVP_DAYS:
+                entry = schedule["days"].get(day, {})
+                if entry.get("host_id"):
+                    _HRSVP_ESCALATED.discard(day)
+                    continue
+                ts = _parse_meet_ts(entry.get("day", ""), entry.get("time", ""))
+                if not ts:
+                    continue
+                days_until = (ts - int(utc_now().timestamp())) / 86400
+                if days_until <= 3 and day not in _HRSVP_ESCALATED:
+                    _HRSVP_ESCALATED.add(day)
+                    slot_data  = rsvp.get(day, {})
+                    maybe_ents = slot_data.get("maybe", [])
+                    maybe_tags = (
+                        "  ".join(f"<@{_hrsvp_uid(e)}>" for e in maybe_ents[:4])
+                        if maybe_ents else "*none*"
+                    )
+                    leader_role = guild.get_role(LEADER_ROLE_ID)
+                    ping        = leader_role.mention if leader_role else "@Leadership"
+                    await ch.send(
+                        f"⚠️ {ping} **{day} has no confirmed host** and is "
+                        f"**{int(days_until)} day(s)** away!\n"
+                        f"❓ Maybe hosts: {maybe_tags}\n"
+                        f"Override a slot in <#{HOST_RSVP_CHANNEL_ID}> using the "
+                        f"**Override Slot** button."
+                    )
+        except Exception as _e:
+            print(f"[HRSVP Escalation] {_e}")
 
 
 # =========================
@@ -20341,6 +20680,69 @@ async def lockslot_cmd(
            else f"Rebuild Schedule can now reassign this slot.")
     )
     await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bot.tree.command(
+    name="hoststats",
+    description="View a host's reliability stats (how often they RSVP and get confirmed)",
+    guild=discord.Object(id=GUILD_ID),
+)
+@discord.app_commands.describe(member="The host to check stats for")
+async def hoststats_cmd(
+    interaction: discord.Interaction,
+    member: discord.Member,
+) -> None:
+    is_staff = any(
+        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+        for r in getattr(interaction.user, "roles", [])
+    ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
+    if not is_staff and interaction.user.id != member.id:
+        return await interaction.response.send_message(
+            "You can only view your own stats.", ephemeral=True
+        )
+
+    data  = _hrel_load()
+    e     = data.get(str(member.id), {})
+    rsvp_count      = e.get("rsvp_count", 0)
+    confirmed_count = e.get("confirmed_count", 0)
+    last_rsvp       = e.get("last_rsvp")
+    last_confirmed  = e.get("last_confirmed")
+
+    if rsvp_count > 0:
+        pct = int(confirmed_count / rsvp_count * 100)
+        reliability = f"{pct}%"
+        bar_filled  = round(pct / 10)
+        rel_bar     = "🟩" * bar_filled + "⬜" * (10 - bar_filled)
+    else:
+        reliability = "No data yet"
+        rel_bar     = "⬜" * 10
+
+    embed = discord.Embed(
+        title=f"📊 Host Reliability — {member.display_name}",
+        color=0x57F287 if rsvp_count > 0 else discord.Color.dark_gray(),
+        timestamp=utc_now(),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="📋 Times RSVP'd",     value=str(rsvp_count),      inline=True)
+    embed.add_field(name="✅ Times Confirmed",   value=str(confirmed_count), inline=True)
+    embed.add_field(name="📈 Confirmation Rate", value=reliability,          inline=True)
+    embed.add_field(name="Reliability Bar",      value=rel_bar,              inline=False)
+
+    if last_rsvp:
+        try:
+            ts = int(datetime.fromisoformat(last_rsvp).timestamp())
+            embed.add_field(name="Last RSVP",      value=f"<t:{ts}:R>", inline=True)
+        except Exception:
+            pass
+    if last_confirmed:
+        try:
+            ts = int(datetime.fromisoformat(last_confirmed).timestamp())
+            embed.add_field(name="Last Confirmed", value=f"<t:{ts}:R>", inline=True)
+        except Exception:
+            pass
+
+    embed.set_footer(text="DIFF Meets • Host Reliability  •  Tracks RSVP submissions vs actual assignments")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # =========================
