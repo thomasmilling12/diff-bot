@@ -2504,53 +2504,79 @@ def _hrsvp_uid(entry) -> str:
 
 def _hrsvp_build_embed() -> discord.Embed:
     data = _hrsvp_load()
-    desc = [
-        "📅 **DIFF Host Availability — Meet Schedule**",
-        "*Hosts, mark your availability below.*",
-        "",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-    ]
+    _DIV = "─" * 30
+
+    embed = discord.Embed(
+        title="📋 DIFF Host Availability — Meet Schedule",
+        description=(
+            "**Hosts, mark your availability for each meet slot below.**\n\n"
+            "• ✅ **Available** — opens a form for your day, time & class\n"
+            "• ❓ **Maybe** — opens a form to note your preferred day\n"
+            "• ❌ **Unavailable** — marks you as unable to host\n"
+            "• 👤 **My Status** — shows what you've submitted so far\n\n"
+            f"{_DIV}"
+        ),
+        color=0x5865F2,
+        timestamp=utc_now(),
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+
     for day in _HRSVP_DAYS:
-        d = data.get(day, {"yes": [], "no": [], "maybe": []})
-        yes_entries = d.get("yes", [])
-        no_entries  = d.get("no", [])
+        d             = data.get(day, {"yes": [], "no": [], "maybe": []})
+        yes_entries   = d.get("yes", [])
+        no_entries    = d.get("no", [])
         maybe_entries = d.get("maybe", [])
 
-        desc.append(f"**{day}**")
+        lines = []
 
-        # ✅ Available — show each host's details
         if yes_entries:
             for e in yes_entries:
                 uid = _hrsvp_uid(e)
                 if isinstance(e, dict):
-                    day_str = f"📅 {e['day']} | " if e.get("day") else ""
-                    desc.append(f"✅ <@{uid}> — {day_str}🕒 {e.get('time', 'TBD')} | 🎮 {e.get('theme', 'TBD')}")
+                    lines.append(
+                        f"✅ <@{uid}>\n"
+                        f"　📅 {e.get('day', 'TBD')}  🕒 {e.get('time', 'TBD')}  🎮 {e.get('theme', 'TBD')}"
+                    )
                 else:
-                    desc.append(f"✅ <@{uid}>")
+                    lines.append(f"✅ <@{uid}>")
         else:
-            desc.append("✅ *No hosts yet*")
+            lines.append("✅ *No hosts yet*")
 
-        # ❌ Unavailable — show names instead of just a count
-        if no_entries:
-            no_tags = " ".join(f"<@{_hrsvp_uid(u)}>" for u in no_entries)
-            desc.append(f"❌ Unavailable: {no_tags}")
-
-        # ❓ Maybe — show count + names clearly
         if maybe_entries:
-            maybe_tags = " ".join(f"<@{_hrsvp_uid(u)}>" for u in maybe_entries)
-            desc.append(f"❓ Maybe ({len(maybe_entries)}): {maybe_tags}")
+            for e in maybe_entries:
+                uid = _hrsvp_uid(e)
+                day_pref = e.get("day", "") if isinstance(e, dict) else ""
+                lines.append(f"❓ <@{uid}>" + (f" — prefers {day_pref}" if day_pref else ""))
 
-        desc.append("")
+        if no_entries:
+            no_tags = "  ".join(f"<@{_hrsvp_uid(u)}>" for u in no_entries)
+            lines.append(f"❌ Unavailable: {no_tags}")
 
-    desc.append("━━━━━━━━━━━━━━━━━━━━━━")
-    desc.append("🕒 Times shown in your local timezone automatically.")
-    embed = discord.Embed(
-        description="\n".join(desc),
-        color=discord.Color.dark_gray(),
-        timestamp=utc_now(),
-    )
-    embed.set_footer(text="Different Meets • Host Availability")
+        embed.add_field(name=day, value="\n".join(lines) or "*No responses yet*", inline=False)
+
+    embed.set_footer(text="Different Meets • Host Availability  •  Times shown in your local timezone")
     return embed
+
+
+class _HrsvpResetConfirmModal(discord.ui.Modal, title="Confirm Reset"):
+    confirm = discord.ui.TextInput(
+        label='Type RESET to confirm clearing all responses',
+        placeholder="RESET",
+        required=True,
+        max_length=10,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if str(self.confirm).strip().upper() != "RESET":
+            return await interaction.response.send_message(
+                "❌ Reset cancelled — you didn't type RESET.", ephemeral=True
+            )
+        _hrsvp_reset()
+        await _hrsvp_update_panel(interaction.client)
+        await interaction.response.send_message(
+            "🗑️ All host availability responses have been cleared for the new week.", ephemeral=True
+        )
 
 
 class _HrsvpResetBtn(discord.ui.Button):
@@ -2572,10 +2598,50 @@ class _HrsvpResetBtn(discord.ui.Button):
             return await interaction.response.send_message(
                 "Only leadership can reset availability responses.", ephemeral=True
             )
-        _hrsvp_reset()
-        await _hrsvp_update_panel(interaction.client)
+        await interaction.response.send_modal(_HrsvpResetConfirmModal())
+
+
+class _HrsvpMyStatusBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="My Status",
+            emoji="👤",
+            style=discord.ButtonStyle.secondary,
+            custom_id="hrsvp_my_status",
+            row=3,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        uid  = str(interaction.user.id)
+        data = _hrsvp_load()
+        lines = []
+        for day in _HRSVP_DAYS:
+            slot = data.get(day, {})
+            found = False
+            for e in slot.get("yes", []):
+                if _hrsvp_uid(e) == uid:
+                    if isinstance(e, dict):
+                        lines.append(
+                            f"✅ **{day}** — {e.get('day','TBD')} · {e.get('time','TBD')} · {e.get('theme','TBD')}"
+                        )
+                    else:
+                        lines.append(f"✅ **{day}** — Available")
+                    found = True
+            for e in slot.get("maybe", []):
+                if _hrsvp_uid(e) == uid:
+                    day_pref = e.get("day","") if isinstance(e, dict) else ""
+                    lines.append(f"❓ **{day}** — Maybe" + (f" (prefers {day_pref})" if day_pref else ""))
+                    found = True
+            for e in slot.get("no", []):
+                if _hrsvp_uid(e) == uid:
+                    lines.append(f"❌ **{day}** — Unavailable")
+                    found = True
+            if not found:
+                lines.append(f"⬜ **{day}** — No response yet")
+
         await interaction.response.send_message(
-            "🗑️ All host availability responses have been cleared for the new week.", ephemeral=True
+            "**Your current availability:**\n" + "\n".join(lines),
+            ephemeral=True,
         )
 
 
@@ -2586,52 +2652,86 @@ class HostRSVPView(discord.ui.View):
             self.add_item(_HostRSVPBtn(day, "yes",   "✅", discord.ButtonStyle.success))
             self.add_item(_HostRSVPBtn(day, "no",    "❌", discord.ButtonStyle.danger))
             self.add_item(_HostRSVPBtn(day, "maybe", "❓", discord.ButtonStyle.secondary))
+        self.add_item(_HrsvpMyStatusBtn())
         self.add_item(_HrsvpResetBtn())
 
 
 class _HostAvailModal(discord.ui.Modal):
-    day_input = discord.ui.TextInput(
-        label="What day do you want to host?",
-        placeholder="e.g. Friday  or  Saturday  or  Sunday",
+    day_time_input = discord.ui.TextInput(
+        label="Day & Time you want to host",
+        placeholder="e.g. Sunday 8:00 PM EST",
         required=True,
-        max_length=30,
-    )
-    time_input = discord.ui.TextInput(
-        label="What time do you want to host?",
-        placeholder="e.g. 8pm EST  or  8:30pm CST",
-        required=True,
-        max_length=50,
+        max_length=60,
     )
     theme_input = discord.ui.TextInput(
-        label="Theme / Class for this meet",
-        placeholder="e.g. JDM Night  or  Stanced Only  or  Open",
-        required=True,
+        label="Starting Class / Theme",
+        placeholder="e.g. JDM  |  Muscle  |  Open Class  |  Euro",
+        required=False,
         max_length=100,
+        default="Open Class",
     )
 
     def __init__(self, day: str):
-        super().__init__(title=f"✅ Hosting {day} — Details")
+        super().__init__(title=f"✅ Available for {day}")
         self.day = day
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user:
             await interaction.response.defer()
             return
-        uid = str(interaction.user.id)
-        day_val = str(self.day_input).strip()
-        time_raw = str(self.time_input).strip()
-        theme_val = str(self.theme_input).strip()
-        # Convert "8pm EST" → Discord auto-timezone timestamp
-        time_val = _popup_parse_time(time_raw)
+        uid       = str(interaction.user.id)
+        raw_dt    = str(self.day_time_input).strip()
+        theme_val = str(self.theme_input).strip() or "Open Class"
+
+        # Split "Sunday 8:00 PM EST" → day_val + time_val
+        parts     = raw_dt.split(None, 1)
+        day_val   = parts[0].capitalize() if parts else raw_dt
+        time_raw  = parts[1] if len(parts) > 1 else raw_dt
+        time_val  = _popup_parse_time(time_raw)
+
         data = _hrsvp_load()
         slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
         for c in ("yes", "no", "maybe"):
-            slot[c] = [e for e in slot.get(c, []) if (e if isinstance(e, str) else e.get("uid")) != uid]
+            slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
         slot["yes"].append({"uid": uid, "day": day_val, "time": time_val, "theme": theme_val})
         _hrsvp_save(data)
         await _hrsvp_update_panel(interaction.client)
         await interaction.response.send_message(
-            f"✅ **{self.day}**: you're marked available\n📅 Day: **{day_val}** | 🕒 Time: {time_val} | 🎮 Theme: **{theme_val}**",
+            f"✅ **{self.day}** — you're marked available!\n"
+            f"📅 **Day:** {day_val}  🕒 **Time:** {time_val}  🎮 **Class:** {theme_val}\n\n"
+            f"*You can update this anytime by clicking the button again.*",
+            ephemeral=True,
+        )
+
+
+class _HostMaybeModal(discord.ui.Modal):
+    day_pref = discord.ui.TextInput(
+        label="What day(s) could you host?",
+        placeholder="e.g. Saturday or Sunday — leave blank if unsure",
+        required=False,
+        max_length=60,
+    )
+
+    def __init__(self, day: str):
+        super().__init__(title=f"❓ Maybe for {day}")
+        self.day = day
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.user:
+            await interaction.response.defer()
+            return
+        uid      = str(interaction.user.id)
+        day_pref = str(self.day_pref).strip()
+        data     = _hrsvp_load()
+        slot     = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
+        for c in ("yes", "no", "maybe"):
+            slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
+        slot["maybe"].append({"uid": uid, "day": day_pref})
+        _hrsvp_save(data)
+        await _hrsvp_update_panel(interaction.client)
+        pref_str = f" — preference: **{day_pref}**" if day_pref else ""
+        await interaction.response.send_message(
+            f"❓ **{self.day}** — marked as Maybe{pref_str}.\n*Leadership will follow up if needed.*",
             ephemeral=True,
         )
 
@@ -2655,21 +2755,26 @@ class _HostRSVPBtn(discord.ui.Button):
         if not has_host:
             await interaction.response.send_message("Only hosts can use this panel.", ephemeral=True)
             return
-        # "yes" opens a modal to collect time + theme
+        # "yes" → modal for day/time/class
         if self.choice == "yes":
             await interaction.response.send_modal(_HostAvailModal(self.day))
             return
-        uid = str(interaction.user.id)
+        # "maybe" → modal to note day preference
+        if self.choice == "maybe":
+            await interaction.response.send_modal(_HostMaybeModal(self.day))
+            return
+        # "no" → instant mark, confirm ephemerally
+        uid  = str(interaction.user.id)
         data = _hrsvp_load()
         slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
         for c in ("yes", "no", "maybe"):
-            slot[c] = [e for e in slot.get(c, []) if (e if isinstance(e, str) else e.get("uid")) != uid]
-        slot[self.choice].append(uid)
+            slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
+        slot["no"].append(uid)
         _hrsvp_save(data)
         await _hrsvp_update_panel(interaction.client)
-        label_map = {"no": "❌ Unavailable", "maybe": "❓ Maybe"}
         await interaction.response.send_message(
-            f"**{self.day}**: marked as **{label_map[self.choice]}**", ephemeral=True
+            f"❌ **{self.day}** — you're marked as unavailable.\n*Changed your mind? Hit the button again.*",
+            ephemeral=True,
         )
 
 
