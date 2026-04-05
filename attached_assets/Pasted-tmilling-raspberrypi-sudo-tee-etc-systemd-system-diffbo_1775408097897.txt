@@ -1,0 +1,993 @@
+tmilling@raspberrypi:~ $ sudo tee /etc/systemd/system/diffbot.service > /dev/null << 'EOF'
+[Unit]
+Description=DIFF Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tmilling
+WorkingDirectory=/home/tmilling/diffbot
+ExecStart=/usr/bin/python3 -u bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable diffbot
+sudo systemctl start diffbot
+sudo systemctl status diffbot
+Created symlink /etc/systemd/system/multi-user.target.wants/diffbot.service → /etc/systemd/system/diffbot.service.
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enab>
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord >
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabl>
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord B>
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● diffbot.service - DIFF Discord Bot
+     Loaded: loaded (/etc/systemd/system/diffbot.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-05 12:54:02 EDT; 18ms ago
+   Main PID: 2449 (python3)
+      Tasks: 1 (limit: 4756)
+        CPU: 15ms
+     CGroup: /system.slice/diffbot.service
+             └─2449 /usr/bin/python3 -u bot.py
+
+Apr 05 12:54:02 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+lines 1-10/10 (END)
