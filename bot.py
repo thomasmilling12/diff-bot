@@ -159,7 +159,8 @@ TOP3_ROLE_ID = 1485828874943074434
 SEASON_FILE = os.path.join("diff_data", "diff_seasons.json")
 FINAL_TIER_FILE = os.path.join("diff_data", "diff_final_tier.json")
 PHOTO_HASHES_FILE = os.path.join("diff_data", "diff_photo_hashes.json")
-CREW_PINGED_FILE = os.path.join("diff_data", "diff_crew_pinged.json")
+CREW_PINGED_FILE   = os.path.join("diff_data", "diff_crew_pinged.json")
+_LAST_ONLINE_FILE  = os.path.join("diff_data", "diff_last_online.json")
 MEMBER_DATABASE_CHANNEL_ID = 1485274945473871903
 REAPPLY_COOLDOWN_DAYS = 14
 DATA_FOLDER = "diff_data"
@@ -11818,6 +11819,17 @@ async def on_ready():
 
     status_message_id = data.get("panel_message_id")
 
+    # ── Startup welcome DM catch-up (DM members who joined while offline) ──
+    asyncio.create_task(_startup_catchup_welcome_dms())
+
+    # ── Save this moment as "last online" so next restart knows the gap ──
+    try:
+        import time as _tmod
+        with open(_LAST_ONLINE_FILE, "w") as _lof:
+            json.dump({"ts": _tmod.time()}, _lof)
+    except Exception as _loe:
+        print(f"[LastOnline] Could not save timestamp: {_loe}")
+
     # ── server lock: leave any guild that isn't the authorised DIFF server ──
     for guild in list(bot.guilds):
         if guild.id != GUILD_ID:
@@ -18460,42 +18472,10 @@ async def _faq_list(ctx: commands.Context) -> None:
     await ctx.send(embed=embed, delete_after=60)
 
 
-# ── Welcome DM on member join ─────────────────────────────────────────────────
+# ── Welcome DM helper (used by on_member_join AND startup catch-up) ───────────
 
-@bot.event
-async def on_member_join(member: discord.Member) -> None:
-    if member.bot:
-        return
-
-    # ── Anti-raid join-flood detection ────────────────────────────────────────
-    import time as _time_mod
-    _now_ts = _time_mod.time()
-    _raid_join_times.append(_now_ts)
-    _raid_join_times[:] = [_t for _t in _raid_join_times if _now_ts - _t < 30]
-    if len(_raid_join_times) >= 5:
-        _mod_hub_ch = member.guild.get_channel(MOD_HUB_CHANNEL_ID)
-        if isinstance(_mod_hub_ch, discord.TextChannel):
-            try:
-                _raid_e = discord.Embed(
-                    title="🚨 Possible Raid Detected",
-                    description=(
-                        f"**{len(_raid_join_times)} members** joined in the last 30 seconds.\n"
-                        "Consider enabling slowmode or raising verification requirements."
-                    ),
-                    color=discord.Color.red(),
-                )
-                _raid_e.set_footer(text="DIFF Anti-Raid System")
-                await _mod_hub_ch.send(content=f"<@&{LEADER_ROLE_ID}>", embed=_raid_e)
-            except Exception:
-                pass
-        for _ch in member.guild.text_channels:
-            try:
-                if _ch.permissions_for(member.guild.default_role).read_messages and _ch.slowmode_delay < 30:
-                    await _ch.edit(slowmode_delay=30, reason="Anti-raid: join flood detected")
-            except Exception:
-                pass
-
-    from datetime import timezone as _tz
+async def _send_welcome_dm(member: discord.Member) -> None:
+    """Send the DIFF welcome DM to a member. Silently ignores Forbidden."""
     try:
         dm_embed = discord.Embed(
             title="👋 Welcome to DIFF Meets!",
@@ -18546,10 +18526,112 @@ async def on_member_join(member: discord.Member) -> None:
             dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
         if DIFF_BANNER_URL:
             dm_embed.set_image(url=DIFF_BANNER_URL)
-
         await member.send(embed=dm_embed)
     except (discord.Forbidden, discord.HTTPException):
-        pass  # Member has DMs disabled — silently ignore
+        pass
+
+
+async def _startup_catchup_welcome_dms() -> None:
+    """On restart, DM any members who joined while the bot was offline."""
+    await asyncio.sleep(10)  # let the gateway fully settle first
+    try:
+        # Load the timestamp from last successful on_ready
+        last_online_ts: float = 0.0
+        try:
+            with open(_LAST_ONLINE_FILE, "r") as _f:
+                last_online_ts = float(json.load(_f).get("ts", 0))
+        except (FileNotFoundError, Exception):
+            pass
+
+        if last_online_ts == 0.0:
+            return  # First ever run — nothing to catch up on
+
+        offline_since = datetime.fromtimestamp(last_online_ts, tz=timezone.utc)
+        now_utc       = datetime.now(timezone.utc)
+
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+
+        missed: list[discord.Member] = [
+            m for m in guild.members
+            if not m.bot
+            and m.joined_at is not None
+            and offline_since < m.joined_at <= now_utc
+        ]
+
+        if not missed:
+            return
+
+        print(f"[CatchUp] Bot was offline since {offline_since.isoformat()}. "
+              f"Sending welcome DMs to {len(missed)} member(s) who joined while down.")
+
+        sent = 0
+        for m in missed:
+            await _send_welcome_dm(m)
+            sent += 1
+            await asyncio.sleep(1.5)  # rate-limit friendly
+
+        # Log summary to staff logs
+        log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(log_ch, discord.TextChannel):
+            names = ", ".join(m.mention for m in missed[:20])
+            if len(missed) > 20:
+                names += f" …and {len(missed) - 20} more"
+            summary = discord.Embed(
+                title="📬 Startup Welcome DM Catch-Up",
+                description=(
+                    f"Bot was offline from <t:{int(last_online_ts)}:f> to <t:{int(now_utc.timestamp())}:f>.\n"
+                    f"Sent welcome DMs to **{sent}** member(s) who joined during that window:\n{names}"
+                ),
+                color=0x57F287,
+                timestamp=now_utc,
+            )
+            summary.set_footer(text="DIFF Catch-Up System")
+            try:
+                await log_ch.send(embed=summary)
+            except Exception:
+                pass
+    except Exception as _e:
+        print(f"[CatchUp] Error during startup DM catch-up: {_e}")
+
+
+# ── Welcome DM on member join ─────────────────────────────────────────────────
+
+@bot.event
+async def on_member_join(member: discord.Member) -> None:
+    if member.bot:
+        return
+
+    # ── Anti-raid join-flood detection ────────────────────────────────────────
+    import time as _time_mod
+    _now_ts = _time_mod.time()
+    _raid_join_times.append(_now_ts)
+    _raid_join_times[:] = [_t for _t in _raid_join_times if _now_ts - _t < 30]
+    if len(_raid_join_times) >= 5:
+        _mod_hub_ch = member.guild.get_channel(MOD_HUB_CHANNEL_ID)
+        if isinstance(_mod_hub_ch, discord.TextChannel):
+            try:
+                _raid_e = discord.Embed(
+                    title="🚨 Possible Raid Detected",
+                    description=(
+                        f"**{len(_raid_join_times)} members** joined in the last 30 seconds.\n"
+                        "Consider enabling slowmode or raising verification requirements."
+                    ),
+                    color=discord.Color.red(),
+                )
+                _raid_e.set_footer(text="DIFF Anti-Raid System")
+                await _mod_hub_ch.send(content=f"<@&{LEADER_ROLE_ID}>", embed=_raid_e)
+            except Exception:
+                pass
+        for _ch in member.guild.text_channels:
+            try:
+                if _ch.permissions_for(member.guild.default_role).read_messages and _ch.slowmode_delay < 30:
+                    await _ch.edit(slowmode_delay=30, reason="Anti-raid: join flood detected")
+            except Exception:
+                pass
+
+    await _send_welcome_dm(member)
 
 
 async def _wipe_old_panels(channel: discord.TextChannel) -> None:
