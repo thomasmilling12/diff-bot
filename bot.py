@@ -10066,12 +10066,14 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
         if is_finalized:
             field_name = f"🏁 Meet {n} — Closed"
             field_lines = [
-                "~~────────────────────────~~",
                 f"📅 {date_text}  🕒 {start_time}  🎮 {class_name}",
                 f"👤 **Host:** {host_text}",
                 f"✅ **{c['yes']}** yes  ·  ❓ **{c['maybe']}** maybe  ·  ❌ **{c['no']}** no",
                 "*🔒 Voting closed*",
             ]
+            ts = _parse_meet_ts(date_text, start_time)
+            if ts:
+                field_lines.append(f"⏱️ <t:{ts}:F>")
         else:
             if class_name == "TBD" or start_time == "TBD":
                 status = "⏳ Awaiting schedule"
@@ -19917,6 +19919,7 @@ _AUTO_WEEKLY_WEEKDAY = 0      # Monday
 _AUTO_WEEKLY_HOUR_UTC = 16    # 12 PM ET / 16 UTC
 _AUTO_WEEKLY_MINUTE_UTC = 0
 _AUTO_MIN_MSG_TO_COUNT = 1
+_last_weekly_reset_ts: float = 0.0   # prevents double-fire after Pi restart
 
 
 class _AutoStatsStore:
@@ -20202,10 +20205,18 @@ def _auto_seconds_until_weekly() -> float:
 
 
 async def _auto_weekly_loop() -> None:
+    global _last_weekly_reset_ts
     from datetime import timezone as _tz
     await bot.wait_until_ready()
     while not bot.is_closed():
         await asyncio.sleep(_auto_seconds_until_weekly())
+        # Dedup guard — skip if we already ran within the last 6 hours.
+        # Prevents a double-fire when the Pi restarts near the scheduled time.
+        import time as _time
+        now_mono = _time.monotonic()
+        if now_mono - _last_weekly_reset_ts < 6 * 3600:
+            continue
+        _last_weekly_reset_ts = now_mono
         guild = bot.get_guild(GUILD_ID)
         if guild is None:
             continue
