@@ -10010,17 +10010,23 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
 
     finalized_count = sum(1 for n in (1, 2, 3)
                           if meets_by_num.get(n) and meets_by_num[n]["is_finalized"])
+    all_finalized = finalized_count == 3
 
     color = (0x57F287 if finalized_count == 3
              else 0xFEE75C if finalized_count > 0
              else 0x5865F2)
 
+    description = (
+        "**All meets this week have been finalized!** 🎉\n"
+        "Attendance has been recorded — see you on the track."
+        if all_finalized else
+        "Mark your attendance for each meet below.\n"
+        "*No-shows are tracked — respond even if you can't make it.*"
+    )
+
     embed = discord.Embed(
         title="📋 DIFF Auto Roll Call",
-        description=(
-            "Mark your attendance for each meet below.\n"
-            "*No-shows are tracked — respond even if you can't make it.*"
-        ),
+        description=description,
         color=color,
         timestamp=datetime.now(timezone.utc),
     )
@@ -10032,46 +10038,54 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
     )
 
     for n in (1, 2, 3):
-        meet        = meets_by_num.get(n)
-        c           = counts[n]
-        class_name  = meet["class_name"] if meet else "TBD"
-        start_time  = meet["start_time"] if meet else "TBD"
-        date_text   = meet["date_text"]  if meet else "TBD"
-        host_id     = meet["host_id"]    if meet else None
-        host_text   = f"<@{host_id}>"   if host_id else "*No host assigned*"
+        meet         = meets_by_num.get(n)
+        c            = counts[n]
+        class_name   = meet["class_name"] if meet else "TBD"
+        start_time   = meet["start_time"] if meet else "TBD"
+        date_text    = meet["date_text"]  if meet else "TBD"
+        host_id      = meet["host_id"]    if meet else None
+        host_text    = f"<@{host_id}>"   if host_id else "*No host assigned*"
         is_finalized = bool(meet and meet["is_finalized"])
 
         if is_finalized:
-            status = "✅ Finalized"
-        elif class_name == "TBD" or start_time == "TBD":
-            status = "⏳ Awaiting schedule"
+            field_name = f"🏁 Meet {n} — Closed"
+            field_lines = [
+                "~~────────────────────────~~",
+                f"📅 {date_text}  🕒 {start_time}  🎮 {class_name}",
+                f"👤 **Host:** {host_text}",
+                f"✅ **{c['yes']}** yes  ·  ❓ **{c['maybe']}** maybe  ·  ❌ **{c['no']}** no",
+                "*🔒 Voting closed*",
+            ]
         else:
-            status = "📝 Open for RSVP"
+            if class_name == "TBD" or start_time == "TBD":
+                status = "⏳ Awaiting schedule"
+            else:
+                status = "📝 Open for RSVP"
 
-        # Attendance bar (up to 10 slots)
-        scale       = max(c["yes"] + c["maybe"] + c["no"], 10)
-        yes_blocks  = round(c["yes"]   / scale * 10)
-        maybe_blocks= round(c["maybe"] / scale * 10)
-        bar         = "🟩" * yes_blocks + "🟨" * maybe_blocks + "⬜" * (10 - yes_blocks - maybe_blocks)
+            scale        = max(c["yes"] + c["maybe"] + c["no"], 10)
+            yes_blocks   = round(c["yes"]   / scale * 10)
+            maybe_blocks = round(c["maybe"] / scale * 10)
+            bar          = "🟩" * yes_blocks + "🟨" * maybe_blocks + "⬜" * (10 - yes_blocks - maybe_blocks)
 
-        field_lines = [
-            f"**{status}**",
-            f"📅 {date_text}  🕒 {start_time}  🎮 {class_name}",
-            f"👤 **Host:** {host_text}",
-            f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`  {bar}",
-        ]
-        # Countdown
-        ts = _parse_meet_ts(date_text, start_time)
-        if ts:
-            field_lines.append(f"⏱️ <t:{ts}:F>  (<t:{ts}:R>)")
+            field_name  = f"〔{n}〕 Meet {n}"
+            field_lines = [
+                f"**{status}**",
+                f"📅 {date_text}  🕒 {start_time}  🎮 {class_name}",
+                f"👤 **Host:** {host_text}",
+                f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}",
+            ]
+            ts = _parse_meet_ts(date_text, start_time)
+            if ts:
+                field_lines.append(f"⏱️ <t:{ts}:F>  (<t:{ts}:R>)")
 
-        embed.add_field(name=f"〔{n}〕 Meet {n}", value="\n".join(field_lines), inline=False)
+        embed.add_field(name=field_name, value="\n".join(field_lines), inline=False)
 
-    embed.add_field(
-        name="\u200b",
-        value="🧥 Wear your crew jacket  •  🎙️ Join voice if required  •  ⚠️ No-shows are tracked",
-        inline=False,
-    )
+    if not all_finalized:
+        embed.add_field(
+            name="\u200b",
+            value="🧥 Wear your crew jacket  •  🎙️ Join voice if required  •  ⚠️ No-shows are tracked",
+            inline=False,
+        )
     embed.set_footer(text="DIFF • Auto Roll Call System  •  Use 📊 My RSVP to see your responses")
     return embed
 
@@ -10210,11 +10224,25 @@ class _RcMyRsvpBtn(discord.ui.Button):
 
 
 class _RcRollCallView(discord.ui.View):
-    def __init__(self) -> None:
+    def __init__(self, meets_by_num: dict = None) -> None:
         super().__init__(timeout=None)
+        finalized = {}
+        if meets_by_num:
+            finalized = {n: bool(meets_by_num.get(n) and meets_by_num[n]["is_finalized"])
+                         for n in (1, 2, 3)}
         for meet_num, row_idx in ((1, 0), (2, 1), (3, 2)):
-            for status in ("yes", "maybe", "no"):
-                self.add_item(_RcBtn(meet_num, status, row_idx))
+            if finalized.get(meet_num):
+                self.add_item(discord.ui.Button(
+                    label=f"Meet {meet_num} — Finalized",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=True,
+                    row=row_idx,
+                    custom_id=f"diff_rollcall:fin_{meet_num}",
+                    emoji="🏁",
+                ))
+            else:
+                for status in ("yes", "maybe", "no"):
+                    self.add_item(_RcBtn(meet_num, status, row_idx))
         self.add_item(_RcMyRsvpBtn())
 
 
@@ -10308,10 +10336,11 @@ async def _rc_refresh_panel(guild: discord.Guild):
             return
 
         # --- try stored ID first ---
+        meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
         if panel:
             try:
                 msg = await channel.fetch_message(panel["message_id"])
-                await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
+                await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
                 return
             except discord.NotFound:
                 pass
@@ -10324,7 +10353,7 @@ async def _rc_refresh_panel(guild: discord.Guild):
         if rc_msg_id:
             try:
                 msg = await channel.fetch_message(rc_msg_id)
-                await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView())
+                await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
                 return
             except Exception as e:
                 print(f"[RcPanel] refresh error (scanned msg): {e}")
