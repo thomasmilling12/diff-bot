@@ -3088,30 +3088,32 @@ def _asched_build_embed() -> discord.Embed:
                 status_tag = "🔴 Open Slot"
                 avail_line = None
 
-        # Countdown line
-        countdown_line = ""
-        meet_ts = _parse_meet_ts(date_val, time_val)
+        meet_ts    = _parse_meet_ts(date_val, time_val)
+        short_date = ""
         if meet_ts:
-            countdown_line = f"\n⏱️ **Starts:** <t:{meet_ts}:F>  (<t:{meet_ts}:R>)"
+            try:
+                from datetime import datetime as _dt
+                short_date = " — " + _dt.utcfromtimestamp(meet_ts).strftime("%a %b %-d")
+            except Exception:
+                pass
+
+        summary_line = f"📅 {date_val}  ·  🕒 {time_val}  ·  🎮 {class_val}"
 
         field_lines = [
-            f"**Status:** {status_tag}{lock_tag}",
-            f"📅 **Date —** {date_val}",
-            f"🎮 **Starting Class —** {class_val}",
-            f"🕒 **Time —** {time_val}",
-            f"👤 **Host —** {host_val}",
+            f"**{status_tag}**{lock_tag}",
+            summary_line,
+            f"👤 **Host:** {host_val}",
         ]
         if avail_line:
             field_lines.append(avail_line)
-        if countdown_line:
-            field_lines.append(countdown_line)
+        if meet_ts:
+            field_lines.append(f"⏱️ <t:{meet_ts}:F>  (<t:{meet_ts}:R>)")
 
         embed.add_field(
-            name=f"{num_tag}  Meet {idx}",
+            name=f"{num_tag}  Meet {idx}{short_date}",
             value="\n".join(field_lines),
             inline=False,
         )
-        embed.add_field(name="─" * 36, value="\u200b", inline=False)
 
     embed.add_field(
         name="📌 Important Information",
@@ -3168,11 +3170,10 @@ class _ASchedAnnounceView(discord.ui.View):
 def _asched_build_finalized_embed() -> discord.Embed:
     """Clean, community-facing embed for the upcoming-meet channel. No management details."""
     schedule = _asched_load()
-    _DIV = "━" * 34
 
     embed = discord.Embed(
         title="📅 DIFF PS5 Weekly Schedule",
-        description=_DIV,
+        description="All 3 meets are confirmed for this week. Mark your calendar! 🗓️",
         color=0x57F287,   # always green — only posted when all 3 slots confirmed
         timestamp=utc_now(),
     )
@@ -3195,20 +3196,35 @@ def _asched_build_finalized_embed() -> discord.Embed:
 
         host_str = f"<@{host_id}>" if host_id else "*TBD*"
 
-        # Countdown timestamp
-        meet_ts   = _parse_meet_ts(date_val, time_val)
-        time_line = f"🕒  {time_val}"
+        meet_ts    = _parse_meet_ts(date_val, time_val)
+        short_date = ""
         if meet_ts:
-            time_line += f"  (<t:{meet_ts}:R>)"
+            try:
+                from datetime import datetime as _dt
+                short_date = " — " + _dt.utcfromtimestamp(meet_ts).strftime("%a %b %-d")
+            except Exception:
+                pass
 
-        field_val = (
-            f"📅  {date_val}\n"
-            f"🎮  Starting Class — {class_val}\n"
-            f"{time_line}\n"
-            f"👤  {host_str}"
+        if meet_ts:
+            date_line = f"📅 <t:{meet_ts}:D>  ·  🕒 {time_val}  ·  🎮 {class_val}"
+            time_line = f"⏱️ <t:{meet_ts}:F>  (<t:{meet_ts}:R>)"
+        else:
+            date_line = f"📅 {date_val}  ·  🕒 {time_val}  ·  🎮 {class_val}"
+            time_line = None
+
+        field_lines = [
+            "✅ **Confirmed**",
+            date_line,
+            f"👤 {host_str}",
+        ]
+        if time_line:
+            field_lines.append(time_line)
+
+        embed.add_field(
+            name=f"{num_tag} Meet {idx}{short_date}",
+            value="\n".join(field_lines),
+            inline=False,
         )
-        embed.add_field(name=f"{num_tag} Meet {idx}", value=field_val, inline=False)
-        embed.add_field(name=_DIV, value="\u200b", inline=False)
 
     embed.add_field(
         name="\u200b",
@@ -3255,7 +3271,7 @@ class _ASchedReminderBtn(discord.ui.Button):
         super().__init__(
             label="Send Reminders",
             emoji="📣",
-            style=discord.ButtonStyle.danger,
+            style=discord.ButtonStyle.primary,
             custom_id="diff_auto_sched_remind",
             row=1,
         )
