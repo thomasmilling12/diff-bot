@@ -412,6 +412,8 @@ class DiffWelcomeJoinSystem(commands.Cog):
             else:
                 await channel.send(content=member.mention, embed=embed, view=view,
                                    allowed_mentions=discord.AllowedMentions(users=True))
+            if member != channel.guild.me:
+                self.db.mark_join_hub_post(member.id)
         except Exception as e:
             print(f"[DiffWelcomeJoinSystem] Failed to send check-in panel: {e}")
 
@@ -460,6 +462,18 @@ class DiffWelcomeJoinSystem(commands.Cog):
     async def on_member_join(self, member: discord.Member):
         if member.guild.id != GUILD_ID:
             return
+
+        # Guard against duplicate panels caused by Discord replaying gateway
+        # events after the bot restarts (e.g. after a Pi freeze).
+        existing = self.db.get_row(member.id)
+        if existing and existing["posted_in_join_hub"] and existing["posted_in_join_hub_at"]:
+            try:
+                posted_at = datetime.fromisoformat(existing["posted_in_join_hub_at"]).replace(tzinfo=timezone.utc)
+                if (utcnow() - posted_at).total_seconds() < 600:
+                    print(f"[DiffWelcomeJoinSystem] Skipping duplicate panel for {member} — already posted within 10m.")
+                    return
+            except Exception:
+                pass
 
         self.db.upsert_join(member.id)
 
