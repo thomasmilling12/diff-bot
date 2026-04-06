@@ -3,12 +3,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import discord
 from discord.ext import commands, tasks
+
+# In-memory dedup caches — prevents duplicate log entries caused by Discord
+# replaying gateway events after the bot reconnects following a Pi freeze.
+_DEDUP_TTL = 30  # seconds
+_join_dedup:  dict[int, float] = {}
+_leave_dedup: dict[int, float] = {}
 
 # =========================================================
 # CONFIG
@@ -274,6 +281,10 @@ class AutoModCog(commands.Cog):
     async def on_member_join(self, member: discord.Member):
         if member.guild.id != GUILD_ID:
             return
+        now_ts = time.monotonic()
+        if now_ts - _join_dedup.get(member.id, 0) < _DEDUP_TTL:
+            return
+        _join_dedup[member.id] = now_ts
 
         # Restore any saved roles (handles rejoin)
         await self._restore_roles(member)
@@ -309,6 +320,10 @@ class AutoModCog(commands.Cog):
     async def on_member_remove(self, member: discord.Member):
         if member.guild.id != GUILD_ID:
             return
+        now_ts = time.monotonic()
+        if now_ts - _leave_dedup.get(member.id, 0) < _DEDUP_TTL:
+            return
+        _leave_dedup[member.id] = now_ts
 
         # Back up roles before they're lost
         await self._backup_roles(member)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -322,10 +323,14 @@ class CheckInView(discord.ui.View):
 
 
 class DiffWelcomeJoinSystem(commands.Cog):
+    _DEDUP_TTL = 30  # seconds
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = CheckInDB(DB_FILE)
         self.reminder_loop.start()
+        self._join_dedup:   dict[int, float] = {}
+        self._verify_dedup: dict[int, float] = {}
 
     async def cog_load(self) -> None:
         self.bot.add_view(CheckInView())
@@ -467,17 +472,13 @@ class DiffWelcomeJoinSystem(commands.Cog):
         if member.guild.id != GUILD_ID:
             return
 
-        # Guard against duplicate panels caused by Discord replaying gateway
-        # events after the bot restarts (e.g. after a Pi freeze).
-        existing = self.db.get_row(member.id)
-        if existing and existing["posted_in_join_hub"] and existing["posted_in_join_hub_at"]:
-            try:
-                posted_at = datetime.fromisoformat(existing["posted_in_join_hub_at"]).replace(tzinfo=timezone.utc)
-                if (utcnow() - posted_at).total_seconds() < 600:
-                    print(f"[DiffWelcomeJoinSystem] Skipping duplicate panel for {member} — already posted within 10m.")
-                    return
-            except Exception:
-                pass
+        # Guard against duplicate events caused by Discord replaying gateway
+        # events after the bot reconnects following a Pi freeze.
+        now_ts = time.monotonic()
+        if now_ts - self._join_dedup.get(member.id, 0) < self._DEDUP_TTL:
+            print(f"[DiffWelcomeJoinSystem] Skipping duplicate join event for {member} (dedup).")
+            return
+        self._join_dedup[member.id] = now_ts
 
         self.db.upsert_join(member.id)
 
@@ -521,6 +522,11 @@ class DiffWelcomeJoinSystem(commands.Cog):
         after_verified  = any(r.id == VERIFIED_ROLE_ID for r in after.roles)
 
         if not before_verified and after_verified:
+            now_ts = time.monotonic()
+            if now_ts - self._verify_dedup.get(after.id, 0) < self._DEDUP_TTL:
+                print(f"[DiffWelcomeJoinSystem] Skipping duplicate verified event for {after} (dedup).")
+                return
+            self._verify_dedup[after.id] = now_ts
             self.db.mark_verified(after.id)
             unverified = self.unverified_role(after.guild)
             if unverified and unverified in after.roles:
