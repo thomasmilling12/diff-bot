@@ -23740,8 +23740,7 @@ async def run_bot():
 
 # ── Pi Health Command ─────────────────────────────────────────────────────────
 
-@bot.tree.command(name="pihealth", description="Check Raspberry Pi hardware status (staff only)")
-@discord.app_commands.guild_only()
+@bot.tree.command(name="pihealth", description="Check Raspberry Pi hardware status (staff only)", guild=discord.Object(id=GUILD_ID))
 async def pihealth(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         await interaction.response.send_message("Staff only.", ephemeral=True)

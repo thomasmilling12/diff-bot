@@ -1,0 +1,41 @@
+tmilling@raspberrypi:~/diffbot $ sudo journalctl -u diffbot -n 40 --no-pager
+Apr 06 00:08:18 raspberrypi python3[2187]:     @bot.tree.command(name="pihealth", description="Check Raspberry Pi hardware status (staff only)")
+Apr 06 00:08:18 raspberrypi python3[2187]:      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Apr 06 00:08:18 raspberrypi python3[2187]:   File "/home/tmilling/.local/lib/python3.11/site-packages/discord/app_commands/tree.py", line 931, in decorator
+Apr 06 00:08:18 raspberrypi python3[2187]:     self.add_command(command, guild=guild, guilds=guilds)
+Apr 06 00:08:18 raspberrypi python3[2187]:   File "/home/tmilling/.local/lib/python3.11/site-packages/discord/app_commands/tree.py", line 411, in add_command
+Apr 06 00:08:18 raspberrypi python3[2187]:     raise CommandLimitReached(guild_id=None, limit=100)
+Apr 06 00:08:18 raspberrypi python3[2187]: discord.app_commands.errors.CommandLimitReached: maximum number of slash commands exceeded 100 globally
+Apr 06 00:08:18 raspberrypi systemd[1]: diffbot.service: Main process exited, code=exited, status=1/FAILURE
+Apr 06 00:08:18 raspberrypi systemd[1]: diffbot.service: Failed with result 'exit-code'.
+Apr 06 00:08:18 raspberrypi systemd[1]: diffbot.service: Consumed 1.021s CPU time.
+Apr 06 00:08:28 raspberrypi systemd[1]: diffbot.service: Scheduled restart job, restart counter is at 6.
+Apr 06 00:08:28 raspberrypi systemd[1]: Stopped diffbot.service - DIFF Discord Bot.
+Apr 06 00:08:28 raspberrypi systemd[1]: diffbot.service: Consumed 1.021s CPU time.
+Apr 06 00:08:28 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+Apr 06 00:08:29 raspberrypi python3[2189]: Traceback (most recent call last):
+Apr 06 00:08:29 raspberrypi python3[2189]:   File "/home/tmilling/diffbot/bot.py", line 23743, in <module>
+Apr 06 00:08:29 raspberrypi python3[2189]:     @bot.tree.command(name="pihealth", description="Check Raspberry Pi hardware status (staff only)")
+Apr 06 00:08:29 raspberrypi python3[2189]:      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Apr 06 00:08:29 raspberrypi python3[2189]:   File "/home/tmilling/.local/lib/python3.11/site-packages/discord/app_commands/tree.py", line 931, in decorator
+Apr 06 00:08:29 raspberrypi python3[2189]:     self.add_command(command, guild=guild, guilds=guilds)
+Apr 06 00:08:29 raspberrypi python3[2189]:   File "/home/tmilling/.local/lib/python3.11/site-packages/discord/app_commands/tree.py", line 411, in add_command
+Apr 06 00:08:29 raspberrypi python3[2189]:     raise CommandLimitReached(guild_id=None, limit=100)
+Apr 06 00:08:29 raspberrypi python3[2189]: discord.app_commands.errors.CommandLimitReached: maximum number of slash commands exceeded 100 globally
+Apr 06 00:08:29 raspberrypi systemd[1]: diffbot.service: Main process exited, code=exited, status=1/FAILURE
+Apr 06 00:08:31 raspberrypi systemd[1]: diffbot.service: Failed with result 'exit-code'.
+Apr 06 00:08:31 raspberrypi systemd[1]: diffbot.service: Consumed 1.420s CPU time.
+Apr 06 00:08:42 raspberrypi systemd[1]: diffbot.service: Scheduled restart job, restart counter is at 7.
+Apr 06 00:08:42 raspberrypi systemd[1]: Stopped diffbot.service - DIFF Discord Bot.
+Apr 06 00:08:42 raspberrypi systemd[1]: diffbot.service: Consumed 1.420s CPU time.
+Apr 06 00:08:42 raspberrypi systemd[1]: Started diffbot.service - DIFF Discord Bot.
+Apr 06 00:08:42 raspberrypi python3[2193]: Traceback (most recent call last):
+Apr 06 00:08:42 raspberrypi python3[2193]:   File "/home/tmilling/diffbot/bot.py", line 23743, in <module>
+Apr 06 00:08:42 raspberrypi python3[2193]:     @bot.tree.command(name="pihealth", description="Check Raspberry Pi hardware status (staff only)")
+Apr 06 00:08:42 raspberrypi python3[2193]:      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Apr 06 00:08:42 raspberrypi python3[2193]:   File "/home/tmilling/.local/lib/python3.11/site-packages/discord/app_commands/tree.py", line 931, in decorator
+Apr 06 00:08:42 raspberrypi python3[2193]:     self.add_command(command, guild=guild, guilds=guilds)
+Apr 06 00:08:42 raspberrypi python3[2193]:   File "/home/tmilling/.local/lib/python3.11/site-packages/discord/app_commands/tree.py", line 411, in add_command
+Apr 06 00:08:42 raspberrypi python3[2193]:     raise CommandLimitReached(guild_id=None, limit=100)
+Apr 06 00:08:42 raspberrypi python3[2193]: discord.app_commands.errors.CommandLimitReached: maximum number of slash commands exceeded 100 globally
+Apr 06 00:08:42 raspberrypi systemd[1]: diffbot.service: Main process exited, code=exited, status=1/FAILURE
