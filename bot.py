@@ -12422,6 +12422,10 @@ async def on_ready():
     # ── Startup welcome DM catch-up (DM members who joined while offline) ──
     asyncio.create_task(_startup_catchup_welcome_dms())
 
+    # ── Roll call finalize reminder (starts after first 30min loop tick) ──
+    if not _rc_finalize_reminder_loop.is_running():
+        _rc_finalize_reminder_loop.start()
+
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
         import time as _tmod
@@ -19153,10 +19157,43 @@ async def _faq_list(ctx: commands.Context) -> None:
     await ctx.send(embed=embed, delete_after=60)
 
 
+# ── Welcome DM dedup tracking ─────────────────────────────────────────────────
+_WELCOME_DM_LOG_FILE = os.path.join("diff_data", "diff_welcome_dms.json")
+
+def _wdm_load() -> dict:
+    try:
+        with open(_WELCOME_DM_LOG_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _wdm_save(data: dict) -> None:
+    try:
+        with open(_WELCOME_DM_LOG_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+def _wdm_already_sent(user_id: int) -> bool:
+    """Return True if a welcome DM was sent to this user within the last 24 hours."""
+    data = _wdm_load()
+    ts = data.get(str(user_id))
+    if not ts:
+        return False
+    return (time.time() - float(ts)) < 86400
+
+def _wdm_mark_sent(user_id: int) -> None:
+    data = _wdm_load()
+    data[str(user_id)] = time.time()
+    _wdm_save(data)
+
 # ── Welcome DM helper (used by on_member_join AND startup catch-up) ───────────
 
 async def _send_welcome_dm(member: discord.Member) -> None:
     """Send the DIFF welcome DM to a member. Silently ignores Forbidden."""
+    if _wdm_already_sent(member.id):
+        print(f"[WelcomeDM] Skipping duplicate DM for {member} — already sent within 24h.")
+        return
     try:
         dm_embed = discord.Embed(
             title="👋 Welcome to DIFF Meets!",
@@ -19208,6 +19245,7 @@ async def _send_welcome_dm(member: discord.Member) -> None:
         if DIFF_BANNER_URL:
             dm_embed.set_image(url=DIFF_BANNER_URL)
         await member.send(embed=dm_embed)
+        _wdm_mark_sent(member.id)
     except (discord.Forbidden, discord.HTTPException):
         pass
 
@@ -23700,7 +23738,102 @@ async def run_bot():
         except Exception:
             pass
 
-_log_handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='a')
+# ── Pi Health Command ─────────────────────────────────────────────────────────
+
+@bot.tree.command(name="pihealth", description="Check Raspberry Pi hardware status (staff only)")
+@discord.app_commands.guild_only()
+async def pihealth(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
+        await interaction.response.send_message("Staff only.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    lines = []
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as _f:
+            temp_c = int(_f.read().strip()) / 1000
+            lines.append(f"🌡️ **CPU Temp:** {temp_c:.1f}°C")
+    except Exception:
+        lines.append("🌡️ **CPU Temp:** unavailable")
+    try:
+        import subprocess as _sp
+        _mem = _sp.check_output(["free", "-m"], text=True).splitlines()
+        _parts = _mem[1].split()
+        used_mb, total_mb = int(_parts[2]), int(_parts[1])
+        pct = used_mb / total_mb * 100
+        lines.append(f"💾 **RAM:** {used_mb} MB / {total_mb} MB ({pct:.0f}% used)")
+    except Exception:
+        lines.append("💾 **RAM:** unavailable")
+    try:
+        with open("/proc/uptime") as _f:
+            secs = float(_f.read().split()[0])
+        h, rem = divmod(int(secs), 3600)
+        m, s = divmod(rem, 60)
+        lines.append(f"⏱️ **Pi Uptime:** {h}h {m}m {s}s")
+    except Exception:
+        lines.append("⏱️ **Pi Uptime:** unavailable")
+    try:
+        import subprocess as _sp
+        _df = _sp.check_output(["df", "-h", "/"], text=True).splitlines()[1].split()
+        lines.append(f"💿 **Disk:** {_df[2]} used / {_df[1]} total ({_df[4]} full)")
+    except Exception:
+        lines.append("💿 **Disk:** unavailable")
+    embed = discord.Embed(
+        title="🖥️ Raspberry Pi Status",
+        description="\n".join(lines),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text="DIFF Bot • Pi Health Monitor")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ── Roll Call Finalize Reminder ────────────────────────────────────────────────
+_rc_reminded: set = set()  # (guild_id, meet_number) pairs already reminded this session
+
+@tasks.loop(minutes=30)
+async def _rc_finalize_reminder_loop():
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+        meets = _rc_db.get_meets(GUILD_ID)
+        if not meets:
+            return
+        now_ts = datetime.now(timezone.utc).timestamp()
+        ch = guild.get_channel(HOST_RSVP_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            return
+        for meet in meets:
+            mn = int(meet["meet_number"])
+            key = (GUILD_ID, mn)
+            if meet["is_finalized"] or key in _rc_reminded:
+                continue
+            st = str(meet["start_time"] or "")
+            _m = re.search(r"<t:(\d+):", st)
+            if not _m:
+                continue
+            meet_unix = int(_m.group(1))
+            if now_ts - meet_unix >= 3600:  # 1+ hour past meet time
+                _rc_reminded.add(key)
+                host_id = meet["host_id"]
+                mention = f"<@{host_id}>" if host_id else f"<@&{HOST_ROLE_ID}>"
+                await ch.send(
+                    f"⚠️ {mention} — **Meet {mn}** ended over an hour ago but hasn't been finalized. "
+                    f"Please open the admin panel and finalize attendance when you're ready!"
+                )
+    except Exception as _e:
+        print(f"[RcReminder] Error: {_e}")
+
+@_rc_finalize_reminder_loop.before_loop
+async def _before_rc_reminder():
+    await bot.wait_until_ready()
+
+
+from logging.handlers import RotatingFileHandler as _RotatingFileHandler
+_log_handler = _RotatingFileHandler(
+    filename='discord.log', encoding='utf-8',
+    maxBytes=5 * 1024 * 1024, backupCount=3,
+)
 _log_handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
 _discord_logger = logging.getLogger('discord')
 _discord_logger.setLevel(logging.DEBUG)

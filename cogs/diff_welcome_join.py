@@ -16,6 +16,10 @@ JOIN_MEETS_HUB_CHANNEL_ID = 1277084633858576406
 VERIFICATION_LOG_CHANNEL_ID = 1485265848099799163
 VERIFIED_ROLE_ID       = 1141424243616256032
 UNVERIFIED_ROLE_ID     = 1486011550916411512
+MEET_ANNOUNCEMENT_CHANNEL_ID = 1484768466023223418
+UPCOMING_MEET_CHANNEL_ID     = 1485861257708834836
+DIFF_HOSTS_CHANNEL_ID        = 1195953265377021952
+MEET_INFO_CHANNEL_ID         = 1266933655486332999
 
 REMINDER_AFTER_HOURS        = 2
 REMINDER_CHECK_EVERY_MINUTES = 10
@@ -538,12 +542,28 @@ class DiffWelcomeJoinSystem(commands.Cog):
                     embed = discord.Embed(
                         title="✅ You're Cleared to Enter",
                         description=(
-                            "You have been verified in **Different Meets** and now have full access to the community.\n\n"
-                            "Welcome to the meet — see you on the track! 🚗"
+                            f"You have been verified in **Different Meets** and now have full access to the community.\n\n"
+                            f"Welcome to the meet — see you on the track! 🚗"
                         ),
                         color=discord.Color.green(),
                         timestamp=utcnow(),
                     )
+                    embed.add_field(
+                        name="📅 Find the Meets",
+                        value=(
+                            f"• <#{MEET_ANNOUNCEMENT_CHANNEL_ID}> — official meet announcements\n"
+                            f"• <#{UPCOMING_MEET_CHANNEL_ID}> — upcoming scheduled meets\n"
+                            f"• <#{MEET_INFO_CHANNEL_ID}> — meet rules & info\n"
+                            f"• <#{DIFF_HOSTS_CHANNEL_ID}> — host schedule"
+                        ),
+                        inline=False,
+                    )
+                    embed.add_field(
+                        name="🎮 Next Step",
+                        value=f"Head to <#{JOIN_MEETS_HUB_CHANNEL_ID}> to complete your PS5 setup and get your platform role.",
+                        inline=False,
+                    )
+                    embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets")
                     await after.send(embed=embed)
                 except discord.Forbidden:
                     pass
