@@ -4,3 +4,7 @@ aiohttp==3.9.5
 matplotlib==3.8.4
 flask==3.0.3
 gunicorn==22.0.0
+yt-dlp
+edge-tts
+spotipy
+PyNaCl
