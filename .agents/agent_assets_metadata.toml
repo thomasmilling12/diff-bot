@@ -6,3 +6,9 @@ id = "jgCLUQLmfy4VVKa3cIaci"
 uri = "file://diffbot.zip"
 type = "unspecified"
 title = "diffbot.zip — Full bot project (bot.py + cogs + data)"
+
+[[outputs]]
+id = "IixzlBwtWIMdDD9EwoDIm"
+uri = "file://diffbot_complete.zip"
+type = "unspecified"
+title = "diffbot_complete.zip — Full Project"
