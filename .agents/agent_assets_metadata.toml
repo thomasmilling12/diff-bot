@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "jgCLUQLmfy4VVKa3cIaci"
+uri = "file://diffbot.zip"
+type = "unspecified"
+title = "diffbot.zip — Full bot project (bot.py + cogs + data)"
