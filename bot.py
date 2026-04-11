@@ -17864,10 +17864,10 @@ def _supp_build_log_embed(action: str, user: discord.Member, ticket: _TicketType
         color=discord.Color.dark_blue(),
         timestamp=now,
     )
-    embed.add_field(name="User", value=f"{user.mention} (`{user.id}`)", inline=False)
-    embed.add_field(name="Type", value=ticket.label, inline=True)
-    embed.add_field(name="Channel", value=channel.name, inline=True)
-    embed.add_field(name="Time", value=f"<t:{int(now.timestamp())}:F>", inline=False)
+    embed.add_field(name="👤 User", value=user.mention, inline=True)
+    embed.add_field(name="📋 Type", value=ticket.label, inline=True)
+    embed.add_field(name="📁 Channel", value=f"#{channel.name}", inline=True)
+    embed.add_field(name="⏰ Time", value=f"<t:{int(now.timestamp())}:F>", inline=False)
     return _supp_brand_embed(embed)
 
 
@@ -18407,6 +18407,14 @@ class SupportCloseButton(discord.ui.View):
         if isinstance(logs_channel, discord.TextChannel):
             from datetime import timezone as _tz
             now = datetime.now(_EST_TZ)
+            # Upload transcript first (file-only) to get a clean CDN URL
+            try:
+                tr_msg = await logs_channel.send(file=transcript_file)
+                if tr_msg.attachments:
+                    transcript_url = tr_msg.attachments[0].url
+            except Exception:
+                pass
+
             color = _TICKET_COLORS.get(ticket.key, discord.Color.red())
             close_embed = discord.Embed(
                 title=f"🔒 Ticket Closed — {ticket.label}",
@@ -18422,10 +18430,16 @@ class SupportCloseButton(discord.ui.View):
                 close_embed.add_field(name="🙋 Claimed By", value=f"<@{claimer_id}>", inline=True)
             close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
             _supp_brand_embed(close_embed)
+            log_view = discord.ui.View()
+            if transcript_url:
+                log_view.add_item(discord.ui.Button(
+                    label="View Transcript",
+                    emoji="📋",
+                    style=discord.ButtonStyle.link,
+                    url=transcript_url,
+                ))
             try:
-                log_msg = await logs_channel.send(embed=close_embed, file=transcript_file)
-                if log_msg.attachments:
-                    transcript_url = log_msg.attachments[0].url
+                await logs_channel.send(embed=close_embed, view=log_view)
             except discord.HTTPException:
                 pass
 
