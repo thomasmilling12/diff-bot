@@ -3126,29 +3126,24 @@ def _asched_build_embed() -> discord.Embed:
                 status_tag = "🔴 Open Slot"
                 avail_line = None
 
-        meet_ts    = _parse_meet_ts(date_val, time_val)
-        short_date = ""
-        if meet_ts:
-            try:
-                from datetime import datetime as _dt
-                short_date = " — " + _dt.utcfromtimestamp(meet_ts).strftime("%a %b %-d")
-            except Exception:
-                pass
+        meet_ts = _parse_meet_ts(date_val, time_val)
 
-        summary_line = f"📅 {date_val}  ·  🕒 {time_val}  ·  🎮 {class_val}"
+        if meet_ts:
+            when_line = f"📅 <t:{meet_ts}:D>  ·  🕒 <t:{meet_ts}:t>  ·  <t:{meet_ts}:R>"
+        else:
+            when_line = f"📅 {date_val}  ·  🕒 {time_val}"
 
         field_lines = [
             f"**{status_tag}**{lock_tag}",
-            summary_line,
+            f"🎮 {class_val}",
+            when_line,
             f"👤 **Host:** {host_val}",
         ]
         if avail_line:
             field_lines.append(avail_line)
-        if meet_ts:
-            field_lines.append(f"⏱️ <t:{meet_ts}:F>  (<t:{meet_ts}:R>)")
 
         embed.add_field(
-            name=f"{num_tag}  Meet {idx}{short_date}",
+            name=f"{num_tag}  Meet {idx}",
             value="\n".join(field_lines),
             inline=False,
         )
@@ -3233,33 +3228,21 @@ def _asched_build_finalized_embed() -> discord.Embed:
         num_tag   = _NUMS[idx - 1]
 
         host_str = f"<@{host_id}>" if host_id else "*TBD*"
-
-        meet_ts    = _parse_meet_ts(date_val, time_val)
-        short_date = ""
-        if meet_ts:
-            try:
-                from datetime import datetime as _dt
-                short_date = " — " + _dt.utcfromtimestamp(meet_ts).strftime("%a %b %-d")
-            except Exception:
-                pass
+        meet_ts  = _parse_meet_ts(date_val, time_val)
 
         if meet_ts:
-            date_line = f"📅 <t:{meet_ts}:D>  ·  🕒 {time_val}  ·  🎮 {class_val}"
-            time_line = f"⏱️ <t:{meet_ts}:F>  (<t:{meet_ts}:R>)"
+            when_line = f"📅 <t:{meet_ts}:D>  ·  🕒 <t:{meet_ts}:t>  ·  <t:{meet_ts}:R>"
         else:
-            date_line = f"📅 {date_val}  ·  🕒 {time_val}  ·  🎮 {class_val}"
-            time_line = None
+            when_line = f"📅 {date_val}  ·  🕒 {time_val}"
 
         field_lines = [
-            "✅ **Confirmed**",
-            date_line,
+            f"🎮 **{class_val}**",
+            when_line,
             f"👤 {host_str}",
         ]
-        if time_line:
-            field_lines.append(time_line)
 
         embed.add_field(
-            name=f"{num_tag} Meet {idx}{short_date}",
+            name=f"{num_tag} Meet {idx}",
             value="\n".join(field_lines),
             inline=False,
         )
@@ -3272,7 +3255,7 @@ def _asched_build_finalized_embed() -> discord.Embed:
         ),
         inline=False,
     )
-    embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets")
+    embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets • Times shown in your local timezone")
     return embed
 
 
