@@ -9544,21 +9544,7 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                     except Exception as _re:
                         print(f"[Recap] Post failed: {_re}")
 
-                # ── Post roll call lock notice ──────────────────────────────────
-                try:
-                    rc_channel = interaction.client.get_channel(ROLL_CALL_CHANNEL_ID)
-                    if isinstance(rc_channel, discord.TextChannel):
-                        panel = _rc_db.get_panel(interaction.guild.id)
-                        rc_msg_id = panel["message_id"] if panel else None
-                        notice_embed = discord.Embed(
-                            description="🛑 **The meet has ended — the roll call is now closed.**",
-                            color=0xe74c3c,
-                            timestamp=datetime.now(timezone.utc),
-                        )
-                        notice_embed.set_footer(text="DIFF Meets • Roll Call System")
-                        await rc_channel.send(embed=notice_embed)
-                except Exception as _rce:
-                    print(f"[RCNotice] Failed: {_rce}")
+                # Roll call panel auto-updates to finalized state — no separate notice needed
 
                 await interaction.followup.send(f"✅ Meet end message sent in {ch.mention}.", ephemeral=True)
             else:
@@ -10573,7 +10559,8 @@ async def _rc_log_attendance(guild, meet_number, attended, no_shows, action_by):
         pass
 
 
-_CREW_CHAT_CHANNEL_ID = 990097781798613063
+_CREW_CHAT_CHANNEL_ID    = 990097781798613063
+_EVERYONE_CHAT_CHANNEL_ID = 1047335231826436166
 
 
 async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
@@ -11009,10 +10996,6 @@ class _OmAttendanceView(discord.ui.View):
 
 
 async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | None:
-    channel = bot.get_channel(MEET_ATTENDANCE_CHANNEL_ID)
-    if not isinstance(channel, discord.TextChannel):
-        return None
-
     _att_body = (
         f"📊 **DIFF Meet Attendance — {record.theme}**\n\n"
         f"Host: <@{record.host_id}>\n"
@@ -11024,17 +11007,13 @@ async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | No
         f"Your check-in is recorded for attendance stats and no-show tracking."
     )
 
-    att_msg = await channel.send(
-        f"<@&{PS5_ROLE_ID}>\n\n" + _att_body,
-        view=_OmAttendanceView(),
-        allowed_mentions=discord.AllowedMentions(roles=True, users=False),
-    )
+    primary_msg = None
 
-    # Mirror into crew chat with a @Crew Member ping
+    # Post to crew chat with @Crew Member ping
     crew_ch = bot.get_channel(_CREW_CHAT_CHANNEL_ID)
     if isinstance(crew_ch, discord.TextChannel):
         try:
-            await crew_ch.send(
+            primary_msg = await crew_ch.send(
                 f"<@&{CREW_MEMBER_ROLE_ID}>\n\n" + _att_body,
                 view=_OmAttendanceView(),
                 allowed_mentions=discord.AllowedMentions(roles=True, users=False),
@@ -11042,7 +11021,21 @@ async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | No
         except Exception:
             pass
 
-    return att_msg
+    # Post to everyone chat with @PS5 Member ping
+    everyone_ch = bot.get_channel(_EVERYONE_CHAT_CHANNEL_ID)
+    if isinstance(everyone_ch, discord.TextChannel):
+        try:
+            msg = await everyone_ch.send(
+                f"<@&{PS5_ROLE_ID}>\n\n" + _att_body,
+                view=_OmAttendanceView(),
+                allowed_mentions=discord.AllowedMentions(roles=True, users=False),
+            )
+            if primary_msg is None:
+                primary_msg = msg
+        except Exception:
+            pass
+
+    return primary_msg
 
 
 def _om_get_counts(msg_id: int) -> dict:
@@ -11113,7 +11106,7 @@ class _OfficialMeetRSVPView(discord.ui.View):
             _om_upsert_record(record)
             _om_increment_host_stat(record.host_id, "meets_hosted")
             ch = bot.get_channel(record.channel_id)
-            att_ref = f"<#{MEET_ATTENDANCE_CHANNEL_ID}>" if att_msg else "#attendance"
+            att_ref = f"<#{_CREW_CHAT_CHANNEL_ID}> and <#{_EVERYONE_CHAT_CHANNEL_ID}>" if att_msg else "#chat"
             if isinstance(ch, discord.TextChannel):
                 live_embed = discord.Embed(
                     title="🚨 DIFF Session Is Now Live",
@@ -11146,7 +11139,7 @@ class _OfficialMeetRSVPView(discord.ui.View):
                     child.disabled = True
             await interaction.response.edit_message(view=self)
             await interaction.followup.send(
-                f"Meet marked as **live**. Attendance panel opened in <#{MEET_ATTENDANCE_CHANNEL_ID}>.",
+                f"Meet marked as **live**. Attendance panel posted in <#{_CREW_CHAT_CHANNEL_ID}> and <#{_EVERYONE_CHAT_CHANNEL_ID}>.",
                 ephemeral=True,
             )
 
