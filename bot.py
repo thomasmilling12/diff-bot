@@ -11421,6 +11421,166 @@ async def _cmd_officialmeet(ctx: commands.Context, theme: str, date: str, time_s
 
 
 # =========================
+# /officialmeet SLASH MODAL
+# =========================
+
+class _OfficialMeetModal(discord.ui.Modal, title="Schedule Official Meet"):
+    theme = discord.ui.TextInput(
+        label="Theme",
+        placeholder='e.g. Tire Lettering',
+        max_length=80,
+    )
+    date = discord.ui.TextInput(
+        label="Date (YYYY-MM-DD)",
+        placeholder='e.g. 2026-05-10',
+        max_length=10,
+    )
+    time_et = discord.ui.TextInput(
+        label="Time ET (HH:MM, 24-hour)",
+        placeholder='e.g. 20:00',
+        max_length=5,
+    )
+    notes = discord.ui.TextInput(
+        label="Staff Notes (optional)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=300,
+    )
+
+    def __init__(self, host: discord.Member):
+        super().__init__()
+        self._host = host
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            local_dt = datetime.strptime(
+                f"{self.date.value.strip()} {self.time_et.value.strip()}",
+                "%Y-%m-%d %H:%M",
+            ).replace(tzinfo=ZoneInfo(_OFFICIAL_MEET_TZ))
+        except ValueError:
+            return await interaction.response.send_message(
+                "Invalid date or time. Date must be YYYY-MM-DD and time HH:MM (24-hour ET).",
+                ephemeral=True,
+            )
+        meet_ts = int(local_dt.timestamp())
+        if meet_ts <= int(datetime.now(timezone.utc).timestamp()):
+            return await interaction.response.send_message(
+                "That meet time is already in the past.", ephemeral=True
+            )
+        channel = interaction.client.get_channel(_OFFICIAL_MEET_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return await interaction.response.send_message(
+                "Meet announcement channel not found.", ephemeral=True
+            )
+        try:
+            sent = await channel.send(
+                content=f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>",
+                embed=_om_build_embed(
+                    theme=self.theme.value.strip(),
+                    host=self._host,
+                    timestamp=meet_ts,
+                    notes=self.notes.value.strip() if self.notes.value else "",
+                ),
+                view=_OfficialMeetRSVPView(),
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+            )
+        except discord.Forbidden:
+            return await interaction.response.send_message(
+                "Missing permissions to post in the meet channel.", ephemeral=True
+            )
+        record = _OmRecord(
+            message_id=sent.id,
+            channel_id=channel.id,
+            host_id=self._host.id,
+            theme=self.theme.value.strip(),
+            timestamp=meet_ts,
+        )
+        _om_upsert_record(record)
+        _om_schedule_reminders(record)
+        await interaction.response.send_message(
+            f"Official meet posted in {channel.mention} for <t:{meet_ts}:F>.", ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="officialmeet",
+    description="Schedule an official DIFF meet (opens a form).",
+    guild=discord.Object(id=GUILD_ID),
+)
+@discord.app_commands.describe(host="The host for this meet")
+async def _slash_officialmeet(interaction: discord.Interaction, host: discord.Member):
+    if not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    is_staff = (
+        interaction.user.guild_permissions.manage_guild
+        or any(r.id in _JOIN_STAFF_ROLE_IDS for r in interaction.user.roles)
+    )
+    if not is_staff:
+        return await interaction.response.send_message(
+            "Only staff can schedule official meets.", ephemeral=True
+        )
+    await interaction.response.send_modal(_OfficialMeetModal(host))
+
+
+# =========================
+# /meetstats SLASH COMMAND
+# =========================
+
+@bot.tree.command(
+    name="meetstats",
+    description="View your host stats — meets hosted, attendance, score, and tier.",
+    guild=discord.Object(id=GUILD_ID),
+)
+async def _slash_meetstats(interaction: discord.Interaction):
+    if not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    hp_data = _hp_load()
+    uid = str(interaction.user.id)
+    stats = hp_data.get("host_stats", {}).get(uid)
+    if not stats:
+        return await interaction.response.send_message(
+            "No host stats found for your account yet. Host a meet to get started!",
+            ephemeral=True,
+        )
+    meets       = stats.get("meets_hosted", 0)
+    total_att   = stats.get("total_attendance_sum", 0)
+    score       = stats.get("score_total", 0)
+    warnings    = stats.get("warning_count", 0)
+    last        = stats.get("last_session_at")
+    avg         = round(total_att / meets, 1) if meets > 0 else 0
+    if score >= 30:
+        tier = "💎 Elite"
+    elif score >= 15:
+        tier = "🔥 Senior"
+    elif score >= 0:
+        tier = "⭐ Junior"
+    else:
+        tier = "⚠️ At Risk"
+    if last:
+        try:
+            ts = int(datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp())
+            last_str = f"<t:{ts}:F>"
+        except Exception:
+            last_str = str(last)
+    else:
+        last_str = "Never"
+    embed = discord.Embed(
+        title=f"📊 Your Host Stats",
+        color=0xC9A227,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    embed.add_field(name="🏁 Meets Hosted",       value=str(meets),     inline=True)
+    embed.add_field(name="👥 Avg Attendance",      value=str(avg),       inline=True)
+    embed.add_field(name="⭐ Score",               value=str(score),     inline=True)
+    embed.add_field(name="🏆 Tier",                value=tier,           inline=True)
+    embed.add_field(name="⚠️ Warnings",            value=str(warnings),  inline=True)
+    embed.add_field(name="📅 Last Session",        value=last_str,       inline=True)
+    embed.set_footer(text="DIFF Meets • Host Performance")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================
 # OFFICIAL MEET PANEL
 # =========================
 
