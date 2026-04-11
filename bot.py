@@ -18429,18 +18429,24 @@ class SupportCloseButton(discord.ui.View):
         if owner_id:
             try:
                 owner = interaction.guild.get_member(int(owner_id))
-                if owner and owner.id != member.id:
+                if owner:
                     dm_embed = discord.Embed(
                         title="🔒 Your Ticket Has Been Closed",
                         description=(
                             f"Your **{ticket.label}** ticket (`{channel.name}`) in **{interaction.guild.name}** "
-                            f"has been closed by {member.mention}.\n\n"
+                            f"has been closed.\n\n"
+                            "A transcript of your ticket is attached below for your records.\n"
                             "If you still need help, you can open a new ticket from the support panel."
                         ),
                         color=_TICKET_COLORS.get(ticket.key, discord.Color.red()),
+                        timestamp=datetime.now(timezone.utc),
                     )
                     dm_embed.set_footer(text="Different Meets • Support System")
-                    await owner.send(embed=dm_embed)
+                    try:
+                        dm_transcript = await _supp_export_transcript(channel)
+                        await owner.send(embed=dm_embed, file=dm_transcript)
+                    except Exception:
+                        await owner.send(embed=dm_embed)
             except Exception:
                 pass
 
@@ -18987,6 +18993,31 @@ class SupportDropdown(discord.ui.Select):
         await interaction.followup.send(
             f"Your {ticket.label} ticket has been created: {channel.mention}", ephemeral=True
         )
+
+        # DM the user to confirm their ticket was opened
+        try:
+            open_embed = discord.Embed(
+                title="🎫 Ticket Opened",
+                description=(
+                    f"You have opened a **{ticket.label}** ticket in **{interaction.guild.name}**.\n\n"
+                    f"**Channel:** {channel.name}\n"
+                    "A staff member will be with you shortly. Please provide as much detail as possible."
+                ),
+                color=_TICKET_COLORS.get(ticket.key, discord.Color.blurple()),
+                timestamp=datetime.now(timezone.utc),
+            )
+            open_embed.set_footer(text="Different Meets • Support System")
+            ticket_url = f"https://discord.com/channels/{interaction.guild.id}/{channel.id}"
+            open_view = discord.ui.View()
+            open_view.add_item(discord.ui.Button(
+                label="Go to Ticket",
+                emoji="🎫",
+                style=discord.ButtonStyle.link,
+                url=ticket_url,
+            ))
+            await interaction.user.send(embed=open_embed, view=open_view)
+        except Exception:
+            pass
 
 
 # ── Appeal dropdown (all 6 types + status check) ──────────────────────────────
