@@ -222,7 +222,7 @@ class AutoModCog(commands.Cog):
             color=discord.Color.red(),
             timestamp=_utcnow(),
         )
-        log_embed.add_field(name="User",    value=f"{member.mention}\n`{member.id}`", inline=True)
+        log_embed.add_field(name="User", value=member.mention, inline=True)
         log_embed.add_field(name="Channel", value=message.channel.mention,            inline=True)
         log_embed.add_field(name="Reason",  value=reason,                             inline=False)
         if extra:
@@ -301,7 +301,7 @@ class AutoModCog(commands.Cog):
             timestamp=now,
         )
         embed.set_author(name=f"{member.display_name} ({member})", icon_url=member.display_avatar.url)
-        embed.add_field(name="👤 User", value=f"{member.mention}\n`{member.id}`", inline=True)
+        embed.add_field(name="👤 User", value=member.mention, inline=True)
         embed.add_field(name="📅 Account Created", value=(
             f"{discord.utils.format_dt(member.created_at, style='D')}\n"
             f"{discord.utils.format_dt(member.created_at, style='R')}"
@@ -360,7 +360,7 @@ class AutoModCog(commands.Cog):
             timestamp=now,
         )
         embed.set_author(name=f"{member.display_name} ({member})", icon_url=member.display_avatar.url)
-        embed.add_field(name="👤 User", value=f"{member.mention}\n`{member.id}`", inline=True)
+        embed.add_field(name="👤 User", value=member.mention, inline=True)
         embed.add_field(name="📅 Joined Server", value=joined_value, inline=True)
         embed.add_field(name="👥 Members", value=f"#{member_count:,}", inline=True)
         if roles_str:
