@@ -24039,6 +24039,147 @@ async def _cmd_postigpanel(ctx: commands.Context):
 
 
 # =========================
+# !postmeet — inline command (no cog needed)
+# =========================
+_POSTMEET_HOST_POSTERS_ID  = 1091157191895023626
+_POSTMEET_MEET_INFO_ID     = MEET_INFO_CHANNEL_ID
+_POSTMEET_EVERYONE_ID      = EVERYONE_CHAT_CHANNEL_ID
+_POSTMEET_PS5_ROLE_ID      = 1485668852921798849
+_POSTMEET_EMBED_COLOR      = 0xE91E63
+_POSTMEET_LOGO_URL = (
+    "https://media.discordapp.net/attachments/1107375326625005719/"
+    "1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm="
+    "2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a"
+    "&=&format=webp&quality=lossless&width=1376&height=917"
+)
+_POSTMEET_USAGE = (
+    "**Usage:** `!postmeet @host | date | time | class`\n"
+    "**Example:** `!postmeet @Frostyy | April 18, 2026 | 9:00pm EST | Open Class`\n"
+    "**With notes:** `!postmeet @Frostyy | April 18, 2026 | 9:00pm EST | Open Class | No weapons`\n"
+    "Attach your Canva poster image directly to the message."
+)
+
+def _postmeet_build_embed(host, date, time_str, ts, class_name, notes, image_url, footer_extra=""):
+    from datetime import datetime, timezone as _tz
+    embed = discord.Embed(
+        title="🏁 DIFF Meet Announcement",
+        color=_POSTMEET_EMBED_COLOR,
+        timestamp=datetime.now(_tz.utc),
+    )
+    if host:
+        embed.add_field(name="👤 Host", value=host.mention, inline=True)
+    if class_name:
+        embed.add_field(name="🎮 Class", value=class_name, inline=True)
+    if ts:
+        embed.add_field(name="⏰ Date & Time", value=f"<t:{ts}:F>\n🕐 <t:{ts}:R>", inline=False)
+    else:
+        embed.add_field(name="📅 Date & Time", value=f"{date}  •  {time_str}", inline=False)
+    if notes:
+        embed.add_field(name="📝 Notes", value=notes, inline=False)
+    if image_url:
+        embed.set_image(url=image_url)
+    footer = "DIFF Meets • Host Poster"
+    if footer_extra:
+        footer += f"  •  {footer_extra}"
+    embed.set_footer(text=footer)
+    embed.set_thumbnail(url=_POSTMEET_LOGO_URL)
+    return embed
+
+@bot.command(name="postmeet")
+@commands.guild_only()
+async def cmd_postmeet(ctx: commands.Context, *, args: str = ""):
+    try:
+        fields = [f.strip() for f in args.split("|")]
+        if len(fields) < 4:
+            return await ctx.reply(_POSTMEET_USAGE, mention_author=False)
+
+        host = ctx.message.mentions[0] if ctx.message.mentions else None
+        if host is None:
+            try:
+                host = await ctx.guild.fetch_member(int(fields[0].strip("<@!> ")))
+            except Exception:
+                host = None
+
+        date       = fields[1]
+        time_str   = fields[2]
+        class_name = fields[3]
+        notes      = fields[4].strip() if len(fields) >= 5 and fields[4].strip() else None
+
+        ts = None
+        try:
+            ts = _parse_meet_ts(date.strip(), time_str.strip())
+        except Exception:
+            pass
+
+        image_url = None
+        img_atts = [a for a in ctx.message.attachments if a.content_type and a.content_type.startswith("image/")]
+        if img_atts:
+            image_url = img_atts[0].url
+
+        def make_embed(footer_extra=""):
+            return _postmeet_build_embed(host, date, time_str, ts, class_name, notes, image_url, footer_extra)
+
+        poster_ch = bot.get_channel(_POSTMEET_HOST_POSTERS_ID)
+        if not isinstance(poster_ch, discord.TextChannel):
+            return await ctx.reply("❌ Host posters channel not found.", mention_author=False)
+
+        files = []
+        for att in img_atts[:4]:
+            try:
+                files.append(await att.to_file())
+            except Exception:
+                pass
+
+        send_kw = dict(content=f"📅 **{date}** | 🕒 **{time_str}**", embed=make_embed())
+        if files:
+            send_kw["files"] = files
+        poster_msg = await poster_ch.send(**send_kw)
+
+        try:
+            thread_name = f"{date} — {class_name}"[:80]
+            await poster_msg.create_thread(name=thread_name, auto_archive_duration=10080)
+        except Exception as _te:
+            print(f"[postmeet] thread error: {_te}")
+
+        info_ch = bot.get_channel(_POSTMEET_MEET_INFO_ID)
+        if isinstance(info_ch, discord.TextChannel):
+            try:
+                await info_ch.send(embed=make_embed("via !postmeet"))
+            except Exception as _ie:
+                print(f"[postmeet] meet-info error: {_ie}")
+
+        everyone_ch = bot.get_channel(_POSTMEET_EVERYONE_ID)
+        if isinstance(everyone_ch, discord.TextChannel):
+            try:
+                await everyone_ch.send(
+                    content=f"<@&{_POSTMEET_PS5_ROLE_ID}>",
+                    embed=make_embed(),
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+            except Exception as _ee:
+                print(f"[postmeet] everyone chat error: {_ee}")
+
+        info_mention = info_ch.mention if isinstance(info_ch, discord.TextChannel) else "#meet-info"
+        confirm = await ctx.reply(
+            f"✅ Posted in {poster_ch.mention}, forwarded to {info_mention} and <#{_POSTMEET_EVERYONE_ID}>.",
+            mention_author=False,
+        )
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+        try:
+            await confirm.delete(delay=15)
+        except Exception:
+            pass
+    except Exception as _err:
+        print(f"[postmeet] unhandled error: {_err}")
+        try:
+            await ctx.reply(f"❌ Error: {_err}", mention_author=False)
+        except Exception:
+            pass
+
+# =========================
 # START BOT
 # =========================
 if not TOKEN:
