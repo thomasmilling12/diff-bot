@@ -313,6 +313,7 @@ class AutoModCog(commands.Cog):
                 value=f"Account is only **{account_age_days} day(s)** old — potential alt or new user.",
                 inline=False,
             )
+        embed.set_thumbnail(url=member.display_avatar.url)
         embed.set_footer(text="DIFF Meets • Join Logs")
         await self._send_log(embed, JOIN_LEAVE_LOG_CHANNEL_ID)
 
@@ -364,6 +365,7 @@ class AutoModCog(commands.Cog):
         embed.add_field(name="👥 Members", value=f"#{member_count:,}", inline=True)
         if roles_str:
             embed.add_field(name="🏷️ Roles", value=roles_str[:1024], inline=False)
+        embed.set_thumbnail(url=member.display_avatar.url)
         embed.set_footer(text="DIFF Meets • Leave Logs")
         await self._send_log(embed, JOIN_LEAVE_LOG_CHANNEL_ID)
 
