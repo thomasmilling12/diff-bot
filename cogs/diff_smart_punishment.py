@@ -731,7 +731,6 @@ class SmartPunishmentCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        await self.ensure_panel()
         print("[SmartPunishment] Cog ready.")
 
     @commands.command(name="remove_warning")

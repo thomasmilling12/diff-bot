@@ -12471,16 +12471,7 @@ async def on_ready():
                 _safe_add_view(_PopupMeetView(int(_pm["id"])), f"_PopupMeetView({_pm['id']})")
         except Exception as _pe:
             print(f"[Popup] Could not re-register meet views for guild {_guild.id}: {_pe}")
-    for _g in bot.guilds:
-        try:
-            await _om_panel_post_or_refresh(_g)
-        except Exception as _e:
-            print(f"[OfficialMeetPanel] on_ready error: {_e}")
-    for _g in bot.guilds:
-        try:
-            await _popup_post_or_refresh(_g)
-        except Exception as _e:
-            print(f"[PopupMeet] on_ready refresh error: {_e}")
+    # Panel post/refresh removed from on_ready — use refresh commands to repost manually
     _safe_add_view(WelcomeHubView(),                      "WelcomeHubView")
     _safe_add_view(SocialMediaLinksView(),                "SocialMediaLinksView")
     _safe_add_view(_PshipPanelView(),                     "_PshipPanelView")
@@ -12488,21 +12479,6 @@ async def on_ready():
     _safe_add_view(_PartnerPanelView(_pp_get_partners()), "_PartnerPanelView")
     _safe_add_view(_RsvpView(),                           "_RsvpView")
     _safe_add_view(_IgDropView(),                         "_IgDropView")
-    for _g in bot.guilds:
-        try:
-            await _wh_post_or_refresh(_g)
-        except Exception as _e:
-            print(f"[WelcomeHub] on_ready error: {_e}")
-    for _g in bot.guilds:
-        try:
-            await _ig_panel_post_or_refresh(_g)
-        except Exception as _e:
-            print(f"[IGPanel] on_ready error: {_e}")
-    for _g in bot.guilds:
-        try:
-            await send_or_refresh_crew_panel(_g)
-        except Exception as _e:
-            print(f"[CrewPanel] on_ready error: {_e}")
     for _g in bot.guilds:
         try:
             await _upsert_unified_leaderboard(_g)

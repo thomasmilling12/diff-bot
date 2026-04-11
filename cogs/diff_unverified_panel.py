@@ -240,7 +240,6 @@ class UnverifiedPanelCog(commands.Cog):
     # ------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_ready(self):
-        await self.ensure_panel()
         print("[UnverifiedPanel] Cog ready.")
 
     @commands.command(name="refresh_unverified_panel")

@@ -354,9 +354,6 @@ class MeetInfoPatchCog(commands.Cog, name="MeetInfoPatch"):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        import asyncio
-        await asyncio.sleep(5)   # let bot.py on_ready finish first
-        await self.refresh_panel()
         print("[MeetInfoPatch] Cog ready.")
 
     @commands.command(name="refresh_meetinfo")
