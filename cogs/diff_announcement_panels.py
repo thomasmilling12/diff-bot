@@ -920,8 +920,6 @@ class AnnouncementPanelsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        await self.ensure_crew_panel()
-        await self.ensure_general_panel()
         print("[AnnouncePanels] Cog ready.")
 
     @commands.command(name="refresh_crew_announce_panel")
