@@ -11,13 +11,6 @@ MEET_INFO_CHANNEL_ID     = 1266933655486332999
 EVERYONE_CHAT_CHANNEL_ID = 1047335231826436166
 PS5_ROLE_ID              = 1485668852921798849
 
-STAFF_ROLE_IDS: set[int] = {
-    850391095845584937,   # Leader
-    850391378559238235,   # Co-Leader
-    990011447193006101,   # Manager
-    1055823929358430248,  # Meet Host
-}
-
 DIFF_LOGO_URL = (
     "https://media.discordapp.net/attachments/1107375326625005719/"
     "1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm="
@@ -39,10 +32,6 @@ def _main():
     return sys.modules["__main__"]
 
 
-def _is_staff(member: discord.Member) -> bool:
-    return any(r.id in STAFF_ROLE_IDS for r in member.roles)
-
-
 def _image_attachments(msg: discord.Message) -> list[discord.Attachment]:
     return [
         a for a in msg.attachments
@@ -52,7 +41,7 @@ def _image_attachments(msg: discord.Message) -> list[discord.Attachment]:
 
 def _try_parse_ts(date_str: str, time_str: str) -> int | None:
     try:
-        return _main()._parse_meet_ts(date_str, time_str)
+        return _main()._parse_meet_ts(date_str.strip(), time_str.strip())
     except Exception:
         return None
 
@@ -100,7 +89,7 @@ class DiffHostPosters(commands.Cog, name="DiffHostPosters"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # ── A + B + D  Auto-detect posters posted manually in #hosts-posters ────────
+    # ── A + B + D  Auto-detect posters posted manually in #hosts-posters ─────────
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -108,34 +97,36 @@ class DiffHostPosters(commands.Cog, name="DiffHostPosters"):
             return
         if not message.guild or message.channel.id != HOST_POSTERS_CHANNEL_ID:
             return
+        # Skip bot commands so !postmeet doesn't double-fire
+        if message.content.startswith("!"):
+            return
 
         images = _image_attachments(message)
         if not images:
             return
 
-        caption = message.content.strip() or ""
-        # Caption format: "April 10th, 2026 | 9:00pm EST" → split on first |
+        caption   = message.content.strip() or ""
         parts     = [p.strip() for p in caption.split("|", 1)]
         date_part = parts[0] if parts else caption
         time_part = parts[1] if len(parts) > 1 else caption
         ts        = _try_parse_ts(date_part, time_part) if caption else None
         host      = message.author if isinstance(message.author, discord.Member) else None
 
-        # ── D: Auto-thread ───────────────────────────────────────────────────────
+        # ── D: Auto-thread ────────────────────────────────────────────────────────
         thread_name = (caption[:80] or "Meet Poster").strip() or "Meet Poster"
         try:
             await message.create_thread(name=thread_name, auto_archive_duration=10080)
         except Exception as e:
             print(f"[HostPosters] Thread error: {e}")
 
-        # ── A: Reply with formatted embed ────────────────────────────────────────
+        # ── A: Reply with embed ───────────────────────────────────────────────────
         try:
             embed = _build_embed(host=host, date=date_part, time=time_part, ts=ts)
             await message.reply(embed=embed, mention_author=False)
         except Exception as e:
             print(f"[HostPosters] Embed reply error: {e}")
 
-        # ── B: Forward images + embed to meet-info ───────────────────────────────
+        # ── B: Forward images + embed to meet-info ────────────────────────────────
         try:
             info_ch = self.bot.get_channel(MEET_INFO_CHANNEL_ID)
             if isinstance(info_ch, discord.TextChannel):
@@ -161,32 +152,39 @@ class DiffHostPosters(commands.Cog, name="DiffHostPosters"):
         except Exception as e:
             print(f"[HostPosters] Forward error: {e}")
 
-    # ── C: !postmeet prefix command ──────────────────────────────────────────────
+    # ── C: !postmeet prefix command ───────────────────────────────────────────────
 
     @commands.command(name="postmeet")
     @commands.guild_only()
     async def postmeet(self, ctx: commands.Context, *, args: str = ""):
-        """Post a full meet announcement.
-        Usage: !postmeet @host | date | time | class | [notes or image url]
-        Attach the Canva poster to the message, or include an image URL as the last field.
+        """Post a meet announcement.
+        Usage: !postmeet @host | date | time | class
+        Optionally add | notes as a 5th field.
+        Attach the Canva poster image to the message.
         """
-        if not isinstance(ctx.author, discord.Member) or not _is_staff(ctx.author):
-            return await ctx.reply("Staff only.", mention_author=False, delete_after=10)
+        try:
+            await self._do_postmeet(ctx, args)
+        except Exception as e:
+            print(f"[HostPosters] !postmeet unhandled error: {e}")
+            try:
+                await ctx.reply(f"❌ Error: {e}", mention_author=False)
+            except Exception:
+                pass
 
-        # ── Parse pipe-separated args ─────────────────────────────────────────────
+    async def _do_postmeet(self, ctx: commands.Context, args: str):
+        # ── Parse pipe-separated fields ───────────────────────────────────────────
         fields = [f.strip() for f in args.split("|")]
 
         if len(fields) < 4:
             return await ctx.reply(USAGE, mention_author=False)
 
-        # Field 0: host mention or ID
+        # Field 0: host (use first @mention in message, fall back to plain text)
         host: discord.Member | None = None
-        host_raw = fields[0].strip()
         if ctx.message.mentions:
             host = ctx.message.mentions[0]
         else:
             try:
-                host = await ctx.guild.fetch_member(int(host_raw.strip("<@!> ")))
+                host = await ctx.guild.fetch_member(int(fields[0].strip("<@!> ")))
             except Exception:
                 host = None
 
@@ -195,18 +193,18 @@ class DiffHostPosters(commands.Cog, name="DiffHostPosters"):
         class_name = fields[3]
 
         # Field 4 (optional): notes or image URL
-        notes     : str | None = None
-        image_url : str | None = None
+        notes    : str | None = None
+        image_url: str | None = None
         if len(fields) >= 5:
-            extra = fields[4]
+            extra = fields[4].strip()
             if extra.startswith("http") and any(
                 extra.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif")
             ):
                 image_url = extra
-            else:
-                notes = extra or None
+            elif extra:
+                notes = extra
 
-        # Image attached to the command message takes priority
+        # Attached image takes priority over URL
         cmd_images = _image_attachments(ctx.message)
         if cmd_images:
             image_url = cmd_images[0].url
@@ -228,9 +226,8 @@ class DiffHostPosters(commands.Cog, name="DiffHostPosters"):
         # ── Post to #hosts-posters ────────────────────────────────────────────────
         poster_ch = self.bot.get_channel(HOST_POSTERS_CHANNEL_ID)
         if not isinstance(poster_ch, discord.TextChannel):
-            return await ctx.reply("Host posters channel not found.", mention_author=False)
+            return await ctx.reply("❌ Host posters channel not found.", mention_author=False)
 
-        # Re-upload attached images so they appear in the poster channel
         files = []
         for att in cmd_images[:4]:
             try:
@@ -238,11 +235,14 @@ class DiffHostPosters(commands.Cog, name="DiffHostPosters"):
             except Exception:
                 pass
 
-        poster_msg = await poster_ch.send(
+        send_kwargs: dict = dict(
             content=f"📅 **{date}** | 🕒 **{time_str}**",
             embed=make_embed(),
-            files=files or discord.utils.MISSING,
         )
+        if files:
+            send_kwargs["files"] = files
+
+        poster_msg = await poster_ch.send(**send_kwargs)
 
         # ── D: Thread ─────────────────────────────────────────────────────────────
         try:
@@ -271,15 +271,21 @@ class DiffHostPosters(commands.Cog, name="DiffHostPosters"):
             except Exception as e:
                 print(f"[HostPosters] !postmeet everyone chat error: {e}")
 
+        # Confirm back to caller
         info_mention = info_ch.mention if isinstance(info_ch, discord.TextChannel) else "#meet-info"
-        await ctx.reply(
+        confirm = await ctx.reply(
             f"✅ Posted in {poster_ch.mention}, forwarded to {info_mention} and <#{EVERYONE_CHAT_CHANNEL_ID}>.",
             mention_author=False,
         )
 
-        # Delete the command message to keep the channel clean
+        # Clean up — delete the original command message
         try:
             await ctx.message.delete()
+        except Exception:
+            pass
+        # Auto-delete the confirm message after 15 s
+        try:
+            await confirm.delete(delay=15)
         except Exception:
             pass
 
