@@ -312,8 +312,8 @@ async def _setup_hook():
         "cogs.diff_community_features",
         "cogs.diff_advanced_features",
         "cogs.diff_extras",
-        "cogs.diff_postmeet",
         "cogs.diff_host_posters",
+        "cogs.diff_postmeet",
     ]
     for _cog in _cogs:
         try:
@@ -4985,59 +4985,88 @@ def _hostflow_role_ping(guild: discord.Guild) -> str:
     return " ".join(parts)
 
 
+def _hostflow_start_embed(host_mention: str, guild: discord.Guild) -> tuple:
+    from datetime import datetime, timezone as _tz
+    ping = _hostflow_role_ping(guild)
+    embed = discord.Embed(
+        title="🔱 DIFF Meet Welcome 🔱",
+        description=(
+            f"Hello everyone, welcome to another **DIFF Meet**!\n\n"
+            f"🎮 Tonight's host is {host_mention}\n"
+            f"If you have any questions during the meet, please contact the host."
+        ),
+        color=0x57F287,
+        timestamp=datetime.now(_tz.utc),
+    )
+    embed.add_field(
+        name="🚗 Meet Status",
+        value="The meet is now **underway** — please get your vehicles ready and positioned properly.",
+        inline=False,
+    )
+    embed.add_field(
+        name="⚠️ Important Notice",
+        value="If you have any problems with another player, please **open a ticket** in the DIFF Discord so Management can handle it properly.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🚫 Meet Rules",
+        value=(
+            "☞ No weapons out at any time\n"
+            "☞ During cruises: single file only — no passing or overtaking\n"
+            "☞ No harassment, bullying, or unnecessary negativity\n"
+            "☞ No revving or excessive honking during the meet\n"
+            "☞ Stance vehicles away from meet location — no police\n"
+            "☞ Stay in Discord voice chat at all times"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Keep meets clean, realistic, and enjoyable for everyone  •  Different Meets")
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    return ping, embed
+
 def _hostflow_start_msg(host_mention: str, guild: discord.Guild) -> str:
     ping = _hostflow_role_ping(guild)
-    return (
-        f"{ping}\n\n"
-        "🔱 __**DIFF Meet Welcome**__ 🔱\n\n"
-        "*Hello everyone, welcome to another DIFF Meet.*\n\n"
-        f"*Tonight's host is {host_mention}.*\n\n"
-        "*If you have any questions or need help during the meet, please contact the host.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚗 **Meet Status**\n"
-        "*The meet is now underway — please get your vehicles ready and positioned properly.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚠️ **Important Notice**\n"
-        "*If you have any problems with another player during the meet, please create a ticket in the DIFF Discord so DIFF Management can handle it properly.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚫 __**Meet Rules**__ 🚫\n\n"
-        "**☞ No weapons out at any time**\n"
-        "**☞ During cruises: single file only — no passing or overtaking**\n"
-        "**☞ No harassment, bullying, or unnecessary negativity**\n"
-        "**☞ No revving or excessive honking during the meet**\n"
-        "**☞ Stance vehicles away from the meet location so police are not attracted**\n"
-        "**☞ Stay in Discord voice chat so you know what is going on**\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "*Please follow all rules so we can keep the meet clean, realistic, and enjoyable for everyone.*\n\n"
-        "— **Different Meets**"
-    )
+    return ping  # legacy fallback — actual send now uses _hostflow_start_embed
 
+
+def _hostflow_end_embed(guild: discord.Guild) -> tuple:
+    from datetime import datetime, timezone as _tz
+    ping = _hostflow_role_ping(guild)
+    embed = discord.Embed(
+        title="📌 DIFF Meet Ending 📌",
+        description=(
+            "Alright everyone, tonight's **DIFF Meet** has now come to an end.\n\n"
+            "Thank you all for attending and being a part of tonight's meet! 🙏"
+        ),
+        color=0xED4245,
+        timestamp=datetime.now(_tz.utc),
+    )
+    embed.add_field(
+        name="💬 Feedback",
+        value="If you enjoyed the meet, please leave feedback in our Discord server — it helps us improve every meet!",
+        inline=False,
+    )
+    embed.add_field(
+        name="📲 Stay Connected",
+        value="Follow us on **Instagram, YouTube & TikTok** — **@diff_meets**",
+        inline=False,
+    )
+    embed.add_field(
+        name="🚗 Interested in Joining DIFF?",
+        value="Complete the **Crew Application** and message a DIFF Crew Manager for more information.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎮 Lobby Status",
+        value="The lobby is now turning into a **chill lobby**.\n🚫 No killing — anyone killing will be blocked.",
+        inline=False,
+    )
+    embed.set_footer(text="🌙 Have a great night — see you at the next DIFF Meet!  •  Different Meets")
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    return ping, embed
 
 def _hostflow_end_msg(guild: discord.Guild) -> str:
-    ping = _hostflow_role_ping(guild)
-    return (
-        f"{ping}\n\n"
-        "📌 __**DIFF Meet Ending**__ 📌\n\n"
-        "*Alright everyone, tonight's DIFF Meet has now come to an end.*\n\n"
-        "*Thank you all for attending and being a part of tonight's meet.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "💬 **Feedback**\n"
-        "*If you enjoyed the meet, please leave feedback in our Discord server.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📲 **Stay Connected**\n"
-        "*Follow us on all platforms:*\n"
-        "**@diff_meets** — Instagram, YouTube, TikTok\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚗 **Interested in Joining DIFF?**\n"
-        "*Complete the Crew Application and message a DIFF Crew Manager for more information.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎮 **Lobby Status**\n"
-        "*The lobby is now turning into a chill lobby.*\n"
-        "🚫 *No killing — anyone killing will be blocked.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🌙 *Have a great night, and we hope to see you at the next DIFF Meet.*\n\n"
-        "— **Different Meets**"
-    )
+    return _hostflow_role_ping(guild)  # legacy fallback
 
 
 def _hostflow_voice_script(host_mention: str) -> str:
@@ -5116,10 +5145,8 @@ class HostFlowView(discord.ui.View):
         if not isinstance(ch, discord.TextChannel):
             await interaction.response.send_message("Meet channel not found.", ephemeral=True)
             return
-        await ch.send(
-            _hostflow_start_msg(interaction.user.mention, interaction.guild),
-            allowed_mentions=discord.AllowedMentions(roles=True),
-        )
+        _ping, _embed = _hostflow_start_embed(interaction.user.mention, interaction.guild)
+        await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
         await interaction.response.send_message(f"✅ Welcome speech posted in {ch.mention}.", ephemeral=True)
 
     @discord.ui.button(label="End Meet", emoji="📌", style=discord.ButtonStyle.danger, custom_id="diff_hostflow:end_meet")
@@ -5130,10 +5157,8 @@ class HostFlowView(discord.ui.View):
         if not isinstance(ch, discord.TextChannel):
             await interaction.response.send_message("Meet channel not found.", ephemeral=True)
             return
-        await ch.send(
-            _hostflow_end_msg(interaction.guild),
-            allowed_mentions=discord.AllowedMentions(roles=True),
-        )
+        _ping, _embed = _hostflow_end_embed(interaction.guild)
+        await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
         log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(log_ch, discord.TextChannel):
             await log_ch.send(_hostflow_log_msg(interaction.user.mention))
@@ -24038,6 +24063,147 @@ async def _cmd_postigpanel(ctx: commands.Context):
         pass
     await _ig_panel_post_or_refresh(ctx.guild)
 
+
+# =========================
+# !postmeet — inline command (no cog needed)
+# =========================
+_POSTMEET_HOST_POSTERS_ID  = 1091157191895023626
+_POSTMEET_MEET_INFO_ID     = MEET_INFO_CHANNEL_ID
+_POSTMEET_EVERYONE_ID      = EVERYONE_CHAT_CHANNEL_ID
+_POSTMEET_PS5_ROLE_ID      = 1485668852921798849
+_POSTMEET_EMBED_COLOR      = 0xE91E63
+_POSTMEET_LOGO_URL = (
+    "https://media.discordapp.net/attachments/1107375326625005719/"
+    "1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm="
+    "2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a"
+    "&=&format=webp&quality=lossless&width=1376&height=917"
+)
+_POSTMEET_USAGE = (
+    "**Usage:** `!postmeet @host | date | time | class`\n"
+    "**Example:** `!postmeet @Frostyy | April 18, 2026 | 9:00pm EST | Open Class`\n"
+    "**With notes:** `!postmeet @Frostyy | April 18, 2026 | 9:00pm EST | Open Class | No weapons`\n"
+    "Attach your Canva poster image directly to the message."
+)
+
+def _postmeet_build_embed(host, date, time_str, ts, class_name, notes, image_url, footer_extra=""):
+    from datetime import datetime, timezone as _tz
+    embed = discord.Embed(
+        title="🏁 DIFF Meet Announcement",
+        color=_POSTMEET_EMBED_COLOR,
+        timestamp=datetime.now(_tz.utc),
+    )
+    if host:
+        embed.add_field(name="👤 Host", value=host.mention, inline=True)
+    if class_name:
+        embed.add_field(name="🎮 Class", value=class_name, inline=True)
+    if ts:
+        embed.add_field(name="⏰ Date & Time", value=f"<t:{ts}:F>\n🕐 <t:{ts}:R>", inline=False)
+    else:
+        embed.add_field(name="📅 Date & Time", value=f"{date}  •  {time_str}", inline=False)
+    if notes:
+        embed.add_field(name="📝 Notes", value=notes, inline=False)
+    if image_url:
+        embed.set_image(url=image_url)
+    footer = "DIFF Meets • Host Poster"
+    if footer_extra:
+        footer += f"  •  {footer_extra}"
+    embed.set_footer(text=footer)
+    embed.set_thumbnail(url=_POSTMEET_LOGO_URL)
+    return embed
+
+@bot.command(name="postmeet")
+@commands.guild_only()
+async def cmd_postmeet(ctx: commands.Context, *, args: str = ""):
+    try:
+        fields = [f.strip() for f in args.split("|")]
+        if len(fields) < 4:
+            return await ctx.reply(_POSTMEET_USAGE, mention_author=False)
+
+        host = ctx.message.mentions[0] if ctx.message.mentions else None
+        if host is None:
+            try:
+                host = await ctx.guild.fetch_member(int(fields[0].strip("<@!> ")))
+            except Exception:
+                host = None
+
+        date       = fields[1]
+        time_str   = fields[2]
+        class_name = fields[3]
+        notes      = fields[4].strip() if len(fields) >= 5 and fields[4].strip() else None
+
+        ts = None
+        try:
+            ts = _parse_meet_ts(date.strip(), time_str.strip())
+        except Exception:
+            pass
+
+        image_url = None
+        img_atts = [a for a in ctx.message.attachments if a.content_type and a.content_type.startswith("image/")]
+        if img_atts:
+            image_url = img_atts[0].url
+
+        def make_embed(footer_extra=""):
+            return _postmeet_build_embed(host, date, time_str, ts, class_name, notes, image_url, footer_extra)
+
+        poster_ch = bot.get_channel(_POSTMEET_HOST_POSTERS_ID)
+        if not isinstance(poster_ch, discord.TextChannel):
+            return await ctx.reply("❌ Host posters channel not found.", mention_author=False)
+
+        files = []
+        for att in img_atts[:4]:
+            try:
+                files.append(await att.to_file())
+            except Exception:
+                pass
+
+        send_kw = dict(content=f"📅 **{date}** | 🕒 **{time_str}**", embed=make_embed())
+        if files:
+            send_kw["files"] = files
+        poster_msg = await poster_ch.send(**send_kw)
+
+        try:
+            thread_name = f"{date} — {class_name}"[:80]
+            await poster_msg.create_thread(name=thread_name, auto_archive_duration=10080)
+        except Exception as _te:
+            print(f"[postmeet] thread error: {_te}")
+
+        info_ch = bot.get_channel(_POSTMEET_MEET_INFO_ID)
+        if isinstance(info_ch, discord.TextChannel):
+            try:
+                await info_ch.send(embed=make_embed("via !postmeet"))
+            except Exception as _ie:
+                print(f"[postmeet] meet-info error: {_ie}")
+
+        everyone_ch = bot.get_channel(_POSTMEET_EVERYONE_ID)
+        if isinstance(everyone_ch, discord.TextChannel):
+            try:
+                await everyone_ch.send(
+                    content=f"<@&{_POSTMEET_PS5_ROLE_ID}>",
+                    embed=make_embed(),
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+            except Exception as _ee:
+                print(f"[postmeet] everyone chat error: {_ee}")
+
+        info_mention = info_ch.mention if isinstance(info_ch, discord.TextChannel) else "#meet-info"
+        confirm = await ctx.reply(
+            f"✅ Posted in {poster_ch.mention}, forwarded to {info_mention} and <#{_POSTMEET_EVERYONE_ID}>.",
+            mention_author=False,
+        )
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+        try:
+            await confirm.delete(delay=15)
+        except Exception:
+            pass
+    except Exception as _err:
+        print(f"[postmeet] unhandled error: {_err}")
+        try:
+            await ctx.reply(f"❌ Error: {_err}", mention_author=False)
+        except Exception:
+            pass
 
 # =========================
 # START BOT
