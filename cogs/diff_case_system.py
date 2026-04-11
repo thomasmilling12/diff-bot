@@ -179,86 +179,91 @@ class AssignCaseModal(discord.ui.Modal):
 # Views
 # ---------------------------------------------------------------------------
 
-class CaseActionView(discord.ui.View):
-    """Persistent view attached to every case file embed.
-    Case ID is recovered from the embed title at interaction time so it
-    survives bot restarts without needing dynamic custom_ids.
-    """
+class _AddNoteBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Add Note", style=discord.ButtonStyle.primary, emoji="📝", custom_id="diff_case_add_note")
+    async def callback(self, interaction: discord.Interaction):
+        if not has_staff_access(interaction.user):
+            return await interaction.response.send_message("You do not have permission to manage cases.", ephemeral=True)
+        case_id = self.view._get_case_id(interaction)
+        if not case_id:
+            return await interaction.response.send_message("Could not determine case ID.", ephemeral=True)
+        await interaction.response.send_modal(CaseManageModal(self.view.cog, case_id, "Add Note"))
 
+class _AssignOwnerBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Assign Owner", style=discord.ButtonStyle.secondary, emoji="👤", custom_id="diff_case_assign_owner")
+    async def callback(self, interaction: discord.Interaction):
+        if not has_staff_access(interaction.user):
+            return await interaction.response.send_message("You do not have permission to manage cases.", ephemeral=True)
+        case_id = self.view._get_case_id(interaction)
+        if not case_id:
+            return await interaction.response.send_message("Could not determine case ID.", ephemeral=True)
+        await interaction.response.send_modal(AssignCaseModal(self.view.cog, case_id))
+
+class _CloseCaseBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Close Case", style=discord.ButtonStyle.success, emoji="✅", custom_id="diff_case_close")
+    async def callback(self, interaction: discord.Interaction):
+        if not has_staff_access(interaction.user):
+            return await interaction.response.send_message("You do not have permission to manage cases.", ephemeral=True)
+        case_id = self.view._get_case_id(interaction)
+        if not case_id:
+            return await interaction.response.send_message("Could not determine case ID.", ephemeral=True)
+        await interaction.response.send_modal(CaseManageModal(self.view.cog, case_id, "Close Case"))
+
+class _ReopenCaseBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Reopen Case", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="diff_case_reopen")
+    async def callback(self, interaction: discord.Interaction):
+        if not has_staff_access(interaction.user):
+            return await interaction.response.send_message("You do not have permission to manage cases.", ephemeral=True)
+        case_id = self.view._get_case_id(interaction)
+        if not case_id:
+            return await interaction.response.send_message("Could not determine case ID.", ephemeral=True)
+        await interaction.response.send_modal(CaseManageModal(self.view.cog, case_id, "Reopen Case"))
+
+class _ArchiveCaseBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Archive Case", style=discord.ButtonStyle.danger, emoji="📦", custom_id="diff_case_archive")
+    async def callback(self, interaction: discord.Interaction):
+        if not has_staff_access(interaction.user):
+            return await interaction.response.send_message("You do not have permission to manage cases.", ephemeral=True)
+        case_id = self.view._get_case_id(interaction)
+        if not case_id:
+            return await interaction.response.send_message("Could not determine case ID.", ephemeral=True)
+        await interaction.response.send_modal(CaseManageModal(self.view.cog, case_id, "Archive Case"))
+
+
+class CaseActionView(discord.ui.View):
+    """Persistent view attached to every case file embed."""
     def __init__(self, cog: "CaseSystem"):
         super().__init__(timeout=None)
         self.cog = cog
+        self.add_item(_AddNoteBtn())
+        self.add_item(_AssignOwnerBtn())
+        self.add_item(_CloseCaseBtn())
+        self.add_item(_ReopenCaseBtn())
+        self.add_item(_ArchiveCaseBtn())
 
     def _get_case_id(self, interaction: discord.Interaction) -> Optional[str]:
         return _parse_case_id_from_embed(interaction.message)
 
-    @discord.ui.button(label="Add Note", style=discord.ButtonStyle.primary, emoji="📝", custom_id="diff_case_add_note")
-    async def add_note(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_staff_access(interaction.user):
-            await interaction.response.send_message("You do not have permission to manage cases.", ephemeral=True)
-            return
-        case_id = self._get_case_id(interaction)
-        if not case_id:
-            await interaction.response.send_message("Could not determine case ID.", ephemeral=True)
-            return
-        await interaction.response.send_modal(CaseManageModal(self.cog, case_id, "Add Note"))
 
-    @discord.ui.button(label="Assign Owner", style=discord.ButtonStyle.secondary, emoji="👤", custom_id="diff_case_assign_owner")
-    async def assign_owner(self, interaction: discord.Interaction, button: discord.ui.Button):
+class _CreateCaseFileBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Create Case File", style=discord.ButtonStyle.primary, emoji="🧾", custom_id="diff_create_case_file")
+    async def callback(self, interaction: discord.Interaction):
         if not has_staff_access(interaction.user):
-            await interaction.response.send_message("You do not have permission to manage cases.", ephemeral=True)
-            return
-        case_id = self._get_case_id(interaction)
-        if not case_id:
-            await interaction.response.send_message("Could not determine case ID.", ephemeral=True)
-            return
-        await interaction.response.send_modal(AssignCaseModal(self.cog, case_id))
-
-    @discord.ui.button(label="Close Case", style=discord.ButtonStyle.success, emoji="✅", custom_id="diff_case_close")
-    async def close_case(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_staff_access(interaction.user):
-            await interaction.response.send_message("You do not have permission to manage cases.", ephemeral=True)
-            return
-        case_id = self._get_case_id(interaction)
-        if not case_id:
-            await interaction.response.send_message("Could not determine case ID.", ephemeral=True)
-            return
-        await interaction.response.send_modal(CaseManageModal(self.cog, case_id, "Close Case"))
-
-    @discord.ui.button(label="Reopen Case", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="diff_case_reopen")
-    async def reopen_case(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_staff_access(interaction.user):
-            await interaction.response.send_message("You do not have permission to manage cases.", ephemeral=True)
-            return
-        case_id = self._get_case_id(interaction)
-        if not case_id:
-            await interaction.response.send_message("Could not determine case ID.", ephemeral=True)
-            return
-        await interaction.response.send_modal(CaseManageModal(self.cog, case_id, "Reopen Case"))
-
-    @discord.ui.button(label="Archive Case", style=discord.ButtonStyle.danger, emoji="📦", custom_id="diff_case_archive")
-    async def archive_case(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_staff_access(interaction.user):
-            await interaction.response.send_message("You do not have permission to manage cases.", ephemeral=True)
-            return
-        case_id = self._get_case_id(interaction)
-        if not case_id:
-            await interaction.response.send_message("Could not determine case ID.", ephemeral=True)
-            return
-        await interaction.response.send_modal(CaseManageModal(self.cog, case_id, "Archive Case"))
+            return await interaction.response.send_message("You do not have permission to create cases.", ephemeral=True)
+        await interaction.response.send_modal(CreateCaseModal(self.view.cog))
 
 
 class CasePanelView(discord.ui.View):
     def __init__(self, cog: "CaseSystem"):
         super().__init__(timeout=None)
         self.cog = cog
-
-    @discord.ui.button(label="Create Case File", style=discord.ButtonStyle.primary, emoji="🧾", custom_id="diff_create_case_file")
-    async def create_case_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not has_staff_access(interaction.user):
-            await interaction.response.send_message("You do not have permission to create cases.", ephemeral=True)
-            return
-        await interaction.response.send_modal(CreateCaseModal(self.cog))
+        self.add_item(_CreateCaseFileBtn())
 
 
 # ---------------------------------------------------------------------------
