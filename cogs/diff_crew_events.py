@@ -810,7 +810,6 @@ class CrewEventsCog(commands.Cog):
     # ------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_ready(self):
-        await self.ensure_panel()
         await self._rebuild_event_views()
         print("[CrewEvents] Cog ready.")
 
