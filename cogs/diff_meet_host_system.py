@@ -76,30 +76,17 @@ class LocationUpdateModal(discord.ui.Modal, title="DIFF Meet Location Update"):
 # View
 # ---------------------------------------------------------------------------
 
-class HostMeetControlView(discord.ui.View):
-    def __init__(self, cog: "DiffMeetHostSystem"):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    def _has_access(self, user: discord.Member) -> bool:
-        if user.guild_permissions.administrator or user.guild_permissions.manage_guild:
-            return True
-        return any(r.id == HOST_ROLE_ID for r in user.roles)
-
-    @discord.ui.button(label="Start Meet", style=discord.ButtonStyle.success, emoji="🏁", custom_id="diff:start_meet")
-    async def start_meet(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._has_access(interaction.user):
-            await interaction.response.send_message("Only approved hosts or staff can use this panel.", ephemeral=True)
-            return
-
+class _StartMeetBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Start Meet", style=discord.ButtonStyle.success, emoji="🏁", custom_id="diff:start_meet")
+    async def callback(self, interaction: discord.Interaction):
+        if not self.view._has_access(interaction.user):
+            return await interaction.response.send_message("Only approved hosts or staff can use this panel.", ephemeral=True)
         meet_channel = interaction.client.get_channel(MEET_CHANNEL_ID)
         if meet_channel is None:
-            await interaction.response.send_message("Meet channel not found.", ephemeral=True)
-            return
-
-        ps_role  = f"<@&{PS5_ROLE_ID}>"
-        cm_role  = f"<@&{CARMEET_ROLE_ID}>"
-
+            return await interaction.response.send_message("Meet channel not found.", ephemeral=True)
+        ps_role = f"<@&{PS5_ROLE_ID}>"
+        cm_role = f"<@&{CARMEET_ROLE_ID}>"
         embed = discord.Embed(
             title="DIFF Official Meet Started",
             description=(
@@ -117,34 +104,30 @@ class HostMeetControlView(discord.ui.View):
         )
         embed.set_image(url=DIFF_LOGO_URL)
         embed.set_footer(text="DIFF Meet Start Notice")
-
         await meet_channel.send(embed=embed)
-        await self.cog.log_host_action(
+        await self.view.cog.log_host_action(
             interaction.guild,
             f"🏁 **Meet Started**\nHost: {interaction.user.mention}\nChannel: {meet_channel.mention}",
         )
-        await interaction.response.send_message(
-            f"Meet start message sent in {meet_channel.mention}.", ephemeral=True
-        )
+        await interaction.response.send_message(f"Meet start message sent in {meet_channel.mention}.", ephemeral=True)
 
-    @discord.ui.button(label="Post Location Update", style=discord.ButtonStyle.primary, emoji="📍", custom_id="diff:location_update")
-    async def location_update(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._has_access(interaction.user):
-            await interaction.response.send_message("Only approved hosts or staff can use this panel.", ephemeral=True)
-            return
-        await interaction.response.send_modal(LocationUpdateModal(self.cog))
+class _LocationUpdateBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Post Location Update", style=discord.ButtonStyle.primary, emoji="📍", custom_id="diff:location_update")
+    async def callback(self, interaction: discord.Interaction):
+        if not self.view._has_access(interaction.user):
+            return await interaction.response.send_message("Only approved hosts or staff can use this panel.", ephemeral=True)
+        await interaction.response.send_modal(LocationUpdateModal(self.view.cog))
 
-    @discord.ui.button(label="End Meet", style=discord.ButtonStyle.danger, emoji="🛑", custom_id="diff:end_meet")
-    async def end_meet(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._has_access(interaction.user):
-            await interaction.response.send_message("Only approved hosts or staff can use this panel.", ephemeral=True)
-            return
-
+class _EndMeetBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="End Meet", style=discord.ButtonStyle.danger, emoji="🛑", custom_id="diff:end_meet")
+    async def callback(self, interaction: discord.Interaction):
+        if not self.view._has_access(interaction.user):
+            return await interaction.response.send_message("Only approved hosts or staff can use this panel.", ephemeral=True)
         meet_channel = interaction.client.get_channel(MEET_CHANNEL_ID)
         if meet_channel is None:
-            await interaction.response.send_message("Meet channel not found.", ephemeral=True)
-            return
-
+            return await interaction.response.send_message("Meet channel not found.", ephemeral=True)
         embed = discord.Embed(
             title="DIFF Meet Ended",
             description=(
@@ -157,15 +140,26 @@ class HostMeetControlView(discord.ui.View):
         )
         embed.set_image(url=DIFF_LOGO_URL)
         embed.set_footer(text="DIFF Meet End Notice")
-
         await meet_channel.send(embed=embed)
-        await self.cog.log_host_action(
+        await self.view.cog.log_host_action(
             interaction.guild,
             f"🛑 **Meet Ended**\nHost: {interaction.user.mention}\nChannel: {meet_channel.mention}",
         )
-        await interaction.response.send_message(
-            f"Meet end message sent in {meet_channel.mention}.", ephemeral=True
-        )
+        await interaction.response.send_message(f"Meet end message sent in {meet_channel.mention}.", ephemeral=True)
+
+
+class HostMeetControlView(discord.ui.View):
+    def __init__(self, cog: "DiffMeetHostSystem"):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.add_item(_StartMeetBtn())
+        self.add_item(_LocationUpdateBtn())
+        self.add_item(_EndMeetBtn())
+
+    def _has_access(self, user: discord.Member) -> bool:
+        if user.guild_permissions.administrator or user.guild_permissions.manage_guild:
+            return True
+        return any(r.id == HOST_ROLE_ID for r in user.roles)
 
 
 # ---------------------------------------------------------------------------
