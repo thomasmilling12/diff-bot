@@ -2958,32 +2958,68 @@ def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple:
 
 
 def _parse_meet_ts(date_val: str, time_val: str) -> int | None:
-    """Try to compute a Unix timestamp for the next occurrence of day+time. Returns None on failure."""
+    """Return a Unix timestamp for a meet's date+time.
+    Handles:
+      • Weekday names  — "Friday", "sunday", etc. → next occurrence
+      • Explicit dates — "april 12", "Sunday april 12", "april 12, 6:00 PM EST"
+    Returns None on any parse failure.
+    """
     import re as _re
-    _DAY_MAP = {
-        "monday": 0, "mon": 0, "tuesday": 1, "tue": 1, "wednesday": 2, "wed": 2,
-        "thursday": 3, "thu": 3, "friday": 4, "fri": 4, "saturday": 5, "sat": 5,
-        "sunday": 6, "sun": 6,
-    }
-    day_num = next((n for k, n in _DAY_MAP.items() if k in date_val.lower()), None)
-    if day_num is None:
-        return None
-    m = _re.search(r"(\d{1,2})(?::(\d{2}))?\s*(AM|PM|am|pm)?", time_val)
-    if not m:
-        return None
-    hour, minute, ampm = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").upper()
-    if ampm == "PM" and hour != 12:
-        hour += 12
-    elif ampm == "AM" and hour == 12:
-        hour = 0
+    combined = (date_val + " " + time_val).lower()
+
+    # ── Timezone ────────────────────────────────────────────────────────────────
     try:
         from zoneinfo import ZoneInfo as _ZI
-        tz = _ZI("US/Pacific") if any(x in time_val.upper() for x in ("PST", "PDT")) else \
-             _ZI("US/Central")  if any(x in time_val.upper() for x in ("CST", "CDT")) else \
-             _ZI("US/Eastern")
+        if any(x in combined for x in ("pst", "pdt")):
+            tz = _ZI("US/Pacific")
+        elif any(x in combined for x in ("cst", "cdt")):
+            tz = _ZI("US/Central")
+        else:
+            tz = _ZI("US/Eastern")
     except Exception:
         return None
+
+    # ── Parse hour / minute ─────────────────────────────────────────────────────
+    tm = _re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", combined)
+    if not tm:
+        return None
+    hour   = int(tm.group(1))
+    minute = int(tm.group(2) or 0)
+    ampm   = (tm.group(3) or "").lower()
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+
     now = datetime.now(tz)
+
+    # ── Try explicit month + day first ──────────────────────────────────────────
+    _MONTHS = {
+        "january": 1, "february": 2, "march": 3, "april": 4,
+        "may": 5, "june": 6, "july": 7, "august": 8,
+        "september": 9, "october": 10, "november": 11, "december": 12,
+    }
+    for mname, mnum in _MONTHS.items():
+        if mname in combined:
+            dm = _re.search(rf"{mname}\s+(\d{{1,2}})", combined)
+            if dm:
+                day = int(dm.group(1))
+                for yr in (now.year, now.year + 1):
+                    try:
+                        target = datetime(yr, mnum, day, hour, minute, tzinfo=tz)
+                        if target >= now - timedelta(hours=3):
+                            return int(target.timestamp())
+                    except Exception:
+                        pass
+
+    # ── Fall back to weekday-based "next occurrence" ────────────────────────────
+    _DAY_MAP = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6,
+    }
+    day_num = next((n for k, n in _DAY_MAP.items() if k in combined), None)
+    if day_num is None:
+        return None
     days_until = (day_num - now.weekday()) % 7
     if days_until == 0 and (now.hour > hour or (now.hour == hour and now.minute >= minute)):
         days_until = 7
@@ -10069,9 +10105,6 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
                 f"✅ **{c['yes']}** yes  ·  ❓ **{c['maybe']}** maybe  ·  ❌ **{c['no']}** no",
                 "*🔒 Voting closed*",
             ]
-            ts = _parse_meet_ts(date_text, start_time)
-            if ts:
-                field_lines.append(f"⏱️ <t:{ts}:F>")
         else:
             if class_name == "TBD" or start_time == "TBD":
                 status = "⏳ Awaiting schedule"
@@ -10083,16 +10116,24 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
             maybe_blocks = round(c["maybe"] / scale * 10)
             bar          = "🟩" * yes_blocks + "🟨" * maybe_blocks + "⬜" * (10 - yes_blocks - maybe_blocks)
 
-            field_name  = f"〔{n}〕 Meet {n}"
-            field_lines = [
-                f"**{status}**",
-                f"📅 {date_text}  🕒 {start_time}  🎮 {class_name}",
-                f"👤 **Host:** {host_text}",
-                f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}",
-            ]
+            field_name = f"〔{n}〕 Meet {n}"
             ts = _parse_meet_ts(date_text, start_time)
-            if ts:
-                field_lines.append(f"⏱️ <t:{ts}:F>  (<t:{ts}:R>)")
+            if ts and status == "📝 Open for RSVP":
+                field_lines = [
+                    f"**{status}**",
+                    f"⏰ <t:{ts}:F>",
+                    f"🕐 <t:{ts}:R>",
+                    f"🎮 {class_name}",
+                    f"👤 **Host:** {host_text}",
+                    f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}",
+                ]
+            else:
+                field_lines = [
+                    f"**{status}**",
+                    f"📅 {date_text}  🕒 {start_time}  🎮 {class_name}",
+                    f"👤 **Host:** {host_text}",
+                    f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}",
+                ]
 
         embed.add_field(name=field_name, value="\n".join(field_lines), inline=False)
 
