@@ -22161,27 +22161,75 @@ class JoinTicketView(discord.ui.View):
 
         from datetime import timezone as _tz
         now = datetime.now(_EST_TZ)
+        uid_raw = _join_parse_user_id(interaction.channel.topic)
+        psn = _join_parse_psn(interaction.channel.topic)
+        transcript_url = None
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
+            # Upload transcript first (file-only) to get a clean CDN URL
+            if transcript_file:
+                try:
+                    tr_msg = await logs_channel.send(file=transcript_file)
+                    if tr_msg.attachments:
+                        transcript_url = tr_msg.attachments[0].url
+                except Exception:
+                    pass
+
             close_embed = discord.Embed(
                 title="🔒 Join Ticket Closed",
-                description="\n".join([
-                    f"**Channel:** {interaction.channel.name}",
-                    f"**Closed by:** {interaction.user.mention}",
-                    f"**Ticket Topic:** {interaction.channel.topic or 'No topic set'}",
-                ]),
                 color=discord.Color.greyple(),
                 timestamp=now,
             )
+            close_embed.add_field(name="📁 Channel", value=f"`{interaction.channel.name}`", inline=True)
+            close_embed.add_field(name="🔒 Closed By", value=interaction.user.mention, inline=True)
+            if uid_raw:
+                close_embed.add_field(name="👤 Applicant", value=f"<@{uid_raw}>", inline=True)
+            if psn:
+                close_embed.add_field(name="🎮 PSN", value=f"`{psn}`", inline=True)
+            close_embed.add_field(name="⏰ Closed At", value=f"<t:{int(now.timestamp())}:F>", inline=True)
             if DIFF_LOGO_URL:
                 close_embed.set_thumbnail(url=DIFF_LOGO_URL)
             close_embed.set_footer(text="Different Meets • Join Hub")
+            log_view = discord.ui.View()
+            if transcript_url:
+                log_view.add_item(discord.ui.Button(
+                    label="View Transcript",
+                    emoji="📋",
+                    style=discord.ButtonStyle.link,
+                    url=transcript_url,
+                ))
             try:
-                if transcript_file:
-                    await logs_channel.send(embed=close_embed, file=transcript_file)
-                else:
-                    await logs_channel.send(embed=close_embed)
+                await logs_channel.send(embed=close_embed, view=log_view)
             except discord.HTTPException:
+                pass
+
+        # DM the ticket owner
+        if uid_raw and uid_raw.isdigit():
+            try:
+                owner = interaction.guild.get_member(int(uid_raw))
+                if owner:
+                    dm_embed = discord.Embed(
+                        title="🔒 Your Join Ticket Has Been Closed",
+                        description=(
+                            f"Your join ticket in **{interaction.guild.name}** has been closed.\n\n"
+                            "If you have any questions, feel free to open a new support ticket from the server."
+                        ),
+                        color=discord.Color.greyple(),
+                        timestamp=now,
+                    )
+                    if psn:
+                        dm_embed.add_field(name="🎮 PSN", value=f"`{psn}`", inline=True)
+                    dm_embed.set_footer(text="Different Meets • Join Hub")
+                    dm_view = discord.ui.View()
+                    if transcript_url:
+                        dm_view.add_item(discord.ui.Button(
+                            label="View Transcript",
+                            emoji="📋",
+                            style=discord.ButtonStyle.link,
+                            url=transcript_url,
+                        ))
+                    await owner.send(embed=dm_embed, view=dm_view)
+            except Exception:
                 pass
 
         t = _join_ticket_tasks.pop(interaction.channel.id, None)
