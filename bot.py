@@ -12284,12 +12284,13 @@ async def on_ready():
 
     print(f"Logged in as {bot.user}")
     try:
-        # Guild sync is instant; global sync can take up to 1 hour
+        # Clear any guild-specific commands so they don't duplicate the global ones
         guild_obj = discord.Object(id=GUILD_ID)
-        guild_synced = await bot.tree.sync(guild=guild_obj)
-        print(f"Guild-synced {len(guild_synced)} slash command(s) to {GUILD_ID}")
+        bot.tree.clear_commands(guild=guild_obj)
+        await bot.tree.sync(guild=guild_obj)
+        print(f"Cleared guild-specific slash commands from {GUILD_ID}")
     except Exception as e:
-        print(f"Guild sync error: {e}")
+        print(f"Guild clear error: {e}")
     try:
         synced = await bot.tree.sync()
         print(f"Global-synced {len(synced)} slash command(s)")
