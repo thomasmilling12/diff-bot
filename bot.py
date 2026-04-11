@@ -312,6 +312,7 @@ async def _setup_hook():
         "cogs.diff_community_features",
         "cogs.diff_advanced_features",
         "cogs.diff_extras",
+        "cogs.diff_host_posters",
     ]
     for _cog in _cogs:
         try:
