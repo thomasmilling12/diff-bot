@@ -238,21 +238,14 @@ async def _ensure_panel(
 # =========================================================
 # ANNOUNCEMENT TRACKING BUTTONS (attached to posted announcements)
 # =========================================================
-class AnnouncementButtons(discord.ui.View):
+class _AcknowledgeBtn(discord.ui.Button):
     def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(discord.ui.Button(
-            label="View Updates",
-            style=discord.ButtonStyle.link,
-            url=f"https://discord.com/channels/{GUILD_ID}/{VIEW_UPDATES_CHANNEL_ID}",
-            emoji="📍",
-        ))
+        super().__init__(
+            label="Acknowledge", style=discord.ButtonStyle.success, emoji="✅",
+            custom_id="diff_announce_acknowledge_v1",
+        )
 
-    @discord.ui.button(
-        label="Acknowledge", style=discord.ButtonStyle.success, emoji="✅",
-        custom_id="diff_announce_acknowledge_v1",
-    )
-    async def acknowledge(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not interaction.message:
             return
         record = _get_record(interaction.message.id)
@@ -276,11 +269,15 @@ class AnnouncementButtons(discord.ui.View):
             "✅ You have acknowledged this announcement.", ephemeral=True
         )
 
-    @discord.ui.button(
-        label="Remind Me", style=discord.ButtonStyle.secondary, emoji="⏰",
-        custom_id="diff_announce_remind_v1",
-    )
-    async def remind_me(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class _RemindMeBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Remind Me", style=discord.ButtonStyle.secondary, emoji="⏰",
+            custom_id="diff_announce_remind_v1",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not interaction.message:
             return
         record = _get_record(interaction.message.id)
@@ -316,11 +313,15 @@ class AnnouncementButtons(discord.ui.View):
             ephemeral=True,
         )
 
-    @discord.ui.button(
-        label="Interested", style=discord.ButtonStyle.primary, emoji="🔥",
-        custom_id="diff_announce_interested_v1",
-    )
-    async def interested(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class _InterestedBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Interested", style=discord.ButtonStyle.primary, emoji="🔥",
+            custom_id="diff_announce_interested_v1",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not interaction.message:
             return
         record = _get_record(interaction.message.id)
@@ -341,6 +342,20 @@ class AnnouncementButtons(discord.ui.View):
                 except Exception:
                     pass
         await interaction.response.send_message("🔥 Marked as interested.", ephemeral=True)
+
+
+class AnnouncementButtons(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(
+            label="View Updates",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{GUILD_ID}/{VIEW_UPDATES_CHANNEL_ID}",
+            emoji="📍",
+        ))
+        self.add_item(_AcknowledgeBtn())
+        self.add_item(_RemindMeBtn())
+        self.add_item(_InterestedBtn())
 
 
 # =========================================================
@@ -589,18 +604,17 @@ class _CrewAnnounceSelect(discord.ui.Select):
 # =========================================================
 # CREW PANEL VIEW  (persistent)
 # =========================================================
-class CrewAnnouncePanelView(discord.ui.View):
+class _CrewAnnounceCreateBtn(discord.ui.Button):
     def __init__(self, cog: "AnnouncementPanelsCog"):
-        super().__init__(timeout=None)
+        super().__init__(
+            label="Post Announcement", emoji="📣",
+            style=discord.ButtonStyle.danger,
+            custom_id="diff_crew_announce_create_v1",
+            row=1,
+        )
         self.cog = cog
-        self.add_item(_CrewAnnounceSelect(cog))
 
-    @discord.ui.button(
-        label="Post Announcement", emoji="📣",
-        style=discord.ButtonStyle.danger,
-        custom_id="diff_crew_announce_create_v1", row=1,
-    )
-    async def make_crew_announcement(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction) -> None:
         member = interaction.user
         if not isinstance(member, discord.Member) or not _is_staff(member):
             return await interaction.response.send_message(
@@ -608,18 +622,33 @@ class CrewAnnouncePanelView(discord.ui.View):
             )
         await interaction.response.send_modal(CrewAnnouncementModal(self.cog))
 
-    @discord.ui.button(
-        label="Quick Ping", emoji="⚡",
-        style=discord.ButtonStyle.secondary,
-        custom_id="diff_crew_announce_quick_v1", row=1,
-    )
-    async def quick_ping(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class _CrewAnnounceQuickBtn(discord.ui.Button):
+    def __init__(self, cog: "AnnouncementPanelsCog"):
+        super().__init__(
+            label="Quick Ping", emoji="⚡",
+            style=discord.ButtonStyle.secondary,
+            custom_id="diff_crew_announce_quick_v1",
+            row=1,
+        )
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction) -> None:
         member = interaction.user
         if not isinstance(member, discord.Member) or not _is_staff(member):
             return await interaction.response.send_message(
                 "Only staff can use this button.", ephemeral=True
             )
         await interaction.response.send_modal(CrewQuickPingModal(self.cog))
+
+
+class CrewAnnouncePanelView(discord.ui.View):
+    def __init__(self, cog: "AnnouncementPanelsCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.add_item(_CrewAnnounceSelect(cog))
+        self.add_item(_CrewAnnounceCreateBtn(cog))
+        self.add_item(_CrewAnnounceQuickBtn(cog))
 
 
 # =========================================================
@@ -765,18 +794,16 @@ class _PingSelect(discord.ui.Select):
         )
 
 
-class GeneralAnnouncePanelView(discord.ui.View):
+class _GeneralRefreshBtn(discord.ui.Button):
     def __init__(self, cog: "AnnouncementPanelsCog"):
-        super().__init__(timeout=None)
+        super().__init__(
+            label="Refresh Panel", emoji="♻️",
+            style=discord.ButtonStyle.secondary,
+            custom_id="diff_general_announce_refresh_v1",
+        )
         self.cog = cog
-        self.add_item(_PingSelect(cog))
 
-    @discord.ui.button(
-        label="Refresh Panel", emoji="♻️",
-        style=discord.ButtonStyle.secondary,
-        custom_id="diff_general_announce_refresh_v1",
-    )
-    async def refresh_general_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction) -> None:
         member = interaction.user
         if not isinstance(member, discord.Member) or not _is_staff(member):
             return await interaction.response.send_message(
@@ -785,6 +812,14 @@ class GeneralAnnouncePanelView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         await self.cog.ensure_general_panel()
         await interaction.followup.send("General announcement panel refreshed.", ephemeral=True)
+
+
+class GeneralAnnouncePanelView(discord.ui.View):
+    def __init__(self, cog: "AnnouncementPanelsCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.add_item(_PingSelect(cog))
+        self.add_item(_GeneralRefreshBtn(cog))
 
 
 # =========================================================
@@ -885,8 +920,6 @@ class AnnouncementPanelsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        await self.ensure_crew_panel()
-        await self.ensure_general_panel()
         print("[AnnouncePanels] Cog ready.")
 
     @commands.command(name="refresh_crew_announce_panel")
