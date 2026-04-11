@@ -4985,59 +4985,88 @@ def _hostflow_role_ping(guild: discord.Guild) -> str:
     return " ".join(parts)
 
 
+def _hostflow_start_embed(host_mention: str, guild: discord.Guild) -> tuple:
+    from datetime import datetime, timezone as _tz
+    ping = _hostflow_role_ping(guild)
+    embed = discord.Embed(
+        title="🔱 DIFF Meet Welcome 🔱",
+        description=(
+            f"Hello everyone, welcome to another **DIFF Meet**!\n\n"
+            f"🎮 Tonight's host is {host_mention}\n"
+            f"If you have any questions during the meet, please contact the host."
+        ),
+        color=0x57F287,
+        timestamp=datetime.now(_tz.utc),
+    )
+    embed.add_field(
+        name="🚗 Meet Status",
+        value="The meet is now **underway** — please get your vehicles ready and positioned properly.",
+        inline=False,
+    )
+    embed.add_field(
+        name="⚠️ Important Notice",
+        value="If you have any problems with another player, please **open a ticket** in the DIFF Discord so Management can handle it properly.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🚫 Meet Rules",
+        value=(
+            "☞ No weapons out at any time\n"
+            "☞ During cruises: single file only — no passing or overtaking\n"
+            "☞ No harassment, bullying, or unnecessary negativity\n"
+            "☞ No revving or excessive honking during the meet\n"
+            "☞ Stance vehicles away from meet location — no police\n"
+            "☞ Stay in Discord voice chat at all times"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Keep meets clean, realistic, and enjoyable for everyone  •  Different Meets")
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    return ping, embed
+
 def _hostflow_start_msg(host_mention: str, guild: discord.Guild) -> str:
     ping = _hostflow_role_ping(guild)
-    return (
-        f"{ping}\n\n"
-        "🔱 __**DIFF Meet Welcome**__ 🔱\n\n"
-        "*Hello everyone, welcome to another DIFF Meet.*\n\n"
-        f"*Tonight's host is {host_mention}.*\n\n"
-        "*If you have any questions or need help during the meet, please contact the host.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚗 **Meet Status**\n"
-        "*The meet is now underway — please get your vehicles ready and positioned properly.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚠️ **Important Notice**\n"
-        "*If you have any problems with another player during the meet, please create a ticket in the DIFF Discord so DIFF Management can handle it properly.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚫 __**Meet Rules**__ 🚫\n\n"
-        "**☞ No weapons out at any time**\n"
-        "**☞ During cruises: single file only — no passing or overtaking**\n"
-        "**☞ No harassment, bullying, or unnecessary negativity**\n"
-        "**☞ No revving or excessive honking during the meet**\n"
-        "**☞ Stance vehicles away from the meet location so police are not attracted**\n"
-        "**☞ Stay in Discord voice chat so you know what is going on**\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "*Please follow all rules so we can keep the meet clean, realistic, and enjoyable for everyone.*\n\n"
-        "— **Different Meets**"
-    )
+    return ping  # legacy fallback — actual send now uses _hostflow_start_embed
 
+
+def _hostflow_end_embed(guild: discord.Guild) -> tuple:
+    from datetime import datetime, timezone as _tz
+    ping = _hostflow_role_ping(guild)
+    embed = discord.Embed(
+        title="📌 DIFF Meet Ending 📌",
+        description=(
+            "Alright everyone, tonight's **DIFF Meet** has now come to an end.\n\n"
+            "Thank you all for attending and being a part of tonight's meet! 🙏"
+        ),
+        color=0xED4245,
+        timestamp=datetime.now(_tz.utc),
+    )
+    embed.add_field(
+        name="💬 Feedback",
+        value="If you enjoyed the meet, please leave feedback in our Discord server — it helps us improve every meet!",
+        inline=False,
+    )
+    embed.add_field(
+        name="📲 Stay Connected",
+        value="Follow us on **Instagram, YouTube & TikTok** — **@diff_meets**",
+        inline=False,
+    )
+    embed.add_field(
+        name="🚗 Interested in Joining DIFF?",
+        value="Complete the **Crew Application** and message a DIFF Crew Manager for more information.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎮 Lobby Status",
+        value="The lobby is now turning into a **chill lobby**.\n🚫 No killing — anyone killing will be blocked.",
+        inline=False,
+    )
+    embed.set_footer(text="🌙 Have a great night — see you at the next DIFF Meet!  •  Different Meets")
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    return ping, embed
 
 def _hostflow_end_msg(guild: discord.Guild) -> str:
-    ping = _hostflow_role_ping(guild)
-    return (
-        f"{ping}\n\n"
-        "📌 __**DIFF Meet Ending**__ 📌\n\n"
-        "*Alright everyone, tonight's DIFF Meet has now come to an end.*\n\n"
-        "*Thank you all for attending and being a part of tonight's meet.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "💬 **Feedback**\n"
-        "*If you enjoyed the meet, please leave feedback in our Discord server.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📲 **Stay Connected**\n"
-        "*Follow us on all platforms:*\n"
-        "**@diff_meets** — Instagram, YouTube, TikTok\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚗 **Interested in Joining DIFF?**\n"
-        "*Complete the Crew Application and message a DIFF Crew Manager for more information.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🎮 **Lobby Status**\n"
-        "*The lobby is now turning into a chill lobby.*\n"
-        "🚫 *No killing — anyone killing will be blocked.*\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🌙 *Have a great night, and we hope to see you at the next DIFF Meet.*\n\n"
-        "— **Different Meets**"
-    )
+    return _hostflow_role_ping(guild)  # legacy fallback
 
 
 def _hostflow_voice_script(host_mention: str) -> str:
@@ -5116,10 +5145,8 @@ class HostFlowView(discord.ui.View):
         if not isinstance(ch, discord.TextChannel):
             await interaction.response.send_message("Meet channel not found.", ephemeral=True)
             return
-        await ch.send(
-            _hostflow_start_msg(interaction.user.mention, interaction.guild),
-            allowed_mentions=discord.AllowedMentions(roles=True),
-        )
+        _ping, _embed = _hostflow_start_embed(interaction.user.mention, interaction.guild)
+        await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
         await interaction.response.send_message(f"✅ Welcome speech posted in {ch.mention}.", ephemeral=True)
 
     @discord.ui.button(label="End Meet", emoji="📌", style=discord.ButtonStyle.danger, custom_id="diff_hostflow:end_meet")
@@ -5130,10 +5157,8 @@ class HostFlowView(discord.ui.View):
         if not isinstance(ch, discord.TextChannel):
             await interaction.response.send_message("Meet channel not found.", ephemeral=True)
             return
-        await ch.send(
-            _hostflow_end_msg(interaction.guild),
-            allowed_mentions=discord.AllowedMentions(roles=True),
-        )
+        _ping, _embed = _hostflow_end_embed(interaction.guild)
+        await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
         log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(log_ch, discord.TextChannel):
             await log_ch.send(_hostflow_log_msg(interaction.user.mention))
