@@ -312,8 +312,6 @@ async def _setup_hook():
         "cogs.diff_community_features",
         "cogs.diff_advanced_features",
         "cogs.diff_extras",
-        "cogs.diff_tts",
-        "cogs.diff_music",
     ]
     for _cog in _cogs:
         try:
@@ -8176,7 +8174,7 @@ def _build_diff_panel_embed() -> discord.Embed:
     return _build_unified_hub_embed()
 
 
-@bot.tree.command(name="diffpanel", description="Post the DIFF Crew Control Panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="diffpanel", description="Post the DIFF Crew Control Panel (staff only)")
 async def diffpanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -8188,7 +8186,7 @@ async def diffpanel(interaction: discord.Interaction):
     _save_diff_json(DIFF_PANEL_STATE_FILE, {"channel_id": panel_ch.id, "message_id": message.id})
 
 
-@bot.tree.command(name="refreshdiffpanel", description="Refresh the existing DIFF Crew Control Panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refreshdiffpanel", description="Refresh the existing DIFF Crew Control Panel (staff only)")
 async def refreshdiffpanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -8216,7 +8214,7 @@ async def refreshdiffpanel(interaction: discord.Interaction):
     await interaction.followup.send("Panel refreshed ✅", ephemeral=True)
 
 
-@bot.tree.command(name="diffhub", description="Post the DIFF Crew Control Hub in this channel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="diffhub", description="Post the DIFF Crew Control Hub in this channel (staff only)")
 async def diffhub(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -8415,7 +8413,7 @@ class ActivityDashboardView(discord.ui.View):
         ))
 
 
-@bot.tree.command(name="meet-create", description="Create a tracked meet record (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="meet-create", description="Create a tracked meet record (staff only)")
 @app_commands.describe(meet_id="Short unique ID e.g. friday-derby-01", title="Meet title", scheduled_time_unix="Unix timestamp", host="Meet host")
 async def meet_create(interaction: discord.Interaction, meet_id: str, title: str, scheduled_time_unix: int, host: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -8435,7 +8433,7 @@ async def meet_create(interaction: discord.Interaction, meet_id: str, title: str
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="meet-rsvp", description="Set a member's RSVP for a tracked meet (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="meet-rsvp", description="Set a member's RSVP for a tracked meet (staff only)")
 @app_commands.describe(meet_id="Tracked meet ID", member="Member to update", status="going, maybe, or not_going")
 @app_commands.choices(status=[
     app_commands.Choice(name="going", value="going"),
@@ -8462,7 +8460,7 @@ async def meet_rsvp(interaction: discord.Interaction, meet_id: str, member: disc
     await interaction.response.send_message(f"Set {member.mention} to **{status.value}** for `{meet_id}`.\nGoing: {going} | Maybe: {maybe} | Not Going: {not_going}", ephemeral=True)
 
 
-@bot.tree.command(name="meet-checkin", description="Mark a member as attended for a meet (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="meet-checkin", description="Mark a member as attended for a meet (staff only)")
 @app_commands.describe(meet_id="Tracked meet ID", member="Member that showed up")
 async def meet_checkin(interaction: discord.Interaction, meet_id: str, member: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -8490,7 +8488,7 @@ async def meet_checkin(interaction: discord.Interaction, meet_id: str, member: d
     await interaction.response.send_message(f"Checked in {member.mention} for `{meet_id}`. Total attended: {stats.get('attended', 0)}", ephemeral=True)
 
 
-@bot.tree.command(name="meet-hosted", description="Add a hosted meet to a member's record (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="meet-hosted", description="Add a hosted meet to a member's record (staff only)")
 @app_commands.describe(member="Host member")
 async def meet_hosted(interaction: discord.Interaction, member: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -8505,7 +8503,7 @@ async def meet_hosted(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(f"Added 1 hosted meet to {member.mention}. Total hosted: {stats.get('hosted', 0)}", ephemeral=True)
 
 
-@bot.tree.command(name="meet-close", description="Close a meet and apply no-show penalties (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="meet-close", description="Close a meet and apply no-show penalties (staff only)")
 @app_commands.describe(meet_id="Tracked meet ID")
 async def meet_close(interaction: discord.Interaction, meet_id: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -8570,7 +8568,7 @@ async def meet_close(interaction: discord.Interaction, meet_id: str):
     await interaction.response.send_message(msg, ephemeral=True)
 
 
-@bot.tree.command(name="diff-leaderboard", description="Post the DIFF activity leaderboard (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="diff-leaderboard", description="Post the DIFF activity leaderboard (staff only)")
 async def diff_leaderboard(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -8584,7 +8582,7 @@ async def diff_leaderboard(interaction: discord.Interaction):
     await interaction.followup.send("Leaderboard refreshed.", ephemeral=True)
 
 
-@bot.tree.command(name="diff-dashboard-post", description="Post the live DIFF activity dashboard (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="diff-dashboard-post", description="Post the live DIFF activity dashboard (staff only)")
 async def diff_dashboard_post(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -8599,7 +8597,7 @@ async def diff_dashboard_post(interaction: discord.Interaction):
     await interaction.response.send_message("Activity dashboard posted and linked for auto-refresh.", ephemeral=True)
 
 
-@bot.tree.command(name="diff-dashboard-refresh", description="Manually refresh the DIFF activity dashboard (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="diff-dashboard-refresh", description="Manually refresh the DIFF activity dashboard (staff only)")
 async def diff_dashboard_refresh(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -8610,7 +8608,7 @@ async def diff_dashboard_refresh(interaction: discord.Interaction):
     await interaction.response.send_message("Dashboard refreshed.", ephemeral=True)
 
 
-@bot.tree.command(name="diff-member-stats", description="Show full activity stats for a member (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="diff-member-stats", description="Show full activity stats for a member (staff only)")
 @app_commands.describe(member="Member to inspect")
 async def diff_member_stats(interaction: discord.Interaction, member: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -8628,7 +8626,7 @@ async def diff_member_stats(interaction: discord.Interaction, member: discord.Me
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="diff-reset-member", description="Reset a member's activity meets record (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="diff-reset-member", description="Reset a member's activity meets record (staff only)")
 @app_commands.describe(member="Member to reset")
 async def diff_reset_member(interaction: discord.Interaction, member: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -12286,13 +12284,18 @@ async def on_ready():
 
     print(f"Logged in as {bot.user}")
     try:
-        # Guild sync is instant; global sync can take up to 1 hour
+        # Clear any guild-specific commands so they don't duplicate the global ones
         guild_obj = discord.Object(id=GUILD_ID)
-        bot.tree.copy_global_to(guild=guild_obj)
-        guild_synced = await bot.tree.sync(guild=guild_obj)
-        print(f"Guild-synced {len(guild_synced)} slash command(s) to {GUILD_ID}")
+        bot.tree.clear_commands(guild=guild_obj)
+        await bot.tree.sync(guild=guild_obj)
+        print(f"Cleared guild-specific slash commands from {GUILD_ID}")
     except Exception as e:
-        print(f"Guild sync error: {e}")
+        print(f"Guild clear error: {e}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Global-synced {len(synced)} slash command(s)")
+    except Exception as e:
+        print(f"Global sync error: {e}")
 
     def _safe_add_view(view, label: str = "") -> None:
         try:
@@ -12786,12 +12789,12 @@ class StartMeetModal(discord.ui.Modal, title="Start a DIFF Meet"):
 # =========================
 # SLASH COMMANDS
 # =========================
-@bot.tree.command(name="ping", description="Check if the bot is online", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="ping", description="Check if the bot is online")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("Pong 🏓")
 
 
-@bot.tree.command(name="panel", description="Show the DIFF host panel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="panel", description="Show the DIFF host panel")
 async def panel(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in the server.", ephemeral=True)
@@ -12800,7 +12803,7 @@ async def panel(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="postpanel", description="Post or refresh the saved live panel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="postpanel", description="Post or refresh the saved live panel")
 @app_commands.checks.has_permissions(administrator=True)
 async def postpanel(interaction: discord.Interaction):
     global status_message_id
@@ -12839,7 +12842,7 @@ async def postpanel(interaction: discord.Interaction):
     await interaction.response.send_message(f"Panel saved in {channel.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="listhosts", description="Show all saved DIFF hosts", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="listhosts", description="Show all saved DIFF hosts")
 async def listhosts(interaction: discord.Interaction):
     if not data["hosts"]:
         await interaction.response.send_message("No hosts saved.", ephemeral=True)
@@ -12850,7 +12853,7 @@ async def listhosts(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="refreshpanel", description="Refresh the saved live panel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refreshpanel", description="Refresh the saved live panel")
 async def refreshpanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -12903,7 +12906,7 @@ async def panel_error(interaction: discord.Interaction, error: app_commands.AppC
         await interaction.response.send_message(msg, ephemeral=True)
 
 
-@bot.tree.command(name="addhost", description="Add a DIFF host", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="addhost", description="Add a DIFF host")
 @app_commands.checks.has_permissions(administrator=True)
 async def addhost(interaction: discord.Interaction, member: discord.Member, profile_url: str):
     for host in data["hosts"]:
@@ -12916,7 +12919,7 @@ async def addhost(interaction: discord.Interaction, member: discord.Member, prof
     await interaction.response.send_message(f"Added **{member.display_name}** to the DIFF host list.", ephemeral=True)
 
 
-@bot.tree.command(name="removehost", description="Remove a DIFF host", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="removehost", description="Remove a DIFF host")
 async def removehost(interaction: discord.Interaction, member: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -12930,7 +12933,7 @@ async def removehost(interaction: discord.Interaction, member: discord.Member):
         await interaction.response.send_message(f"Removed **{member.display_name}** from the DIFF host list.", ephemeral=True)
 
 
-@bot.tree.command(name="sendmeetinfo", description="Post or update the DIFF meet info panel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="sendmeetinfo", description="Post or update the DIFF meet info panel")
 async def sendmeetinfo(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -12966,7 +12969,7 @@ async def sendmeetinfo(interaction: discord.Interaction):
         await interaction.response.send_message(f"Error posting meet info panel: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="refreshrules", description="Post or refresh all rules panels in the rules channel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refreshrules", description="Post or refresh all rules panels in the rules channel")
 @app_commands.checks.has_permissions(administrator=True)
 async def refreshrules(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -13037,7 +13040,7 @@ async def refreshrules_error(interaction: discord.Interaction, error: app_comman
         pass
 
 
-@bot.tree.command(name="refreshcrewpanel", description="Post or refresh the crew recruitment panel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refreshcrewpanel", description="Post or refresh the crew recruitment panel")
 async def refreshcrewpanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -13060,7 +13063,7 @@ async def refreshcrewpanel(interaction: discord.Interaction):
 
 
 
-@bot.tree.command(name="sethostrole", description="Set the DIFF host role", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="sethostrole", description="Set the DIFF host role")
 async def sethostrole(interaction: discord.Interaction, role: discord.Role):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -13069,7 +13072,7 @@ async def sethostrole(interaction: discord.Interaction, role: discord.Role):
     await interaction.response.send_message(f"Host role set to {role.mention}", ephemeral=True)
 
 
-@bot.tree.command(name="setmeetpingrole", description="Set the role to ping for meet announcements", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="setmeetpingrole", description="Set the role to ping for meet announcements")
 @app_commands.checks.has_permissions(administrator=True)
 async def setmeetpingrole(interaction: discord.Interaction, role: discord.Role):
     data["meet_ping_role_id"] = role.id
@@ -13090,7 +13093,7 @@ async def setmeetpingrole_error(interaction: discord.Interaction, error: app_com
         await interaction.response.send_message(msg, ephemeral=True)
 
 
-@bot.tree.command(name="startmeet", description="Open the meet announcement form", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="startmeet", description="Open the meet announcement form")
 async def startmeet(interaction: discord.Interaction):
     if not is_host_or_admin(interaction):
         await interaction.response.send_message("You need the Host role or admin permissions to use this command.", ephemeral=True)
@@ -13101,7 +13104,7 @@ async def startmeet(interaction: discord.Interaction):
     await interaction.response.send_modal(StartMeetModal())
 
 
-@bot.tree.command(name="endmeet", description="Post a meet closed message", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="endmeet", description="Post a meet closed message")
 async def endmeet(
     interaction: discord.Interaction,
     message: str = "I Appreciate everyone for pulling up tonight. Meet is officially closed. Safe travels and see y’all at the next one. 💯",
@@ -13116,7 +13119,7 @@ async def endmeet(
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="hostpanel", description="Show current bot host role setup", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="hostpanel", description="Show current bot host role setup")
 async def hostpanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -13138,7 +13141,7 @@ async def hostpanel(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="meethistory", description="Show the latest messages in the extra-meets channel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="meethistory", description="Show the latest messages in the extra-meets channel")
 @app_commands.checks.has_permissions(administrator=True)
 async def meethistory(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 10] = 5):
     if interaction.guild is None:
@@ -13224,7 +13227,7 @@ class _WarnProofView(discord.ui.View):
         self.add_item(_WarnProofBtn(warn_id))
 
 
-@bot.tree.command(name="warn", description="Warn a member and log it to the warns channel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="warn", description="Warn a member and log it to the warns channel")
 @app_commands.describe(
     member="The member to warn",
     reason="Reason for the warning",
@@ -13361,7 +13364,7 @@ async def warn(
     )
 
 
-@bot.tree.command(name="warnings", description="Check a member's warnings", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="warnings", description="Check a member's warnings")
 @app_commands.checks.has_permissions(administrator=True)
 async def warnings(interaction: discord.Interaction, member: discord.Member):
     member_warnings = data.get("warnings", {}).get(str(member.id), [])
@@ -13391,7 +13394,7 @@ async def warnings(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="clearwarnings", description="Clear all warnings for a member", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="clearwarnings", description="Clear all warnings for a member")
 @app_commands.checks.has_permissions(administrator=True)
 async def clearwarnings(interaction: discord.Interaction, member: discord.Member):
     clear_warnings_for_member(member.id)
@@ -13423,7 +13426,7 @@ async def moderation_command_error(interaction: discord.Interaction, error: app_
 
 
 
-@bot.tree.command(name="posthierarchy", description="Post or refresh the DIFF hierarchy panel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="posthierarchy", description="Post or refresh the DIFF hierarchy panel")
 async def posthierarchy(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -13449,7 +13452,7 @@ async def posthierarchy(interaction: discord.Interaction):
         pass
 
 
-@bot.tree.command(name="refreshhierarchy", description="Refresh the DIFF hierarchy panel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refreshhierarchy", description="Refresh the DIFF hierarchy panel")
 async def refreshhierarchy(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -13475,7 +13478,7 @@ async def refreshhierarchy(interaction: discord.Interaction):
         pass
 
 
-@bot.tree.command(name="refresh-live-attendance", description="Post or refresh the live crew attendance status panel", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refresh-live-attendance", description="Post or refresh the live crew attendance status panel")
 @app_commands.checks.has_permissions(administrator=True)
 async def refresh_live_attendance_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -13498,7 +13501,7 @@ async def refresh_live_attendance_cmd(interaction: discord.Interaction):
 # =========================
 # APPLICATION COMMANDS
 # =========================
-@bot.tree.command(name="application_lookup", description="Look up a DIFF application by ID (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="application_lookup", description="Look up a DIFF application by ID (staff only)")
 @app_commands.describe(application_id="Application ID, e.g. 0001")
 async def application_lookup(interaction: discord.Interaction, application_id: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -13518,7 +13521,7 @@ async def application_lookup(interaction: discord.Interaction, application_id: s
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="application_stats", description="View DIFF application totals (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="application_stats", description="View DIFF application totals (staff only)")
 async def application_stats(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
@@ -13535,7 +13538,7 @@ async def application_stats(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="staffreplypanel", description="Post a staff response panel in the current channel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="staffreplypanel", description="Post a staff response panel in the current channel (staff only)")
 async def staffreplypanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
@@ -13551,7 +13554,7 @@ async def staffreplypanel(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Staff reply panel posted.", ephemeral=True)
 
 
-@bot.tree.command(name="recordattendance", description="Record a member's meet attendance (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="recordattendance", description="Record a member's meet attendance (staff only)")
 @discord.app_commands.describe(member="The member who attended", meet_name="Name of the meet")
 async def recordattendance(interaction: discord.Interaction, member: discord.Member, meet_name: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -13561,7 +13564,7 @@ async def recordattendance(interaction: discord.Interaction, member: discord.Mem
     await interaction.followup.send(f"✅ Recorded attendance for {member.mention} at **{meet_name}**.", ephemeral=True)
 
 
-@bot.tree.command(name="recordhost", description="Record a member hosting a meet (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="recordhost", description="Record a member hosting a meet (staff only)")
 @discord.app_commands.describe(member="The member who hosted", meet_name="Name of the meet")
 async def recordhost(interaction: discord.Interaction, member: discord.Member, meet_name: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -13571,7 +13574,7 @@ async def recordhost(interaction: discord.Interaction, member: discord.Member, m
     await interaction.followup.send(f"✅ Recorded {member.mention} as host for **{meet_name}**.", ephemeral=True)
 
 
-@bot.tree.command(name="giverep", description="Give or remove reputation from a crew member (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="giverep", description="Give or remove reputation from a crew member (staff only)")
 @discord.app_commands.describe(member="Target member", amount="Positive to add, negative to remove", reason="Reason for the change")
 async def giverep(interaction: discord.Interaction, member: discord.Member, amount: int, reason: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -13582,7 +13585,7 @@ async def giverep(interaction: discord.Interaction, member: discord.Member, amou
     await interaction.followup.send(f"✅ {direction} **{amount:+}** reputation for {member.mention}. Reason: {reason}", ephemeral=True)
 
 
-@bot.tree.command(name="memberstats", description="View a crew member's activity stats (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="memberstats", description="View a crew member's activity stats (staff only)")
 @discord.app_commands.describe(member="The member to look up")
 async def memberstats(interaction: discord.Interaction, member: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -13591,7 +13594,7 @@ async def memberstats(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="mystats", description="View your own DIFF activity stats", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="mystats", description="View your own DIFF activity stats")
 async def mystats(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -13600,7 +13603,7 @@ async def mystats(interaction: discord.Interaction):
 
 
 
-@bot.tree.command(name="postattendancepanel", description="Post the meet attendance panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="postattendancepanel", description="Post the meet attendance panel (staff only)")
 async def postattendancepanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
@@ -13617,7 +13620,7 @@ async def postattendancepanel(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Attendance panel posted.", ephemeral=True)
 
 
-@bot.tree.command(name="rankinfo", description="View the DIFF rank promotion requirements", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="rankinfo", description="View the DIFF rank promotion requirements")
 async def rankinfo(interaction: discord.Interaction):
     embed = discord.Embed(
         title="📈 DIFF Rank Progression",
@@ -13643,14 +13646,14 @@ async def rankinfo(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="weeklyrollcall", description="Post the weekly DIFF roll call with RSVP buttons (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="weeklyrollcall", description="Post the weekly DIFF roll call with RSVP buttons (staff only)")
 async def weeklyrollcall(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
     await interaction.response.send_modal(WeeklyRollCallModal())
 
 
-@bot.tree.command(name="staffdashboard", description="Post the DIFF staff recruitment dashboard (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="staffdashboard", description="Post the DIFF staff recruitment dashboard (staff only)")
 async def staffdashboard(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
@@ -14211,7 +14214,7 @@ def _cs_build_panel_embed() -> discord.Embed:
     return embed
 
 
-@bot.tree.command(name="post-color-panel", description="Post the DIFF color submission panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="post-color-panel", description="Post the DIFF color submission panel (staff only)")
 async def post_color_panel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -14221,7 +14224,7 @@ async def post_color_panel(interaction: discord.Interaction):
     await interaction.response.send_message(f"Color submission panel posted in {panel_ch.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="refresh-color-panel", description="Refresh the existing DIFF color submission panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refresh-color-panel", description="Refresh the existing DIFF color submission panel (staff only)")
 async def refresh_color_panel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -14251,7 +14254,7 @@ async def refresh_color_panel(interaction: discord.Interaction):
     await interaction.followup.send("Color panel refreshed ✅", ephemeral=True)
 
 
-@bot.tree.command(name="color-stats", description="Show the DIFF color team leaderboard", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="color-stats", description="Show the DIFF color team leaderboard")
 async def color_stats(interaction: discord.Interaction):
     data = _cs_load()
     if not data["stats"]:
@@ -14279,7 +14282,7 @@ async def color_stats(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="force-color-vote", description="Manually post the weekly color vote (leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="force-color-vote", description="Manually post the weekly color vote (leadership only)")
 async def force_color_vote(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
         return await interaction.response.send_message("Leaders, Co-Leaders, and Managers only.", ephemeral=True)
@@ -14294,7 +14297,7 @@ async def force_color_vote(interaction: discord.Interaction):
         )
 
 
-@bot.tree.command(name="force-color-winner", description="Manually close the vote and post the winner (leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="force-color-winner", description="Manually close the vote and post the winner (leadership only)")
 async def force_color_winner(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
         return await interaction.response.send_message("Leaders, Co-Leaders, and Managers only.", ephemeral=True)
@@ -14473,7 +14476,7 @@ async def _post_or_refresh_color_team_panel(ping_role: bool = True) -> Optional[
     return msg
 
 
-@bot.tree.command(name="post-color-team-panel", description="Post or refresh the Color Team coordination panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="post-color-team-panel", description="Post or refresh the Color Team coordination panel (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def post_color_team_panel(interaction: discord.Interaction):
     try:
@@ -14484,7 +14487,7 @@ async def post_color_team_panel(interaction: discord.Interaction):
     await interaction.followup.send("Color team coordination panel posted/refreshed.", ephemeral=True)
 
 
-@bot.tree.command(name="refresh-color-team-panel", description="Refresh the Color Team panel in place without duplicating (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refresh-color-team-panel", description="Refresh the Color Team panel in place without duplicating (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def refresh_color_team_panel(interaction: discord.Interaction):
     try:
@@ -14495,7 +14498,7 @@ async def refresh_color_team_panel(interaction: discord.Interaction):
     await interaction.followup.send("Color team panel refreshed with no duplicate post.", ephemeral=True)
 
 
-@bot.tree.command(name="reset-color-team-panel", description="Reset the Color Team panel state and repost cleanly (admin only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="reset-color-team-panel", description="Reset the Color Team panel state and repost cleanly (admin only)")
 @app_commands.checks.has_permissions(administrator=True)
 async def reset_color_team_panel(interaction: discord.Interaction):
     try:
@@ -14509,7 +14512,7 @@ async def reset_color_team_panel(interaction: discord.Interaction):
     await interaction.followup.send("Color team panel reset and reposted cleanly.", ephemeral=True)
 
 
-@bot.tree.command(name="test-monday-color", description="Manually trigger the Monday color team update post (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="test-monday-color", description="Manually trigger the Monday color team update post (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def test_monday_color(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -14528,7 +14531,7 @@ async def test_monday_color(interaction: discord.Interaction):
     await interaction.followup.send("Monday color team post sent.", ephemeral=True)
 
 
-@bot.tree.command(name="test-tuesday-color", description="Manually trigger the Tuesday voting live post (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="test-tuesday-color", description="Manually trigger the Tuesday voting live post (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def test_tuesday_color(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -14900,7 +14903,7 @@ async def _post_or_refresh_interview_panel() -> None:
     _interview_panel_save({"channel_id": channel.id, "message_id": msg.id})
 
 
-@bot.tree.command(name="post-interview-panel", description="Post or refresh the Crew Interview Zone panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="post-interview-panel", description="Post or refresh the Crew Interview Zone panel (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def post_interview_panel(interaction: discord.Interaction):
     try:
@@ -14914,7 +14917,7 @@ async def post_interview_panel(interaction: discord.Interaction):
     await interaction.followup.send(f"Interview panel posted or refreshed in {mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="refresh-interview-panel", description="Refresh the interview panel in place without reposting (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refresh-interview-panel", description="Refresh the interview panel in place without reposting (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def refresh_interview_panel(interaction: discord.Interaction):
     try:
@@ -15270,7 +15273,7 @@ async def _post_or_refresh_interview_outcome_panel(channel: discord.TextChannel)
     _interview_outcome_save({"channel_id": channel.id, "message_id": msg.id})
 
 
-@bot.tree.command(name="post-interview-results-panel", description="Post the accept/deny interview results panel in this channel (Leader/Co-Leader/Manager only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="post-interview-results-panel", description="Post the accept/deny interview results panel in this channel (Leader/Co-Leader/Manager only)")
 async def post_interview_results_panel(interaction: discord.Interaction):
     if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
         return await interaction.response.send_message("Run this command in the ticket channel where you want the panel.", ephemeral=True)
@@ -15741,7 +15744,7 @@ class ApplicationReviewView(discord.ui.View):
         await interaction.response.send_modal(ApplicationResultModal(self.target_member_id, "Denied"))
 
 
-@bot.tree.command(name="send-application-review-panel", description="Post the application review panel for a member in this ticket (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="send-application-review-panel", description="Post the application review panel for a member in this ticket (staff only)")
 @app_commands.describe(member="The applicant to link to this ticket")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def send_application_review_panel(interaction: discord.Interaction, member: discord.Member):
@@ -15760,7 +15763,7 @@ async def send_application_review_panel(interaction: discord.Interaction, member
     )
 
 
-@bot.tree.command(name="link-application-ticket", description="Link the current ticket channel to an applicant and log it (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="link-application-ticket", description="Link the current ticket channel to an applicant and log it (staff only)")
 @app_commands.describe(member="The applicant to link")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def link_application_ticket(interaction: discord.Interaction, member: discord.Member):
@@ -15857,7 +15860,7 @@ async def prefix_unlink_ticket(ctx: commands.Context):
         await ctx.send("This ticket has no active application link.")
 
 
-@bot.tree.command(name="setup-application-ticket", description="Auto-detect the applicant in this ticket and attach the review panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="setup-application-ticket", description="Auto-detect the applicant in this ticket and attach the review panel (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def setup_application_ticket(interaction: discord.Interaction):
     if not isinstance(interaction.channel, discord.TextChannel):
@@ -15896,7 +15899,7 @@ async def setup_application_ticket(interaction: discord.Interaction):
     await interaction.followup.send(f"Review panel attached for {applicant.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="rebuild-application-panel", description="Rebuild the review panel in this ticket if it was deleted (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="rebuild-application-panel", description="Rebuild the review panel in this ticket if it was deleted (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def rebuild_application_panel(interaction: discord.Interaction):
     if not isinstance(interaction.channel, discord.TextChannel):
@@ -15920,7 +15923,7 @@ async def rebuild_application_panel(interaction: discord.Interaction):
     await interaction.followup.send("Application review panel rebuilt.", ephemeral=True)
 
 
-@bot.tree.command(name="application-status", description="Show the linked application status for this ticket (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="application-status", description="Show the linked application status for this ticket (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def application_status(interaction: discord.Interaction):
     if not isinstance(interaction.channel, discord.TextChannel):
@@ -16230,7 +16233,7 @@ async def before_color_ops_refresh_loop():
 
 # Application / Interview commands
 
-@bot.tree.command(name="log-application", description="Log a member application into the system (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="log-application", description="Log a member application into the system (staff only)")
 @app_commands.describe(member="The applicant", notes="Optional notes")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def log_application(interaction: discord.Interaction, member: discord.Member, notes: str = "Application logged."):
@@ -16257,7 +16260,7 @@ async def log_application(interaction: discord.Interaction, member: discord.Memb
     await interaction.followup.send(f"Application logged for {member.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="schedule-interview", description="Connect an interview time to an existing application (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="schedule-interview", description="Connect an interview time to an existing application (staff only)")
 @app_commands.describe(member="The applicant", when_text="When the interview is (e.g. 'Friday 8pm ET')", notes="Optional notes")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def schedule_interview(interaction: discord.Interaction, member: discord.Member, when_text: str, notes: str = "Interview scheduled."):
@@ -16286,7 +16289,7 @@ async def schedule_interview(interaction: discord.Interaction, member: discord.M
     await interaction.followup.send(f"Interview connected to {member.mention}'s application.", ephemeral=True)
 
 
-@bot.tree.command(name="application-result", description="Set the final result for a member application (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="application-result", description="Set the final result for a member application (staff only)")
 @app_commands.describe(member="The applicant", result="approved / denied / pending", notes="Optional notes")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def application_result(interaction: discord.Interaction, member: discord.Member, result: str, notes: str = "No extra notes provided."):
@@ -16323,7 +16326,7 @@ async def application_result(interaction: discord.Interaction, member: discord.M
 
 # Color submission / winner commands
 
-@bot.tree.command(name="log-color-submission", description="Log a color submission and track contributor stats (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="log-color-submission", description="Log a color submission and track contributor stats (staff only)")
 @app_commands.describe(contributor="Who submitted the color", color_name="Name of the color", image_url="Optional image URL")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def log_color_submission(interaction: discord.Interaction, contributor: discord.Member, color_name: str, image_url: str = ""):
@@ -16367,7 +16370,7 @@ async def log_color_submission(interaction: discord.Interaction, contributor: di
     await interaction.followup.send(f"Color submission logged for {contributor.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="set-color-winner", description="Set the winning color, update stats, and auto-post the winner announcement (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="set-color-winner", description="Set the winning color, update stats, and auto-post the winner announcement (staff only)")
 @app_commands.describe(color_name="Winning color name", contributor="Who submitted it", image_url="Optional image URL")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def set_color_winner(interaction: discord.Interaction, color_name: str, contributor: discord.Member, image_url: str = ""):
@@ -16428,7 +16431,7 @@ async def set_color_winner(interaction: discord.Interaction, color_name: str, co
     await interaction.followup.send(f"Winner set and announced for **{color_name}**.", ephemeral=True)
 
 
-@bot.tree.command(name="refresh-color-ops-panels", description="Refresh the color stats and contributor leaderboard panels (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refresh-color-ops-panels", description="Refresh the color stats and contributor leaderboard panels (staff only)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def refresh_color_ops_panels(interaction: discord.Interaction):
     try:
@@ -16439,7 +16442,7 @@ async def refresh_color_ops_panels(interaction: discord.Interaction):
     await interaction.followup.send("Color ops panels refreshed.", ephemeral=True)
 
 
-@bot.tree.command(name="reset-color-ops-panels", description="Reset saved panel IDs and repost clean panels (admin only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="reset-color-ops-panels", description="Reset saved panel IDs and repost clean panels (admin only)")
 @app_commands.checks.has_permissions(administrator=True)
 async def reset_color_ops_panels(interaction: discord.Interaction):
     try:
@@ -16847,7 +16850,7 @@ async def _rsvp_post_or_refresh_control_hub(channel: discord.TextChannel) -> dis
 ControlHubView = UnifiedCrewHubView
 
 
-@bot.tree.command(name="attendance-create", description="Create a live RSVP attendance panel for a meet (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="attendance-create", description="Create a live RSVP attendance panel for a meet (staff only)")
 @app_commands.describe(meet_title="Meet name", host="Host for the meet", meet_date="Date shown on the panel")
 async def attendance_create(interaction: discord.Interaction, meet_title: str, host: discord.Member, meet_date: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -16875,7 +16878,7 @@ async def attendance_create(interaction: discord.Interaction, meet_title: str, h
     )
 
 
-@bot.tree.command(name="attendance-checkin", description="Mark a member as actually present at the meet (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="attendance-checkin", description="Mark a member as actually present at the meet (staff only)")
 @app_commands.describe(meet_id="Meet ID from the attendance panel", member="Member to check in")
 async def attendance_checkin(interaction: discord.Interaction, meet_id: str, member: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -16896,7 +16899,7 @@ async def attendance_checkin(interaction: discord.Interaction, meet_id: str, mem
     )
 
 
-@bot.tree.command(name="attendance-close", description="Close a meet RSVP panel and post final results (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="attendance-close", description="Close a meet RSVP panel and post final results (staff only)")
 @app_commands.describe(meet_id="Meet ID from the attendance panel", total_players="Total players in lobby")
 async def attendance_close(interaction: discord.Interaction, meet_id: str, total_players: int):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -16934,7 +16937,7 @@ async def attendance_close(interaction: discord.Interaction, meet_id: str, total
     )
 
 
-@bot.tree.command(name="attendance-leaderboard", description="Show the most active DIFF members by meet attendance", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="attendance-leaderboard", description="Show the most active DIFF members by meet attendance")
 async def attendance_leaderboard(interaction: discord.Interaction):
     if not _rsvp_leaderboard:
         return await interaction.response.send_message("No attendance data yet.", ephemeral=True)
@@ -16961,7 +16964,7 @@ async def attendance_leaderboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="post-crew-hub", description="Post or refresh the DIFF Crew Hub stats panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="post-crew-hub", description="Post or refresh the DIFF Crew Hub stats panel (staff only)")
 async def post_crew_hub(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -16989,7 +16992,7 @@ async def post_crew_hub(interaction: discord.Interaction):
         await interaction.followup.send("Crew Hub panel posted and linked for auto-refresh.", ephemeral=True)
 
 
-@bot.tree.command(name="post-notify-panel", description="Post the meet notification opt-in panel in this channel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="post-notify-panel", description="Post the meet notification opt-in panel in this channel (staff only)")
 async def post_notify_panel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -17010,7 +17013,7 @@ async def post_notify_panel(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Notification panel posted.", ephemeral=True)
 
 
-@bot.tree.command(name="post-staff-dashboard", description="Post/refresh the staff dashboard and run crew invite check (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="post-staff-dashboard", description="Post/refresh the staff dashboard and run crew invite check (staff only)")
 async def post_staff_dashboard(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -17020,7 +17023,7 @@ async def post_staff_dashboard(interaction: discord.Interaction):
     await interaction.followup.send("✅ Staff dashboard refreshed and crew invite check complete.", ephemeral=True)
 
 
-@bot.tree.command(name="suggestions", description="Show DIFF promotion and activity suggestions (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="suggestions", description="Show DIFF promotion and activity suggestions (staff only)")
 async def suggestions(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -17028,7 +17031,7 @@ async def suggestions(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="meetrecap", description="Post a DIFF meet recap and update host stats (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="meetrecap", description="Post a DIFF meet recap and update host stats (staff only)")
 @app_commands.describe(
     host="Meet host",
     meet="Meet name or theme",
@@ -17116,7 +17119,7 @@ async def meetrecap(
     await interaction.followup.send("✅ Meet recap posted and host stats updated.", ephemeral=True)
 
 
-@bot.tree.command(name="behavior", description="Set a member's behavior score and update their tier rank (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="behavior", description="Set a member's behavior score and update their tier rank (staff only)")
 @app_commands.describe(
     user="Target member",
     score="Behavior score 1–10 (10 = perfect)",
@@ -17166,7 +17169,7 @@ async def behavior(
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="my-stats", description="View your DIFF meet attendance and activity stats", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="my-stats", description="View your DIFF meet attendance and activity stats")
 @app_commands.describe(member="Optional: check another member's stats (staff only)")
 async def my_stats(interaction: discord.Interaction, member: Optional[discord.Member] = None):
     if member and member != interaction.user:
@@ -17237,7 +17240,7 @@ async def my_stats(interaction: discord.Interaction, member: Optional[discord.Me
     await interaction.response.send_message(embed=embed, ephemeral=member is None)
 
 
-@bot.tree.command(name="clear-history", description="Clear message history in this channel (Leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="clear-history", description="Clear message history in this channel (Leadership only)")
 @app_commands.describe(amount="Number of messages to delete (1–1000, default 100). Use 0 to delete ALL messages.")
 async def clear_history(interaction: discord.Interaction, amount: int = 100):
     _leadership_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID}
@@ -17277,7 +17280,7 @@ async def clear_history(interaction: discord.Interaction, amount: int = 100):
     await interaction.followup.send(f"✅ Deleted **{len(deleted)}** message(s).", ephemeral=True)
 
 
-@bot.tree.command(name="control-hub-post", description="Post or refresh the DIFF Crew Control Hub panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="control-hub-post", description="Post or refresh the DIFF Crew Control Hub panel (staff only)")
 async def control_hub_post(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
@@ -19442,7 +19445,7 @@ async def _wipe_old_panels(channel: discord.TextChannel) -> None:
             pass
 
 
-@bot.tree.command(name="post-support-panel", description="Post the DIFF Support Center dropdown panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="post-support-panel", description="Post the DIFF Support Center dropdown panel (staff only)")
 async def post_support_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild:
         return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -19751,7 +19754,7 @@ class StaffReviewView(discord.ui.View):
         await self._handle(interaction, approved=False)
 
 
-@bot.tree.command(name="staff-stats", description="View DIFF staff performance stats for a member (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="staff-stats", description="View DIFF staff performance stats for a member (staff only)")
 @app_commands.describe(member="The staff member to look up")
 async def staff_stats(interaction: discord.Interaction, member: discord.Member) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -19776,7 +19779,7 @@ async def staff_stats(interaction: discord.Interaction, member: discord.Member) 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="staff-add-ticket", description="Add handled ticket stats to a staff member (leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="staff-add-ticket", description="Add handled ticket stats to a staff member (leadership only)")
 @app_commands.describe(member="Staff member to update", amount="Number of tickets to add (default 1)")
 async def staff_add_ticket(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -19789,7 +19792,7 @@ async def staff_add_ticket(interaction: discord.Interaction, member: discord.Mem
     await _staff_check_promotion(interaction.guild, member)
 
 
-@bot.tree.command(name="staff-add-application", description="Add reviewed application stats to a staff member (leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="staff-add-application", description="Add reviewed application stats to a staff member (leadership only)")
 @app_commands.describe(member="Staff member to update", amount="Number of applications to add (default 1)")
 async def staff_add_application(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -19802,7 +19805,7 @@ async def staff_add_application(interaction: discord.Interaction, member: discor
     await _staff_check_promotion(interaction.guild, member)
 
 
-@bot.tree.command(name="staff-add-report", description="Add resolved report stats to a staff member (leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="staff-add-report", description="Add resolved report stats to a staff member (leadership only)")
 @app_commands.describe(member="Staff member to update", amount="Number of reports to add (default 1)")
 async def staff_add_report(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -19815,7 +19818,7 @@ async def staff_add_report(interaction: discord.Interaction, member: discord.Mem
     await _staff_check_promotion(interaction.guild, member)
 
 
-@bot.tree.command(name="staff-add-appeal", description="Add reviewed appeal stats to a staff member (leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="staff-add-appeal", description="Add reviewed appeal stats to a staff member (leadership only)")
 @app_commands.describe(member="Staff member to update", amount="Number of appeals to add (default 1)")
 async def staff_add_appeal(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -19828,7 +19831,7 @@ async def staff_add_appeal(interaction: discord.Interaction, member: discord.Mem
     await _staff_check_promotion(interaction.guild, member)
 
 
-@bot.tree.command(name="staff-post-leaderboard", description="Post the DIFF staff performance leaderboard (leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="staff-post-leaderboard", description="Post the DIFF staff performance leaderboard (leadership only)")
 async def staff_post_leaderboard(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -19870,7 +19873,7 @@ async def staff_post_leaderboard(interaction: discord.Interaction) -> None:
     await interaction.followup.send(f"Leaderboard posted in {lb_channel.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="staff-reset-stats", description="Reset all DIFF staff performance stats (leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="staff-reset-stats", description="Reset all DIFF staff performance stats (leadership only)")
 async def staff_reset_stats(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -19881,7 +19884,7 @@ async def staff_reset_stats(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("All staff stats have been reset.", ephemeral=True)
 
 
-@bot.tree.command(name="post-staff-review-panel", description="Post an Accept / Deny review panel in the current ticket (leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="post-staff-review-panel", description="Post an Accept / Deny review panel in the current ticket (leadership only)")
 async def post_staff_review_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -20700,7 +20703,7 @@ async def on_interaction(interaction: discord.Interaction) -> None:
     await _auto_check_promotion(interaction.guild, interaction.user)
 
 
-@bot.tree.command(name="auto-staff-stats", description="View automatically tracked staff stats for a member (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="auto-staff-stats", description="View automatically tracked staff stats for a member (staff only)")
 @app_commands.describe(member="The staff member to look up")
 async def auto_staff_stats(interaction: discord.Interaction, member: discord.Member) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -20730,7 +20733,7 @@ async def auto_staff_stats(interaction: discord.Interaction, member: discord.Mem
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="force-weekly-staff-report", description="Force post the weekly staff report and reset stats (leadership only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="force-weekly-staff-report", description="Force post the weekly staff report and reset stats (leadership only)")
 async def force_weekly_staff_report(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -20780,108 +20783,148 @@ async def clearweeklyreport(ctx: commands.Context):
         pass
 
 
-# The following commands are temporarily disabled because this guild already has 100 registered slash commands.
-# Discord enforces a 100-command limit per guild, and keeping these enabled prevents the bot from starting.
-# If you need these later, move them into a separate bot or remove other commands to stay below the limit.
-
-# @bot.tree.command(name="auto-add-meet-host", description="Add hosted meet stats to a staff member (leadership only)", guild=discord.Object(id=GUILD_ID))
-# @app_commands.describe(member="Staff member to update", amount="Number of meets to add (default 1)")
-# async def auto_add_meet_host(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 20] = 1) -> None:
-#     if not interaction.guild or not isinstance(interaction.user, discord.Member):
-#         return await interaction.response.send_message("Server only.", ephemeral=True)
-#     if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
-#             and not interaction.user.guild_permissions.manage_guild:
-#         return await interaction.response.send_message("Leadership only.", ephemeral=True)
-#     _auto_stats.add_stat(member.id, "meets_hosted", amount)
-#     await _auto_check_promotion(interaction.guild, member)
-#     await interaction.response.send_message(f"Added **{amount}** hosted meet(s) to {member.mention}.", ephemeral=True)
+@bot.tree.command(name="auto-add-meet-host", description="Add hosted meet stats to a staff member (leadership only)")
+@app_commands.describe(member="Staff member to update", amount="Number of meets to add (default 1)")
+async def auto_add_meet_host(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 20] = 1) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+    _auto_stats.add_stat(member.id, "meets_hosted", amount)
+    await _auto_check_promotion(interaction.guild, member)
+    await interaction.response.send_message(f"Added **{amount}** hosted meet(s) to {member.mention}.", ephemeral=True)
 
 
-# @bot.tree.command(name="post-auto-staff-leaderboard", description="Post the current automated staff leaderboard (leadership only)", guild=discord.Object(id=GUILD_ID))
-# async def post_auto_staff_leaderboard(interaction: discord.Interaction) -> None:
-#     if not interaction.guild or not isinstance(interaction.user, discord.Member):
-#         return await interaction.response.send_message("Server only.", ephemeral=True)
-#     if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
-#             and not interaction.user.guild_permissions.manage_guild:
-#         return await interaction.response.send_message("Leadership only.", ephemeral=True)
-#     lb_channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
-#     if not isinstance(lb_channel, discord.TextChannel):
-#         return await interaction.response.send_message("Leaderboard channel not found.", ephemeral=True)
-#     try:
-#         await interaction.response.defer(ephemeral=True)
-#     except discord.NotFound:
-#         return
-#     await _upsert_unified_leaderboard(interaction.guild)
-#     await interaction.followup.send(f"Leaderboard refreshed in {lb_channel.mention}.", ephemeral=True)
+@bot.tree.command(name="post-auto-staff-leaderboard", description="Post the current automated staff leaderboard (leadership only)")
+async def post_auto_staff_leaderboard(interaction: discord.Interaction) -> None:
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+    lb_channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
+    if not isinstance(lb_channel, discord.TextChannel):
+        return await interaction.response.send_message("Leaderboard channel not found.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+    await _upsert_unified_leaderboard(interaction.guild)
+    await interaction.followup.send(f"Leaderboard refreshed in {lb_channel.mention}.", ephemeral=True)
 
 
 # ── /lockslot — freeze or unfreeze an individual schedule slot ───────────────
 
-# @bot.tree.command(
-#     name="lockslot",
-#     description="Lock or unlock a meet slot so Rebuild Schedule won't overwrite it (leadership only)",
-#     guild=discord.Object(id=GUILD_ID),
-# )
-# @app_commands.describe(
-#     slot="Which meet slot to lock/unlock",
-#     action="Lock (freeze current assignment) or Unlock (allow Rebuild to reassign)",
-# )
-# @app_commands.choices(
-#     slot=[
-#         app_commands.Choice(name="Meet 1", value="Meet 1"),
-#         app_commands.Choice(name="Meet 2", value="Meet 2"),
-#         app_commands.Choice(name="Meet 3", value="Meet 3"),
-#     ],
-#     action=[
-#         app_commands.Choice(name="Lock 🔒", value="lock"),
-#         app_commands.Choice(name="Unlock 🔓", value="unlock"),
-#     ],
-# )
-# async def lockslot_cmd(
-#     interaction: discord.Interaction,
-#     slot: str,
-#     action: str,
-# ) -> None:
-#     if not isinstance(interaction.user, discord.Member) or not any(
-#         r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles
-#     ):
-#         return await interaction.response.send_message("Leadership only.", ephemeral=True)
-#
-#     schedule = _asched_load()
-#     entry = schedule["days"].setdefault(slot, {})
-#     locking = action == "lock"
-#     entry["locked"] = locking
-#     _asched_save(schedule)
-#     await _asched_update_panel(interaction.client)
-#
-#     host_id = entry.get("host_id")
-#     host_str = f"<@{host_id}>" if host_id else "*unassigned*"
-#     icon = "🔒" if locking else "🔓"
-#     msg = (
-#         f"{icon} **{slot}** is now **{'locked' if locking else 'unlocked'}**.\n"
-#         + (f"Current host: {host_str} — Rebuild will skip this slot." if locking
-#            else f"Rebuild Schedule can now reassign this slot.")
-#     )
-#     await interaction.response.send_message(msg, ephemeral=True)
+@bot.tree.command(
+    name="lockslot",
+    description="Lock or unlock a meet slot so Rebuild Schedule won't overwrite it (leadership only)",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    slot="Which meet slot to lock/unlock",
+    action="Lock (freeze current assignment) or Unlock (allow Rebuild to reassign)",
+)
+@app_commands.choices(
+    slot=[
+        app_commands.Choice(name="Meet 1", value="Meet 1"),
+        app_commands.Choice(name="Meet 2", value="Meet 2"),
+        app_commands.Choice(name="Meet 3", value="Meet 3"),
+    ],
+    action=[
+        app_commands.Choice(name="Lock 🔒", value="lock"),
+        app_commands.Choice(name="Unlock 🔓", value="unlock"),
+    ],
+)
+async def lockslot_cmd(
+    interaction: discord.Interaction,
+    slot: str,
+    action: str,
+) -> None:
+    if not isinstance(interaction.user, discord.Member) or not any(
+        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles
+    ):
+        return await interaction.response.send_message("Leadership only.", ephemeral=True)
+
+    schedule = _asched_load()
+    entry = schedule["days"].setdefault(slot, {})
+    locking = action == "lock"
+    entry["locked"] = locking
+    _asched_save(schedule)
+    await _asched_update_panel(interaction.client)
+
+    host_id = entry.get("host_id")
+    host_str = f"<@{host_id}>" if host_id else "*unassigned*"
+    icon = "🔒" if locking else "🔓"
+    msg = (
+        f"{icon} **{slot}** is now **{'locked' if locking else 'unlocked'}**.\n"
+        + (f"Current host: {host_str} — Rebuild will skip this slot." if locking
+           else f"Rebuild Schedule can now reassign this slot.")
+    )
+    await interaction.response.send_message(msg, ephemeral=True)
 
 
-# @bot.tree.command(
-#     name="hoststats",
-#     description="View a host's reliability stats (how often they RSVP and get confirmed)",
-#     guild=discord.Object(id=GUILD_ID),
-# )
-# @discord.app_commands.describe(member="The host to check stats for")
-# async def hoststats_cmd(
-#     interaction: discord.Interaction,
-#     member: discord.Member,
-# ) -> None:
-#     is_staff = any(
-#         r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
-#         for r in getattr(interaction.user, "roles", [])
-#     ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
-#     if not is_staff and interaction.user.id != member.id:
-#         return await interaction.response.send_message(
-#             "You can only view your own stats.", ephemeral=True)
+@bot.tree.command(
+    name="hoststats",
+    description="View a host's reliability stats (how often they RSVP and get confirmed)",
+    guild=discord.Object(id=GUILD_ID),
+)
+@discord.app_commands.describe(member="The host to check stats for")
+async def hoststats_cmd(
+    interaction: discord.Interaction,
+    member: discord.Member,
+) -> None:
+    is_staff = any(
+        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+        for r in getattr(interaction.user, "roles", [])
+    ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
+    if not is_staff and interaction.user.id != member.id:
+        return await interaction.response.send_message(
+            "You can only view your own stats.", ephemeral=True
+        )
+
+    data  = _hrel_load()
+    e     = data.get(str(member.id), {})
+    rsvp_count      = e.get("rsvp_count", 0)
+    confirmed_count = e.get("confirmed_count", 0)
+    last_rsvp       = e.get("last_rsvp")
+    last_confirmed  = e.get("last_confirmed")
+
+    if rsvp_count > 0:
+        pct = int(confirmed_count / rsvp_count * 100)
+        reliability = f"{pct}%"
+        bar_filled  = round(pct / 10)
+        rel_bar     = "🟩" * bar_filled + "⬜" * (10 - bar_filled)
+    else:
+        reliability = "No data yet"
+        rel_bar     = "⬜" * 10
+
+    embed = discord.Embed(
+        title=f"📊 Host Reliability — {member.display_name}",
+        color=0x57F287 if rsvp_count > 0 else discord.Color.dark_gray(),
+        timestamp=utc_now(),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="📋 Times RSVP'd",     value=str(rsvp_count),      inline=True)
+    embed.add_field(name="✅ Times Confirmed",   value=str(confirmed_count), inline=True)
+    embed.add_field(name="📈 Confirmation Rate", value=reliability,          inline=True)
+    embed.add_field(name="Reliability Bar",      value=rel_bar,              inline=False)
+
+    if last_rsvp:
+        try:
+            ts = int(datetime.fromisoformat(last_rsvp).timestamp())
+            embed.add_field(name="Last RSVP",      value=f"<t:{ts}:R>", inline=True)
+        except Exception:
+            pass
+    if last_confirmed:
+        try:
+            ts = int(datetime.fromisoformat(last_confirmed).timestamp())
+            embed.add_field(name="Last Confirmed", value=f"<t:{ts}:R>", inline=True)
+        except Exception:
+            pass
+
+    embed.set_footer(text="DIFF Meets • Host Reliability  •  Tracks RSVP submissions vs actual assignments")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # =========================
@@ -21828,7 +21871,7 @@ class JoinTicketView(discord.ui.View):
             pass
 
 
-@bot.tree.command(name="post-join-panel", description="Post the DIFF Join Hub platform selector panel (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="post-join-panel", description="Post the DIFF Join Hub platform selector panel (staff only)")
 async def post_join_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -21855,7 +21898,7 @@ async def post_join_panel(interaction: discord.Interaction) -> None:
     await interaction.followup.send(f"Join Hub panel posted in {channel.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="refresh-join-panel", description="Refresh the DIFF Join Hub panel in place, or repost it if missing (staff only)", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="refresh-join-panel", description="Refresh the DIFF Join Hub panel in place, or repost it if missing (staff only)")
 async def refresh_join_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -22348,6 +22391,11 @@ class _WHBoosterSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         import sys as _sys
         bh = _sys.modules.get("cogs.diff_booster_hub")
+        if bh is None:
+            try:
+                import cogs.diff_booster_hub as bh
+            except Exception:
+                bh = None
         if not bh:
             return await interaction.response.send_message(
                 "Booster system is loading — please try again in a moment.", ephemeral=True
