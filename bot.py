@@ -18433,7 +18433,7 @@ class SupportCloseButton(discord.ui.View):
             close_embed.add_field(name="🔒 Closed By", value=member.mention, inline=True)
             close_embed.add_field(name="⏰ Closed At", value=f"<t:{int(now.timestamp())}:F>", inline=True)
             if owner_id:
-                close_embed.add_field(name="👤 Ticket Owner", value=f"<@{owner_id}> (`{owner_id}`)", inline=True)
+                close_embed.add_field(name="👤 Ticket Owner", value=f"<@{owner_id}>", inline=True)
             if claimer_id:
                 close_embed.add_field(name="🙋 Claimed By", value=f"<@{claimer_id}>", inline=True)
             close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
