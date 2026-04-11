@@ -22390,6 +22390,11 @@ class _WHBoosterSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         import sys as _sys
         bh = _sys.modules.get("cogs.diff_booster_hub")
+        if bh is None:
+            try:
+                import cogs.diff_booster_hub as bh
+            except Exception:
+                bh = None
         if not bh:
             return await interaction.response.send_message(
                 "Booster system is loading — please try again in a moment.", ephemeral=True
