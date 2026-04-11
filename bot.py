@@ -6242,30 +6242,42 @@ async def hierarchy_attendance_loop():
     if guild is None:
         return
     try:
-        hierarchy_message_ids = data.get("hierarchy_message_ids", [])
-        if hierarchy_message_ids:
-            channel = guild.get_channel(HIERARCHY_CHANNEL_ID)
-            if isinstance(channel, discord.TextChannel):
-                embeds = build_hierarchy_embeds(guild)
-                support_view = build_hierarchy_support_view()
-                msgs = []
+        channel = guild.get_channel(HIERARCHY_CHANNEL_ID)
+        if isinstance(channel, discord.TextChannel):
+            embeds = build_hierarchy_embeds(guild)
+            support_view = build_hierarchy_support_view()
+
+            # Try stored IDs first
+            hierarchy_message_ids = data.get("hierarchy_message_ids", [])
+            msgs = []
+            if hierarchy_message_ids:
                 for mid in hierarchy_message_ids:
                     try:
                         msgs.append(await channel.fetch_message(mid))
                     except Exception:
                         msgs = []
                         break
-                if msgs and len(msgs) == len(embeds):
-                    for i, (msg, emb) in enumerate(zip(msgs, embeds)):
-                        is_last = i == len(embeds) - 1
-                        try:
-                            await msg.edit(
-                                content="## DIFF Hierarchy Panel" if i == 0 else None,
-                                embed=emb,
-                                view=support_view if is_last else discord.ui.View(),
-                            )
-                        except Exception:
-                            pass
+
+            # Fallback: scan channel for existing hierarchy messages
+            if len(msgs) != len(embeds):
+                msgs = await find_existing_hierarchy_messages(channel, len(embeds))
+                if len(msgs) == len(embeds):
+                    # Update stored IDs so future iterations use the correct ones
+                    data["hierarchy_message_ids"] = [m.id for m in msgs]
+                    data["hierarchy_message_id"] = msgs[0].id if msgs else None
+                    save_data(data)
+
+            if len(msgs) == len(embeds):
+                for i, (msg, emb) in enumerate(zip(msgs, embeds)):
+                    is_last = i == len(embeds) - 1
+                    try:
+                        await msg.edit(
+                            content="## DIFF Hierarchy Panel" if i == 0 else None,
+                            embed=emb,
+                            view=support_view if is_last else discord.ui.View(),
+                        )
+                    except Exception:
+                        pass
     except Exception:
         pass
     try:
