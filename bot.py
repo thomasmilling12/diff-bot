@@ -9482,10 +9482,8 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
             await interaction.response.defer(ephemeral=True)
             ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
             if isinstance(ch, discord.TextChannel):
-                await ch.send(
-                    _hostflow_start_msg(interaction.user.mention, interaction.guild),
-                    allowed_mentions=discord.AllowedMentions(roles=True),
-                )
+                _ping, _embed = _hostflow_start_embed(interaction.user.mention, interaction.guild)
+                await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
                 await interaction.followup.send(f"✅ Welcome speech posted in {ch.mention}.", ephemeral=True)
             else:
                 await interaction.followup.send("Meet channel not found.", ephemeral=True)
@@ -9495,10 +9493,8 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
             await interaction.response.defer(ephemeral=True)
             ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
             if isinstance(ch, discord.TextChannel):
-                await ch.send(
-                    _hostflow_end_msg(interaction.guild),
-                    allowed_mentions=discord.AllowedMentions(roles=True),
-                )
+                _ping, _embed = _hostflow_end_embed(interaction.guild)
+                await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
                 log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
                 if isinstance(log_ch, discord.TextChannel):
                     await log_ch.send(_hostflow_log_msg(interaction.user.mention))
