@@ -12605,7 +12605,6 @@ async def on_ready():
     bot.loop.create_task(_hrsvp_auto_reset_loop())
     bot.loop.create_task(_hrsvp_escalation_loop())
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
-    await _hrsvp_update_panel(bot)
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
     _safe_add_view(_ASchedAnnounceView(),   "_ASchedAnnounceView")
     _asched_build()
@@ -12698,9 +12697,35 @@ async def on_guild_join(guild: discord.Guild):
 # HRSVP AUTO-RESET LOOP
 # =========================
 async def _hrsvp_auto_reset_loop() -> None:
-    """Every 30 min: wipe RSVP panel on Monday midnight EST, ping @Meet Hosts."""
+    """Every 30 min: wipe RSVP panel on Monday midnight EST, ping @Meet Hosts.
+    On startup, immediately catches up any missed Monday reset."""
     await bot.wait_until_ready()
     from zoneinfo import ZoneInfo as _ZI
+    from datetime import timedelta as _td
+
+    # ── Startup catch-up: reset if this week's Monday reset was missed ───────
+    try:
+        now_est = datetime.now(_ZI("US/Eastern"))
+        days_since_monday = now_est.weekday()            # 0=Mon … 6=Sun
+        most_recent_monday = (now_est - _td(days=days_since_monday)).strftime("%Y-%m-%d")
+        if _hrsvp_reset_ts_load() != most_recent_monday:
+            _hrsvp_reset()
+            _hrsvp_reset_ts_save(most_recent_monday)
+            await _hrsvp_update_panel(bot)
+            ch = bot.get_channel(HOST_RSVP_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                host_role = ch.guild.get_role(HOST_ROLE_ID) if ch.guild else None
+                ping      = host_role.mention if host_role else "@Meet Hosts"
+                await ch.send(
+                    f"{ping} 📋 **New week — availability panel reset!**\n"
+                    "Please mark your availability for Meet 1, Meet 2, and Meet 3 above. "
+                    "Leadership builds the schedule from your responses."
+                )
+            print("[HRSVP] Startup catch-up reset applied.")
+    except Exception as _e:
+        print(f"[HRSVP] Startup catch-up error: {_e}")
+
+    # ── Ongoing loop ─────────────────────────────────────────────────────────
     while not bot.is_closed():
         await asyncio.sleep(1800)
         try:
