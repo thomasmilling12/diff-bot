@@ -312,8 +312,6 @@ async def _setup_hook():
         "cogs.diff_community_features",
         "cogs.diff_advanced_features",
         "cogs.diff_extras",
-        "cogs.diff_tts",
-        "cogs.diff_music",
     ]
     for _cog in _cogs:
         try:
@@ -12288,7 +12286,6 @@ async def on_ready():
     try:
         # Guild sync is instant; global sync can take up to 1 hour
         guild_obj = discord.Object(id=GUILD_ID)
-        bot.tree.copy_global_to(guild=guild_obj)
         guild_synced = await bot.tree.sync(guild=guild_obj)
         print(f"Guild-synced {len(guild_synced)} slash command(s) to {GUILD_ID}")
     except Exception as e:
