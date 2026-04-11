@@ -11103,15 +11103,29 @@ class _OfficialMeetRSVPView(discord.ui.View):
             ch = bot.get_channel(record.channel_id)
             att_ref = f"<#{MEET_ATTENDANCE_CHANNEL_ID}>" if att_msg else "#attendance"
             if isinstance(ch, discord.TextChannel):
+                live_embed = discord.Embed(
+                    title="🚨 DIFF Session Is Now Live",
+                    description="The meet has officially started. Join up and get in position.",
+                    color=0x57F287,
+                    timestamp=datetime.now(timezone.utc),
+                )
+                live_embed.add_field(name="⏰ Started", value=f"<t:{record.timestamp}:R>", inline=True)
+                live_embed.add_field(name="🎮 Host", value=f"<@{record.host_id}>", inline=True)
+                live_embed.add_field(
+                    name="📋 Instructions",
+                    value="Add the host on PSN and head to **#chat** for session updates.",
+                    inline=False,
+                )
+                live_embed.add_field(
+                    name="📊 Attendance",
+                    value=f"Tracking is now open in {att_ref}.\nCheck in with **Present**, **Late**, or **Unable to Join**.",
+                    inline=False,
+                )
+                live_embed.set_thumbnail(url=DIFF_LOGO_URL)
+                live_embed.set_footer(text="DIFF Meets • Session Live")
                 await ch.send(
-                    f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>\n\n"
-                    f"🚨 **DIFF Session Is Now Live**\n\n"
-                    f"⏳ Started: <t:{record.timestamp}:R>\n\n"
-                    f"🎮 Join through the host: <@{record.host_id}>\n"
-                    f"💬 Head to #chat for instructions\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"📊 Attendance tracking is now open in {att_ref}.\n"
-                    f"Check in with **Present**, **Late**, or **Unable to Join**.",
+                    content=f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>",
+                    embed=live_embed,
                     allowed_mentions=discord.AllowedMentions(roles=True, users=True),
                 )
             await _om_staff_log("Meet Started", record, interaction.user)
@@ -11151,18 +11165,32 @@ class _OfficialMeetRSVPView(discord.ui.View):
             _om_increment_host_stat(record.host_id, "total_no_shows", len(set(record.no_show_ids)))
             ch = bot.get_channel(record.channel_id)
             if isinstance(ch, discord.TextChannel):
-                await ch.send(
-                    f"📌 **DIFF Meet Closed**\n\n"
-                    f"Host: <@{record.host_id}>\n"
-                    f"Theme: {record.theme}\n"
-                    f"Scheduled Time: <t:{record.timestamp}:F>\n\n"
-                    f"**Attendance Summary**\n"
-                    f"• Present: **{len(set(record.checked_in_ids))}**\n"
-                    f"• Late: **{len(set(record.late_ids))}**\n"
-                    f"• Unable: **{len(set(record.unable_ids))}**\n"
-                    f"• No-Shows: **{len(set(record.no_show_ids))}**\n\n"
-                    f"Thank you to everyone who attended and helped keep the meet clean."
+                _present  = len(set(record.checked_in_ids))
+                _late     = len(set(record.late_ids))
+                _unable   = len(set(record.unable_ids))
+                _no_shows = len(set(record.no_show_ids))
+                close_embed = discord.Embed(
+                    title="📌 DIFF Meet Closed",
+                    description="This session has officially ended. Thanks to everyone who attended.",
+                    color=0xED4245,
+                    timestamp=datetime.now(timezone.utc),
                 )
+                close_embed.add_field(name="🎙️ Host", value=f"<@{record.host_id}>", inline=True)
+                close_embed.add_field(name="🎨 Theme", value=record.theme, inline=True)
+                close_embed.add_field(name="📅 Scheduled", value=f"<t:{record.timestamp}:F>", inline=False)
+                close_embed.add_field(
+                    name="📊 Attendance Summary",
+                    value=(
+                        f"✅ Present: **{_present}**\n"
+                        f"⏰ Late: **{_late}**\n"
+                        f"❌ Unable: **{_unable}**\n"
+                        f"👻 No-Shows: **{_no_shows}**"
+                    ),
+                    inline=False,
+                )
+                close_embed.set_thumbnail(url=DIFF_LOGO_URL)
+                close_embed.set_footer(text="DIFF Meets • Session Closed")
+                await ch.send(embed=close_embed)
             await _om_staff_log("Meet Ended", record, interaction.user)
             try:
                 await _om_post_or_update_leaderboard()
@@ -11227,19 +11255,36 @@ async def _om_reminder_task(msg_id: int, delay_secs: int, reminder_type: str) ->
         ch = bot.get_channel(record.channel_id)
         if isinstance(ch, discord.TextChannel):
             if reminder_type == "1h":
-                await ch.send(
-                    "⏳ **DIFF Meet Reminder**\n\n"
-                    "This meet begins in:\n"
-                    f"<t:{record.timestamp}:R>\n\n"
-                    "Be ready with your build and check in with the host."
+                embed = discord.Embed(
+                    title="⏳ DIFF Meet Reminder — 1 Hour to Go",
+                    description="The meet is coming up. Get your build ready and check in with the host.",
+                    color=0xFEE75C,
                 )
+                embed.add_field(name="⏰ Starts", value=f"<t:{record.timestamp}:R>", inline=True)
+                embed.add_field(
+                    name="✅ Before You Join",
+                    value="• Send your car photos to the host\n• Check the theme and dress your build\n• Be in the right voice channel",
+                    inline=False,
+                )
+                embed.set_thumbnail(url=DIFF_LOGO_URL)
+                embed.set_footer(text="DIFF Meets • 1 Hour Reminder")
+                await ch.send(embed=embed)
                 record.one_hour_sent = True
             else:
-                await ch.send(
-                    "🚨 **DIFF Meet Starting Soon**\n\n"
-                    f"⏳ <t:{record.timestamp}:R>\n\n"
-                    "Make sure you're ready to join and have your cars prepared."
+                embed = discord.Embed(
+                    title="🚨 DIFF Meet Starting Soon — 15 Minutes",
+                    description="Final call — the meet is almost live. Make sure everything is ready.",
+                    color=0xFF8C00,
                 )
+                embed.add_field(name="⏰ Starts", value=f"<t:{record.timestamp}:R>", inline=True)
+                embed.add_field(
+                    name="🔥 Last Checks",
+                    value="• Cars loaded and ready\n• Host has your photos\n• You're in the correct VC",
+                    inline=False,
+                )
+                embed.set_thumbnail(url=DIFF_LOGO_URL)
+                embed.set_footer(text="DIFF Meets • Starting Soon")
+                await ch.send(embed=embed)
                 record.fifteen_sent = True
             _om_upsert_record(record)
     except asyncio.CancelledError:
@@ -11287,35 +11332,45 @@ async def _om_restore_on_ready() -> None:
                     pass
 
 
-def _om_build_message(theme: str, host: discord.Member, timestamp: int, notes: str = "") -> str:
-    ps_ping = f"<@&{PS5_ROLE_ID}>"
-    cm_ping = f"<@&{NOTIFY_ROLE_ID}>"
-    notes_section = (
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"**Staff Notes**\n\n"
-        f"{notes}\n\n"
-    ) if notes else ""
-    return (
-        f"{ps_ping} {cm_ping}\n\n"
-        f"🏁 **DIFF Official Meet**\n\n"
-        f"Date: <t:{timestamp}:F>\n"
-        f"Begins: <t:{timestamp}:R>\n"
-        f"Host: {host.mention}\n"
-        f"Theme: {theme}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"**Entry Info**\n\n"
-        f"Send your vehicle photos to the host before joining, unless told otherwise.\n\n"
-        f"All vehicles must match the meet theme and follow the standards listed in #meet-info and #rules.\n\n"
-        f"{notes_section}"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"**Meet Notes**\n\n"
-        f"• Follow all host instructions at all times\n"
-        f"• Use #chat for meet communication and updates\n"
-        f"• Bring clean, realistic, theme-fitting vehicles only\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"**Style Direction**\n\n"
-        f"Choose vehicles that match tonight's theme and represent DIFF properly."
+def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str = "") -> discord.Embed:
+    embed = discord.Embed(
+        title="🏁 DIFF Official Meet",
+        color=0xC9A227,
+        timestamp=datetime.now(timezone.utc),
     )
+    embed.add_field(name="📅 Date", value=f"<t:{timestamp}:F>", inline=True)
+    embed.add_field(name="⏰ Begins", value=f"<t:{timestamp}:R>", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(name="🎙️ Host", value=host.mention, inline=True)
+    embed.add_field(name="🎨 Theme", value=theme, inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
+        name="📋 Entry Info",
+        value=(
+            "Send your vehicle photos to the host before joining, unless told otherwise.\n"
+            f"All vehicles must match the meet theme and follow the standards in <#{MEET_INFO_CHANNEL_ID}> and <#{MEET_RULES_CHANNEL_ID}>."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📌 Meet Notes",
+        value=(
+            "• Follow all host instructions at all times\n"
+            "• Use #chat for meet communication and updates\n"
+            "• Bring clean, realistic, theme-fitting vehicles only"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🚗 Style Direction",
+        value="Choose vehicles that match tonight's theme and represent DIFF properly.",
+        inline=False,
+    )
+    if notes:
+        embed.add_field(name="📝 Staff Notes", value=notes, inline=False)
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text="DIFF Meets • Official Session")
+    return embed
 
 
 @bot.command(name="officialmeet")
@@ -11345,7 +11400,8 @@ async def _cmd_officialmeet(ctx: commands.Context, theme: str, date: str, time_s
         return
     try:
         sent = await channel.send(
-            _om_build_message(theme=theme, host=host, timestamp=meet_ts),
+            content=f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>",
+            embed=_om_build_embed(theme=theme, host=host, timestamp=meet_ts),
             view=_OfficialMeetRSVPView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True),
         )
