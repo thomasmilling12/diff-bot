@@ -18407,11 +18407,12 @@ class SupportCloseButton(discord.ui.View):
         if isinstance(logs_channel, discord.TextChannel):
             from datetime import timezone as _tz
             now = datetime.now(_EST_TZ)
-            # Upload transcript first (file-only) to get a clean CDN URL
+            # Upload transcript to get CDN URL, then delete so staff-logs stays clean
             try:
                 tr_msg = await logs_channel.send(file=transcript_file)
                 if tr_msg.attachments:
                     transcript_url = tr_msg.attachments[0].url
+                await tr_msg.delete()
             except Exception:
                 pass
 
@@ -22166,12 +22167,13 @@ class JoinTicketView(discord.ui.View):
         transcript_url = None
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
-            # Upload transcript first (file-only) to get a clean CDN URL
+            # Upload transcript to get CDN URL, then delete so staff-logs stays clean
             if transcript_file:
                 try:
                     tr_msg = await logs_channel.send(file=transcript_file)
                     if tr_msg.attachments:
                         transcript_url = tr_msg.attachments[0].url
+                    await tr_msg.delete()
                 except Exception:
                     pass
 
