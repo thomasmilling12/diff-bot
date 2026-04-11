@@ -1,0 +1,67 @@
+{
+    "status_channel_id": 1195953265377021952,
+    "hosts": [
+        {
+            "discord_id": 708024998228525167,
+            "name": "Frostyy2003",
+            "profile_url": "https://profile.playstation.com/Frostyy2003"
+        },
+        {
+            "discord_id": 747199066525663235,
+            "name": "BriMedia",
+            "profile_url": "https://profile.playstation.com/BriMedia"
+        },
+        {
+            "discord_id": 581563227402665984,
+            "name": "Trlioz",
+            "profile_url": "https://profile.playstation.com/Trlioz"
+        },
+        {
+            "discord_id": 380049668178182154,
+            "name": "FRDanjay016",
+            "profile_url": "https://profile.playstation.com/FRDanjay016"
+        },
+        {
+            "discord_id": 343488362331635714,
+            "name": "honda3wheelers",
+            "profile_url": "https://profile.playstation.com/honda3wheelers"
+        },
+        {
+            "discord_id": 612129213000187914,
+            "name": "TheeDarkBullet",
+            "profile_url": "https://profile.playstation.com/TheeDarkBullet"
+        },
+        {
+            "discord_id": 1000988147880054894,
+            "name": "GtTamal3z",
+            "profile_url": "https://profile.playstation.com/GtTamal3z"
+        },
+        {
+            "discord_id": 1252445906901532692,
+            "name": "Tso_Kyng",
+            "profile_url": "https://profile.playstation.com/Tso_Kyng"
+        },
+        {
+            "discord_id": 700021323279368262,
+            "name": "SpMex0322",
+            "profile_url": "https://profile.playstation.com/SpMex0322"
+        }
+    ],
+    "panel_message_id": 1485156252660007113,
+    "host_role_id": 1055823929358430248,
+    "meet_ping_role_id": 850392317751066705,
+    "meet_info_message_id": 1485616987412631732,
+    "warnings": {},
+    "hierarchy_message_id": 1487705306749210654,
+    "hierarchy_message_ids": [
+        1487705306749210654,
+        1487705307650985984,
+        1487705308494172292
+    ],
+    "rules_message_ids": [
+        1485235769575477268,
+        1485235770137772142,
+        1485235770653540382
+    ],
+    "crew_panel_message_id": 1485244309027684363
+}

@@ -1,0 +1,101 @@
+{
+  "partners": [
+    {
+      "name": "MMI Meets",
+      "short_desc": "PC & Xbox Series S|X meet community.",
+      "description": "MMI Meets PC & Xbox Series S|X",
+      "invite": "https://discord.gg/mmi",
+      "platforms": "PC, Xbox Series S|X",
+      "banner": ""
+    },
+    {
+      "name": "San Andreas Roleplay",
+      "short_desc": "Professional and friendly roleplay community.",
+      "description": "A professional and friendly roleplay community on Xbox and PlayStation.\n\n**Departments:** Highway Patrol, Sheriff, Fire, EMS, Civilian Ops, Comms\n\n**What They Offer:**\n\u2022 Daily roleplays\n\u2022 Friendly staff\n\u2022 CAD system\n\u2022 Realistic uniforms & ranks",
+      "invite": "https://discord.gg/bwzCykt9ZS",
+      "platforms": "Xbox, PlayStation",
+      "banner": ""
+    },
+    {
+      "name": "Los Santos MotorSports",
+      "short_desc": "Active multi-platform meet community.",
+      "description": "**Los Santos MotorSports**\n\n\u2022 Daily car meets on all platforms\n\u2022 Active staff and chats\n\u2022 1500+ members\n\u2022 Weekly photo competitions\n\u2022 Giveaways\n\u2022 Forza, NFS, Snowrunner meets\n\u2022 LSMS merch",
+      "invite": "https://discord.gg/Jf42kGD",
+      "platforms": "All Platforms",
+      "banner": ""
+    },
+    {
+      "name": "LS Underground",
+      "short_desc": "Daily chill car meets and vibes on PlayStation.",
+      "description": "A very active and engaging community.\n\n\u2022 Daily car meets\n\u2022 Business lobbies\n\u2022 Chill lobbies\n\u2022 LFG channels\n\u2022 Active staff & giveaways\n\u2022 In-house game bot\n\u2022 Fully SFW with trained staff",
+      "invite": "https://discord.gg/T5eZpu329K",
+      "platforms": "PlayStation",
+      "banner": ""
+    },
+    {
+      "name": "Auto Minded",
+      "short_desc": "GTAO car enthusiast hub with events and trading.",
+      "description": "A server for GTAO car enthusiasts and car fans.\n\n**Events:**\n\u2022 Car meets\n\u2022 Racing\n\u2022 Rally events\n\u2022 Buy/sell & trading\n\u2022 Car competitions\n\u2022 Server economy",
+      "invite": "https://discord.gg/autominded",
+      "platforms": "Xbox (focus), open to all",
+      "banner": ""
+    },
+    {
+      "name": "Civil Network",
+      "short_desc": "Large roleplay network with multiple departments.",
+      "description": "**Platforms:** Xbox New Gen, PS Old Gen, PS New Gen, FiveM\n\n**Departments:** Civilian Ops, Fire/EMS, Dispatch, Military Police, FBI, BCSO, LSPD, PBPD, SASP\n\n\u2022 Specialized giveaways\n\u2022 24/7 sessions\n\u2022 Professional/friendly staff",
+      "invite": "https://discord.gg/civilrp",
+      "platforms": "Xbox, PlayStation, FiveM",
+      "banner": "https://share.creavite.co/DKn05AwFAYa5mCl9.gif"
+    },
+    {
+      "name": "RVO",
+      "short_desc": "PS5 GTA meet community with daily meets.",
+      "description": "A chill server to show off your rides and level up your GTA car meet experience.\n\n\u2022 Chill community\n\u2022 Daily car meets\n\u2022 Epic events\n\u2022 Media sharing\n\u2022 Gaming hub",
+      "invite": "https://discord.gg/rvo",
+      "platforms": "PS5",
+      "banner": ""
+    },
+    {
+      "name": "Chop Shop",
+      "short_desc": "Large GTAO-focused online gaming community.",
+      "description": "One of the larger active GCTF Discord servers.\n\n\u2022 Active members, traders & staff\n\u2022 Booster rewards\n\u2022 Server currency\n\u2022 Clubs that host car meets and lobby drops\n\u2022 Always looking for new partners",
+      "invite": "https://discord.gg/YZMbqER2bv",
+      "platforms": "Multi-game / GTAO",
+      "banner": ""
+    },
+    {
+      "name": "Automotive Union",
+      "short_desc": "Established events community with multiple titles.",
+      "description": "Established in 2018.\n\nHosts GTA events every Friday and Sunday (8\u20139 PM UK).\n\n**Also on:**\n\u2022 Wreckfest\n\u2022 GT7\n\u2022 Forza Horizon\n\u2022 Crew Motorfest",
+      "invite": "https://discord.gg/kaApne5w4x",
+      "platforms": "GTA + racing titles",
+      "banner": ""
+    },
+    {
+      "name": "Car Meet Server",
+      "short_desc": "All-platform car meet and GTAO utility server.",
+      "description": "\u2022 Modded heists (PC)\n\u2022 Modded/stock cars\n\u2022 Car and photo competitions\n\u2022 GTAO inspired bot games",
+      "invite": "https://discord.gg/zNd2F3sz5U",
+      "platforms": "All Platforms",
+      "banner": ""
+    },
+    {
+      "name": "Fast Funds (GTA)",
+      "short_desc": "Private selling, sourcing, and heist group.",
+      "description": "**Fast Funds (GTA)**\n\nPrivate selling, sourcing, and heist group. Started recently and growing.",
+      "invite": "https://discord.gg/zxEdwZ9M6s",
+      "platforms": "GTA",
+      "banner": ""
+    },
+    {
+      "name": "Hurricane's Cars & Chill",
+      "short_desc": "PS5-based GTA Online car meet server.",
+      "description": "A PlayStation 5 GTA Online car meet server.\n\n\u2022 Daily car meets\n\u2022 Photo competitions\n\u2022 Weekly giveaways\n\u2022 Game nights\n\u2022 Car advice/rating channels\n\u2022 New members daily\n\u2022 Welcoming community",
+      "invite": "https://discord.gg/CkEXt34waa",
+      "platforms": "PS5",
+      "banner": ""
+    }
+  ],
+  "panel_message_id": 1486078859987390515
+}

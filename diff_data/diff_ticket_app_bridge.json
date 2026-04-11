@@ -1,0 +1,21 @@
+{
+  "applications": {
+    "343488362331635714": {
+      "user_id": 343488362331635714,
+      "display_name": "\ud83c\udd73\ud83c\udd78\ud83c\udd75\ud83c\udd75 - honda (Hosts Manager)",
+      "status": "Approved",
+      "submitted_at": "2026-03-23 12:42 AM ET",
+      "interview_scheduled_for": null,
+      "interview_notes": null,
+      "result_notes": "Testing to make sure everything work",
+      "reviewed_by": "<@708024998228525167>",
+      "last_updated_at": "2026-03-23 11:28 AM ET"
+    }
+  },
+  "ticket_links": {
+    "1025842308752621719": {
+      "member_id": 343488362331635714,
+      "panel_message_id": 1485498775945351300
+    }
+  }
+}

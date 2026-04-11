@@ -1,0 +1,90 @@
+[
+    {
+        "key": "diff_classic",
+        "name": "Different Meets Classic",
+        "description": "Blue Porsche edition logo \u2014 Est. 2020",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054805796557033/diff_classic.png?ex=69ca0aa3&is=69c8b923&hm=8c1a42ff05b384aa9e4d641121e54ce043044b82601b67fb621fc7194a4aecd0&",
+        "message_id": 1486054806098411610,
+        "storage_channel_id": 1485265848099799163
+    },
+    {
+        "key": "diff_crew_gold",
+        "name": "DIFF Crew \u2014 Gold",
+        "description": "Gold metallic Different Meets Crew wordmark",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054807461433384/diff_crew_gold.png?ex=69ca0aa3&is=69c8b923&hm=2b40865ed3d18021dd554e20325d44279510ed90bd07634662b6caeb3a5e5dad&",
+        "message_id": 1486054807738519795,
+        "storage_channel_id": 1485265848099799163
+    },
+    {
+        "key": "diff_crew_silver",
+        "name": "DIFF Crew \u2014 Silver",
+        "description": "Silver metallic Different Meets Crew wordmark",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054809327894708/diff_crew_silver.png?ex=69ca0aa4&is=69c8b924&hm=95035be22b081c70c6122f1e2f829003c2228880fa634758a1a15337e2a1e33e&",
+        "message_id": 1486054809378357342,
+        "storage_channel_id": 1485265848099799163
+    },
+    {
+        "key": "diff_5th_anniversary",
+        "name": "5th Anniversary",
+        "description": "Official DIFF Meets 5th Anniversary logo",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054812511506652/diff_5th_anniversary.png?ex=69ca0aa4&is=69c8b924&hm=0296283db0dd42b237e584d338a801101dfe8e0dc38e7185a35d455d16c5476d&",
+        "message_id": 1486054812838793280,
+        "storage_channel_id": 1485265848099799163
+    },
+    {
+        "key": "diff_420",
+        "name": "420 Edition",
+        "description": "DIFF Meets Crew 420 slime edition",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054814650601563/diff_420.png?ex=69ca0aa5&is=69c8b925&hm=0faf121065fc220003c7f8db5f7a3bfaf7d20fd5d5c99a759171948dd13a6edc&",
+        "message_id": 1486054814889672745,
+        "storage_channel_id": 1485265848099799163
+    },
+    {
+        "key": "dmc_classic",
+        "name": "DMC Classic",
+        "description": "Different Meets Crew \u2014 black & white DMC logo",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054816106025141/dmc_classic.png?ex=69ca0aa5&is=69c8b925&hm=59c31efc803d1e3e1e5bf6e2b39e9f9699c8c100438d4db8533e5b5e1388238c&",
+        "message_id": 1486054816353353789,
+        "storage_channel_id": 1485265848099799163
+    },
+    {
+        "key": "diff_graffiti",
+        "name": "Graffiti Style",
+        "description": "Different Meets Crew graffiti text logo",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054817485951189/diff_graffiti.png?ex=69ca0aa6&is=69c8b926&hm=fae59293b35f5589e508dca64d60c2963dad2edeb6023f1aef77c6c2b3064036&",
+        "message_id": 1486054817783877692,
+        "storage_channel_id": 1485265848099799163
+    },
+    {
+        "key": "diff_red_black",
+        "name": "Red & Black \u2014 Est. 2020",
+        "description": "Different Meets Crew bold red/black edition",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054837312421888/diff_red_black.png?ex=69ca0aaa&is=69c8b92a&hm=08bbc260e022f75aa6fe45d49ef429a251c2105f52b3bd7b6de78a3bc4f85daa&",
+        "message_id": 1486054837379661975,
+        "storage_channel_id": 1485265848099799163
+    },
+    {
+        "key": "diff_4th_anniversary",
+        "name": "4th Anniversary",
+        "description": "Official DIFF Meets 4th Anniversary logo",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054840663543950/diff_4th_anniversary.png?ex=69ca0aab&is=69c8b92b&hm=3709a6ca99cf261c15511ee65bb2ee72d944d38e0199bf9bbdf578ff5c0c1cd5&",
+        "message_id": 1486054841016123637,
+        "storage_channel_id": 1485265848099799163
+    },
+    {
+        "key": "diff_loyalty_club",
+        "name": "DIFF Loyalty Club",
+        "description": "DIFF Meets Loyalty Club official logo",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054844170244116/diff_loyalty_club.png?ex=69ca0aac&is=69c8b92c&hm=b816f5573221f5868861b9f2af885ba678a63f3dc66b796e13f59a3ae97a712e&",
+        "message_id": 1486054844333555938,
+        "storage_channel_id": 1485265848099799163
+    },
+    {
+        "key": "diff_chrome_crew",
+        "name": "Chrome Crew \u2014 Est. 2020",
+        "description": "Different Meets Crew chrome metallic \u2014 Est. 2020",
+        "url": "https://media.discordapp.net/attachments/1485265848099799163/1486054855863832857/diff_chrome_crew.png?ex=69ca0aaf&is=69c8b92f&hm=8e0f6ae1040f8fe998352f20dd40cf429bc038149e34cc322665071b22d5a4ad&",
+        "message_id": 1486054856165691584,
+        "storage_channel_id": 1485265848099799163
+    }
+]

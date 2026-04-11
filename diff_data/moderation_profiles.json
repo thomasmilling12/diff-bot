@@ -1,0 +1,78 @@
+{
+    "111111111111": {
+        "user_id": 111111111111,
+        "display_name": "Smokey_PSN",
+        "writeups": 0,
+        "strikes": 0,
+        "feedback_entries": 12,
+        "feedback_average": 4.8,
+        "attendance_count": 28,
+        "hosted_meets": 14,
+        "flags": [],
+        "last_updated": "2026-03-24T18:26:36.987589+00:00"
+    },
+    "222222222222": {
+        "user_id": 222222222222,
+        "display_name": "DriftKing_PSN",
+        "writeups": 0,
+        "strikes": 0,
+        "feedback_entries": 9,
+        "feedback_average": 4.6,
+        "attendance_count": 22,
+        "hosted_meets": 11,
+        "flags": [],
+        "last_updated": "2026-03-24T18:26:36.987599+00:00"
+    },
+    "444444444444": {
+        "user_id": 444444444444,
+        "display_name": "ToxicRider22",
+        "writeups": 2,
+        "strikes": 3,
+        "feedback_entries": 3,
+        "feedback_average": 1.8,
+        "attendance_count": 7,
+        "hosted_meets": 0,
+        "flags": [
+            "warning_flag",
+            "restricted_flag",
+            "critical_flag"
+        ],
+        "last_updated": "2026-03-24T18:26:36.987604+00:00"
+    },
+    "555555555555": {
+        "user_id": 555555555555,
+        "display_name": "CrashLord_GTA",
+        "writeups": 1,
+        "strikes": 1,
+        "feedback_entries": 5,
+        "feedback_average": 3.2,
+        "attendance_count": 11,
+        "hosted_meets": 0,
+        "flags": [],
+        "last_updated": "2026-03-24T18:26:36.987606+00:00"
+    },
+    "666666666666": {
+        "user_id": 666666666666,
+        "display_name": "SpeedGlitch_GTA",
+        "writeups": 1,
+        "strikes": 0,
+        "feedback_entries": 2,
+        "feedback_average": 4.0,
+        "attendance_count": 5,
+        "hosted_meets": 0,
+        "flags": [],
+        "last_updated": "2026-03-24T18:26:36.987609+00:00"
+    },
+    "333333333333": {
+        "user_id": 333333333333,
+        "display_name": "NightShift_PSN",
+        "writeups": 1,
+        "strikes": 0,
+        "feedback_entries": 4,
+        "feedback_average": 2.9,
+        "attendance_count": 15,
+        "hosted_meets": 5,
+        "flags": [],
+        "last_updated": "2026-03-24T18:26:36.987612+00:00"
+    }
+}

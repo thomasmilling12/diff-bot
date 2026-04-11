@@ -1,0 +1,30 @@
+{
+    "Smokey_PSN": {
+        "meets_hosted": 14,
+        "attendees_total": 378,
+        "meet_score": 72,
+        "points": 98,
+        "last_updated": "2026-03-24T18:26:36.981240+00:00"
+    },
+    "RavenGT_PSN": {
+        "meets_hosted": 9,
+        "attendees_total": 211,
+        "meet_score": 45,
+        "points": 63,
+        "last_updated": "2026-03-24T18:26:36.981257+00:00"
+    },
+    "NightShift_PSN": {
+        "meets_hosted": 5,
+        "attendees_total": 102,
+        "meet_score": 28,
+        "points": 41,
+        "last_updated": "2026-03-24T18:26:36.981261+00:00"
+    },
+    "DriftKing_PSN": {
+        "meets_hosted": 11,
+        "attendees_total": 289,
+        "meet_score": 60,
+        "points": 87,
+        "last_updated": "2026-03-24T18:26:36.981264+00:00"
+    }
+}

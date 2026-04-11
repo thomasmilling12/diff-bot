@@ -1,0 +1,26 @@
+{
+    "Smokey_PSN": {
+        "meets_hosted": 3,
+        "attendees_total": 74,
+        "meet_score": 14,
+        "points": 21
+    },
+    "RavenGT_PSN": {
+        "meets_hosted": 2,
+        "attendees_total": 40,
+        "meet_score": 9,
+        "points": 13
+    },
+    "NightShift_PSN": {
+        "meets_hosted": 1,
+        "attendees_total": 18,
+        "meet_score": 6,
+        "points": 9
+    },
+    "DriftKing_PSN": {
+        "meets_hosted": 4,
+        "attendees_total": 91,
+        "meet_score": 20,
+        "points": 29
+    }
+}

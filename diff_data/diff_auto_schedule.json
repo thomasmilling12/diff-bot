@@ -1,0 +1,26 @@
+{
+  "days": {
+    "Meet 1": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none",
+      "day": "TBD"
+    },
+    "Meet 2": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none",
+      "day": "TBD"
+    },
+    "Meet 3": {
+      "class": "TBD",
+      "time": "TBD",
+      "host_id": null,
+      "host_status": "none",
+      "day": "TBD"
+    }
+  },
+  "updated_at": "2026-03-29T07:41:58.290091"
+}

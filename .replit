@@ -1,0 +1,47 @@
+modules = ["python-3.11"]
+[agent]
+expertMode = true
+
+[nix]
+packages = ["cairo", "ffmpeg-full", "freetype", "ghostscript", "gobject-introspection", "gtk3", "nano", "pkg-config", "qhull", "tcl", "tk"]
+channel = "stable-25_05"
+
+[deployment]
+run = ["python", "bot.py"]
+deploymentTarget = "autoscale"
+
+[[ports]]
+localPort = 3000
+externalPort = 3000
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "echo 'Bot runs on Raspberry Pi — not started here to avoid token conflicts.' && sleep infinity"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[userenv]
+
+[userenv.shared]
+DISCORD_TOKEN = "MTQ4NDM1MTc1NzkzMTc3NDE5NQ.GMbbIw.KdrkgQMOF4__HtRx7vKMp4btqK9JxUpTKWbKVA"

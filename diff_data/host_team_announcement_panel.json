@@ -1,0 +1,32 @@
+{
+  "panel_message_id": 1486831019205202081,
+  "announcements": {
+    "ann-1774559645-708024998228525167": {
+      "title": "DIFF Schedule Notice",
+      "type": "schedule_notice",
+      "type_label": "Schedule Notice",
+      "urgent_mode": true,
+      "message_id": 1486835662584807474,
+      "channel_id": 1486228191243669646,
+      "jump_url": "https://discord.com/channels/850386896509337710/1486228191243669646/1486835662584807474",
+      "created_by_id": 708024998228525167,
+      "created_by_name": "\ud83c\udd73\ud83c\udd78\ud83c\udd75\ud83c\udd75 - Frostyy2003 (Leader)",
+      "created_at": "2026-03-26T21:14:06.132574+00:00",
+      "acknowledged_by": {
+        "708024998228525167": {
+          "name": "\ud83c\udd73\ud83c\udd78\ud83c\udd75\ud83c\udd75 - Frostyy2003 (Leader)",
+          "timestamp": "2026-03-26T21:15:12.914597+00:00"
+        }
+      },
+      "log_message_id": 1486835663482654800,
+      "missing_host_ids_current": [],
+      "escalation_sent": true,
+      "escalation_sent_at": "2026-03-26T21:44:43.452689+00:00",
+      "closed": true,
+      "missing_host_ids_final": []
+    }
+  },
+  "announcement_panel_message_id": 1486831019205202081,
+  "dashboard_panel_message_id": 1486841355224486111,
+  "host_stats": {}
+}
