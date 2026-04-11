@@ -9544,21 +9544,7 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                     except Exception as _re:
                         print(f"[Recap] Post failed: {_re}")
 
-                # ── Post roll call lock notice ──────────────────────────────────
-                try:
-                    rc_channel = interaction.client.get_channel(ROLL_CALL_CHANNEL_ID)
-                    if isinstance(rc_channel, discord.TextChannel):
-                        panel = _rc_db.get_panel(interaction.guild.id)
-                        rc_msg_id = panel["message_id"] if panel else None
-                        notice_embed = discord.Embed(
-                            description="🛑 **The meet has ended — the roll call is now closed.**",
-                            color=0xe74c3c,
-                            timestamp=datetime.now(timezone.utc),
-                        )
-                        notice_embed.set_footer(text="DIFF Meets • Roll Call System")
-                        await rc_channel.send(embed=notice_embed)
-                except Exception as _rce:
-                    print(f"[RCNotice] Failed: {_rce}")
+                # Roll call panel auto-updates to finalized state — no separate notice needed
 
                 await interaction.followup.send(f"✅ Meet end message sent in {ch.mention}.", ephemeral=True)
             else:

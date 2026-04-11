@@ -41,6 +41,23 @@ def _get_admin_msg_id() -> int | None:
     return None
 
 
+def _get_finalized_meets() -> set:
+    result = set()
+    try:
+        conn = sqlite3.connect(RC_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT meet_number FROM rollcall_meets WHERE guild_id=? AND is_finalized=1",
+            (GUILD_ID,),
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            result.add(row["meet_number"])
+    except Exception:
+        pass
+    return result
+
+
 def _get_live_counts() -> dict:
     result = {n: {"yes": 0, "maybe": 0, "no": 0} for n in (1, 2, 3)}
     try:
@@ -62,10 +79,8 @@ def _get_live_counts() -> dict:
 
 
 def _build_embed() -> discord.Embed:
-    counts = _get_live_counts()
-
-    total_yes = sum(counts[n]["yes"] for n in (1, 2, 3))
-    total_maybe = sum(counts[n]["maybe"] for n in (1, 2, 3))
+    counts    = _get_live_counts()
+    finalized = _get_finalized_meets()
 
     embed = discord.Embed(
         title="🛠️ DIFF Roll Call — Staff Tools",
@@ -80,13 +95,19 @@ def _build_embed() -> discord.Embed:
     count_lines = []
     for n in (1, 2, 3):
         c = counts[n]
-        total = c["yes"] + c["maybe"] + c["no"]
-        bar_yes   = round(c["yes"]   / max(total, 10) * 10)
-        bar_maybe = round(c["maybe"] / max(total, 10) * 10)
-        bar = "🟩" * bar_yes + "🟨" * bar_maybe + "⬜" * (10 - bar_yes - bar_maybe)
-        count_lines.append(
-            f"**Meet {n}** — ✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}"
-        )
+        if n in finalized:
+            count_lines.append(
+                f"**Meet {n}** — ✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n"
+                f"🏁 *Finalized*"
+            )
+        else:
+            total     = c["yes"] + c["maybe"] + c["no"]
+            bar_yes   = round(c["yes"]   / max(total, 10) * 10)
+            bar_maybe = round(c["maybe"] / max(total, 10) * 10)
+            bar = "🟩" * bar_yes + "🟨" * bar_maybe + "⬜" * (10 - bar_yes - bar_maybe)
+            count_lines.append(
+                f"**Meet {n}** — ✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}"
+            )
     embed.add_field(
         name="📊 Live RSVP Counts",
         value="\n\n".join(count_lines),
@@ -149,6 +170,24 @@ def _build_attendance_embed(responses: dict) -> discord.Embed:
     return embed
 
 
+# ── Shared helper: rebuild + reset the staff panel ─────────────────────────────
+
+async def _refresh_admin_panel() -> None:
+    """Re-edit the staff panel with a fresh embed and fresh view (resets dropdown)."""
+    try:
+        admin_id = _get_admin_msg_id()
+        if not admin_id:
+            return
+        m  = _main()
+        ch = m.bot.get_channel(ROLL_CALL_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            return
+        msg = await ch.fetch_message(admin_id)
+        await msg.edit(embed=_build_embed(), view=_StaffView())
+    except Exception as e:
+        print(f"[RcAdminPatch] _refresh_admin_panel error: {e}")
+
+
 # ── Finalize modal ─────────────────────────────────────────────────────────────
 
 class _FinalizeModal(discord.ui.Modal):
@@ -176,6 +215,7 @@ class _FinalizeModal(discord.ui.Modal):
             await m._rc_log_attendance(
                 interaction.guild, self.meet_number, attended, no_shows, interaction.user
             )
+            await _refresh_admin_panel()
 
             def _tags(uids, limit=15):
                 tags = " ".join(f"<@{uid}>" for uid in uids[:limit])
@@ -286,16 +326,17 @@ class _StaffSelect(discord.ui.Select):
             return await interaction.response.send_modal(_FinalizeModal(int(v[-1])))
 
         if v == "attendance":
+            await interaction.response.defer(ephemeral=True)
             try:
                 m         = _main()
                 responses = m._rc_db.get_all_responses(interaction.guild.id)
-                return await interaction.response.send_message(
+                await interaction.followup.send(
                     embed=_build_attendance_embed(responses), ephemeral=True
                 )
             except Exception as e:
-                return await interaction.response.send_message(
-                    f"Error fetching attendance: {e}", ephemeral=True
-                )
+                await interaction.followup.send(f"Error fetching attendance: {e}", ephemeral=True)
+            await _refresh_admin_panel()
+            return
 
         if v == "sync":
             try:
@@ -315,10 +356,12 @@ class _StaffSelect(discord.ui.Select):
                         "is_finalized": entry.get("host_id") is not None,
                     })
                 await m._rc_sync_from_schedule(guild, rc_meets)
-                return await interaction.followup.send(
+                await interaction.followup.send(
                     "✅ Schedule synced — roll call updated with latest dates, times, and hosts.",
                     ephemeral=True,
                 )
+                await _refresh_admin_panel()
+                return
             except Exception as e:
                 try:
                     await interaction.followup.send(f"Sync failed: {e}", ephemeral=True)
