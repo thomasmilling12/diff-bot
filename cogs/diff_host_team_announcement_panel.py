@@ -758,103 +758,85 @@ class SmartAnnouncementConfirmView(discord.ui.View):
 # PANEL VIEWS
 # =========================================================
 
+class _CreateSmartAnnouncementBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Create Smart Announcement", emoji="🧠",
+                         style=discord.ButtonStyle.blurple, custom_id="diff_suite_create_announcement")
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+        if not user_is_manager(interaction.user):
+            return await interaction.response.send_message("You do not have permission to use this panel.", ephemeral=True)
+        await interaction.response.send_modal(SmartAnnouncementModal())
+
+class _RefreshAnnouncementPanelBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Refresh Announcement Panel", emoji="♻️",
+                         style=discord.ButtonStyle.gray, custom_id="diff_suite_refresh_announcement_panel")
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
+        if not user_is_manager(interaction.user):
+            return await interaction.response.send_message("You do not have permission to use this panel.", ephemeral=True)
+        await ensure_announcement_panel(interaction.client)
+        await interaction.response.send_message("✅ Announcement panel refreshed.", ephemeral=True)
+
+
 class IntelligencePanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        self.add_item(_CreateSmartAnnouncementBtn())
+        self.add_item(_RefreshAnnouncementPanelBtn())
 
-    @discord.ui.button(
-        label="Create Smart Announcement",
-        emoji="🧠",
-        style=discord.ButtonStyle.blurple,
-        custom_id="diff_suite_create_announcement",
-    )
-    async def create_smart_announcement(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
-            return
-        if not user_is_manager(interaction.user):
-            await interaction.response.send_message("You do not have permission to use this panel.", ephemeral=True)
-            return
-        await interaction.response.send_modal(SmartAnnouncementModal())
 
-    @discord.ui.button(
-        label="Refresh Announcement Panel",
-        emoji="♻️",
-        style=discord.ButtonStyle.gray,
-        custom_id="diff_suite_refresh_announcement_panel",
-    )
-    async def refresh_panel(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("This can only be used in a server.", ephemeral=True)
-            return
+class _ViewStatsBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="View Announcement Stats", emoji="📈",
+                         style=discord.ButtonStyle.blurple, custom_id="diff_suite_view_stats")
+    async def callback(self, interaction: discord.Interaction) -> None:
         if not user_is_manager(interaction.user):
-            await interaction.response.send_message("You do not have permission to use this panel.", ephemeral=True)
-            return
-        await ensure_announcement_panel(interaction.client)
-        await interaction.response.send_message("✅ Announcement panel refreshed.", ephemeral=True)
+            return await interaction.response.send_message("You do not have permission.", ephemeral=True)
+        data = ensure_data_shape(load_data())
+        await interaction.response.send_message(embed=build_stats_embed(data), ephemeral=True)
+
+class _ViewLeaderboardBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="View Host Performance", emoji="🏆",
+                         style=discord.ButtonStyle.green, custom_id="diff_suite_view_leaderboard")
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not user_is_manager(interaction.user):
+            return await interaction.response.send_message("You do not have permission.", ephemeral=True)
+        data = ensure_data_shape(load_data())
+        await interaction.response.send_message(embed=build_leaderboard_embed(data), ephemeral=True)
+
+class _ViewIgnoredBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="View Ignored Announcements", emoji="🚫",
+                         style=discord.ButtonStyle.red, custom_id="diff_suite_view_ignored")
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not user_is_manager(interaction.user):
+            return await interaction.response.send_message("You do not have permission.", ephemeral=True)
+        data = ensure_data_shape(load_data())
+        await interaction.response.send_message(embed=build_ignored_embed(interaction.guild, data), ephemeral=True)
+
+class _RefreshDashboardBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Refresh Dashboard", emoji="♻️",
+                         style=discord.ButtonStyle.gray, custom_id="diff_suite_refresh_dashboard")
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not user_is_manager(interaction.user):
+            return await interaction.response.send_message("You do not have permission.", ephemeral=True)
+        await ensure_dashboard_panel(interaction.client)
+        await interaction.response.send_message("✅ Dashboard refreshed.", ephemeral=True)
 
 
 class ManagerDashboardView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="View Announcement Stats",
-        emoji="📈",
-        style=discord.ButtonStyle.blurple,
-        custom_id="diff_suite_view_stats",
-    )
-    async def view_stats(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not user_is_manager(interaction.user):
-            await interaction.response.send_message("You do not have permission.", ephemeral=True)
-            return
-        data = ensure_data_shape(load_data())
-        await interaction.response.send_message(embed=build_stats_embed(data), ephemeral=True)
-
-    @discord.ui.button(
-        label="View Host Performance",
-        emoji="🏆",
-        style=discord.ButtonStyle.green,
-        custom_id="diff_suite_view_leaderboard",
-    )
-    async def view_leaderboard(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not user_is_manager(interaction.user):
-            await interaction.response.send_message("You do not have permission.", ephemeral=True)
-            return
-        data = ensure_data_shape(load_data())
-        await interaction.response.send_message(embed=build_leaderboard_embed(data), ephemeral=True)
-
-    @discord.ui.button(
-        label="View Ignored Announcements",
-        emoji="🚫",
-        style=discord.ButtonStyle.red,
-        custom_id="diff_suite_view_ignored",
-    )
-    async def view_ignored(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not user_is_manager(interaction.user):
-            await interaction.response.send_message("You do not have permission.", ephemeral=True)
-            return
-        data = ensure_data_shape(load_data())
-        await interaction.response.send_message(
-            embed=build_ignored_embed(interaction.guild, data), ephemeral=True
-        )
-
-    @discord.ui.button(
-        label="Refresh Dashboard",
-        emoji="♻️",
-        style=discord.ButtonStyle.gray,
-        custom_id="diff_suite_refresh_dashboard",
-    )
-    async def refresh_dashboard(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not user_is_manager(interaction.user):
-            await interaction.response.send_message("You do not have permission.", ephemeral=True)
-            return
-        await ensure_dashboard_panel(interaction.client)
-        await interaction.response.send_message("✅ Dashboard refreshed.", ephemeral=True)
+        self.add_item(_ViewStatsBtn())
+        self.add_item(_ViewLeaderboardBtn())
+        self.add_item(_ViewIgnoredBtn())
+        self.add_item(_RefreshDashboardBtn())
 
 
 # =========================================================
