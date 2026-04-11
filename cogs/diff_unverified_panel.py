@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -13,6 +14,11 @@ from discord.ext import commands
 # =========================
 TARGET_CHANNEL_ID  = 1486058055991824655
 UNVERIFIED_ROLE_ID = 1486011550916411512
+VERIFIED_ROLE_ID   = 1141424243616256032
+RULES_CHANNEL_ID   = 1047161846257438743
+JOIN_MEETS_CHANNEL = 1277084633858576406
+
+PING_COOLDOWN_SECS = 600  # 10 minutes between pings
 
 DATA_FILE = os.path.join("diff_data", "unverified_panel.json")
 
@@ -22,9 +28,14 @@ DIFF_LOGO_URL = (
     "2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a"
     "&=&format=webp&quality=lossless&width=1376&height=917"
 )
-EMBED_COLOR = 0x2B2D31
+EMBED_COLOR = 0xED4245
 FOOTER_TEXT = "DIFF Verification System"
 PANEL_TAG   = "DIFF_UNVERIFIED_PANEL"
+
+STAFF_ROLE_IDS = {850391095845584937, 850391378559238235, 990011447193006101, 1055823929358430248}
+
+# In-memory cooldown: guild_id → last ping timestamp
+_ping_cooldowns: dict[int, float] = {}
 
 
 # =========================
@@ -57,84 +68,189 @@ def _set_msg_id(message_id: int) -> None:
     _save(d)
 
 
-# =========================
-# VIEW
-# =========================
-class UnverifiedPingView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Ping Unverified Role",
-        style=discord.ButtonStyle.danger,
-        emoji="📣",
-        custom_id="diff_unverified_ping_button_v1",
+def _is_staff(member: discord.Member) -> bool:
+    return (
+        any(r.id in STAFF_ROLE_IDS for r in member.roles)
+        or member.guild_permissions.manage_guild
+        or member.guild_permissions.administrator
     )
-    async def ping_unverified(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+
+
+def _staff_label(member: discord.Member) -> str:
+    for r in reversed(member.roles):
+        if r.id in STAFF_ROLE_IDS:
+            return f" ({r.name})"
+    return ""
+
+
+def _unverified_members(guild: discord.Guild) -> list[discord.Member]:
+    role = guild.get_role(UNVERIFIED_ROLE_ID)
+    if role is None:
+        return []
+    return sorted(role.members, key=lambda m: m.joined_at or datetime.min.replace(tzinfo=timezone.utc))
+
+
+# =========================
+# BUTTONS  (subclass style — works after restart on Pi)
+# =========================
+class PingButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Ping Unverified Role",
+            style=discord.ButtonStyle.danger,
+            emoji="📣",
+            custom_id="diff_unverified_ping_v2",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
         if not interaction.guild:
-            return await interaction.response.send_message(
-                "This button can only be used in a server.", ephemeral=True
-            )
+            return await interaction.response.send_message("Server only.", ephemeral=True)
 
         member = interaction.user
-        if not isinstance(member, discord.Member):
+        if not isinstance(member, discord.Member) or not _is_staff(member):
             return await interaction.response.send_message(
-                "Could not verify your staff permissions.", ephemeral=True
+                "You need staff permissions to use this.", ephemeral=True
             )
 
-        if not (
-            member.guild_permissions.manage_guild
-            or member.guild_permissions.manage_messages
-            or member.guild_permissions.administrator
-        ):
+        # Cooldown check
+        guild_id = interaction.guild.id
+        now = time.monotonic()
+        last = _ping_cooldowns.get(guild_id, 0)
+        remaining = PING_COOLDOWN_SECS - (now - last)
+        if remaining > 0:
+            mins = int(remaining // 60)
+            secs = int(remaining % 60)
+            wait = f"{mins}m {secs}s" if mins else f"{secs}s"
             return await interaction.response.send_message(
-                "You need staff permissions to use this button.", ephemeral=True
+                f"⏳ Cooldown active — you can ping again in **{wait}**.", ephemeral=True
             )
 
         role = interaction.guild.get_role(UNVERIFIED_ROLE_ID)
         if role is None:
-            return await interaction.response.send_message(
-                "Could not find the Unverified role.", ephemeral=True
-            )
+            return await interaction.response.send_message("Unverified role not found.", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
 
-        channel = interaction.channel
-        if not isinstance(channel, discord.abc.Messageable):
-            return await interaction.followup.send(
-                "I couldn't send the ping in this channel.", ephemeral=True
-            )
+        _ping_cooldowns[guild_id] = now
 
-        STAFF_ROLE_IDS = {850391095845584937, 850391378559238235, 990011447193006101, 1055823929358430248}
-        role_label = ""
-        for r in reversed(member.roles):
-            if r.id in STAFF_ROLE_IDS:
-                role_label = f" ({r.name})"
-                break
+        label = _staff_label(member)
+        count = len(_unverified_members(interaction.guild))
 
         ping_embed = discord.Embed(
             title="📌 Verification Reminder",
             description=(
-                "Please complete the server verification process to unlock full access.\n\n"
-                "• Read the **rules** and **verification** channels\n"
-                "• Follow the steps posted by staff\n"
-                "• Your access will be unlocked once verification is complete"
+                f"You're seeing this because you haven't verified yet.\n"
+                f"Follow the steps below to unlock full access to DIFF.\n\n"
+                f"📜 **Step 1** — Read the rules in <#{RULES_CHANNEL_ID}>\n"
+                f"✅ **Step 2** — Complete verification and click the button\n"
+                f"🎮 **Step 3** — Head to <#{JOIN_MEETS_CHANNEL}> to join meets"
             ),
             color=discord.Color.red(),
             timestamp=datetime.now(timezone.utc),
         )
         ping_embed.set_thumbnail(url=DIFF_LOGO_URL)
-        ping_embed.set_footer(text=f"Sent by {member.display_name}{role_label}  •  DIFF Verification System")
+        ping_embed.set_footer(
+            text=f"Sent by {member.display_name}{label}  •  {FOOTER_TEXT}"
+        )
 
+        channel = interaction.channel
         await channel.send(
             content=role.mention,
             embed=ping_embed,
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
 
-        await interaction.followup.send("Unverified role ping sent.", ephemeral=True)
+        # DM each unverified member
+        dm_ok = 0
+        dm_fail = 0
+        for m in role.members:
+            try:
+                dm_embed = discord.Embed(
+                    title="📌 DIFF — Verification Reminder",
+                    description=(
+                        f"Hey {m.display_name}! A staff member has sent a verification reminder.\n\n"
+                        f"📜 **Step 1** — Read the rules in <#{RULES_CHANNEL_ID}>\n"
+                        f"✅ **Step 2** — Complete verification\n"
+                        f"🎮 **Step 3** — Head to <#{JOIN_MEETS_CHANNEL}> to join meets\n\n"
+                        f"Complete this to unlock full access to **{interaction.guild.name}**!"
+                    ),
+                    color=discord.Color.red(),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
+                dm_embed.set_footer(text=FOOTER_TEXT)
+                await m.send(embed=dm_embed)
+                dm_ok += 1
+            except Exception:
+                dm_fail += 1
+
+        dm_note = f"\n📬 DMs sent: **{dm_ok}** delivered, **{dm_fail}** failed (DMs closed)." if (dm_ok + dm_fail) else ""
+        await interaction.followup.send(
+            f"✅ Pinged **{count}** unverified member(s).{dm_note}",
+            ephemeral=True,
+        )
+
+
+class ListUnverifiedButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="List Unverified Members",
+            style=discord.ButtonStyle.secondary,
+            emoji="👥",
+            custom_id="diff_unverified_list_v2",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+
+        member = interaction.user
+        if not isinstance(member, discord.Member) or not _is_staff(member):
+            return await interaction.response.send_message(
+                "Staff only.", ephemeral=True
+            )
+
+        await interaction.response.defer(ephemeral=True)
+
+        members = _unverified_members(interaction.guild)
+
+        if not members:
+            return await interaction.followup.send(
+                "✅ No unverified members right now!", ephemeral=True
+            )
+
+        now = datetime.now(timezone.utc)
+        lines = []
+        for m in members:
+            joined = m.joined_at
+            if joined:
+                days = (now - joined).days
+                duration = f"{days}d ago" if days > 0 else "today"
+            else:
+                duration = "unknown"
+            lines.append(f"• {m.mention} — joined **{duration}**")
+
+        # Split into chunks if > 25 members
+        chunks = [lines[i:i+25] for i in range(0, len(lines), 25)]
+        for i, chunk in enumerate(chunks):
+            embed = discord.Embed(
+                title=f"👥 Unverified Members ({len(members)} total)" if i == 0 else f"(continued)",
+                description="\n".join(chunk),
+                color=EMBED_COLOR,
+                timestamp=now,
+            )
+            embed.set_footer(text=FOOTER_TEXT)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# =========================
+# VIEW
+# =========================
+class UnverifiedPingView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(PingButton())
+        self.add_item(ListUnverifiedButton())
 
 
 # =========================
@@ -146,45 +262,50 @@ class UnverifiedPanelCog(commands.Cog):
         self._view = UnverifiedPingView()
         bot.add_view(self._view)
 
-    # ------------------------------------------------------------------
-    def _build_embed(self) -> discord.Embed:
+    def _build_embed(self, guild: Optional[discord.Guild] = None) -> discord.Embed:
+        count = len(_unverified_members(guild)) if guild else 0
+        count_str = f"**{count}** unverified member{'s' if count != 1 else ''} right now." if guild else ""
+
         embed = discord.Embed(
             title="📍 DIFF Unverified Members",
             description=(
                 "If you're seeing this channel, you haven't completed server verification yet.\n"
-                "Follow the steps below to unlock full access to DIFF."
+                "Follow the steps below to unlock full access to DIFF.\n\n"
+                + (f"👥 There are currently {count_str}" if count_str else "")
             ),
-            color=0xED4245,
+            color=EMBED_COLOR,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.add_field(
             name="✅ How to Get Verified",
             value=(
-                "• Read the **rules** and **verification** channels\n"
-                "• Follow any steps posted by staff\n"
-                "• Once complete, your access will be unlocked"
+                f"• Go to <#{RULES_CHANNEL_ID}> and read the rules\n"
+                f"• Click the verification button at the bottom of that channel\n"
+                f"• Once complete, your access will be unlocked automatically"
             ),
             inline=False,
         )
         embed.add_field(
-            name="⚙️ What Happens When Staff Ping",
+            name="🎮 After Verifying",
             value=(
-                "• The **Unverified** role is pinged\n"
-                "• A reminder is posted here\n"
-                "• Members are directed to finish verification"
+                f"• Head to <#{JOIN_MEETS_CHANNEL}> to see how to join meets\n"
+                f"• Explore the rest of the server\n"
+                f"• Follow any announcements from staff"
             ),
             inline=False,
         )
         embed.add_field(
-            name="🔔 Staff Action",
-            value="Press the button below to send a verification reminder to all unverified members.",
+            name="🔔 Staff Actions",
+            value=(
+                "**Ping Unverified Role** — sends a reminder ping in this channel and DMs all unverified members *(10 min cooldown)*\n"
+                "**List Unverified Members** — shows a private list of who still needs to verify"
+            ),
             inline=False,
         )
-        embed.set_footer(text=f"DIFF Verification System  |  {PANEL_TAG}")
+        embed.set_footer(text=f"{FOOTER_TEXT}  |  {PANEL_TAG}")
         embed.timestamp = datetime.now(timezone.utc)
         return embed
 
-    # ------------------------------------------------------------------
     async def _get_channel(self) -> Optional[discord.TextChannel]:
         ch = self.bot.get_channel(TARGET_CHANNEL_ID)
         if ch is None:
@@ -194,14 +315,13 @@ class UnverifiedPanelCog(commands.Cog):
                 return None
         return ch if isinstance(ch, discord.TextChannel) else None
 
-    # ------------------------------------------------------------------
-    async def ensure_panel(self) -> None:
+    async def ensure_panel(self, guild: Optional[discord.Guild] = None) -> None:
         channel = await self._get_channel()
         if channel is None:
             print(f"[UnverifiedPanel] Channel not found: {TARGET_CHANNEL_ID}")
             return
 
-        embed = self._build_embed()
+        embed = self._build_embed(guild or channel.guild)
         saved_id = _get_msg_id()
 
         if saved_id:
@@ -215,7 +335,7 @@ class UnverifiedPanelCog(commands.Cog):
             except Exception as e:
                 print(f"[UnverifiedPanel] Edit failed: {e}")
 
-        # Delete any stale duplicates
+        # Clean up stale duplicates
         try:
             async for msg in channel.history(limit=50):
                 if (
@@ -237,16 +357,28 @@ class UnverifiedPanelCog(commands.Cog):
         except Exception as e:
             print(f"[UnverifiedPanel] Failed to post panel: {e}")
 
-    # ------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_ready(self):
         print("[UnverifiedPanel] Cog ready.")
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """Refresh the panel count when someone joins."""
+        await self.ensure_panel(member.guild)
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """Refresh the panel when someone gains/loses the unverified role."""
+        before_ids = {r.id for r in before.roles}
+        after_ids  = {r.id for r in after.roles}
+        if UNVERIFIED_ROLE_ID in (before_ids ^ after_ids):
+            await self.ensure_panel(after.guild)
 
     @commands.command(name="refresh_unverified_panel")
     @commands.has_permissions(manage_guild=True)
     async def refresh_cmd(self, ctx: commands.Context):
         """Force-refresh the unverified panel."""
-        await self.ensure_panel()
+        await self.ensure_panel(ctx.guild)
         await ctx.send("Unverified panel refreshed.", delete_after=10)
 
 
