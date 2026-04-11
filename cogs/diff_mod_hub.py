@@ -665,11 +665,57 @@ class _ModHubSelect(discord.ui.Select):
 # =========================================================
 # MAIN HUB VIEW  (persistent)
 # =========================================================
+class _ModWarnBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Warn", emoji="⚠️", style=discord.ButtonStyle.secondary, custom_id="diff_mod_warn_v1", row=1)
+    async def callback(self, interaction: discord.Interaction):
+        if not await self.view._staff_check(interaction):
+            return
+        await interaction.response.send_message("Select a member to warn:", view=_MemberSelectView(self.view.cog, "Warn"), ephemeral=True)
+
+class _ModTimeoutBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Timeout", emoji="⏳", style=discord.ButtonStyle.primary, custom_id="diff_mod_timeout_v1", row=1)
+    async def callback(self, interaction: discord.Interaction):
+        if not await self.view._staff_check(interaction):
+            return
+        await interaction.response.send_message("Select a member to timeout:", view=_MemberSelectView(self.view.cog, "Timeout"), ephemeral=True)
+
+class _ModKickBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Kick", emoji="👢", style=discord.ButtonStyle.danger, custom_id="diff_mod_kick_v1", row=1)
+    async def callback(self, interaction: discord.Interaction):
+        if not await self.view._staff_check(interaction):
+            return
+        await interaction.response.send_message("Select a member to kick:", view=_MemberSelectView(self.view.cog, "Kick"), ephemeral=True)
+
+class _ModBanBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Ban", emoji="🔨", style=discord.ButtonStyle.danger, custom_id="diff_mod_ban_v1", row=1)
+    async def callback(self, interaction: discord.Interaction):
+        if not await self.view._staff_check(interaction):
+            return
+        await interaction.response.send_message("Select a member to ban:", view=_MemberSelectView(self.view.cog, "Ban"), ephemeral=True)
+
+class _ModCheckWarnBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Check Warnings", emoji="📋", style=discord.ButtonStyle.success, custom_id="diff_mod_checkwarn_v1", row=1)
+    async def callback(self, interaction: discord.Interaction):
+        if not await self.view._staff_check(interaction):
+            return
+        await interaction.response.send_message("Select a member to check:", view=_CheckWarningsView(), ephemeral=True)
+
+
 class ModHubView(discord.ui.View):
     def __init__(self, cog: "ModHubCog"):
         super().__init__(timeout=None)
         self.cog = cog
         self.add_item(_ModHubSelect(cog))
+        self.add_item(_ModWarnBtn())
+        self.add_item(_ModTimeoutBtn())
+        self.add_item(_ModKickBtn())
+        self.add_item(_ModBanBtn())
+        self.add_item(_ModCheckWarnBtn())
 
     async def _staff_check(self, interaction: discord.Interaction) -> bool:
         member = interaction.user
@@ -677,66 +723,6 @@ class ModHubView(discord.ui.View):
             await interaction.response.send_message("Only staff can use this panel.", ephemeral=True)
             return False
         return True
-
-    @discord.ui.button(
-        label="Warn", emoji="⚠️",
-        style=discord.ButtonStyle.secondary,
-        custom_id="diff_mod_warn_v1", row=1,
-    )
-    async def warn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._staff_check(interaction):
-            return
-        await interaction.response.send_message(
-            "Select a member to warn:", view=_MemberSelectView(self.cog, "Warn"), ephemeral=True
-        )
-
-    @discord.ui.button(
-        label="Timeout", emoji="⏳",
-        style=discord.ButtonStyle.primary,
-        custom_id="diff_mod_timeout_v1", row=1,
-    )
-    async def timeout_member(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._staff_check(interaction):
-            return
-        await interaction.response.send_message(
-            "Select a member to timeout:", view=_MemberSelectView(self.cog, "Timeout"), ephemeral=True
-        )
-
-    @discord.ui.button(
-        label="Kick", emoji="👢",
-        style=discord.ButtonStyle.danger,
-        custom_id="diff_mod_kick_v1", row=1,
-    )
-    async def kick(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._staff_check(interaction):
-            return
-        await interaction.response.send_message(
-            "Select a member to kick:", view=_MemberSelectView(self.cog, "Kick"), ephemeral=True
-        )
-
-    @discord.ui.button(
-        label="Ban", emoji="🔨",
-        style=discord.ButtonStyle.danger,
-        custom_id="diff_mod_ban_v1", row=1,
-    )
-    async def ban(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._staff_check(interaction):
-            return
-        await interaction.response.send_message(
-            "Select a member to ban:", view=_MemberSelectView(self.cog, "Ban"), ephemeral=True
-        )
-
-    @discord.ui.button(
-        label="Check Warnings", emoji="📋",
-        style=discord.ButtonStyle.success,
-        custom_id="diff_mod_checkwarn_v1", row=1,
-    )
-    async def check_warnings(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._staff_check(interaction):
-            return
-        await interaction.response.send_message(
-            "Select a member to check:", view=_CheckWarningsView(), ephemeral=True
-        )
 
 
 # =========================================================
