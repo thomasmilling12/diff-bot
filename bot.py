@@ -18402,6 +18402,7 @@ class SupportCloseButton(discord.ui.View):
             _tperf_record_close(int(claimer_id), channel.name)
 
         transcript_file = await _supp_export_transcript(channel)
+        transcript_url = None
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
             from datetime import timezone as _tz
@@ -18422,7 +18423,9 @@ class SupportCloseButton(discord.ui.View):
             close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
             _supp_brand_embed(close_embed)
             try:
-                await logs_channel.send(embed=close_embed, file=transcript_file)
+                log_msg = await logs_channel.send(embed=close_embed, file=transcript_file)
+                if log_msg.attachments:
+                    transcript_url = log_msg.attachments[0].url
             except discord.HTTPException:
                 pass
 
@@ -18433,20 +18436,27 @@ class SupportCloseButton(discord.ui.View):
                     dm_embed = discord.Embed(
                         title="🔒 Your Ticket Has Been Closed",
                         description=(
-                            f"Your **{ticket.label}** ticket (`{channel.name}`) in **{interaction.guild.name}** "
-                            f"has been closed.\n\n"
-                            "A transcript of your ticket is attached below for your records.\n"
-                            "If you still need help, you can open a new ticket from the support panel."
+                            f"Your **{ticket.label}** ticket in **{interaction.guild.name}** has been closed.\n\n"
+                            "Your full ticket transcript is available via the button below — "
+                            "you can open it in your browser to view the full conversation.\n\n"
+                            "If you still need help, feel free to open a new ticket from the support panel."
                         ),
                         color=_TICKET_COLORS.get(ticket.key, discord.Color.red()),
                         timestamp=datetime.now(timezone.utc),
                     )
                     dm_embed.set_footer(text="Different Meets • Support System")
+                    close_view = discord.ui.View()
+                    if transcript_url:
+                        close_view.add_item(discord.ui.Button(
+                            label="View Transcript",
+                            emoji="📋",
+                            style=discord.ButtonStyle.link,
+                            url=transcript_url,
+                        ))
                     try:
-                        dm_transcript = await _supp_export_transcript(channel)
-                        await owner.send(embed=dm_embed, file=dm_transcript)
+                        await owner.send(embed=dm_embed, view=close_view)
                     except Exception:
-                        await owner.send(embed=dm_embed)
+                        pass
             except Exception:
                 pass
 
