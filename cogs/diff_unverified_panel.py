@@ -206,9 +206,7 @@ class ListUnverifiedButton(discord.ui.Button):
 
         member = interaction.user
         if not isinstance(member, discord.Member) or not _is_staff(member):
-            return await interaction.response.send_message(
-                "Staff only.", ephemeral=True
-            )
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
 
@@ -220,27 +218,50 @@ class ListUnverifiedButton(discord.ui.Button):
             )
 
         now = datetime.now(timezone.utc)
-        lines = []
-        for m in members:
-            joined = m.joined_at
-            if joined:
-                days = (now - joined).days
-                duration = f"{days}d ago" if days > 0 else "today"
-            else:
-                duration = "unknown"
-            lines.append(f"• {m.mention} — joined **{duration}**")
 
-        # Split into chunks if > 25 members
-        chunks = [lines[i:i+25] for i in range(0, len(lines), 25)]
-        for i, chunk in enumerate(chunks):
-            embed = discord.Embed(
-                title=f"👥 Unverified Members ({len(members)} total)" if i == 0 else f"(continued)",
-                description="\n".join(chunk),
-                color=EMBED_COLOR,
-                timestamp=now,
-            )
-            embed.set_footer(text=FOOTER_TEXT)
-            await interaction.followup.send(embed=embed, ephemeral=True)
+        # Bucket by how long they've been unverified
+        today = week = month = older = 0
+        for m in members:
+            days = (now - m.joined_at).days if m.joined_at else 999
+            if days == 0:
+                today += 1
+            elif days <= 7:
+                week += 1
+            elif days <= 30:
+                month += 1
+            else:
+                older += 1
+
+        # 10 most recently joined (most actionable)
+        recent = members[-10:][::-1]  # newest first
+        recent_lines = []
+        for m in recent:
+            days = (now - m.joined_at).days if m.joined_at else None
+            duration = f"{days}d ago" if days is not None and days > 0 else "today"
+            recent_lines.append(f"• {m.mention} — joined **{duration}**")
+
+        embed = discord.Embed(
+            title=f"👥 Unverified Members — {len(members)} total",
+            color=EMBED_COLOR,
+            timestamp=now,
+        )
+        embed.add_field(
+            name="📊 Breakdown",
+            value=(
+                f"🟢 Joined today: **{today}**\n"
+                f"🟡 Joined this week: **{week}**\n"
+                f"🟠 Joined this month: **{month}**\n"
+                f"🔴 Older than 30 days: **{older}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🕐 10 Most Recently Joined",
+            value="\n".join(recent_lines) if recent_lines else "None",
+            inline=False,
+        )
+        embed.set_footer(text=FOOTER_TEXT)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # =========================
