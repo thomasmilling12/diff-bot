@@ -280,26 +280,13 @@ class CreateAttendanceModal(discord.ui.Modal, title="Create Attendance Session")
 # =========================================================
 # VIEWS
 # =========================================================
-class AttendanceSessionView(discord.ui.View):
-    def __init__(self, cog: "AttendanceCog", session_id: str):
-        super().__init__(timeout=None)
-        self.cog        = cog
-        self.session_id = session_id
-
-    async def _refresh(self, interaction: discord.Interaction, session: dict):
-        try:
-            await interaction.message.edit(
-                embed=_session_embed(self.session_id, session), view=self
-            )
-        except Exception:
-            pass
-
-    @discord.ui.button(label="Check In", emoji="✅", style=discord.ButtonStyle.success,
-                       custom_id="diff_attendance_check_in_v1")
-    async def check_in(self, interaction: discord.Interaction, button: discord.ui.Button):
+class _CheckInBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Check In", emoji="✅", style=discord.ButtonStyle.success,
+                         custom_id="diff_attendance_check_in_v1")
+    async def callback(self, interaction: discord.Interaction):
         data    = _load_sessions()
-        session = data.get("sessions", {}).get(self.session_id)
-
+        session = data.get("sessions", {}).get(self.view.session_id)
         if not session:
             return await interaction.response.send_message(
                 "This attendance session could not be found.", ephemeral=True
@@ -308,37 +295,34 @@ class AttendanceSessionView(discord.ui.View):
             return await interaction.response.send_message(
                 "This attendance session is already closed.", ephemeral=True
             )
-
         uid = str(interaction.user.id)
         if uid in session["checked_in_users"]:
             return await interaction.response.send_message(
                 "You are already checked in for this session. ✅", ephemeral=True
             )
-
         session["checked_in_users"][uid] = {
             "username":  str(interaction.user),
             "timestamp": _now_ts(),
         }
         session["no_show_users"].pop(uid, None)
         _save_sessions(data)
-
-        await self._refresh(interaction, session)
+        await self.view._refresh(interaction, session)
         await interaction.response.send_message(
             "You have been checked in successfully. ✅", ephemeral=True
         )
 
-    @discord.ui.button(label="Close Attendance", emoji="🔒", style=discord.ButtonStyle.danger,
-                       custom_id="diff_attendance_close_v1")
-    async def close_attendance(self, interaction: discord.Interaction, button: discord.ui.Button):
+class _CloseAttendanceBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Close Attendance", emoji="🔒", style=discord.ButtonStyle.danger,
+                         custom_id="diff_attendance_close_v1")
+    async def callback(self, interaction: discord.Interaction):
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if member is None or not _is_staff(member):
             return await interaction.response.send_message(
                 "Only staff can close attendance sessions.", ephemeral=True
             )
-
         data    = _load_sessions()
-        session = data.get("sessions", {}).get(self.session_id)
-
+        session = data.get("sessions", {}).get(self.view.session_id)
         if not session:
             return await interaction.response.send_message(
                 "This attendance session could not be found.", ephemeral=True
@@ -347,28 +331,23 @@ class AttendanceSessionView(discord.ui.View):
             return await interaction.response.send_message(
                 "This attendance session is already closed.", ephemeral=True
             )
-
         expected   = set(session.get("expected_users", {}).keys())
         checked_in = set(session.get("checked_in_users", {}).keys())
         no_shows   = {uid: True for uid in expected if uid not in checked_in}
-
         session["no_show_users"] = no_shows
         session["status"]        = "closed"
         session["closed_at"]     = _now_ts()
         session["closed_by"]     = interaction.user.id
         _save_sessions(data)
-
         try:
             await interaction.message.edit(
-                embed=_session_embed(self.session_id, session), view=self
+                embed=_session_embed(self.view.session_id, session), view=self.view
             )
         except Exception:
             pass
-
         checked_count  = len(session.get("checked_in_users", {}))
         expected_count = len(expected)
         no_show_count  = len(no_shows)
-
         summary = discord.Embed(
             title="📊 Attendance Session Closed",
             color=WARNING_COLOR,
@@ -379,7 +358,6 @@ class AttendanceSessionView(discord.ui.View):
                 f"**No-Shows:** **{no_show_count}**"
             ),
         )
-
         if no_show_count:
             mentions = [f"<@{uid}>" for uid in list(no_shows.keys())[:15]]
             summary.add_field(
@@ -391,53 +369,64 @@ class AttendanceSessionView(discord.ui.View):
             summary.add_field(
                 name="No-Show Members", value="No no-shows detected. ✅", inline=False
             )
-
         summary.set_thumbnail(url=DIFF_LOGO_URL)
         summary.set_footer(text=f"Closed by {interaction.user.display_name}")
-
         await interaction.response.send_message(embed=summary)
-
-        await self.cog.log_action(
+        await self.view.cog.log_action(
             interaction.guild,
-            f"📊 Attendance session `{self.session_id}` closed by "
+            f"📊 Attendance session `{self.view.session_id}` closed by "
             f"{interaction.user.mention} | "
             f"Checked In: {checked_count} | Expected: {expected_count} | "
             f"No-Shows: {no_show_count}"
         )
 
 
-class AttendancePanelView(discord.ui.View):
-    def __init__(self, cog: "AttendanceCog"):
+class AttendanceSessionView(discord.ui.View):
+    def __init__(self, cog: "AttendanceCog", session_id: str):
         super().__init__(timeout=None)
-        self.cog = cog
+        self.cog        = cog
+        self.session_id = session_id
+        self.add_item(_CheckInBtn())
+        self.add_item(_CloseAttendanceBtn())
 
-    @discord.ui.button(label="Create Attendance Session", emoji="🧠",
-                       style=discord.ButtonStyle.primary,
-                       custom_id="diff_attendance_create_session_v1")
-    async def create_session(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _refresh(self, interaction: discord.Interaction, session: dict):
+        try:
+            await interaction.message.edit(
+                embed=_session_embed(self.session_id, session), view=self
+            )
+        except Exception:
+            pass
+
+
+class _CreateSessionBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Create Attendance Session", emoji="🧠",
+                         style=discord.ButtonStyle.primary,
+                         custom_id="diff_attendance_create_session_v1")
+    async def callback(self, interaction: discord.Interaction):
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if member is None or not _is_staff(member):
             return await interaction.response.send_message(
                 "Only staff can create attendance sessions.", ephemeral=True
             )
-        await interaction.response.send_modal(CreateAttendanceModal(self.cog))
+        await interaction.response.send_modal(CreateAttendanceModal(self.view.cog))
 
-    @discord.ui.button(label="View Open Sessions", emoji="📌",
-                       style=discord.ButtonStyle.secondary,
-                       custom_id="diff_attendance_view_open_v1")
-    async def view_open_sessions(self, interaction: discord.Interaction, button: discord.ui.Button):
+class _ViewOpenSessionsBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="View Open Sessions", emoji="📌",
+                         style=discord.ButtonStyle.secondary,
+                         custom_id="diff_attendance_view_open_v1")
+    async def callback(self, interaction: discord.Interaction):
         sessions = _load_sessions().get("sessions", {})
         open_list = sorted(
             [(s.get("created_at", 0), sid, s)
              for sid, s in sessions.items() if s.get("status") == "open"],
             key=lambda x: x[0], reverse=True,
         )
-
         if not open_list:
             return await interaction.response.send_message(
                 "There are no open attendance sessions right now.", ephemeral=True
             )
-
         embed = discord.Embed(
             title="📌 Open Attendance Sessions",
             color=EMBED_COLOR,
@@ -457,18 +446,29 @@ class AttendancePanelView(discord.ui.View):
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Refresh Panel", emoji="♻️",
-                       style=discord.ButtonStyle.secondary,
-                       custom_id="diff_attendance_refresh_panel_v1")
-    async def refresh_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
+class _RefreshAttendancePanelBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Refresh Panel", emoji="♻️",
+                         style=discord.ButtonStyle.secondary,
+                         custom_id="diff_attendance_refresh_panel_v1")
+    async def callback(self, interaction: discord.Interaction):
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if member is None or not _is_staff(member):
             return await interaction.response.send_message(
                 "Only staff can refresh this panel.", ephemeral=True
             )
         await interaction.response.defer(ephemeral=True)
-        await self.cog.ensure_panel()
+        await self.view.cog.ensure_panel()
         await interaction.followup.send("Attendance panel refreshed.", ephemeral=True)
+
+
+class AttendancePanelView(discord.ui.View):
+    def __init__(self, cog: "AttendanceCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.add_item(_CreateSessionBtn())
+        self.add_item(_ViewOpenSessionsBtn())
+        self.add_item(_RefreshAttendancePanelBtn())
 
 
 # =========================================================
