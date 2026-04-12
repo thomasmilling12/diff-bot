@@ -21813,7 +21813,7 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
             log_embed = discord.Embed(
                 title="📥 New Join Application",
                 description="\n".join([
-                    f"**User:** {interaction.user.display_name} ({interaction.user.mention})",
+                    f"**User:** [{interaction.user.display_name}](https://discord.com/users/{interaction.user.id})",
                     f"**Platform:** PlayStation",
                     f"**PSN:** {clean_psn}",
                     f"**Car Style:** {car_type_val}",
@@ -22265,12 +22265,12 @@ class JoinTicketView(discord.ui.View):
                 timestamp=now,
             )
             close_embed.add_field(name="📁 Channel", value=f"`{interaction.channel.name}`", inline=True)
-            close_embed.add_field(name="🔒 Closed By", value=f"{interaction.user.display_name}\n{interaction.user.mention}", inline=True)
+            close_embed.add_field(name="🔒 Closed By", value=f"[{interaction.user.display_name}](https://discord.com/users/{interaction.user.id})", inline=True)
             if uid_raw and uid_raw.isdigit():
                 _applicant = interaction.guild.get_member(int(uid_raw))
                 _applicant_val = (
-                    f"{_applicant.display_name}\n{_applicant.mention}"
-                    if _applicant else f"<@{uid_raw}>"
+                    f"[{_applicant.display_name}](https://discord.com/users/{_applicant.id})"
+                    if _applicant else f"[Unknown User](https://discord.com/users/{uid_raw})"
                 )
                 close_embed.add_field(name="👤 Applicant", value=_applicant_val, inline=True)
             if psn:
