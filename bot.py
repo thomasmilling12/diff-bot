@@ -27,7 +27,7 @@ from discord.ext import commands, tasks
 try:
     import aiohttp
 except Exception:
-    aiohttp = None
+    aiohttp = Noneit's 
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageOps
