@@ -12605,6 +12605,74 @@ async def _rotating_presence_loop():
         pass
 
 # =========================
+# JOIN TICKET AUTO-BUMP (24h after photos complete, no decision yet)
+# =========================
+@tasks.loop(minutes=30)
+async def _join_auto_bump_loop():
+    """Ping staff if an application has had photos for 24h+ with no accept/deny."""
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+        category = guild.get_channel(JOIN_TICKET_CATEGORY_ID)
+        if not isinstance(category, discord.CategoryChannel):
+            return
+        extra = _join_extra_load()
+        changed = False
+        now_utc = datetime.now(timezone.utc)
+        for ch in category.text_channels:
+            topic = ch.topic or ""
+            if "JOIN_USER:" not in topic:
+                continue
+            ch_key = str(ch.id)
+            entry = extra.get(ch_key, {})
+            if entry.get("bump_sent"):
+                continue
+            photos_ts = entry.get("photos_complete_at")
+            if not photos_ts:
+                continue
+            try:
+                complete_at = datetime.fromisoformat(photos_ts)
+                if complete_at.tzinfo is None:
+                    complete_at = complete_at.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            if (now_utc - complete_at).total_seconds() < 86400:   # 24 hours
+                continue
+            # 24h elapsed — ping staff
+            lead   = guild.get_role(LEADER_ROLE_ID)
+            co     = guild.get_role(CO_LEADER_ROLE_ID)
+            mgr    = guild.get_role(MANAGER_ROLE_ID)
+            mentions = " ".join(r.mention for r in [lead, co, mgr] if r)
+            bump_embed = discord.Embed(
+                title="⏰ Application Awaiting Decision — 24h Reminder",
+                description=(
+                    "This join application has had all required photos for **over 24 hours** "
+                    "with no accept or deny decision.\n\n"
+                    "Please review and close this ticket."
+                ),
+                color=discord.Color.yellow(),
+                timestamp=now_utc,
+            )
+            bump_embed.set_footer(text="Different Meets • Join Hub Auto-Bump")
+            try:
+                await ch.send(
+                    content=mentions if mentions else None,
+                    embed=bump_embed,
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+                entry["bump_sent"] = True
+                extra[ch_key] = entry
+                changed = True
+            except Exception:
+                pass
+        if changed:
+            _join_extra_save(extra)
+    except Exception as _e:
+        print(f"[JoinAutoBump] Error: {_e}")
+
+
+# =========================
 # HOST POSTERS — received button
 # =========================
 _postmeet_seen_by: dict[int, list[str]] = {}
@@ -12801,6 +12869,8 @@ async def on_ready():
         _host_weekly_reminder_loop.start()
     if not _rotating_presence_loop.is_running():
         _rotating_presence_loop.start()
+    if not _join_auto_bump_loop.is_running():
+        _join_auto_bump_loop.start()
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
@@ -20884,6 +20954,15 @@ async def _update_join_ticket_complete(channel: discord.TextChannel) -> None:
             if ft.text:
                 updated.set_footer(text=ft.text, icon_url=ft.icon_url)
             await msg.edit(embed=updated)
+            # Record timestamp when photos became complete (used by auto-bump)
+            try:
+                _pc_extra = _join_extra_load()
+                _pc_entry = _pc_extra.setdefault(str(channel.id), {})
+                if not _pc_entry.get("photos_complete_at"):
+                    _pc_entry["photos_complete_at"] = datetime.now(timezone.utc).isoformat()
+                    _join_extra_save(_pc_extra)
+            except Exception:
+                pass
             return
     except Exception:
         pass
@@ -22103,6 +22182,7 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
 
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
+            _resp_time = _join_response_time_str(interaction.channel)
             log_embed = discord.Embed(
                 title="❌ Join Application Denied",
                 description="\n".join([
@@ -22111,6 +22191,7 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
                     f"**Reason:** {reason_text}",
                     f"**Reviewed by:** {interaction.user.mention}",
                     f"**Ticket:** {interaction.channel.mention}",
+                    f"**Response Time:** {_resp_time}",
                 ]),
                 color=discord.Color.red(),
                 timestamp=now,
@@ -22186,6 +22267,107 @@ class JoinRequestInfoModal(discord.ui.Modal, title="Request More Info"):
                     pass
 
 
+def _join_response_time_str(channel: discord.TextChannel) -> str:
+    """Return a human-readable string of how long the ticket has been open."""
+    try:
+        created = channel.created_at.replace(tzinfo=timezone.utc)
+        delta   = datetime.now(timezone.utc) - created
+        total_s = int(delta.total_seconds())
+        h, rem  = divmod(total_s, 3600)
+        m       = rem // 60
+        if h:
+            return f"{h}h {m}m"
+        return f"{m}m"
+    except Exception:
+        return "Unknown"
+
+
+class _JoinHoldModal(discord.ui.Modal, title="Put Application On Hold"):
+    reason = discord.ui.TextInput(
+        label="Why is this on hold?",
+        style=discord.TextStyle.paragraph,
+        placeholder="e.g. Waiting for better photos, need to confirm PSN, checking crew roster…",
+        required=True,
+        max_length=300,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Channel error.", ephemeral=True)
+        reason_text = str(self.reason).strip()
+        uid_raw     = _join_parse_user_id(interaction.channel.topic)
+
+        # Store hold state in extra JSON
+        extra = _join_extra_load()
+        entry = extra.setdefault(str(interaction.channel.id), {})
+        entry["on_hold"]        = True
+        entry["hold_reason"]    = reason_text
+        entry["hold_by"]        = interaction.user.id
+        entry["hold_at"]        = datetime.now(timezone.utc).isoformat()
+        _join_extra_save(extra)
+
+        applicant_mention = f"<@{uid_raw}>" if uid_raw else "Applicant"
+        hold_embed = discord.Embed(
+            title="⏸️ Application On Hold",
+            description="\n".join([
+                f"{applicant_mention}, your application has been placed **on hold**.",
+                "",
+                f"**Reason:** {reason_text}",
+                "",
+                "Staff will return to this shortly — no action is needed from you right now.",
+            ]),
+            color=discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        hold_embed.set_footer(text=f"Placed on hold by {interaction.user.display_name} • Different Meets")
+        if DIFF_LOGO_URL:
+            hold_embed.set_thumbnail(url=DIFF_LOGO_URL)
+        await interaction.response.send_message(
+            content=applicant_mention,
+            embed=hold_embed,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+
+        # DM the applicant
+        if uid_raw and uid_raw.isdigit():
+            _hold_member = interaction.guild.get_member(int(uid_raw)) if interaction.guild else None
+            if _hold_member:
+                try:
+                    dm = discord.Embed(
+                        title="⏸️ Your Join Application — On Hold",
+                        description="\n".join([
+                            "Your join application is currently **on hold** while staff complete their review.",
+                            "",
+                            f"**Reason:** {reason_text}",
+                            "",
+                            "You'll be updated in your ticket when a decision is made.",
+                        ]),
+                        color=discord.Color.orange(),
+                    )
+                    dm.set_footer(text="Different Meets • Join Hub")
+                    await _hold_member.send(embed=dm)
+                except Exception:
+                    pass
+
+
+class _JoinHoldButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            label="On Hold",
+            emoji="⏸️",
+            style=discord.ButtonStyle.primary,
+            custom_id="diff_join_hold_v1",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member):
+            return
+        if not _join_is_staff(interaction.user):
+            return await interaction.response.send_message("Only staff can place an application on hold.", ephemeral=True)
+        await interaction.response.send_modal(_JoinHoldModal())
+
+
 class _JoinClaimButton(discord.ui.Button):
     def __init__(self) -> None:
         super().__init__(
@@ -22225,6 +22407,7 @@ class _JoinClaimButton(discord.ui.Button):
 class JoinTicketView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
+        self.add_item(_JoinHoldButton())
         self.add_item(_JoinClaimButton())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
@@ -22381,6 +22564,7 @@ class JoinTicketView(discord.ui.View):
 
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
+            _resp_time = _join_response_time_str(interaction.channel)
             log_embed = discord.Embed(
                 title="✅ Join Application Accepted",
                 description="\n".join([
@@ -22389,6 +22573,7 @@ class JoinTicketView(discord.ui.View):
                     f"**Reviewed by:** {interaction.user.mention}",
                     f"**Ticket:** {interaction.channel.mention}",
                     f"**Role Added:** {role.mention if role else 'Not configured'}",
+                    f"**Response Time:** {_resp_time}",
                 ]),
                 color=discord.Color.green(),
                 timestamp=now,
