@@ -518,7 +518,7 @@ class DiffWelcomeJoinSystem(commands.Cog):
 
         await self._log(
             member.guild,
-            f"{member.mention} entered the DIFF check-in flow.\n"
+            f"**{member.display_name}** ({member.mention}) entered the DIFF check-in flow.\n"
             f"Account created: {discord.utils.format_dt(member.created_at, style='D')} "
             f"({discord.utils.format_dt(member.created_at, style='R')})",
             discord.Color.orange(),
