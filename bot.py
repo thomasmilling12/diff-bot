@@ -12544,6 +12544,30 @@ async def _cmd_postpopuppanel(ctx: commands.Context):
 
 
 # =========================
+# ROTATING BOT STATUS
+# =========================
+_presence_index = 0
+
+@tasks.loop(seconds=45)
+async def _rotating_presence_loop():
+    global _presence_index
+    guild = bot.get_guild(GUILD_ID)
+    member_count = guild.member_count if guild else 0
+    activities = [
+        discord.Activity(type=discord.ActivityType.watching,    name=f"over {member_count:,} members"),
+        discord.Activity(type=discord.ActivityType.playing,     name="🏁 DIFF Car Meets | PS5 GTA V"),
+        discord.Activity(type=discord.ActivityType.listening,   name="the DIFF community"),
+        discord.Activity(type=discord.ActivityType.competing,   name="DIFF Host Meets"),
+        discord.Activity(type=discord.ActivityType.watching,    name="🚗 Host Flow • Crew Management"),
+    ]
+    activity = activities[_presence_index % len(activities)]
+    _presence_index += 1
+    try:
+        await bot.change_presence(status=discord.Status.online, activity=activity)
+    except Exception:
+        pass
+
+# =========================
 # HOST POSTERS — received button
 # =========================
 _postmeet_seen_by: dict[int, list[str]] = {}
@@ -12738,6 +12762,8 @@ async def on_ready():
         _rc_ensure_loop.start()
     if not _host_weekly_reminder_loop.is_running():
         _host_weekly_reminder_loop.start()
+    if not _rotating_presence_loop.is_running():
+        _rotating_presence_loop.start()
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
