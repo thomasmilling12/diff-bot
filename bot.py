@@ -12548,18 +12548,55 @@ async def _cmd_postpopuppanel(ctx: commands.Context):
 # =========================
 _presence_index = 0
 
+def _status_next_meet_label() -> str | None:
+    """Return a short 'Next Meet: Day • Time' string from the schedule, or None."""
+    try:
+        schedule = _asched_load()
+        from zoneinfo import ZoneInfo as _ZI
+        now = datetime.now(_ZI("America/New_York"))
+        best_ts  = None
+        best_lbl = None
+        for day_key, slot in schedule.get("days", {}).items():
+            if not slot.get("host_id"):
+                continue
+            day_val  = slot.get("day", "")
+            time_val = slot.get("time", "")
+            if not day_val or not time_val:
+                continue
+            ts = _parse_meet_ts(day_val, time_val)
+            if ts and ts > now.timestamp():
+                if best_ts is None or ts < best_ts:
+                    best_ts  = ts
+                    best_lbl = f"Next Meet: {day_val} • {time_val}"
+        return best_lbl
+    except Exception:
+        return None
+
 @tasks.loop(seconds=45)
 async def _rotating_presence_loop():
     global _presence_index
-    guild = bot.get_guild(GUILD_ID)
+    guild        = bot.get_guild(GUILD_ID)
     member_count = guild.member_count if guild else 0
+    next_meet    = _status_next_meet_label()
+
     activities = [
-        discord.Activity(type=discord.ActivityType.watching,    name=f"over {member_count:,} members"),
-        discord.Activity(type=discord.ActivityType.playing,     name="🏁 DIFF Car Meets | PS5 GTA V"),
-        discord.Activity(type=discord.ActivityType.listening,   name="the DIFF community"),
-        discord.Activity(type=discord.ActivityType.competing,   name="DIFF Host Meets"),
-        discord.Activity(type=discord.ActivityType.watching,    name="🚗 Host Flow • Crew Management"),
+        discord.Streaming(
+            name="🏁 DIFF Car Meets | PS5 GTA V",
+            url="https://www.twitch.tv/directory/game/Grand%20Theft%20Auto%20V",
+        ),
+        discord.Activity(type=discord.ActivityType.watching,  name=f"over {member_count:,} members"),
+        discord.Activity(type=discord.ActivityType.competing, name="DIFF Host Meets"),
+        discord.Activity(type=discord.ActivityType.listening, name="the DIFF community"),
+        discord.Activity(type=discord.ActivityType.watching,  name="🚗 Host Flow • Crew Management"),
     ]
+
+    # inject next meet as its own slide if data is available
+    if next_meet:
+        activities.insert(2, discord.Activity(
+            type=discord.ActivityType.playing,
+            name=f"📅 {next_meet}",
+        ))
+
     activity = activities[_presence_index % len(activities)]
     _presence_index += 1
     try:
