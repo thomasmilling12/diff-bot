@@ -11263,7 +11263,9 @@ class _OfficialMeetRSVPView(discord.ui.View):
             except Exception:
                 pass
             for child in self.children:
-                if isinstance(child, discord.ui.Button) and child.custom_id in ("diff_om_ctrl:start", "diff_om_ctrl:end"):
+                if isinstance(child, discord.ui.Button) and child.custom_id in (
+                    "diff_om_ctrl:start", "diff_om_ctrl:end", "diff_om_ctrl:cancel"
+                ):
                     child.disabled = True
             await interaction.response.edit_message(view=self)
             await interaction.followup.send(
@@ -11916,16 +11918,32 @@ class _HostPickerView(discord.ui.View):
         max_values=1,
     )
     async def host_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
-        member = select.values[0]
+        selected = select.values[0]
+        guild = interaction.guild
+
+        # Ensure we have a Member object (not just a User) so role check is reliable
+        member = selected if isinstance(selected, discord.Member) else None
+        if member is None and guild:
+            try:
+                member = await guild.fetch_member(selected.id)
+            except Exception:
+                pass
+
+        if member is None:
+            await interaction.response.send_message(
+                "Couldn't resolve that user as a server member. Try again.", ephemeral=True
+            )
+            return
+
         # Validate Host role
-        if isinstance(member, discord.Member):
-            has_role = any(r.id == HOST_ROLE_ID for r in member.roles)
-            if not has_role:
-                await interaction.response.send_message(
-                    f"⚠️ {member.mention} doesn't have the **Host** role. Select someone with the Host role.",
-                    ephemeral=True,
-                )
-                return
+        has_role = any(r.id == HOST_ROLE_ID for r in member.roles)
+        if not has_role:
+            await interaction.response.send_message(
+                f"⚠️ {member.mention} doesn't have the **Host** role. Select someone with the Host role.",
+                ephemeral=True,
+            )
+            return
+
         # Open the scheduling modal with the chosen host pre-loaded
         await interaction.response.send_modal(_OfficialMeetScheduleModal(host_id=member.id))
 
