@@ -11106,6 +11106,20 @@ class _OfficialMeetRSVPView(discord.ui.View):
         for s in ("yes", "maybe", "no"):
             _om_rsvps[msg_id][s].discard(uid)
         _om_rsvps[msg_id][status].add(uid)
+
+        # Persist RSVP to the saved record so counts survive restarts
+        record = _om_get_record(msg_id)
+        if record:
+            for attr in ("rsvp_yes_ids", "rsvp_maybe_ids", "rsvp_no_ids"):
+                lst = getattr(record, attr)
+                if uid in lst:
+                    lst.remove(uid)
+            attr_map = {"yes": "rsvp_yes_ids", "maybe": "rsvp_maybe_ids", "no": "rsvp_no_ids"}
+            target = getattr(record, attr_map[status])
+            if uid not in target:
+                target.append(uid)
+            _om_upsert_record(record)
+
         counts = _om_get_counts(msg_id)
         for child in self.children:
             if isinstance(child, discord.ui.Button):
@@ -11276,6 +11290,90 @@ class _OfficialMeetRSVPView(discord.ui.View):
     @discord.ui.button(label="⏹ End Meet", style=discord.ButtonStyle.danger, custom_id="diff_om_ctrl:end", row=1)
     async def btn_end(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle_ctrl(interaction, "end")
+
+    @discord.ui.button(label="🚫 Cancel Meet", style=discord.ButtonStyle.secondary, custom_id="diff_om_ctrl:cancel", row=2)
+    async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member):
+            return
+        is_staff = (
+            interaction.user.guild_permissions.manage_guild
+            or any(r.id in _JOIN_STAFF_ROLE_IDS for r in interaction.user.roles)
+        )
+        if not is_staff:
+            return await interaction.response.send_message("Only staff can cancel a meet.", ephemeral=True)
+        msg_id = interaction.message.id
+        record = _om_get_record(msg_id)
+        if not record:
+            return await interaction.response.send_message("Meet record not found.", ephemeral=True)
+        if record.ended:
+            return await interaction.response.send_message("This meet has already ended.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Post cancellation notice in the meet channel
+        cancel_embed = discord.Embed(
+            title="🚫 Official Meet Cancelled",
+            description=(
+                f"The **{record.theme}** meet scheduled for <t:{record.timestamp}:F> "
+                f"has been **cancelled** by {interaction.user.mention}.\n\n"
+                "Keep an eye out for the next scheduled meet."
+            ),
+            color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        cancel_embed.set_thumbnail(url=DIFF_LOGO_URL)
+        cancel_embed.set_footer(text="DIFF Meets • Official Session")
+        ch = bot.get_channel(record.channel_id) or interaction.channel
+        if isinstance(ch, discord.TextChannel):
+            try:
+                await ch.send(
+                    content=f"<@&{PS5_ROLE_ID}>",
+                    embed=cancel_embed,
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+            except Exception:
+                pass
+
+        # DM the host
+        guild = interaction.guild or bot.get_guild(GUILD_ID)
+        if guild:
+            host = guild.get_member(record.host_id)
+            if host:
+                try:
+                    dm = discord.Embed(
+                        title="🚫 Your Scheduled Meet Was Cancelled",
+                        description=(
+                            f"Your **{record.theme}** meet (scheduled for <t:{record.timestamp}:F>) "
+                            f"has been cancelled by {interaction.user.display_name}."
+                        ),
+                        color=discord.Color.red(),
+                    )
+                    dm.set_footer(text="Different Meets • Official Meet System")
+                    await host.send(embed=dm)
+                except Exception:
+                    pass
+
+        # Mark ended so it won't auto-bump or show as next meet
+        record.ended = True
+        _om_upsert_record(record)
+
+        # Disable all buttons on the original meet post
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+        await _om_staff_log("Meet Cancelled", record, interaction.user)
+        await interaction.followup.send("Meet cancelled and the channel has been notified.", ephemeral=True)
+
+        # Refresh panel so next-meet field updates
+        if guild:
+            try:
+                await _om_panel_post_or_refresh(guild, force_repost=False)
+            except Exception:
+                pass
 
 
 async def _om_staff_log(title: str, record: _OmRecord, acted_by: discord.Member) -> None:
@@ -11684,6 +11782,38 @@ def _om_parse_datetime(date_str: str, time_str: str) -> int | None:
         return None
 
 
+def _om_next_meet() -> "_OmRecord | None":
+    """Return the soonest upcoming non-ended meet, or None."""
+    data = _om_load_records()
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    upcoming: list[_OmRecord] = []
+    for raw in data.values():
+        try:
+            rec = _OmRecord(**{k: v for k, v in raw.items() if k in _OmRecord.__dataclass_fields__})
+            if not rec.ended and rec.timestamp > now_ts:
+                upcoming.append(rec)
+        except Exception:
+            pass
+    return min(upcoming, key=lambda r: r.timestamp) if upcoming else None
+
+
+def _om_restore_rsvp_counts():
+    """Restore in-memory RSVP dicts from saved records (called on bot startup)."""
+    data = _om_load_records()
+    for raw in data.values():
+        try:
+            rec = _OmRecord(**{k: v for k, v in raw.items() if k in _OmRecord.__dataclass_fields__})
+            if rec.ended:
+                continue
+            _om_rsvps[rec.message_id] = {
+                "yes":   set(rec.rsvp_yes_ids),
+                "maybe": set(rec.rsvp_maybe_ids),
+                "no":    set(rec.rsvp_no_ids),
+            }
+        except Exception:
+            pass
+
+
 def _om_panel_build_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🏁 DIFF Official Meet Hub",
@@ -11694,6 +11824,27 @@ def _om_panel_build_embed() -> discord.Embed:
         color=discord.Color.dark_gold(),
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    # Show next scheduled meet if one exists
+    next_meet = _om_next_meet()
+    if next_meet:
+        status = "🟢 Live" if next_meet.started else "📅 Upcoming"
+        embed.add_field(
+            name=f"{status} — Next Official Meet",
+            value=(
+                f"**{next_meet.theme}**\n"
+                f"<t:{next_meet.timestamp}:F>  •  <t:{next_meet.timestamp}:R>\n"
+                f"🎙️ Host: <@{next_meet.host_id}>"
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="📅 Next Official Meet",
+            value="No meet currently scheduled.",
+            inline=False,
+        )
+
     embed.add_field(
         name="📋 What Gets Posted",
         value=(
@@ -11701,7 +11852,7 @@ def _om_panel_build_embed() -> discord.Embed:
             "• Auto-converting Discord timestamp\n"
             "• Entry info, custom notes, and style direction\n"
             "• RSVP buttons for members\n"
-            "• Start / End meet controls for the host\n"
+            "• Start / End / Cancel meet controls for staff\n"
             "• Automatic 1-hour and 15-minute reminders"
         ),
         inline=False,
@@ -11752,6 +11903,32 @@ def _om_parse_combined_datetime(text: str) -> int | None:
     return None
 
 
+class _HostPickerView(discord.ui.View):
+    """Ephemeral view shown before the schedule modal — lets staff pick a host from a member select."""
+
+    def __init__(self):
+        super().__init__(timeout=120)
+
+    @discord.ui.user_select(
+        placeholder="Search and select the meet host…",
+        min_values=1,
+        max_values=1,
+    )
+    async def host_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        member = select.values[0]
+        # Validate Host role
+        if isinstance(member, discord.Member):
+            has_role = any(r.id == HOST_ROLE_ID for r in member.roles)
+            if not has_role:
+                await interaction.response.send_message(
+                    f"⚠️ {member.mention} doesn't have the **Host** role. Select someone with the Host role.",
+                    ephemeral=True,
+                )
+                return
+        # Open the scheduling modal with the chosen host pre-loaded
+        await interaction.response.send_modal(_OfficialMeetScheduleModal(host_id=member.id))
+
+
 class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official Meet"):
     theme_field = discord.ui.TextInput(
         label="Meet Theme",
@@ -11765,12 +11942,6 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
         required=True,
         max_length=80,
     )
-    host_field = discord.ui.TextInput(
-        label="Host (user ID or @mention)",
-        placeholder="e.g. 123456789012345678  or paste their @mention",
-        required=True,
-        max_length=100,
-    )
     notes_field = discord.ui.TextInput(
         label="Meet Notes (optional)",
         placeholder="e.g. LOWERED CARS ONLY • Send photos to host before joining",
@@ -11779,20 +11950,17 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
         max_length=500,
     )
 
+    def __init__(self, host_id: int):
+        super().__init__()
+        self._selected_host_id = host_id
+
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
         if not guild:
             await interaction.response.send_message("Server only.", ephemeral=True)
             return
 
-        raw_host = self.host_field.value.strip()
-        host_id_match = re.search(r'\d{15,20}', raw_host)
-        if not host_id_match:
-            await interaction.response.send_message(
-                "Couldn't find a valid user ID. Paste their user ID or @mention.", ephemeral=True
-            )
-            return
-        host_id = int(host_id_match.group())
+        host_id = self._selected_host_id
         host_member = guild.get_member(host_id)
         if not host_member:
             try:
@@ -11826,7 +11994,8 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
         await interaction.response.defer(ephemeral=True)
         try:
             sent = await channel.send(
-                _om_build_message(
+                content=f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>",
+                embed=_om_build_embed(
                     theme=self.theme_field.value.strip(),
                     host=host_member,
                     timestamp=meet_ts,
@@ -11837,6 +12006,9 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
             )
         except discord.Forbidden:
             await interaction.followup.send("Missing permissions to post in the meet channel.", ephemeral=True)
+            return
+        except Exception as _e:
+            await interaction.followup.send(f"❌ Failed to post meet: {_e}", ephemeral=True)
             return
 
         record = _OmRecord(
@@ -11871,7 +12043,16 @@ class _OfficialMeetPanelView(discord.ui.View):
         if not is_staff:
             await interaction.response.send_message("Only staff can schedule official meets.", ephemeral=True)
             return
-        await interaction.response.send_modal(_OfficialMeetScheduleModal())
+        embed = discord.Embed(
+            title="🎙️ Select Meet Host",
+            description=(
+                "Use the dropdown below to select the host for this meet.\n"
+                "Only members with the **Host** role can be chosen."
+            ),
+            color=discord.Color.dark_gold(),
+        )
+        embed.set_footer(text="DIFF Official Meet System • Step 1 of 2")
+        await interaction.response.send_message(embed=embed, view=_HostPickerView(), ephemeral=True)
 
 
 async def _om_panel_post_or_refresh(guild: discord.Guild, force_repost: bool = False):
@@ -12871,6 +13052,7 @@ async def on_ready():
         _rotating_presence_loop.start()
     if not _join_auto_bump_loop.is_running():
         _join_auto_bump_loop.start()
+    _om_restore_rsvp_counts()
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
