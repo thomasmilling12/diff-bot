@@ -238,7 +238,7 @@ class ListUnverifiedButton(discord.ui.Button):
         for m in recent:
             days = (now - m.joined_at).days if m.joined_at else None
             duration = f"{days}d ago" if days is not None and days > 0 else "today"
-            recent_lines.append(f"• **{m.display_name}** ({m.mention}) — joined **{duration}**")
+            recent_lines.append(f"• [{m.display_name}](https://discord.com/users/{m.id}) — joined **{duration}**")
 
         embed = discord.Embed(
             title=f"👥 Unverified Members — {len(members)} total",
