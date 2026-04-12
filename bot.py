@@ -12544,6 +12544,44 @@ async def _cmd_postpopuppanel(ctx: commands.Context):
 
 
 # =========================
+# HOST POSTERS — received button
+# =========================
+_postmeet_seen_by: dict[int, list[str]] = {}
+
+class _PostmeetReceivedButton(discord.ui.Button):
+    def __init__(self, count: int = 0):
+        label = "✅ Mark Received" if count == 0 else f"✅ Received ({count})"
+        super().__init__(
+            style=discord.ButtonStyle.success,
+            label=label,
+            custom_id="diff_postmeet_received",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        msg_id = interaction.message.id
+        name   = interaction.user.display_name
+        seen   = _postmeet_seen_by.setdefault(msg_id, [])
+        if name not in seen:
+            seen.append(name)
+        old_embeds = interaction.message.embeds
+        if old_embeds:
+            emb  = discord.Embed.from_dict(old_embeds[0].to_dict())
+            kept = [f for f in emb.fields if f.name != "👁️ Seen By"]
+            emb.clear_fields()
+            for f in kept:
+                emb.add_field(name=f.name, value=f.value, inline=f.inline)
+            emb.add_field(name="👁️ Seen By", value=", ".join(seen), inline=False)
+        else:
+            emb = None
+        new_view = _PostmeetReceivedView(count=len(seen))
+        await interaction.response.edit_message(embed=emb, view=new_view)
+
+class _PostmeetReceivedView(discord.ui.View):
+    def __init__(self, count: int = 0):
+        super().__init__(timeout=None)
+        self.add_item(_PostmeetReceivedButton(count=count))
+
+# =========================
 # EVENTS
 # =========================
 @bot.event
@@ -12571,6 +12609,7 @@ async def on_ready():
         except Exception as _e:
             print(f"[Views] Failed to register {label or type(view).__name__}: {_e}")
 
+    _safe_add_view(_PostmeetReceivedView(),                             "PostmeetReceivedView")
     _safe_add_view(RulesAcceptView(GUILD_ID),                          "RulesAcceptView")
     _safe_add_view(CrewPanelView(),                                     "CrewPanelView")
     _safe_add_view(ReviewView(app_id="0000", applicant_id=0),           "ReviewView")
@@ -20795,6 +20834,55 @@ async def on_message(message: discord.Message) -> None:
                     await _nm_reply.delete()
                 except Exception:
                     pass
+
+    # --- Host posters auto-embed + received button ---
+    if message.channel.id == _POSTMEET_HOST_POSTERS_ID:
+        _pm_images = [
+            a for a in message.attachments
+            if (a.content_type and a.content_type.startswith("image/"))
+            or any(a.filename.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"))
+        ]
+        if _pm_images and not message.content.startswith("!"):
+            _pm_caption = message.content.strip()
+            _pm_parts   = [p.strip() for p in _pm_caption.split("|")] if _pm_caption else []
+            _pm_date    = _pm_parts[0] if _pm_parts else ""
+            _pm_time    = _pm_parts[1] if len(_pm_parts) > 1 else ""
+            if _pm_date and _pm_time:
+                _pm_ts = _parse_meet_ts(_pm_date, _pm_time)
+                _pm_dt_value = f"<t:{_pm_ts}:F>  •  <t:{_pm_ts}:R>" if _pm_ts else f"{_pm_date}  •  {_pm_time}"
+            elif _pm_caption:
+                _pm_dt_value = _pm_caption
+            else:
+                _pm_dt_value = "See poster"
+            _pm_embed = discord.Embed(
+                title="🏁 DIFF Meet Announcement",
+                color=0xE91E63,
+                timestamp=utc_now(),
+            )
+            _pm_embed.add_field(
+                name="👤 Host",
+                value=f"{message.author.display_name}\n{message.author.mention}",
+                inline=True,
+            )
+            _pm_embed.add_field(name="📅 Date & Time", value=_pm_dt_value, inline=False)
+            _pm_embed.set_footer(text="DIFF Meets • Host Poster")
+            _pm_embed.set_thumbnail(url=_POSTMEET_LOGO_URL)
+            try:
+                await message.create_thread(
+                    name=(_pm_caption[:80] or "Meet Poster"),
+                    auto_archive_duration=10080,
+                )
+            except Exception:
+                pass
+            try:
+                await message.reply(
+                    embed=_pm_embed,
+                    view=_PostmeetReceivedView(),
+                    mention_author=False,
+                )
+            except Exception as _pm_err:
+                print(f"[host-posters] reply error: {_pm_err}")
+        return
 
     # --- Social feed auto-post (Instagram / TikTok / YouTube) ---
     if message.channel.id == _IG_CHANNEL_ID:
