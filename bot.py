@@ -20858,7 +20858,7 @@ async def on_message(message: discord.Message) -> None:
             else:
                 _pm_dt_value = "See poster"
             _pm_embed = discord.Embed(
-                title="🏁 DIFF Meet Announcement",
+                title="🏁 DIFF Host Posters",
                 color=0xE91E63,
                 timestamp=utc_now(),
             )
