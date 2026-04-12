@@ -20847,9 +20847,12 @@ async def on_message(message: discord.Message) -> None:
             _pm_parts   = [p.strip() for p in _pm_caption.split("|")] if _pm_caption else []
             _pm_date    = _pm_parts[0] if _pm_parts else ""
             _pm_time    = _pm_parts[1] if len(_pm_parts) > 1 else ""
-            if _pm_date and _pm_time:
-                # strip ordinal suffixes (12th→12, 1st→1) so the parser reads the time correctly
-                import re as _re_pm
+            import re as _re_pm
+            # If the caption already contains a Discord timestamp token, use it directly
+            if _re_pm.search(r"<t:\d+(?::[tTdDfFR])?>", _pm_caption):
+                _pm_dt_value = _pm_caption
+            elif _pm_date and _pm_time:
+                # strip ordinal suffixes (12th→12) so the parser reads the time correctly
                 _pm_date_clean = _re_pm.sub(r"(\d+)(st|nd|rd|th)\b", r"\1", _pm_date, flags=_re_pm.IGNORECASE)
                 _pm_ts = _parse_meet_ts(_pm_date_clean, _pm_time)
                 _pm_dt_value = f"<t:{_pm_ts}:F>\n<t:{_pm_ts}:R>" if _pm_ts else f"{_pm_date}  •  {_pm_time}"
@@ -20858,14 +20861,9 @@ async def on_message(message: discord.Message) -> None:
             else:
                 _pm_dt_value = "See poster"
             _pm_embed = discord.Embed(
-                title="🏁 DIFF Meet Announcement",
+                title="🏁 DIFF Host Posters",
                 color=0xE91E63,
                 timestamp=utc_now(),
-            )
-            _pm_embed.add_field(
-                name="👤 Host",
-                value=f"{message.author.display_name}\n{message.author.mention}",
-                inline=True,
             )
             _pm_embed.add_field(name="📅 Date & Time", value=_pm_dt_value, inline=False)
             _pm_embed.set_footer(text="DIFF Meets • Host Poster")
