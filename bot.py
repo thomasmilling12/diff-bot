@@ -20862,11 +20862,6 @@ async def on_message(message: discord.Message) -> None:
                 color=0xE91E63,
                 timestamp=utc_now(),
             )
-            _pm_embed.add_field(
-                name="👤 Host",
-                value=f"{message.author.display_name}\n{message.author.mention}",
-                inline=True,
-            )
             _pm_embed.add_field(name="📅 Date & Time", value=_pm_dt_value, inline=False)
             _pm_embed.set_footer(text="DIFF Meets • Host Poster")
             _pm_embed.set_thumbnail(url=_POSTMEET_LOGO_URL)
