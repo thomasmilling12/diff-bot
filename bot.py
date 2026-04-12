@@ -11909,7 +11909,8 @@ class _HostPickerView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
 
-    @discord.ui.user_select(
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
         placeholder="Search and select the meet host…",
         min_values=1,
         max_values=1,
