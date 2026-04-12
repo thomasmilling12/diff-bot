@@ -17853,8 +17853,8 @@ class _TicketRatingButton(discord.ui.Button):
         except Exception:
             pass
         guild    = interaction.guild or bot.get_guild(GUILD_ID)
-        logs_ch  = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
-        if isinstance(logs_ch, discord.TextChannel):
+        rating_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+        if isinstance(rating_ch, discord.TextChannel):
             stars_bar = ("⭐" * self._star) + ("☆" * (5 - self._star))
             log_embed = discord.Embed(
                 title="⭐ Ticket Rating Received",
@@ -17873,7 +17873,7 @@ class _TicketRatingButton(discord.ui.Button):
                 log_embed.set_thumbnail(url=DIFF_LOGO_URL)
             log_embed.set_footer(text="Different Meets • Ticket Rating")
             try:
-                await logs_ch.send(embed=log_embed)
+                await rating_ch.send(embed=log_embed)  # staff-logs
             except Exception:
                 pass
 
