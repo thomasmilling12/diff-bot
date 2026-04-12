@@ -3,9 +3,6 @@ from discord.ext import commands
 from datetime import datetime, timezone
 
 HOST_POSTERS = 1091157191895023626
-MEET_INFO    = 1266933655486332999
-EVERYONE_CH  = 1047335231826436166
-PS5_ROLE     = 1485668852921798849
 COLOR        = 0xE91E63
 LOGO         = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm=2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a&=&format=webp&quality=lossless&width=1376&height=917"
 
@@ -45,18 +42,6 @@ class PostMeetCog(commands.Cog):
             pass
         try:
             await message.reply(embed=embed, mention_author=False)
-        except Exception:
-            pass
-        try:
-            info_ch = self.bot.get_channel(MEET_INFO)
-            if info_ch:
-                files = []
-                for a in images[:4]:
-                    try:
-                        files.append(await a.to_file())
-                    except Exception:
-                        pass
-                await info_ch.send(content=f"New poster from {message.author.mention}:", files=files, embed=embed, allowed_mentions=discord.AllowedMentions.none())
         except Exception:
             pass
 
@@ -105,20 +90,6 @@ class PostMeetCog(commands.Cog):
                 await poster_msg.create_thread(name=f"{date} — {class_name}"[:80], auto_archive_duration=10080)
             except Exception:
                 pass
-
-            info_ch = self.bot.get_channel(MEET_INFO)
-            if info_ch:
-                try:
-                    await info_ch.send(embed=embed)
-                except Exception:
-                    pass
-
-            everyone_ch = self.bot.get_channel(EVERYONE_CH)
-            if everyone_ch:
-                try:
-                    await everyone_ch.send(content=f"<@&{PS5_ROLE}>", embed=embed, allowed_mentions=discord.AllowedMentions(roles=True))
-                except Exception:
-                    pass
 
             confirm = await ctx.reply(f"Done! Posted in <#{HOST_POSTERS}>.", mention_author=False)
             try:
