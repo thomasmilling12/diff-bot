@@ -13032,7 +13032,10 @@ async def on_ready():
                 _safe_add_view(_PopupMeetView(int(_pm["id"])), f"_PopupMeetView({_pm['id']})")
         except Exception as _pe:
             print(f"[Popup] Could not re-register meet views for guild {_guild.id}: {_pe}")
-    # Panel post/refresh removed from on_ready — use refresh commands to repost manually
+    # Auto-refresh the official meet panel on startup (edit in place, never duplicates)
+    for _og in bot.guilds:
+        asyncio.create_task(_om_panel_post_or_refresh(_og, force_repost=False))
+    # (legacy note: was removed — restored with force_repost=False to avoid duplicates)
     _safe_add_view(WelcomeHubView(),                      "WelcomeHubView")
     _safe_add_view(SocialMediaLinksView(),                "SocialMediaLinksView")
     _safe_add_view(_PshipPanelView(),                     "_PshipPanelView")
