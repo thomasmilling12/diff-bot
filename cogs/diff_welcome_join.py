@@ -183,6 +183,19 @@ class CheckInHelpSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            await self._handle(interaction)
+        except Exception as e:
+            print(f"[CheckInHelpSelect] Unhandled error: {e}")
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "Something went wrong — please try again.", ephemeral=True
+                    )
+            except Exception:
+                pass
+
+    async def _handle(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This only works inside the server.", ephemeral=True)
             return
@@ -505,7 +518,7 @@ class DiffWelcomeJoinSystem(commands.Cog):
 
         await self._log(
             member.guild,
-            f"{member.mention} entered the DIFF check-in flow.\n"
+            f"**{member.display_name}** ({member.mention}) entered the DIFF check-in flow.\n"
             f"Account created: {discord.utils.format_dt(member.created_at, style='D')} "
             f"({discord.utils.format_dt(member.created_at, style='R')})",
             discord.Color.orange(),
