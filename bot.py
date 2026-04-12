@@ -17820,6 +17820,81 @@ _TICKET_TYPES: dict[str, _TicketType] = {
 }
 
 
+# =========================
+# TICKET STAR RATING SYSTEM
+# =========================
+class _TicketRatingButton(discord.ui.Button):
+    def __init__(self, star: int, style: discord.ButtonStyle, uid: str, channel_name: str, ticket_type: str):
+        super().__init__(
+            style=style,
+            label=str(star),
+            emoji="⭐",
+            custom_id=f"diff_rate_{uid}_{star}",
+            row=1,
+        )
+        self._star        = star
+        self._uid         = uid
+        self._channel_name = channel_name
+        self._ticket_type  = ticket_type
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        for item in self.view.children:
+            item.disabled = True
+        embeds = interaction.message.embeds if interaction.message else []
+        embed  = embeds[0] if embeds else discord.Embed(title="Ticket Closed", color=discord.Color.greyple())
+        embed.add_field(
+            name="⭐ Your Rating",
+            value=f"{'⭐' * self._star} ({self._star}/5) — Thank you for the feedback!",
+            inline=False,
+        )
+        try:
+            await interaction.message.edit(embed=embed, view=self.view)
+        except Exception:
+            pass
+        guild    = interaction.guild or bot.get_guild(GUILD_ID)
+        logs_ch  = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+        if isinstance(logs_ch, discord.TextChannel):
+            stars_bar = ("⭐" * self._star) + ("☆" * (5 - self._star))
+            log_embed = discord.Embed(
+                title="⭐ Ticket Rating Received",
+                color=discord.Color.gold(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            log_embed.add_field(name="⭐ Rating", value=f"{stars_bar}  **{self._star}/5**", inline=True)
+            log_embed.add_field(
+                name="👤 Rated By",
+                value=f"[{interaction.user.display_name}](https://discord.com/users/{interaction.user.id})",
+                inline=True,
+            )
+            log_embed.add_field(name="📁 Ticket", value=f"`{self._channel_name}`", inline=True)
+            log_embed.add_field(name="🎫 Type",   value=self._ticket_type,           inline=True)
+            if DIFF_LOGO_URL:
+                log_embed.set_thumbnail(url=DIFF_LOGO_URL)
+            log_embed.set_footer(text="Different Meets • Ticket Rating")
+            try:
+                await logs_ch.send(embed=log_embed)
+            except Exception:
+                pass
+
+
+class _TicketRatingView(discord.ui.View):
+    """Adds ⭐1–⭐5 rating buttons to the ticket-closed DM."""
+    def __init__(self, channel_name: str, ticket_type: str):
+        super().__init__(timeout=None)
+        import uuid as _uuid
+        uid = _uuid.uuid4().hex[:10]
+        _styles = [
+            discord.ButtonStyle.danger,   # 1 — red
+            discord.ButtonStyle.danger,   # 2 — red
+            discord.ButtonStyle.primary,  # 3 — blue
+            discord.ButtonStyle.success,  # 4 — green
+            discord.ButtonStyle.success,  # 5 — green
+        ]
+        for star in range(1, 6):
+            self.add_item(_TicketRatingButton(star, _styles[star - 1], uid, channel_name, ticket_type))
+
+
 def _supp_brand_embed(embed: discord.Embed) -> discord.Embed:
     if DIFF_LOGO_URL:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -18556,19 +18631,21 @@ class SupportCloseButton(discord.ui.View):
                             f"Your **{ticket.label}** ticket in **{interaction.guild.name}** has been closed.\n\n"
                             "Your full ticket transcript is available via the button below — "
                             "you can open it in your browser to view the full conversation.\n\n"
-                            "If you still need help, feel free to open a new ticket from the support panel."
+                            "If you still need help, feel free to open a new ticket from the support panel.\n\n"
+                            "⭐ **How was your experience?** Tap a star below to rate this ticket."
                         ),
                         color=_TICKET_COLORS.get(ticket.key, discord.Color.red()),
                         timestamp=datetime.now(timezone.utc),
                     )
                     dm_embed.set_footer(text="Different Meets • Support System")
-                    close_view = discord.ui.View()
+                    close_view = _TicketRatingView(channel_name=channel.name, ticket_type=ticket.label)
                     if transcript_url:
                         close_view.add_item(discord.ui.Button(
                             label="View Transcript",
                             emoji="📋",
                             style=discord.ButtonStyle.link,
                             url=transcript_url,
+                            row=0,
                         ))
                     try:
                         await owner.send(embed=dm_embed, view=close_view)
@@ -22364,7 +22441,8 @@ class JoinTicketView(discord.ui.View):
                         title="🔒 Your Join Ticket Has Been Closed",
                         description=(
                             f"Your join ticket in **{interaction.guild.name}** has been closed.\n\n"
-                            "If you have any questions, feel free to open a new support ticket from the server."
+                            "If you have any questions, feel free to open a new support ticket from the server.\n\n"
+                            "⭐ **How was your experience?** Tap a star below to rate your join ticket."
                         ),
                         color=discord.Color.greyple(),
                         timestamp=now,
@@ -22372,13 +22450,14 @@ class JoinTicketView(discord.ui.View):
                     if psn:
                         dm_embed.add_field(name="🎮 PSN", value=f"`{psn}`", inline=True)
                     dm_embed.set_footer(text="Different Meets • Join Hub")
-                    dm_view = discord.ui.View()
+                    dm_view = _TicketRatingView(channel_name=interaction.channel.name, ticket_type="Join Application")
                     if transcript_url:
                         dm_view.add_item(discord.ui.Button(
                             label="View Transcript",
                             emoji="📋",
                             style=discord.ButtonStyle.link,
                             url=transcript_url,
+                            row=0,
                         ))
                     await owner.send(embed=dm_embed, view=dm_view)
             except Exception:
