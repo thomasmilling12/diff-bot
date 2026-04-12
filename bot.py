@@ -11903,6 +11903,32 @@ def _om_parse_combined_datetime(text: str) -> int | None:
     return None
 
 
+class _HostPickerView(discord.ui.View):
+    """Ephemeral view shown before the schedule modal — lets staff pick a host from a member select."""
+
+    def __init__(self):
+        super().__init__(timeout=120)
+
+    @discord.ui.user_select(
+        placeholder="Search and select the meet host…",
+        min_values=1,
+        max_values=1,
+    )
+    async def host_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        member = select.values[0]
+        # Validate Host role
+        if isinstance(member, discord.Member):
+            has_role = any(r.id == HOST_ROLE_ID for r in member.roles)
+            if not has_role:
+                await interaction.response.send_message(
+                    f"⚠️ {member.mention} doesn't have the **Host** role. Select someone with the Host role.",
+                    ephemeral=True,
+                )
+                return
+        # Open the scheduling modal with the chosen host pre-loaded
+        await interaction.response.send_modal(_OfficialMeetScheduleModal(host_id=member.id))
+
+
 class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official Meet"):
     theme_field = discord.ui.TextInput(
         label="Meet Theme",
@@ -11916,12 +11942,6 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
         required=True,
         max_length=80,
     )
-    host_field = discord.ui.TextInput(
-        label="Host (user ID or @mention)",
-        placeholder="e.g. 123456789012345678  or paste their @mention",
-        required=True,
-        max_length=100,
-    )
     notes_field = discord.ui.TextInput(
         label="Meet Notes (optional)",
         placeholder="e.g. LOWERED CARS ONLY • Send photos to host before joining",
@@ -11930,20 +11950,17 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
         max_length=500,
     )
 
+    def __init__(self, host_id: int):
+        super().__init__()
+        self._selected_host_id = host_id
+
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
         if not guild:
             await interaction.response.send_message("Server only.", ephemeral=True)
             return
 
-        raw_host = self.host_field.value.strip()
-        host_id_match = re.search(r'\d{15,20}', raw_host)
-        if not host_id_match:
-            await interaction.response.send_message(
-                "Couldn't find a valid user ID. Paste their user ID or @mention.", ephemeral=True
-            )
-            return
-        host_id = int(host_id_match.group())
+        host_id = self._selected_host_id
         host_member = guild.get_member(host_id)
         if not host_member:
             try:
@@ -12026,7 +12043,16 @@ class _OfficialMeetPanelView(discord.ui.View):
         if not is_staff:
             await interaction.response.send_message("Only staff can schedule official meets.", ephemeral=True)
             return
-        await interaction.response.send_modal(_OfficialMeetScheduleModal())
+        embed = discord.Embed(
+            title="🎙️ Select Meet Host",
+            description=(
+                "Use the dropdown below to select the host for this meet.\n"
+                "Only members with the **Host** role can be chosen."
+            ),
+            color=discord.Color.dark_gold(),
+        )
+        embed.set_footer(text="DIFF Official Meet System • Step 1 of 2")
+        await interaction.response.send_message(embed=embed, view=_HostPickerView(), ephemeral=True)
 
 
 async def _om_panel_post_or_refresh(guild: discord.Guild, force_repost: bool = False):
