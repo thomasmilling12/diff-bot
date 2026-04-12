@@ -11826,7 +11826,8 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
         await interaction.response.defer(ephemeral=True)
         try:
             sent = await channel.send(
-                _om_build_message(
+                content=f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>",
+                embed=_om_build_embed(
                     theme=self.theme_field.value.strip(),
                     host=host_member,
                     timestamp=meet_ts,
@@ -11837,6 +11838,9 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
             )
         except discord.Forbidden:
             await interaction.followup.send("Missing permissions to post in the meet channel.", ephemeral=True)
+            return
+        except Exception as _e:
+            await interaction.followup.send(f"❌ Failed to post meet: {_e}", ephemeral=True)
             return
 
         record = _OmRecord(
