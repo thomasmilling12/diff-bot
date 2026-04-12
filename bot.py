@@ -3703,31 +3703,36 @@ def _hrsvp_responded_uids() -> set:
     return uids
 
 
-@tasks.loop(minutes=30)
-async def _host_weekly_reminder_loop():
-    """Sunday 12 PM ET: post to host team channel + DM hosts who haven't responded."""
+async def _do_host_weekly_reminder(force: bool = False) -> bool:
+    """Send the weekly host availability reminder.
+
+    Returns True if the reminder was actually sent, False if skipped.
+    force=True bypasses the Sunday-noon guard (for manual/staff triggers).
+    """
     try:
         from zoneinfo import ZoneInfo
         now_et = datetime.now(ZoneInfo("America/New_York"))
     except Exception:
-        return
-    # Only fire on Sunday (weekday 6) between 12:00–12:29 PM
-    if now_et.weekday() != 6 or now_et.hour != 12:
-        return
-    # Deduplicate — one blast per Sunday max
+        return False
+
+    if not force:
+        if now_et.weekday() != 6 or now_et.hour < 12:
+            return False
+
+    # Deduplicate — one blast per calendar day max (unless forced)
     today_str = now_et.strftime("%Y-%m-%d")
     sched = _asched_load()
-    if sched.get("_reminder_last_sent") == today_str:
-        return
+    if not force and sched.get("_reminder_last_sent") == today_str:
+        return False
     sched["_reminder_last_sent"] = today_str
     _asched_save(sched)
 
     guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
     if not guild:
-        return
+        return False
     host_role = guild.get_role(HOST_ROLE_ID)
     if not host_role:
-        return
+        return False
 
     panel_url = f"https://discord.com/channels/{GUILD_ID}/{HOST_RSVP_CHANNEL_ID}"
 
@@ -3840,11 +3845,43 @@ async def _host_weekly_reminder_loop():
                 print(f"[ColorReminder] DM to {member.id} failed: {_dme}")
                 cd += 1
         print(f"[ColorReminder] Weekly reminder — {cs} delivered, {cd} failed.")
+    return True
+
+
+@tasks.loop(minutes=30)
+async def _host_weekly_reminder_loop():
+    """Every 30 min: check if it's Sunday ≥12 PM ET and send the reminder if not yet sent today."""
+    await _do_host_weekly_reminder(force=False)
 
 
 @_host_weekly_reminder_loop.before_loop
 async def _before_host_weekly_reminder():
     await bot.wait_until_ready()
+
+
+@bot.command(name="sendhostavailabilityreminder", aliases=["hostreminder"])
+async def _cmd_send_host_reminder(ctx: commands.Context):
+    """Manually trigger the Sunday host availability reminder (staff only)."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and (
+            ctx.author.guild_permissions.administrator
+            or any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        )
+    )
+    if not is_staff:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    msg = await ctx.send("📤 Sending host availability reminder…")
+    sent = await _do_host_weekly_reminder(force=True)
+    if sent:
+        await msg.edit(content="✅ Host availability reminder sent to the channel and all pending hosts.")
+    else:
+        await msg.edit(content="⚠️ Reminder couldn't be sent (no guild or host role found).")
 
 
 # =========================
@@ -13070,6 +13107,8 @@ async def on_ready():
         _rc_ensure_loop.start()
     if not _host_weekly_reminder_loop.is_running():
         _host_weekly_reminder_loop.start()
+    # Catch-up: if bot restarted after the 12 PM window on a Sunday, send immediately
+    asyncio.create_task(_do_host_weekly_reminder(force=False))
     if not _rotating_presence_loop.is_running():
         _rotating_presence_loop.start()
     if not _join_auto_bump_loop.is_running():
