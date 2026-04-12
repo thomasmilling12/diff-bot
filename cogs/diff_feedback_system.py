@@ -9,7 +9,7 @@ import discord
 from discord.ext import commands
 
 GUILD_ID = 850386896509337710
-FEEDBACK_LOG_CHANNEL_ID = 1485265848099799163
+FEEDBACK_LOG_CHANNEL_ID = 990097781798613063
 
 DIFF_LOGO_URL = "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm=2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a&=&format=webp&quality=lossless&width=1376&height=917"
 STAFF_PING_ROLE_ID = 0
