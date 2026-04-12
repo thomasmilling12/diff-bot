@@ -21809,6 +21809,14 @@ class JoinPlatformSelect(discord.ui.Select):
                         f"You already have an open join ticket: {ch.mention}", ephemeral=True
                     )
 
+            cooldown_text = get_reapply_cooldown_text(interaction.user.id)
+            if cooldown_text:
+                return await interaction.response.send_message(
+                    f"❌ You have an active reapply cooldown: **{cooldown_text}**.\n"
+                    "Please wait until the cooldown expires before submitting a new join application.",
+                    ephemeral=True,
+                )
+
             await interaction.response.send_modal(JoinPsnModal())
 
         except Exception as _e:
@@ -22049,6 +22057,8 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
                 member = None
 
         psn = _join_parse_psn(interaction.channel.topic)
+        set_reapply_cooldown(int(uid_raw))
+
         await interaction.response.send_message(
             f"Application denied.{f' {member.mention} was notified by DM.' if member else ''}",
             ephemeral=True,
@@ -22065,7 +22075,7 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
                         "",
                         f"**Reason:** {reason_text}",
                         "",
-                        "You're welcome to improve and reapply in the future.",
+                        f"You're welcome to improve and reapply in **{REAPPLY_COOLDOWN_DAYS} days**.",
                     ]),
                     color=discord.Color.red(),
                 ))
@@ -22154,11 +22164,68 @@ class JoinRequestInfoModal(discord.ui.Modal, title="Request More Info"):
             embed=embed,
             allowed_mentions=discord.AllowedMentions(users=True),
         )
+        if uid_raw and uid_raw.isdigit():
+            _req_member = interaction.guild.get_member(int(uid_raw)) if interaction.guild else None
+            if _req_member:
+                try:
+                    dm_embed = discord.Embed(
+                        title="📋 Staff Need More Info — Your Join Ticket",
+                        description="\n".join([
+                            f"A staff member reviewed your join application and needs the following from you:",
+                            "",
+                            f"> {msg_text}",
+                            "",
+                            f"Please respond in your ticket: {interaction.channel.mention}",
+                        ]),
+                        color=discord.Color.orange(),
+                        timestamp=utc_now(),
+                    )
+                    dm_embed.set_footer(text="Different Meets • Join Hub")
+                    await _req_member.send(embed=dm_embed)
+                except Exception:
+                    pass
+
+
+class _JoinClaimButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            label="Claim Review",
+            emoji="🙋",
+            style=discord.ButtonStyle.secondary,
+            custom_id="diff_join_claim_v1",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member):
+            return
+        if not _join_is_staff(interaction.user):
+            return await interaction.response.send_message("Only staff can claim a review.", ephemeral=True)
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+        topic = channel.topic or ""
+        if "join_claimed_by=" in topic:
+            claimer_raw = topic.split("join_claimed_by=")[-1].split("|")[0].strip()
+            return await interaction.response.send_message(
+                f"This application is already being reviewed by <@{claimer_raw}>.", ephemeral=True
+            )
+        try:
+            await channel.edit(topic=topic + f" | join_claimed_by={interaction.user.id}")
+        except Exception:
+            pass
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                description=f"🙋 **{interaction.user.display_name}** is reviewing this application.",
+                color=discord.Color.blurple(),
+            )
+        )
 
 
 class JoinTicketView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
+        self.add_item(_JoinClaimButton())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
