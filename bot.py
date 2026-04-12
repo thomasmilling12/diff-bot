@@ -20848,8 +20848,11 @@ async def on_message(message: discord.Message) -> None:
             _pm_date    = _pm_parts[0] if _pm_parts else ""
             _pm_time    = _pm_parts[1] if len(_pm_parts) > 1 else ""
             if _pm_date and _pm_time:
-                _pm_ts = _parse_meet_ts(_pm_date, _pm_time)
-                _pm_dt_value = f"<t:{_pm_ts}:F>  •  <t:{_pm_ts}:R>" if _pm_ts else f"{_pm_date}  •  {_pm_time}"
+                # strip ordinal suffixes (12th→12, 1st→1) so the parser reads the time correctly
+                import re as _re_pm
+                _pm_date_clean = _re_pm.sub(r"(\d+)(st|nd|rd|th)\b", r"\1", _pm_date, flags=_re_pm.IGNORECASE)
+                _pm_ts = _parse_meet_ts(_pm_date_clean, _pm_time)
+                _pm_dt_value = f"<t:{_pm_ts}:F>\n<t:{_pm_ts}:R>" if _pm_ts else f"{_pm_date}  •  {_pm_time}"
             elif _pm_caption:
                 _pm_dt_value = _pm_caption
             else:
@@ -20867,13 +20870,6 @@ async def on_message(message: discord.Message) -> None:
             _pm_embed.add_field(name="📅 Date & Time", value=_pm_dt_value, inline=False)
             _pm_embed.set_footer(text="DIFF Meets • Host Poster")
             _pm_embed.set_thumbnail(url=_POSTMEET_LOGO_URL)
-            try:
-                await message.create_thread(
-                    name=(_pm_caption[:80] or "Meet Poster"),
-                    auto_archive_duration=10080,
-                )
-            except Exception:
-                pass
             try:
                 await message.reply(
                     embed=_pm_embed,
