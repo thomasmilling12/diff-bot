@@ -18853,19 +18853,10 @@ class SupportCloseButton(discord.ui.View):
             _tperf_record_close(int(claimer_id), channel.name)
 
         transcript_file = await _supp_export_transcript(channel)
-        transcript_url = None
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
             from datetime import timezone as _tz
             now = datetime.now(_EST_TZ)
-            # Upload transcript to get CDN URL, then delete so staff-logs stays clean
-            try:
-                tr_msg = await logs_channel.send(file=transcript_file)
-                if tr_msg.attachments:
-                    transcript_url = tr_msg.attachments[0].url
-                await tr_msg.delete()
-            except Exception:
-                pass
 
             color = _TICKET_COLORS.get(ticket.key, discord.Color.red())
             close_embed = discord.Embed(
@@ -18882,16 +18873,12 @@ class SupportCloseButton(discord.ui.View):
                 close_embed.add_field(name="🙋 Claimed By", value=f"<@{claimer_id}>", inline=True)
             close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
             _supp_brand_embed(close_embed)
-            log_view = discord.ui.View()
-            if transcript_url:
-                log_view.add_item(discord.ui.Button(
-                    label="View Transcript",
-                    emoji="📋",
-                    style=discord.ButtonStyle.link,
-                    url=transcript_url,
-                ))
             try:
-                await logs_channel.send(embed=close_embed, view=log_view)
+                # Attach transcript directly — CDN links expire, file attachments don't
+                if transcript_file:
+                    await logs_channel.send(embed=close_embed, file=transcript_file)
+                else:
+                    await logs_channel.send(embed=close_embed)
             except discord.HTTPException:
                 pass
 
@@ -18903,8 +18890,6 @@ class SupportCloseButton(discord.ui.View):
                         title="🔒 Your Ticket Has Been Closed",
                         description=(
                             f"Your **{ticket.label}** ticket in **{interaction.guild.name}** has been closed.\n\n"
-                            "Your full ticket transcript is available via the button below — "
-                            "you can open it in your browser to view the full conversation.\n\n"
                             "If you still need help, feel free to open a new ticket from the support panel.\n\n"
                             "⭐ **How was your experience?** Tap a star below to rate this ticket."
                         ),
@@ -18913,14 +18898,6 @@ class SupportCloseButton(discord.ui.View):
                     )
                     dm_embed.set_footer(text="Different Meets • Support System")
                     close_view = _TicketRatingView(channel_name=channel.name, ticket_type=ticket.label)
-                    if transcript_url:
-                        close_view.add_item(discord.ui.Button(
-                            label="View Transcript",
-                            emoji="📋",
-                            style=discord.ButtonStyle.link,
-                            url=transcript_url,
-                            row=0,
-                        ))
                     try:
                         await owner.send(embed=dm_embed, view=close_view)
                     except Exception:
@@ -22842,19 +22819,8 @@ class JoinTicketView(discord.ui.View):
         now = datetime.now(_EST_TZ)
         uid_raw = _join_parse_user_id(interaction.channel.topic)
         psn = _join_parse_psn(interaction.channel.topic)
-        transcript_url = None
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
-            # Upload transcript to get CDN URL, then delete so staff-logs stays clean
-            if transcript_file:
-                try:
-                    tr_msg = await logs_channel.send(file=transcript_file)
-                    if tr_msg.attachments:
-                        transcript_url = tr_msg.attachments[0].url
-                    await tr_msg.delete()
-                except Exception:
-                    pass
-
             close_embed = discord.Embed(
                 title="🔒 Join Ticket Closed",
                 color=discord.Color.greyple(),
@@ -22875,16 +22841,12 @@ class JoinTicketView(discord.ui.View):
             if DIFF_LOGO_URL:
                 close_embed.set_thumbnail(url=DIFF_LOGO_URL)
             close_embed.set_footer(text="Different Meets • Join Hub")
-            log_view = discord.ui.View()
-            if transcript_url:
-                log_view.add_item(discord.ui.Button(
-                    label="View Transcript",
-                    emoji="📋",
-                    style=discord.ButtonStyle.link,
-                    url=transcript_url,
-                ))
             try:
-                await logs_channel.send(embed=close_embed, view=log_view)
+                # Attach transcript directly — CDN links expire, file attachments don't
+                if transcript_file:
+                    await logs_channel.send(embed=close_embed, file=transcript_file)
+                else:
+                    await logs_channel.send(embed=close_embed)
             except discord.HTTPException:
                 pass
 
@@ -22907,14 +22869,6 @@ class JoinTicketView(discord.ui.View):
                         dm_embed.add_field(name="🎮 PSN", value=f"`{psn}`", inline=True)
                     dm_embed.set_footer(text="Different Meets • Join Hub")
                     dm_view = _TicketRatingView(channel_name=interaction.channel.name, ticket_type="Join Application")
-                    if transcript_url:
-                        dm_view.add_item(discord.ui.Button(
-                            label="View Transcript",
-                            emoji="📋",
-                            style=discord.ButtonStyle.link,
-                            url=transcript_url,
-                            row=0,
-                        ))
                     await owner.send(embed=dm_embed, view=dm_view)
             except Exception:
                 pass
