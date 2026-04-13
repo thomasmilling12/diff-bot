@@ -4820,15 +4820,15 @@ async def _cmd_hoststats(ctx: commands.Context, member: discord.Member = None):
     else:
         last_str = "Never"
     avg = round(total_att / meets, 1) if meets > 0 else 0
-    pts = stats.get("score_total", 0)
-    if pts >= 30:
+    _career_meets = get_user_stats(member.id).get("meets_hosted", 0)
+    if _career_meets >= 15:
         tier = "💎 Elite"
-    elif pts >= 15:
+    elif _career_meets >= 5:
         tier = "🔥 Senior"
-    elif pts >= 0:
+    elif _career_meets >= 1:
         tier = "⭐ Junior"
     else:
-        tier = "⚠️ At Risk"
+        tier = "🆕 New"
     embed = discord.Embed(
         title=f"📊 Host Stats — {member.display_name}",
         color=0xC9A227,
@@ -6744,20 +6744,15 @@ async def _auto_refresh_hierarchy_panel(guild: discord.Guild):
 
 
 def build_status_embed(guild: discord.Guild) -> discord.Embed:
-    gta_hosts: list[str] = []
+    gta_hosts:    list[str] = []
     online_hosts: list[str] = []
     offline_hosts: list[str] = []
 
-    hp_data = _hp_load()
+    hp_data    = _hp_load()
     host_stats = hp_data.get("host_stats", {})
 
-    def _custom_status(member: discord.Member):
-        for act in (member.activities or []):
-            if isinstance(act, discord.CustomActivity) and act.name:
-                return act.name
-        return None
-
     def _last_session_str(uid: int) -> str:
+        """Return a Discord relative timestamp for the host's last HP session, or empty string."""
         s = host_stats.get(str(uid), {})
         last = s.get("last_session_at")
         if last:
@@ -6766,69 +6761,73 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
                 return f"<t:{ts}:R>"
             except Exception:
                 pass
-        return "never"
+        return ""
 
-    def _tier_info(uid: int) -> tuple[str, int]:
-        s = host_stats.get(str(uid), {})
-        pts = s.get("score_total", 0)
-        meets = s.get("meets_hosted", 0)
-        if pts >= 30:
-            tier = "💎 Elite"
-        elif pts >= 15:
-            tier = "🔥 Senior"
-        elif pts >= 0:
-            tier = "⭐ Junior"
-        else:
-            tier = "⚠️ At Risk"
-        return tier, meets
+    def _tier(meets: int) -> str:
+        """Tier badge based on career meets hosted (uses real activity data)."""
+        if meets >= 15:
+            return "💎 Elite"
+        if meets >= 5:
+            return "🔥 Senior"
+        if meets >= 1:
+            return "⭐ Junior"
+        return "🆕 New"
 
     for host in data["hosts"]:
-        member = guild.get_member(host["discord_id"])
+        member  = guild.get_member(host["discord_id"])
         profile = host.get("profile_url", "")
-        link = f" [↗]({profile})" if profile else ""
-        uid = host["discord_id"]
-        tier, meets = _tier_info(uid)
-        last = _last_session_str(uid)
+        link    = f" [↗]({profile})" if profile else ""
+        uid     = host["discord_id"]
+
+        # Pull real meet count from the activity file
+        meets     = get_user_stats(uid).get("meets_hosted", 0)
+        tier      = _tier(meets)
         meets_str = f"{meets} meet{'s' if meets != 1 else ''}"
+        last_str  = _last_session_str(uid)
 
         if member:
             is_online = member.status != discord.Status.offline
-            activity = get_activity(member)
-            name = member.display_name
+            activity  = get_activity(member)
+            name      = member.display_name
         else:
             is_online = False
-            activity = "Offline"
-            name = host["name"]
+            activity  = "Offline"
+            name      = host["name"]
 
         activity_lower = activity.lower()
 
         if is_online:
             if "grand theft auto" in activity_lower or "gta" in activity_lower:
-                # In GTA — show tier + meet count, no activity label needed
-                gta_hosts.append(f"🎮 **{name}** • {tier} • {meets_str}{link}")
+                line = f"🎮 **{name}** • {tier} • {meets_str}{link}"
+                gta_hosts.append(line)
             else:
-                # Online but not in GTA — show activity (truncated), just tier
-                act_label = (activity[:22] + "…") if len(activity) > 24 else activity
-                act_label = act_label or "Online"
-                online_hosts.append(f"🟡 **{name}** — `{act_label}` • {tier}{link}")
+                act_label = (activity[:22] + "…") if len(activity) > 24 else (activity or "Online")
+                line = f"🟡 **{name}** — `{act_label}` • {tier} • {meets_str}{link}"
+                online_hosts.append(line)
         else:
-            # Offline — show tier and last session only (no custom status, no meet count)
-            offline_hosts.append(f"🔴 **{name}** • {tier} • last {last}{link}")
+            # Offline: show tier + meets + last session (if any)
+            if last_str:
+                line = f"🔴 **{name}** • {tier} • {meets_str} • last {last_str}{link}"
+            elif meets == 0:
+                line = f"🔴 **{name}** • {tier} • no meets yet{link}"
+            else:
+                line = f"🔴 **{name}** • {tier} • {meets_str}{link}"
+            offline_hosts.append(line)
 
-    # Online ratio progress bar
-    total = max(len(gta_hosts) + len(online_hosts) + len(offline_hosts), 1)
+    # Progress bar
+    total        = max(len(gta_hosts) + len(online_hosts) + len(offline_hosts), 1)
     online_count = len(gta_hosts) + len(online_hosts)
-    filled = round(online_count / total * 10)
-    bar = "🟩" * filled + "🟥" * (10 - filled)
+    filled       = round(online_count / total * 10)
+    bar          = "🟩" * filled + "🟥" * (10 - filled)
     summary_line = f"{bar}  **{online_count}/{total}** online"
 
-    # Dynamic embed color
+    # Dynamic color
     if gta_hosts:
-        color = 0x43B581   # green — hosts in GTA
+        color = 0x43B581   # green
     elif online_hosts:
-        color = 0xFAA61A   # yellow — hosts online elsewhere
+        color = 0xFAA61A   # yellow
     else:
-        color = 0xED4245   # red — everyone offline
+        color = 0xED4245   # red
 
     embed = discord.Embed(
         title="🏁 DIFF Host Activity Board",
@@ -6861,7 +6860,7 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
         )
 
     embed.set_footer(text="DIFF Meets • EST. 2020")
-    embed.timestamp = datetime.utcnow()
+    embed.timestamp = datetime.now(timezone.utc)
     return embed
 
 
@@ -11737,14 +11736,15 @@ async def _slash_meetstats(interaction: discord.Interaction):
     warnings    = stats.get("warning_count", 0)
     last        = stats.get("last_session_at")
     avg         = round(total_att / meets, 1) if meets > 0 else 0
-    if score >= 30:
+    _career_meets = get_user_stats(interaction.user.id).get("meets_hosted", 0)
+    if _career_meets >= 15:
         tier = "💎 Elite"
-    elif score >= 15:
+    elif _career_meets >= 5:
         tier = "🔥 Senior"
-    elif score >= 0:
+    elif _career_meets >= 1:
         tier = "⭐ Junior"
     else:
-        tier = "⚠️ At Risk"
+        tier = "🆕 New"
     if last:
         try:
             ts = int(datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp())
