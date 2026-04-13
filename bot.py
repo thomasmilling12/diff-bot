@@ -2006,6 +2006,26 @@ class MeetAttendanceModal(discord.ui.Modal, title="DIFF Meet Attendance"):
             "created_at": datetime.utcnow().isoformat(),
         }
         _save_activity_json(MEETS_FILE, data)
+
+        # ── Auto-post recap to recap channel ────────────────────────────────
+        recap_ch = interaction.guild.get_channel(RECAP_CHANNEL_ID)
+        if isinstance(recap_ch, discord.TextChannel):
+            recap_embed = discord.Embed(
+                title="🏁 Meet Recap",
+                color=0x2ECC71,
+                timestamp=utc_now(),
+            )
+            recap_embed.add_field(name="📛 Meet Name",          value=str(self.meet_name),          inline=False)
+            recap_embed.add_field(name="🎤 Host",               value=str(self.host_name),           inline=True)
+            recap_embed.add_field(name="📅 Date",               value=str(self.meet_date),           inline=True)
+            recap_embed.add_field(name="👥 Total in Lobby",     value=str(total_players_value),      inline=True)
+            recap_embed.add_field(name="🏎️ DIFF Members",       value=str(self.diff_members_present), inline=True)
+            recap_embed.set_footer(text=f"Submitted by {interaction.user} • DIFF Meets")
+            try:
+                await recap_ch.send(embed=recap_embed)
+            except Exception:
+                pass
+
         await interaction.response.send_message("✅ Meet attendance posted.", ephemeral=True)
 
 
@@ -26314,6 +26334,631 @@ async def _stale_join_alert_task():
         await mgmt_ch.send(embed=embed)
     except Exception:
         pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEATURE: !bulkwarn / !bulkmute
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _is_staff_member(member: discord.Member) -> bool:
+    return any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in member.roles)
+
+
+@bot.command(name="bulkwarn")
+@commands.has_permissions(administrator=True)
+async def _cmd_bulk_warn(ctx: commands.Context, members: commands.Greedy[discord.Member], *, reason: str = "No reason provided"):
+    """Warn multiple members at once. Usage: !bulkwarn @A @B @C reason here"""
+    if not members:
+        return await ctx.send("❌ Mention at least one member. Usage: `!bulkwarn @A @B reason`", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    results = []
+    warns_ch = bot.get_channel(WARNS_CHANNEL_ID)
+    for member in members:
+        if member.bot:
+            results.append(f"⏭️ {member.mention} — skipped (bot)")
+            continue
+        warn_id     = _next_warn_id()
+        add_warning(member.id, ctx.author.id, reason, warn_id=warn_id)
+        total       = get_warning_count(member.id)
+        ordinal     = _ordinal(total)
+        dm_ok = False
+        try:
+            dm_e = discord.Embed(title=f"⚠️ You received your {ordinal} warning in DIFF Meets", color=0xFF4444, timestamp=datetime.now(timezone.utc))
+            dm_e.add_field(name="Reason", value=reason, inline=False)
+            dm_e.add_field(name="Total Warnings", value=str(total), inline=True)
+            dm_e.set_footer(text="DIFF Meets • Warning System")
+            await member.send(embed=dm_e)
+            dm_ok = True
+        except Exception:
+            pass
+        if isinstance(warns_ch, discord.TextChannel):
+            pub_e = discord.Embed(title=f"Warn [{warn_id:04d}]", color=0xFF4444, timestamp=datetime.now(timezone.utc))
+            pub_e.set_thumbnail(url=member.display_avatar.url)
+            pub_e.add_field(name="Target",    value=f"{member.mention}\n`{member.id}`", inline=True)
+            pub_e.add_field(name="Status",    value=f"**{ordinal.upper()} WARN**",      inline=True)
+            pub_e.add_field(name="DM",        value="✅" if dm_ok else "❌",             inline=True)
+            pub_e.add_field(name="Reason",    value=reason,                             inline=True)
+            pub_e.add_field(name="Moderator", value=ctx.author.mention,                 inline=True)
+            pub_e.add_field(name="Warnings",  value=f"{total} total",                   inline=True)
+            pub_e.set_footer(text="DIFF Meets • Bulk Warning System")
+            try:
+                await warns_ch.send(embed=pub_e)
+            except Exception:
+                pass
+        results.append(f"✅ {member.mention} — warn #{warn_id:04d} ({ordinal})")
+
+    summary = discord.Embed(
+        title=f"⚠️ Bulk Warn — {len(members)} member(s)",
+        description="\n".join(results),
+        color=0xFF4444,
+        timestamp=datetime.now(timezone.utc),
+    )
+    summary.add_field(name="Reason", value=reason, inline=False)
+    summary.set_footer(text=f"Issued by {ctx.author} • DIFF Meets")
+    await ctx.send(embed=summary)
+
+
+def _parse_duration(text: str) -> timedelta | None:
+    """Parse duration strings like 1h, 30m, 2d, 1h30m. Returns None on failure."""
+    import re as _re
+    total = 0
+    for val, unit in _re.findall(r"(\d+)\s*([dhm])", text.lower()):
+        v = int(val)
+        if unit == "d":
+            total += v * 86400
+        elif unit == "h":
+            total += v * 3600
+        elif unit == "m":
+            total += v * 60
+    return timedelta(seconds=total) if total else None
+
+
+@bot.command(name="bulkmute")
+@commands.has_permissions(administrator=True)
+async def _cmd_bulk_mute(ctx: commands.Context, members: commands.Greedy[discord.Member], *, args: str = "1h No reason provided"):
+    """Timeout multiple members at once. Usage: !bulkmute @A @B 2h spamming"""
+    if not members:
+        return await ctx.send("❌ Mention at least one member. Usage: `!bulkmute @A @B 1h reason`", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    tokens = args.split()
+    duration = None
+    reason_start = 0
+    if tokens:
+        duration = _parse_duration(tokens[0])
+        if duration:
+            reason_start = 1
+    if not duration:
+        duration = timedelta(hours=1)
+    reason = " ".join(tokens[reason_start:]) or "No reason provided"
+
+    h = int(duration.total_seconds() // 3600)
+    m = int((duration.total_seconds() % 3600) // 60)
+    dur_str = f"{h}h {m}m" if m else f"{h}h"
+
+    results = []
+    for member in members:
+        if member.bot:
+            results.append(f"⏭️ {member.mention} — skipped (bot)")
+            continue
+        try:
+            await member.timeout(duration, reason=f"Bulk mute by {ctx.author}: {reason}")
+            results.append(f"🔇 {member.mention} — timed out for {dur_str}")
+        except discord.Forbidden:
+            results.append(f"❌ {member.mention} — missing permissions")
+        except Exception as e:
+            results.append(f"❌ {member.mention} — error: {e}")
+
+    summary = discord.Embed(
+        title=f"🔇 Bulk Mute — {len(members)} member(s)",
+        description="\n".join(results),
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    summary.add_field(name="Duration", value=dur_str,   inline=True)
+    summary.add_field(name="Reason",   value=reason,    inline=True)
+    summary.set_footer(text=f"Issued by {ctx.author} • DIFF Meets")
+    await ctx.send(embed=summary)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEATURE: !ticketstats
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="ticketstats")
+async def _cmd_ticket_stats(ctx: commands.Context):
+    """Show ticket handling stats (staff only)."""
+    if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
+        return await ctx.send("Staff only.", delete_after=6)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    rows = _auto_stats.leaderboard()
+    total_tickets  = sum(s.get("tickets_handled", 0)       for _, s in rows)
+    total_apps     = sum(s.get("applications_reviewed", 0) for _, s in rows)
+    total_appeals  = sum(s.get("appeals_reviewed", 0)      for _, s in rows)
+    total_reports  = sum(s.get("reports_resolved", 0)      for _, s in rows)
+    total_accepted = sum(s.get("accepted_apps", 0)         for _, s in rows)
+
+    join_data   = _join_extra_load()
+    pending_j   = sum(1 for e in join_data.values() if e.get("status") == "Pending")
+    accepted_j  = sum(1 for e in join_data.values() if e.get("status") == "Accepted")
+    denied_j    = sum(1 for e in join_data.values() if e.get("status") == "Denied")
+
+    top_lines = []
+    for uid, s in rows[:5]:
+        member = ctx.guild.get_member(uid) if ctx.guild else None
+        name = member.display_name if member else f"<@{uid}>"
+        score = _auto_score(s)
+        top_lines.append(f"• **{name}** — {s.get('tickets_handled',0)} tickets / {s.get('applications_reviewed',0)} apps (score {score})")
+
+    embed = discord.Embed(
+        title="🎫 Ticket Stats",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="Support Tickets (all-time)",
+        value=(
+            f"🎫 Handled: **{total_tickets}**\n"
+            f"📋 Apps Reviewed: **{total_apps}** (✅ {total_accepted} accepted)\n"
+            f"⚖️ Appeals: **{total_appeals}**\n"
+            f"🚨 Reports: **{total_reports}**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Join Tickets",
+        value=(
+            f"⏳ Pending: **{pending_j}**\n"
+            f"✅ Accepted: **{accepted_j}**\n"
+            f"❌ Denied: **{denied_j}**"
+        ),
+        inline=True,
+    )
+    if top_lines:
+        embed.add_field(name="🏆 Top Staff (Tickets)", value="\n".join(top_lines), inline=False)
+    embed.set_footer(text="DIFF Management • Ticket Stats")
+    await ctx.send(embed=embed)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEATURE: !repleaderboard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="repleaderboard", aliases=["replb", "repscore"])
+async def _cmd_rep_leaderboard(ctx: commands.Context):
+    """Show the top members by reputation score."""
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    rep_data = _load_activity_json(REPUTATION_FILE)
+    rows = sorted(
+        [(int(uid), d.get("reputation", 0)) for uid, d in rep_data.items()],
+        key=lambda x: x[1], reverse=True,
+    )
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for idx, (uid, rep) in enumerate(rows[:15], start=1):
+        member = ctx.guild.get_member(uid) if ctx.guild else None
+        name   = member.mention if member else f"<@{uid}>"
+        badge  = medals[idx - 1] if idx <= 3 else f"**#{idx}**"
+        lines.append(f"{badge} {name} — **{rep:+}** rep")
+
+    embed = discord.Embed(
+        title="🏆 Reputation Leaderboard",
+        description="\n".join(lines) if lines else "No reputation data yet.",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="DIFF Meets • Reputation Leaderboard")
+    await ctx.send(embed=embed)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEATURE: !meethistory [@user]
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="meethistory", aliases=["mhist", "meethist"])
+async def _cmd_meet_history(ctx: commands.Context, member: discord.Member = None):
+    """Show meet history for a member (defaults to yourself)."""
+    target = member or ctx.author
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    stats   = get_user_stats(target.id)
+    records = _load_activity_json(MEETS_FILE)
+
+    hosted_meets = [
+        r for r in records.values()
+        if str(r.get("submitted_by_id")) == str(target.id)
+    ]
+    hosted_meets.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+
+    rep_data = get_user_reputation(target.id)
+
+    embed = discord.Embed(
+        title=f"📋 Meet History — {target.display_name}",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(
+        name="📊 Overall Stats",
+        value=(
+            f"🏎️ Meets Attended: **{stats.get('meets_attended', 0)}**\n"
+            f"🎤 Meets Hosted: **{stats.get('meets_hosted', 0)}**\n"
+            f"⭐ Reputation: **{rep_data.get('reputation', 0):+}**"
+        ),
+        inline=False,
+    )
+
+    if hosted_meets:
+        recent_lines = []
+        for r in hosted_meets[:8]:
+            name  = r.get("meet_name", "Unknown")
+            date  = r.get("meet_date", "?")
+            lobby = r.get("total_players", "?")
+            diff  = r.get("diff_present", "?")
+            recent_lines.append(f"**{name}** — {date} | Lobby: {lobby} | DIFF: {diff}")
+        embed.add_field(
+            name=f"🎤 Hosted Meets ({len(hosted_meets)} total)",
+            value="\n".join(recent_lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="🎤 Hosted Meets", value="No hosted meets recorded.", inline=False)
+
+    if rep_data.get("positive_notes"):
+        rep_lines = [
+            f"+{n['amount']} — {n['note']}" for n in rep_data["positive_notes"][-5:]
+        ]
+        embed.add_field(name="🟢 Recent Rep Gains", value="\n".join(rep_lines), inline=False)
+
+    embed.set_footer(text=f"DIFF Meets • Meet History")
+    await ctx.send(embed=embed)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEATURE: Server anniversary tracker
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_ANNIVERSARY_FILE = os.path.join("diff_data", "diff_anniversaries.json")
+_ANNIVERSARY_CHANNEL_ID = STAFF_LOGS_CHANNEL_ID
+
+
+def _ann_load() -> dict:
+    try:
+        if os.path.exists(_ANNIVERSARY_FILE):
+            with open(_ANNIVERSARY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _ann_save(d: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    with open(_ANNIVERSARY_FILE, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2)
+
+
+@tasks.loop(hours=24)
+async def _anniversary_check_task():
+    """Daily check for server anniversaries — DMs member + logs to staff."""
+    await bot.wait_until_ready()
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    now    = datetime.now(timezone.utc)
+    today  = now.date()
+    ann    = _ann_load()
+    log_ch = guild.get_channel(_ANNIVERSARY_CHANNEL_ID)
+
+    for member in guild.members:
+        if member.bot or member.joined_at is None:
+            continue
+        joined = member.joined_at.date()
+        if joined.month != today.month or joined.day != today.day:
+            continue
+        years = today.year - joined.year
+        if years <= 0:
+            continue
+
+        last_key = str(member.id)
+        if ann.get(last_key) == today.year:
+            continue
+
+        ann[last_key] = today.year
+        _ann_save(ann)
+
+        ordinal_year = _ordinal(years)
+        try:
+            dm_e = discord.Embed(
+                title=f"🎉 Happy {ordinal_year} Server Anniversary!",
+                description=(
+                    f"You joined **DIFF Meets** {years} year{'s' if years != 1 else ''} ago today!\n"
+                    "Thanks for being part of the community. 🏎️"
+                ),
+                color=0xF1C40F,
+                timestamp=datetime.now(timezone.utc),
+            )
+            dm_e.set_footer(text="DIFF Meets • Server Anniversary")
+            await member.send(embed=dm_e)
+        except Exception:
+            pass
+
+        await update_member_reputation(guild, member, 1, f"Server anniversary — {years} year(s)", given_by=None)
+
+        if isinstance(log_ch, discord.TextChannel):
+            log_e = discord.Embed(
+                title="🎂 Server Anniversary",
+                description=f"{member.mention} has been a member for **{years} year(s)**! +1 rep awarded.",
+                color=0xF1C40F,
+                timestamp=datetime.now(timezone.utc),
+            )
+            log_e.set_thumbnail(url=member.display_avatar.url)
+            log_e.set_footer(text="DIFF Meets • Anniversary Tracker")
+            try:
+                await log_ch.send(embed=log_e)
+            except Exception:
+                pass
+
+
+@_anniversary_check_task.before_loop
+async def _before_anniversary_check():
+    await bot.wait_until_ready()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEATURE: Weekly host availability DM summary
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@tasks.loop(hours=24)
+async def _host_avail_weekly_dm_task():
+    """Every Monday, DM leaders/managers with a host RSVP availability summary."""
+    await bot.wait_until_ready()
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 0:
+        return
+
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    rsvp_data = _hrsvp_load()
+    lines = []
+    for day in _HRSVP_DAYS:
+        slot   = rsvp_data.get(day, {})
+        yes    = slot.get("yes", [])
+        no     = slot.get("no", [])
+        maybe  = slot.get("maybe", [])
+
+        yes_names = []
+        for entry in yes:
+            uid = _hrsvp_uid(entry)
+            m   = guild.get_member(int(uid)) if uid else None
+            theme = entry.get("theme", "?") if isinstance(entry, dict) else "?"
+            time_ = entry.get("time", "?")  if isinstance(entry, dict) else "?"
+            yes_names.append(f"{m.display_name if m else uid} ({time_}, {theme})")
+
+        no_names    = [guild.get_member(int(_hrsvp_uid(e))).display_name if guild.get_member(int(_hrsvp_uid(e))) else _hrsvp_uid(e) for e in no  if _hrsvp_uid(e)]
+        maybe_names = [guild.get_member(int(_hrsvp_uid(e))).display_name if guild.get_member(int(_hrsvp_uid(e))) else _hrsvp_uid(e) for e in maybe if _hrsvp_uid(e)]
+
+        lines.append(
+            f"**{day}**\n"
+            f"  ✅ Available ({len(yes)}): {', '.join(yes_names) or '—'}\n"
+            f"  ❓ Maybe ({len(maybe)}): {', '.join(maybe_names) or '—'}\n"
+            f"  ❌ Unavailable ({len(no)}): {', '.join(no_names) or '—'}"
+        )
+
+    dm_embed = discord.Embed(
+        title="📅 Weekly Host Availability Summary",
+        description="\n\n".join(lines) or "No availability data.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    dm_embed.set_footer(text="DIFF Meets • Weekly Host Digest")
+
+    for role_id in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID):
+        role = guild.get_role(role_id)
+        if not role:
+            continue
+        for member in role.members:
+            if member.bot:
+                continue
+            try:
+                await member.send(embed=dm_embed)
+            except Exception:
+                pass
+
+
+@_host_avail_weekly_dm_task.before_loop
+async def _before_host_avail_weekly_dm():
+    await bot.wait_until_ready()
+
+
+@bot.command(name="sendweeklyhostdm", aliases=["hostsummary"])
+async def _cmd_send_weekly_host_dm(ctx: commands.Context):
+    """Manually trigger the weekly host availability DM (staff only)."""
+    if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
+        return await ctx.send("Staff only.", delete_after=6)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    guild = ctx.guild
+    if not guild:
+        return
+
+    rsvp_data = _hrsvp_load()
+    lines = []
+    for day in _HRSVP_DAYS:
+        slot  = rsvp_data.get(day, {})
+        yes   = slot.get("yes", [])
+        no    = slot.get("no", [])
+        maybe = slot.get("maybe", [])
+
+        yes_names = []
+        for entry in yes:
+            uid = _hrsvp_uid(entry)
+            m   = guild.get_member(int(uid)) if uid else None
+            theme = entry.get("theme", "?") if isinstance(entry, dict) else "?"
+            time_ = entry.get("time", "?")  if isinstance(entry, dict) else "?"
+            yes_names.append(f"{m.display_name if m else uid} ({time_}, {theme})")
+
+        no_names    = [guild.get_member(int(_hrsvp_uid(e))).display_name if guild.get_member(int(_hrsvp_uid(e))) else _hrsvp_uid(e) for e in no  if _hrsvp_uid(e)]
+        maybe_names = [guild.get_member(int(_hrsvp_uid(e))).display_name if guild.get_member(int(_hrsvp_uid(e))) else _hrsvp_uid(e) for e in maybe if _hrsvp_uid(e)]
+
+        lines.append(
+            f"**{day}**\n"
+            f"  ✅ Available ({len(yes)}): {', '.join(yes_names) or '—'}\n"
+            f"  ❓ Maybe ({len(maybe)}): {', '.join(maybe_names) or '—'}\n"
+            f"  ❌ Unavailable ({len(no)}): {', '.join(no_names) or '—'}"
+        )
+
+    dm_embed = discord.Embed(
+        title="📅 Weekly Host Availability Summary",
+        description="\n\n".join(lines) or "No availability data.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    dm_embed.set_footer(text="DIFF Meets • Weekly Host Digest")
+
+    sent = 0
+    for role_id in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID):
+        role = guild.get_role(role_id)
+        if not role:
+            continue
+        for member in role.members:
+            if member.bot:
+                continue
+            try:
+                await member.send(embed=dm_embed)
+                sent += 1
+            except Exception:
+                pass
+    await ctx.send(f"✅ Host availability summary sent to **{sent}** staff member(s).", delete_after=10)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEATURE: !diffhelp — command help panel
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="diffhelp", aliases=["commands", "bothelp"])
+async def _cmd_diff_help(ctx: commands.Context):
+    """Show a categorised list of all bot commands."""
+    is_staff = isinstance(ctx.author, discord.Member) and _is_staff_member(ctx.author)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    embed = discord.Embed(
+        title="📖 DIFF Meets — Bot Commands",
+        description="All available commands. Slash commands start with `/`, prefix commands with `!`.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    embed.add_field(
+        name="👤 Member Commands",
+        value=(
+            "`!repleaderboard` — Top members by reputation\n"
+            "`!meethistory [@user]` — View meet history\n"
+            "`/warn` — (staff) Warn a member\n"
+            "`/warnings` — (staff) View a member's warnings"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🎮 Meet Commands",
+        value=(
+            "`/postmeet` — Post a new meet announcement\n"
+            "`/rollcall` — Start the weekly roll call\n"
+            "`/attendance` — Open the meet attendance panel\n"
+            "`!meethistory [@user]` — View a member's hosted meets"
+        ),
+        inline=False,
+    )
+
+    if is_staff:
+        embed.add_field(
+            name="🛡️ Moderation (Staff Only)",
+            value=(
+                "`/warn @user reason` — Warn a member (auto-escalates at 2/3/5 warns)\n"
+                "`/warnings @user` — View all warnings\n"
+                "`/clearwarnings @user` — Clear all warnings\n"
+                "`!bulkwarn @A @B reason` — Warn multiple members at once\n"
+                "`!bulkmute @A @B 1h reason` — Timeout multiple members at once"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="📊 Statistics (Staff Only)",
+            value=(
+                "`!joinstats` — Join application stats + acceptance rate\n"
+                "`!ticketstats` — Ticket handling stats by staff\n"
+                "`!appleaderboard` — Who has reviewed the most applications\n"
+                "`!cooldownlist` — Members currently on reapply cooldown"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="📋 Management (Staff Only)",
+            value=(
+                "`!managementreport` — Today's management briefing\n"
+                "`!weeklyreport` — Full weekly report\n"
+                "`!pendingjoins` — Open join tickets\n"
+                "`!hoststatus` — Current host team activity\n"
+                "`!sendweeklyhostdm` — Manually send weekly host availability DM"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🏆 Leaderboards (Staff Only)",
+            value=(
+                "`!repleaderboard` — Reputation leaderboard (public)\n"
+                "`!appleaderboard` — Application review leaderboard\n"
+                "`/staffleaderboard` — Staff performance leaderboard"
+            ),
+            inline=False,
+        )
+
+    embed.add_field(
+        name="ℹ️ Notes",
+        value=(
+            "• Auto-escalation is active: 2 warns → 24h timeout, 3 → kick, 5 → ban\n"
+            "• Meet recaps are auto-posted when attendance is submitted\n"
+            "• Server anniversaries are tracked and rewarded automatically"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="DIFF Meets Bot • Use !diffhelp for this panel")
+    await ctx.send(embed=embed)
+
+
+# ── Start background tasks ────────────────────────────────────────────────────
+_anniversary_check_task.start()
+_host_avail_weekly_dm_task.start()
 
 
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
