@@ -13136,6 +13136,8 @@ async def on_ready():
         _mgmt_weekly_report_loop.start()
     if not _mgmt_alert_loop.is_running():
         _mgmt_alert_loop.start()
+    if not _stale_join_alert_task.is_running():
+        _stale_join_alert_task.start()
 
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
@@ -22253,7 +22255,17 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
 
         # Save extra application data
         extra = _join_extra_load()
-        extra[str(channel.id)] = {"car_type": car_type_val, "heard_from": heard_from_val}
+        extra[str(channel.id)] = {
+            "car_type": car_type_val,
+            "heard_from": heard_from_val,
+            "opened_at": datetime.now(timezone.utc).isoformat(),
+            "psn": clean_psn,
+            "user_id": interaction.user.id,
+            "channel_name": channel.name,
+            "status": "Pending",
+            "reviewed_by": None,
+            "reviewed_at": None,
+        }
         _join_extra_save(extra)
 
         # Start the 30-minute idle auto-close timer
@@ -22406,6 +22418,18 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
         deny_embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
         await interaction.channel.send(embed=deny_embed)
 
+        _join_extra_deny = _join_extra_load()
+        _jed = _join_extra_deny.setdefault(str(interaction.channel.id), {})
+        _jed["status"] = "Denied"
+        _jed["reviewed_by"] = str(interaction.user)
+        _jed["reviewed_by_id"] = interaction.user.id
+        _jed["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+        _jed["deny_reason"] = reason_text
+        _jed.setdefault("psn", psn)
+        _jed.setdefault("channel_name", interaction.channel.name)
+        _jed.setdefault("opened_at", interaction.channel.created_at.isoformat())
+        _join_extra_save(_join_extra_deny)
+
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
             _resp_time = _join_response_time_str(interaction.channel)
@@ -22416,7 +22440,7 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
                     f"**PSN:** {psn}",
                     f"**Reason:** {reason_text}",
                     f"**Reviewed by:** {interaction.user.mention}",
-                    f"**Ticket:** {interaction.channel.mention}",
+                    f"**Ticket:** #{interaction.channel.name} ({interaction.channel.mention})",
                     f"**Response Time:** {_resp_time}",
                 ]),
                 color=discord.Color.red(),
@@ -22788,6 +22812,17 @@ class JoinTicketView(discord.ui.View):
         except discord.HTTPException:
             pass
 
+        _join_extra_acc = _join_extra_load()
+        _jea = _join_extra_acc.setdefault(str(interaction.channel.id), {})
+        _jea["status"] = "Accepted"
+        _jea["reviewed_by"] = str(interaction.user)
+        _jea["reviewed_by_id"] = interaction.user.id
+        _jea["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+        _jea.setdefault("psn", psn)
+        _jea.setdefault("channel_name", interaction.channel.name)
+        _jea.setdefault("opened_at", interaction.channel.created_at.isoformat())
+        _join_extra_save(_join_extra_acc)
+
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
             _resp_time = _join_response_time_str(interaction.channel)
@@ -22797,7 +22832,7 @@ class JoinTicketView(discord.ui.View):
                     f"**User:** {member.mention}",
                     f"**PSN:** {psn}",
                     f"**Reviewed by:** {interaction.user.mention}",
-                    f"**Ticket:** {interaction.channel.mention}",
+                    f"**Ticket:** #{interaction.channel.name} ({interaction.channel.mention})",
                     f"**Role Added:** {role.mention if role else 'Not configured'}",
                     f"**Response Time:** {_resp_time}",
                 ]),
@@ -26005,6 +26040,248 @@ async def _cmd_host_status(ctx: commands.Context):
         )
     embed.set_footer(text="DIFF Management • Host Status")
     await ctx.send(embed=embed)
+
+
+# ── Join Application Stats ─────────────────────────────────────────────────────
+@bot.command(name="joinstats")
+async def _cmd_join_stats(ctx: commands.Context):
+    """Show join application statistics (staff only)."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    )
+    if not is_staff:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    data = _join_extra_load()
+    entries = list(data.values())
+
+    total     = len(entries)
+    accepted  = sum(1 for e in entries if e.get("status") == "Accepted")
+    denied    = sum(1 for e in entries if e.get("status") == "Denied")
+    pending   = sum(1 for e in entries if e.get("status") == "Pending")
+    accept_rate = f"{accepted / (accepted + denied) * 100:.0f}%" if (accepted + denied) > 0 else "N/A"
+
+    # Response times
+    times = []
+    for e in entries:
+        if e.get("opened_at") and e.get("reviewed_at"):
+            try:
+                from datetime import timezone as _tz2
+                opened  = datetime.fromisoformat(e["opened_at"]).replace(tzinfo=timezone.utc)
+                reviewed = datetime.fromisoformat(e["reviewed_at"]).replace(tzinfo=timezone.utc)
+                times.append((reviewed - opened).total_seconds())
+            except Exception:
+                pass
+    avg_resp = "N/A"
+    if times:
+        avg_s = int(sum(times) / len(times))
+        h, rem = divmod(avg_s, 3600)
+        m = rem // 60
+        avg_resp = f"{h}h {m}m" if h else f"{m}m"
+
+    # Reviewers leaderboard
+    reviewer_counts: dict = {}
+    for e in entries:
+        rb = e.get("reviewed_by")
+        if rb:
+            reviewer_counts[rb] = reviewer_counts.get(rb, 0) + 1
+    top_reviewers = sorted(reviewer_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # This week stats
+    from datetime import timedelta as _td2
+    week_ago = datetime.now(timezone.utc) - _td2(days=7)
+    week_entries = [
+        e for e in entries
+        if e.get("opened_at") and datetime.fromisoformat(e["opened_at"]).replace(tzinfo=timezone.utc) > week_ago
+    ]
+    week_accepted = sum(1 for e in week_entries if e.get("status") == "Accepted")
+    week_denied   = sum(1 for e in week_entries if e.get("status") == "Denied")
+
+    embed = discord.Embed(
+        title="📊 Join Application Stats",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="All Time",
+        value=f"📥 Total: **{total}**\n✅ Accepted: **{accepted}**\n❌ Denied: **{denied}**\n⏳ Pending: **{pending}**\n📈 Acceptance Rate: **{accept_rate}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="This Week",
+        value=f"📥 Submitted: **{len(week_entries)}**\n✅ Accepted: **{week_accepted}**\n❌ Denied: **{week_denied}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="⏱️ Avg Response Time",
+        value=avg_resp,
+        inline=True,
+    )
+    if top_reviewers:
+        reviewer_lines = "\n".join(f"**{i+1}.** {name} — {cnt} reviewed" for i, (name, cnt) in enumerate(top_reviewers))
+        embed.add_field(name="🏆 Top Reviewers", value=reviewer_lines, inline=False)
+    embed.set_footer(text="DIFF Management • Join Stats")
+    await ctx.send(embed=embed)
+
+
+# ── Application Leaderboard ────────────────────────────────────────────────────
+@bot.command(name="appleaderboard", aliases=["appboard"])
+async def _cmd_app_leaderboard(ctx: commands.Context):
+    """Show who has reviewed the most join applications (staff only)."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    )
+    if not is_staff:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    data = _join_extra_load()
+    reviewer_stats: dict = {}
+    for e in data.values():
+        rb = e.get("reviewed_by")
+        if not rb:
+            continue
+        st = e.get("status", "Unknown")
+        if rb not in reviewer_stats:
+            reviewer_stats[rb] = {"total": 0, "Accepted": 0, "Denied": 0}
+        reviewer_stats[rb]["total"] += 1
+        reviewer_stats[rb][st] = reviewer_stats[rb].get(st, 0) + 1
+
+    if not reviewer_stats:
+        await ctx.send("No review data yet.", delete_after=10)
+        return
+
+    sorted_reviewers = sorted(reviewer_stats.items(), key=lambda x: x[1]["total"], reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, (name, stats) in enumerate(sorted_reviewers[:10]):
+        medal = medals[i] if i < 3 else f"**{i+1}.**"
+        lines.append(f"{medal} **{name}** — {stats['total']} total (✅ {stats.get('Accepted',0)} / ❌ {stats.get('Denied',0)})")
+
+    embed = discord.Embed(
+        title="🏆 Application Review Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="DIFF Management • App Leaderboard")
+    await ctx.send(embed=embed)
+
+
+# ── Reapply Cooldown List ──────────────────────────────────────────────────────
+@bot.command(name="cooldownlist", aliases=["cooldowns"])
+async def _cmd_cooldown_list(ctx: commands.Context):
+    """Show all users currently on a reapply cooldown (staff only)."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    )
+    if not is_staff:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    cooldowns = _load_diff_json(COOLDOWN_FILE)
+    now = datetime.now(timezone.utc)
+    active = []
+    for uid_str, expires_str in cooldowns.items():
+        try:
+            expires = datetime.fromisoformat(expires_str).replace(tzinfo=timezone.utc)
+            if expires > now:
+                remaining = expires - now
+                days = remaining.days
+                hours = remaining.seconds // 3600
+                active.append((int(uid_str), expires, days, hours))
+        except Exception:
+            pass
+
+    if not active:
+        await ctx.send("✅ No active reapply cooldowns.", delete_after=10)
+        return
+
+    active.sort(key=lambda x: x[1])
+    lines = []
+    for uid, expires, days, hours in active[:20]:
+        lines.append(f"<@{uid}> — expires in **{days}d {hours}h** (<t:{int(expires.timestamp())}:R>)")
+
+    embed = discord.Embed(
+        title=f"⏳ Reapply Cooldowns — {len(active)} active",
+        description="\n".join(lines),
+        color=discord.Color.orange(),
+        timestamp=now,
+    )
+    embed.set_footer(text="DIFF Management • Cooldown List")
+    await ctx.send(embed=embed)
+
+
+# ── Stale Join Ticket Alert Task ───────────────────────────────────────────────
+_STALE_JOIN_HOURS = 24
+
+@tasks.loop(minutes=30)
+async def _stale_join_alert_task():
+    """Alert staff every 30 min if a join ticket has been open > 24h without a decision."""
+    await bot.wait_until_ready()
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    mgmt_ch = guild.get_channel(_MGMT_CHANNEL_ID)
+    if not isinstance(mgmt_ch, discord.TextChannel):
+        return
+
+    data = _join_extra_load()
+    now = datetime.now(timezone.utc)
+    stale = []
+    for ch_id_str, entry in data.items():
+        if entry.get("status") != "Pending":
+            continue
+        opened_raw = entry.get("opened_at")
+        if not opened_raw:
+            continue
+        try:
+            opened = datetime.fromisoformat(opened_raw).replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        age_h = (now - opened).total_seconds() / 3600
+        if age_h >= _STALE_JOIN_HOURS:
+            stale.append((ch_id_str, entry, age_h))
+
+    if not stale:
+        return
+
+    lines = []
+    for ch_id_str, entry, age_h in sorted(stale, key=lambda x: -x[2]):
+        psn  = entry.get("psn", "unknown")
+        uid  = entry.get("user_id")
+        name = entry.get("channel_name", ch_id_str)
+        h    = int(age_h)
+        user_str = f"<@{uid}>" if uid else "Unknown"
+        lines.append(f"• **#{name}** — {user_str} (PSN: {psn}) — open **{h}h**")
+
+    embed = discord.Embed(
+        title=f"⚠️ Stale Join Tickets — {len(stale)} unreviewed 24h+",
+        description="\n".join(lines[:15]),
+        color=discord.Color.orange(),
+        timestamp=now,
+    )
+    embed.set_footer(text="DIFF Management • Stale Alert")
+    try:
+        await mgmt_ch.send(embed=embed)
+    except Exception:
+        pass
 
 
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
