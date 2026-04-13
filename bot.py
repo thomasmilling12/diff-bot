@@ -13190,6 +13190,10 @@ async def on_ready():
         _mgmt_alert_loop.start()
     if not _stale_join_alert_task.is_running():
         _stale_join_alert_task.start()
+    if not _anniversary_check_task.is_running():
+        _anniversary_check_task.start()
+    if not _host_avail_weekly_dm_task.is_running():
+        _host_avail_weekly_dm_task.start()
 
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
@@ -26893,9 +26897,6 @@ async def _cmd_diff_help(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
-# ── Start background tasks ────────────────────────────────────────────────────
-_anniversary_check_task.start()
-_host_avail_weekly_dm_task.start()
 
 
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
