@@ -39,14 +39,8 @@ except Exception:
 # KEEP ALIVE FOR REPLIT
 # =========================
 def keep_alive():
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "120", "web:app"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
+    # No-op on Pi — bot runs as a systemd service and needs no web keep-alive.
+    pass
 
 
 # =========================
@@ -13131,6 +13125,10 @@ async def on_ready():
     if not _rc_finalize_reminder_loop.is_running():
         _rc_finalize_reminder_loop.start()
 
+    # ── PSN Host Status Board ──────────────────────────────────────────────────
+    if not _psn_board_refresh_loop.is_running():
+        _psn_board_refresh_loop.start()
+
     # ── Management channel: daily briefing, weekly report, real-time alerts ──
     if not _mgmt_daily_briefing_loop.is_running():
         _mgmt_daily_briefing_loop.start()
@@ -25088,6 +25086,383 @@ async def _rc_finalize_reminder_loop():
 @_rc_finalize_reminder_loop.before_loop
 async def _before_rc_reminder():
     await bot.wait_until_ready()
+
+
+# =========================
+# PSN HOST STATUS BOARD
+# =========================
+
+try:
+    from psnawp_api import PSNAWP as _PSNAWP
+    _PSNAWP_AVAILABLE = True
+except ImportError:
+    _PSNAWP_AVAILABLE = False
+
+_PSN_MAP_FILE  = os.path.join(DATA_FOLDER, "diff_psn_map.json")
+_PSN_NPSSO_KEY = "PSN_NPSSO"
+
+
+def _psn_map_load() -> dict:
+    try:
+        with open(_PSN_MAP_FILE, "r") as _f:
+            return json.load(_f)
+    except Exception:
+        return {"map": {}, "board_message_id": None}
+
+def _psn_map_save(_d: dict) -> None:
+    try:
+        with open(_PSN_MAP_FILE, "w") as _f:
+            json.dump(_d, _f, indent=2)
+    except Exception:
+        pass
+
+def _psn_npsso() -> str:
+    return os.environ.get(_PSN_NPSSO_KEY, "").strip()
+
+def _psn_client():
+    if not _PSNAWP_AVAILABLE:
+        return None
+    npsso = _psn_npsso()
+    if not npsso:
+        return None
+    try:
+        return _PSNAWP(npsso=npsso)
+    except Exception as _e:
+        print(f"[PSN] Client init failed: {_e}")
+        return None
+
+
+def _psn_fetch_all_sync(psn_ids: list) -> dict:
+    """Sync: fetch PSN presence for a list of PSN IDs. Returns {psn_id: parsed_dict}."""
+    client = _psn_client()
+    if not client:
+        return {}
+    results: dict = {}
+    for psn_id in psn_ids:
+        try:
+            user     = client.user(online_id=psn_id)
+            raw      = user.get_presence()
+            basic    = raw.get("basicPresence", raw)
+            avail    = basic.get("availability", "offline")
+            ppi      = basic.get("primaryPlatformInfo") or {}
+            platform = ppi.get("platform", "")
+            online   = ppi.get("onlineStatus", "offline") == "online" or avail == "availableToPlay"
+            dnd      = avail == "doNotDisturb"
+            games    = basic.get("gameTitleInfoList") or []
+            game     = games[0].get("titleName", "") if games else ""
+            last_ts  = basic.get("lastAvailableDate", "")
+            results[psn_id] = {
+                "online":   online,
+                "dnd":      dnd,
+                "platform": platform,
+                "game":     game,
+                "last":     last_ts,
+                "error":    None,
+            }
+        except Exception as _e:
+            results[psn_id] = {"online": False, "dnd": False, "platform": "", "game": "", "last": "", "error": str(_e)}
+    return results
+
+
+async def _psn_fetch_all(psn_ids: list) -> dict:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _psn_fetch_all_sync, psn_ids)
+
+
+def _psn_platform_emoji(platform: str) -> str:
+    p = platform.upper()
+    if "PS5" in p:
+        return "🎮 PS5"
+    if "PS4" in p:
+        return "🎮 PS4"
+    if p:
+        return f"🎮 {platform}"
+    return ""
+
+
+def _psn_build_board_embed(guild: discord.Guild, presence: dict, psn_map: dict) -> discord.Embed:
+    """Build the PSN status board embed from fetched presence data."""
+    # Invert map: psn_id → [discord_member, ...]
+    gta_lines:     list[str] = []
+    online_lines:  list[str] = []
+    dnd_lines:     list[str] = []
+    offline_lines: list[str] = []
+    error_count = 0
+
+    for did_str, psn_id in psn_map.items():
+        member = guild.get_member(int(did_str))
+        name   = member.display_name if member else f"<@{did_str}>"
+        p      = presence.get(psn_id, {})
+
+        if p.get("error"):
+            error_count += 1
+            offline_lines.append(f"⚫ **{name}** (`{psn_id}`) — unavailable")
+            continue
+
+        game     = p.get("game", "")
+        platform = _psn_platform_emoji(p.get("platform", ""))
+        plat_str = f" · {platform}" if platform else ""
+
+        if p.get("online"):
+            if "grand theft auto" in game.lower() or "gta" in game.lower():
+                gta_lines.append(f"🟢 **{name}** (`{psn_id}`){plat_str} · 🏎️ GTA Online")
+            elif game:
+                online_lines.append(f"🟡 **{name}** (`{psn_id}`){plat_str} · {game}")
+            else:
+                online_lines.append(f"🟡 **{name}** (`{psn_id}`){plat_str} · Online")
+        elif p.get("dnd"):
+            dnd_lines.append(f"🔴 **{name}** (`{psn_id}`) · Do Not Disturb")
+        else:
+            last = ""
+            raw_last = p.get("last", "")
+            if raw_last:
+                try:
+                    ts = int(datetime.fromisoformat(raw_last.replace("Z", "+00:00")).timestamp())
+                    last = f" · last seen <t:{ts}:R>"
+                except Exception:
+                    pass
+            offline_lines.append(f"⚫ **{name}** (`{psn_id}`){last}")
+
+    total  = len(gta_lines) + len(online_lines) + len(dnd_lines) + len(offline_lines)
+    online = len(gta_lines) + len(online_lines)
+
+    if gta_lines:
+        color = 0x43B581
+    elif online_lines:
+        color = 0xFAA61A
+    else:
+        color = 0x36393F
+
+    filled = round(online / max(total, 1) * 10)
+    bar    = "🟩" * filled + "⬛" * (10 - filled)
+
+    embed = discord.Embed(
+        title="🎮 DIFF Host PSN Status",
+        description=(
+            "Live PlayStation presence for the host team.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{bar}  **{online}/{total}** online"
+        ),
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    if gta_lines:
+        embed.add_field(name=f"🏎️ In GTA Online  ({len(gta_lines)})", value="\n".join(gta_lines), inline=False)
+    if online_lines:
+        embed.add_field(name=f"🟡 Online Elsewhere  ({len(online_lines)})", value="\n".join(online_lines), inline=False)
+    if dnd_lines:
+        embed.add_field(name=f"🔴 Do Not Disturb  ({len(dnd_lines)})", value="\n".join(dnd_lines), inline=False)
+    if offline_lines:
+        embed.add_field(name=f"⚫ Offline  ({len(offline_lines)})", value="\n".join(offline_lines), inline=False)
+
+    if not psn_map:
+        embed.add_field(
+            name="No PSN accounts registered",
+            value="Hosts can register with `!setpsn YourPSN`",
+            inline=False,
+        )
+
+    footer = "DIFF Meets • PSN Status Board — updates every 5 min"
+    if error_count:
+        footer += f" • {error_count} account(s) unreachable"
+    embed.set_footer(text=footer)
+    return embed
+
+
+async def _psn_refresh_board(guild: discord.Guild) -> None:
+    """Fetch presence and update (or post) the board embed in the host team channel."""
+    d = _psn_map_load()
+    psn_map: dict = d.get("map", {})
+
+    ch = guild.get_channel(_HOST_TEAM_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        try:
+            ch = await guild.fetch_channel(_HOST_TEAM_CHANNEL_ID)
+        except Exception:
+            return
+    if not isinstance(ch, discord.TextChannel):
+        return
+
+    # Fetch presence (runs sync psnawp in thread pool)
+    presence = await _psn_fetch_all(list(psn_map.values())) if psn_map and _psn_npsso() else {}
+    embed = _psn_build_board_embed(guild, presence, psn_map)
+
+    board_msg_id = d.get("board_message_id")
+    if board_msg_id:
+        try:
+            msg = await ch.fetch_message(int(board_msg_id))
+            await msg.edit(embed=embed)
+            return
+        except discord.NotFound:
+            pass
+        except Exception as _e:
+            print(f"[PSN] Board edit failed: {_e}")
+            return
+
+    # Post fresh board
+    try:
+        msg = await ch.send(embed=embed)
+        d["board_message_id"] = msg.id
+        _psn_map_save(d)
+    except Exception as _e:
+        print(f"[PSN] Board post failed: {_e}")
+
+
+@tasks.loop(minutes=5)
+async def _psn_board_refresh_loop():
+    guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
+    if guild:
+        try:
+            await _psn_refresh_board(guild)
+        except Exception as _e:
+            print(f"[PSN] Loop error: {_e}")
+
+@_psn_board_refresh_loop.before_loop
+async def _before_psn_board():
+    await bot.wait_until_ready()
+
+
+# ── Commands ───────────────────────────────────────────────────────────────────
+
+@bot.command(name="setpsn")
+async def _cmd_setpsn(ctx: commands.Context, *args):
+    """!setpsn <PSN>  or  !setpsn @user <PSN>  — register a PSN username for the board."""
+    if not isinstance(ctx.author, discord.Member):
+        return
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_host  = any(r.id == HOST_ROLE_ID for r in ctx.author.roles)
+
+    # Staff can set for another member: !setpsn @user PSN
+    if args and ctx.message.mentions and is_staff:
+        target  = ctx.message.mentions[0]
+        psn_val = " ".join(a for a in args if not a.startswith("<@")).strip()
+    elif args and not ctx.message.mentions:
+        if not is_host and not is_staff:
+            return await ctx.send("Host role required.", delete_after=8)
+        target  = ctx.author
+        psn_val = args[0].strip()
+    else:
+        return await ctx.send("Usage: `!setpsn YourPSN` or `!setpsn @user YourPSN`", delete_after=10)
+
+    if not psn_val or len(psn_val) > 16:
+        return await ctx.send("Invalid PSN username.", delete_after=8)
+
+    d = _psn_map_load()
+    d.setdefault("map", {})[str(target.id)] = psn_val
+    _psn_map_save(d)
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    await ctx.send(
+        f"✅ PSN registered for **{target.display_name}**: `{psn_val}`\n"
+        f"The board will update within 5 minutes.",
+        delete_after=15,
+    )
+
+
+@bot.command(name="removepsn", aliases=["clearpsn", "unsetpsn"])
+async def _cmd_removepsn(ctx: commands.Context, member: discord.Member = None):
+    """!removepsn — remove your own PSN mapping (staff can pass @user)."""
+    if not isinstance(ctx.author, discord.Member):
+        return
+    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+
+    if member and not is_staff:
+        return await ctx.send("Staff only for removing others.", delete_after=8)
+
+    target = member or ctx.author
+    d = _psn_map_load()
+    removed = d.get("map", {}).pop(str(target.id), None)
+    _psn_map_save(d)
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    if removed:
+        await ctx.send(f"✅ PSN (`{removed}`) removed for **{target.display_name}**.", delete_after=10)
+    else:
+        await ctx.send(f"No PSN was registered for **{target.display_name}**.", delete_after=8)
+
+
+@bot.command(name="psnboard")
+async def _cmd_psnboard(ctx: commands.Context):
+    """!psnboard — post a fresh PSN board (staff only)."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    )
+    if not is_staff:
+        return await ctx.send("Staff only.", delete_after=6)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    if not ctx.guild:
+        return
+    # Clear stored message ID so _psn_refresh_board posts a new one
+    d = _psn_map_load()
+    d["board_message_id"] = None
+    _psn_map_save(d)
+    await ctx.send("⏳ Fetching PSN data…", delete_after=8)
+    await _psn_refresh_board(ctx.guild)
+
+
+@bot.command(name="refreshpsnboard", aliases=["psnrefresh"])
+async def _cmd_refresh_psn_board(ctx: commands.Context):
+    """!refreshpsnboard — force-refresh the existing PSN board embed."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    )
+    if not is_staff:
+        return await ctx.send("Staff only.", delete_after=6)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    if not ctx.guild:
+        return
+    msg = await ctx.send("⏳ Refreshing PSN board…")
+    await _psn_refresh_board(ctx.guild)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+
+@bot.command(name="psnlist")
+async def _cmd_psn_list(ctx: commands.Context):
+    """!psnlist — show all registered host PSN accounts (staff/host only)."""
+    is_ok = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    )
+    if not is_ok:
+        return await ctx.send("Staff/host only.", delete_after=6)
+    d = _psn_map_load()
+    psn_map = d.get("map", {})
+    if not psn_map:
+        return await ctx.send("No PSN accounts registered yet. Use `!setpsn YourPSN`.", delete_after=10)
+    lines = []
+    for did_str, psn in psn_map.items():
+        m = ctx.guild.get_member(int(did_str)) if ctx.guild else None
+        name = m.display_name if m else f"<@{did_str}>"
+        lines.append(f"**{name}** → `{psn}`")
+    embed = discord.Embed(
+        title=f"🎮 Registered PSN Accounts ({len(lines)})",
+        description="\n".join(lines),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="!setpsn <PSN>  •  !removepsn  •  !refreshpsnboard")
+    await ctx.send(embed=embed, delete_after=30)
 
 
 # =========================
