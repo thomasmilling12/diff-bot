@@ -2474,7 +2474,7 @@ _HRSVP_DAYS = ["Meet 1", "Meet 2", "Meet 3"]
 
 def _hrsvp_repair_entries(data: dict) -> dict:
     """Convert any string-dict entries back to proper dicts (fixes legacy corruption)."""
-    import ast as _ast
+    import re as _re
     changed = False
     for day in _HRSVP_DAYS:
         slot = data.get(day, {})
@@ -2482,11 +2482,19 @@ def _hrsvp_repair_entries(data: dict) -> dict:
             fixed = []
             for entry in slot.get(key, []):
                 if isinstance(entry, str) and entry.startswith("{"):
-                    try:
-                        entry = _ast.literal_eval(entry)
+                    # Extract fields with regex — handles apostrophes in values
+                    uid_m   = _re.search(r"'uid'\s*:\s*'([^']+)'", entry)
+                    day_m   = _re.search(r"'day'\s*:\s*'([^']+)'", entry)
+                    time_m  = _re.search(r"'time'\s*:\s*'([^']+)'", entry)
+                    theme_m = _re.search(r"'theme'\s*:\s*'(.*?)'(?:\s*[,}])", entry)
+                    if uid_m:
+                        entry = {
+                            "uid":   uid_m.group(1),
+                            "day":   day_m.group(1)   if day_m   else "TBD",
+                            "time":  time_m.group(1)  if time_m  else "TBD",
+                            "theme": theme_m.group(1) if theme_m else "TBD",
+                        }
                         changed = True
-                    except Exception:
-                        pass
                 fixed.append(entry)
             slot[key] = fixed
         data[day] = slot
