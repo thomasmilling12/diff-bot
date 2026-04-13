@@ -2472,11 +2472,35 @@ _HRSVP_FILE = os.path.join("diff_data", "diff_host_rsvp.json")
 _HRSVP_DAYS = ["Meet 1", "Meet 2", "Meet 3"]
 
 
+def _hrsvp_repair_entries(data: dict) -> dict:
+    """Convert any string-dict entries back to proper dicts (fixes legacy corruption)."""
+    import ast as _ast
+    changed = False
+    for day in _HRSVP_DAYS:
+        slot = data.get(day, {})
+        for key in ("yes", "maybe", "no"):
+            fixed = []
+            for entry in slot.get(key, []):
+                if isinstance(entry, str) and entry.startswith("{"):
+                    try:
+                        entry = _ast.literal_eval(entry)
+                        changed = True
+                    except Exception:
+                        pass
+                fixed.append(entry)
+            slot[key] = fixed
+        data[day] = slot
+    if changed:
+        _hrsvp_save(data)
+    return data
+
+
 def _hrsvp_load() -> dict:
     if os.path.exists(_HRSVP_FILE):
         try:
             with open(_HRSVP_FILE, "r") as f:
-                return json.load(f)
+                raw = json.load(f)
+            return _hrsvp_repair_entries(raw)
         except Exception:
             pass
     return {day: {"yes": [], "no": [], "maybe": []} for day in _HRSVP_DAYS}
