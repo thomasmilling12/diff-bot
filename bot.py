@@ -39,14 +39,8 @@ except Exception:
 # KEEP ALIVE FOR REPLIT
 # =========================
 def keep_alive():
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "120", "web:app"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
+    # No-op on Pi — bot runs as a systemd service and needs no web keep-alive.
+    pass
 
 
 # =========================
