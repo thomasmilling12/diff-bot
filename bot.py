@@ -26469,69 +26469,6 @@ async def _cmd_bulk_mute(ctx: commands.Context, members: commands.Greedy[discord
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FEATURE: !ticketstats
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@bot.command(name="ticketstats")
-async def _cmd_ticket_stats(ctx: commands.Context):
-    """Show ticket handling stats (staff only)."""
-    if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
-        return await ctx.send("Staff only.", delete_after=6)
-    try:
-        await ctx.message.delete()
-    except Exception:
-        pass
-
-    rows = _auto_stats.leaderboard()
-    total_tickets  = sum(s.get("tickets_handled", 0)       for _, s in rows)
-    total_apps     = sum(s.get("applications_reviewed", 0) for _, s in rows)
-    total_appeals  = sum(s.get("appeals_reviewed", 0)      for _, s in rows)
-    total_reports  = sum(s.get("reports_resolved", 0)      for _, s in rows)
-    total_accepted = sum(s.get("accepted_apps", 0)         for _, s in rows)
-
-    join_data   = _join_extra_load()
-    pending_j   = sum(1 for e in join_data.values() if e.get("status") == "Pending")
-    accepted_j  = sum(1 for e in join_data.values() if e.get("status") == "Accepted")
-    denied_j    = sum(1 for e in join_data.values() if e.get("status") == "Denied")
-
-    top_lines = []
-    for uid, s in rows[:5]:
-        member = ctx.guild.get_member(uid) if ctx.guild else None
-        name = member.display_name if member else f"<@{uid}>"
-        score = _auto_score(s)
-        top_lines.append(f"• **{name}** — {s.get('tickets_handled',0)} tickets / {s.get('applications_reviewed',0)} apps (score {score})")
-
-    embed = discord.Embed(
-        title="🎫 Ticket Stats",
-        color=discord.Color.blurple(),
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(
-        name="Support Tickets (all-time)",
-        value=(
-            f"🎫 Handled: **{total_tickets}**\n"
-            f"📋 Apps Reviewed: **{total_apps}** (✅ {total_accepted} accepted)\n"
-            f"⚖️ Appeals: **{total_appeals}**\n"
-            f"🚨 Reports: **{total_reports}**"
-        ),
-        inline=True,
-    )
-    embed.add_field(
-        name="Join Tickets",
-        value=(
-            f"⏳ Pending: **{pending_j}**\n"
-            f"✅ Accepted: **{accepted_j}**\n"
-            f"❌ Denied: **{denied_j}**"
-        ),
-        inline=True,
-    )
-    if top_lines:
-        embed.add_field(name="🏆 Top Staff (Tickets)", value="\n".join(top_lines), inline=False)
-    embed.set_footer(text="DIFF Management • Ticket Stats")
-    await ctx.send(embed=embed)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: !repleaderboard
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -26914,7 +26851,7 @@ async def _cmd_diff_help(ctx: commands.Context):
             name="📊 Statistics (Staff Only)",
             value=(
                 "`!joinstats` — Join application stats + acceptance rate\n"
-                "`!ticketstats` — Ticket handling stats by staff\n"
+                "`!ticketstats` — Count of currently open tickets by type\n"
                 "`!appleaderboard` — Who has reviewed the most applications\n"
                 "`!cooldownlist` — Members currently on reapply cooldown"
             ),
