@@ -1,4 +1,4 @@
-
+ 
 import asyncio
 import hashlib
 import io
@@ -13131,6 +13131,14 @@ async def on_ready():
     if not _rc_finalize_reminder_loop.is_running():
         _rc_finalize_reminder_loop.start()
 
+    # ── Management channel: daily briefing, weekly report, real-time alerts ──
+    if not _mgmt_daily_briefing_loop.is_running():
+        _mgmt_daily_briefing_loop.start()
+    if not _mgmt_weekly_report_loop.is_running():
+        _mgmt_weekly_report_loop.start()
+    if not _mgmt_alert_loop.is_running():
+        _mgmt_alert_loop.start()
+
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
         import time as _tmod
@@ -25080,6 +25088,548 @@ async def _rc_finalize_reminder_loop():
 @_rc_finalize_reminder_loop.before_loop
 async def _before_rc_reminder():
     await bot.wait_until_ready()
+
+
+# =========================
+# MANAGEMENT CHANNEL SYSTEM
+# =========================
+
+_MGMT_CHANNEL_ID      = 1025842308752621719
+_MGMT_SNAPSHOT_FILE   = os.path.join(DATA_FOLDER, "diff_mgmt_snapshot.json")
+_MGMT_ALERT_STATE_FILE = os.path.join(DATA_FOLDER, "diff_mgmt_alerts.json")
+
+
+def _mgmt_snapshot_load() -> dict:
+    try:
+        with open(_MGMT_SNAPSHOT_FILE, "r") as _f:
+            return json.load(_f)
+    except Exception:
+        return {}
+
+def _mgmt_snapshot_save(_d: dict) -> None:
+    try:
+        with open(_MGMT_SNAPSHOT_FILE, "w") as _f:
+            json.dump(_d, _f)
+    except Exception:
+        pass
+
+def _mgmt_alert_load() -> dict:
+    try:
+        with open(_MGMT_ALERT_STATE_FILE, "r") as _f:
+            return json.load(_f)
+    except Exception:
+        return {}
+
+def _mgmt_alert_save(_d: dict) -> None:
+    try:
+        with open(_MGMT_ALERT_STATE_FILE, "w") as _f:
+            json.dump(_d, _f)
+    except Exception:
+        pass
+
+
+def _mgmt_open_join_tickets(guild: discord.Guild) -> list:
+    """Return [(channel, age_hours), ...] for open join tickets, oldest first."""
+    now = datetime.now(timezone.utc)
+    result = []
+    for ch in guild.text_channels:
+        if ch.category_id != JOIN_TICKET_CATEGORY_ID:
+            continue
+        if not ch.topic or "JOIN_USER:" not in ch.topic:
+            continue
+        age_h = (now - ch.created_at).total_seconds() / 3600
+        result.append((ch, age_h))
+    result.sort(key=lambda x: x[1], reverse=True)
+    return result
+
+
+def _mgmt_open_appeal_tickets(guild: discord.Guild) -> list:
+    """Return [(channel, age_hours), ...] for open appeal/support tickets, oldest first."""
+    now = datetime.now(timezone.utc)
+    result = []
+    for ch in guild.text_channels:
+        topic = ch.topic or ""
+        if "ticket_owner=" not in topic or "ticket_type=" not in topic:
+            continue
+        age_h = (now - ch.created_at).total_seconds() / 3600
+        is_appeal = any(f"ticket_type={k}" in topic for k in _APPEAL_TYPE_KEYS)
+        result.append((ch, age_h, is_appeal))
+    result.sort(key=lambda x: x[1], reverse=True)
+    return result
+
+
+def _mgmt_recent_warnings(days: int = 7) -> list:
+    """Return warning dicts issued in the last N days."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
+    out = []
+    for uid_str, entries in data.get("warnings", {}).items():
+        for w in entries:
+            if isinstance(w, dict) and w.get("timestamp", 0) >= cutoff:
+                out.append({**w, "user_id": uid_str})
+    return out
+
+
+def _mgmt_hosts_pending_members(guild: discord.Guild) -> list:
+    """Return Member objects of hosts who haven't marked availability this week."""
+    responded = _hrsvp_responded_uids()
+    host_role = guild.get_role(HOST_ROLE_ID)
+    if not host_role:
+        return []
+    return [m for m in host_role.members if str(m.id) not in {str(u) for u in responded}]
+
+
+async def _mgmt_channel_obj(guild: discord.Guild):
+    ch = guild.get_channel(_MGMT_CHANNEL_ID)
+    if isinstance(ch, discord.TextChannel):
+        return ch
+    try:
+        ch = await guild.fetch_channel(_MGMT_CHANNEL_ID)
+        return ch if isinstance(ch, discord.TextChannel) else None
+    except Exception:
+        return None
+
+
+async def _mgmt_send_daily_briefing(guild: discord.Guild) -> None:
+    ch = await _mgmt_channel_obj(guild)
+    if not ch:
+        return
+
+    now_et = datetime.now(_EST_TZ)
+    join_tickets  = _mgmt_open_join_tickets(guild)
+    all_tickets   = _mgmt_open_appeal_tickets(guild)
+    appeal_tickets  = [(c, a) for c, a, ia in all_tickets if ia]
+    support_tickets = [(c, a) for c, a, ia in all_tickets if not ia]
+    recent_warns  = _mgmt_recent_warnings(days=1)
+    all_records   = _om_load_records()
+    now_ts        = int(datetime.now(timezone.utc).timestamp())
+    upcoming      = sorted(
+        [r for r in all_records.values() if not r.get("ended") and r.get("timestamp", 0) > now_ts],
+        key=lambda r: r.get("timestamp", 0),
+    )
+    pending_hosts = _mgmt_hosts_pending_members(guild)
+
+    embed = discord.Embed(
+        title="☀️ Daily Management Briefing",
+        description=f"**{now_et.strftime('%A, %B %-d %Y')}**",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    # Join tickets
+    if join_tickets:
+        oldest_ch, oldest_age = join_tickets[0]
+        psn = _join_parse_psn(oldest_ch.topic)
+        jval = f"**{len(join_tickets)}** open\n📌 Oldest: `{psn}` — {oldest_age:.0f}h ({oldest_ch.mention})"
+    else:
+        jval = "✅ None open"
+    embed.add_field(name="🎮 Join Tickets", value=jval, inline=True)
+
+    # Appeal tickets
+    if appeal_tickets:
+        aval = f"**{len(appeal_tickets)}** pending\n📌 Oldest: {appeal_tickets[0][0].mention} — {appeal_tickets[0][1]:.0f}h ago"
+    else:
+        aval = "✅ None pending"
+    embed.add_field(name="⚖️ Appeals", value=aval, inline=True)
+
+    # Support tickets
+    sval = f"**{len(support_tickets)}** open" if support_tickets else "✅ None open"
+    embed.add_field(name="🎫 Support Tickets", value=sval, inline=True)
+
+    # Warnings last 24h
+    embed.add_field(name="⚠️ Warnings (24h)", value=str(len(recent_warns)) or "0", inline=True)
+
+    # Next meet
+    if upcoming:
+        nm = upcoming[0]
+        mval = f"**{nm.get('theme','?')}** — <t:{nm.get('timestamp',0)}:R>"
+    else:
+        mval = "None scheduled"
+    embed.add_field(name="🏁 Next Meet", value=mval, inline=True)
+
+    # Hosts pending
+    hval = f"**{len(pending_hosts)}** not responded" if pending_hosts else "✅ All responded"
+    embed.add_field(name="📋 Host Availability", value=hval, inline=True)
+
+    embed.set_footer(text="DIFF Management • Daily Briefing — 9 AM ET")
+    await ch.send(embed=embed)
+
+
+async def _mgmt_send_weekly_report(guild: discord.Guild) -> None:
+    ch = await _mgmt_channel_obj(guild)
+    if not ch:
+        return
+
+    now_et     = datetime.now(_EST_TZ)
+    snap       = _mgmt_snapshot_load()
+    prev_count = snap.get("member_count", guild.member_count)
+    diff_count = guild.member_count - prev_count
+    diff_str   = (f"+{diff_count}" if diff_count >= 0 else str(diff_count))
+
+    snap["member_count"]    = guild.member_count
+    snap["snapshot_date"]   = now_et.strftime("%Y-%m-%d")
+    _mgmt_snapshot_save(snap)
+
+    week_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
+    all_records = _om_load_records()
+    meets_week  = [r for r in all_records.values()
+                   if r.get("started") and r.get("started_at_ts", 0) >= week_cutoff]
+    warns_7d    = _mgmt_recent_warnings(days=7)
+
+    # Top hosts all-time
+    host_counts: dict = {}
+    for r in all_records.values():
+        hid = r.get("host_id")
+        if hid and r.get("started"):
+            host_counts[hid] = host_counts.get(hid, 0) + 1
+    top_hosts = sorted(host_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+
+    # Staff performance
+    tperf = _tperf_load()
+
+    embed = discord.Embed(
+        title="📊 Weekly Management Report",
+        description=f"Week ending **{now_et.strftime('%A, %B %-d %Y')}**",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    embed.add_field(name="👥 Members", value=f"**{guild.member_count:,}** ({diff_str} this week)", inline=True)
+    embed.add_field(name="🏁 Meets Held", value=str(len(meets_week)), inline=True)
+    embed.add_field(name="⚠️ Warnings", value=str(len(warns_7d)), inline=True)
+
+    if top_hosts:
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, (hid, cnt) in enumerate(top_hosts):
+            m = guild.get_member(int(hid))
+            name = m.display_name if m else f"<@{hid}>"
+            lines.append(f"{medals[i]} **{name}** — {cnt} meet{'s' if cnt != 1 else ''}")
+        embed.add_field(name="🎙️ Top Hosts (All-Time)", value="\n".join(lines), inline=False)
+
+    staff_lines = []
+    for sid, stats in sorted(tperf.items(), key=lambda x: x[1].get("closed", 0), reverse=True)[:6]:
+        m = guild.get_member(int(sid))
+        if not m:
+            continue
+        closed  = stats.get("closed", 0)
+        total_s = stats.get("total_seconds", 0)
+        avg_str = ""
+        if closed > 0 and total_s > 0:
+            avg_h = (total_s / closed) / 3600
+            avg_str = f" • avg {avg_h:.1f}h response"
+        staff_lines.append(f"**{m.display_name}** — {closed} closed{avg_str}")
+    if staff_lines:
+        embed.add_field(name="🙋 Staff Ticket Performance", value="\n".join(staff_lines), inline=False)
+
+    embed.set_footer(text="DIFF Management • Weekly Report — Sunday 9 PM ET")
+    await ch.send(embed=embed)
+
+
+@tasks.loop(minutes=15)
+async def _mgmt_daily_briefing_loop():
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return
+    if now_et.hour != 9 or now_et.minute >= 15:
+        return
+    today_str = now_et.strftime("%Y-%m-%d")
+    snap = _mgmt_snapshot_load()
+    if snap.get("_briefing_sent") == today_str:
+        return
+    snap["_briefing_sent"] = today_str
+    _mgmt_snapshot_save(snap)
+    guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
+    if guild:
+        try:
+            await _mgmt_send_daily_briefing(guild)
+        except Exception as _e:
+            print(f"[MgmtBriefing] {_e}")
+
+
+@tasks.loop(minutes=15)
+async def _mgmt_weekly_report_loop():
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return
+    if now_et.weekday() != 6 or now_et.hour != 21 or now_et.minute >= 15:
+        return
+    today_str = now_et.strftime("%Y-%m-%d")
+    snap = _mgmt_snapshot_load()
+    if snap.get("_weekly_sent") == today_str:
+        return
+    snap["_weekly_sent"] = today_str
+    _mgmt_snapshot_save(snap)
+    guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
+    if guild:
+        try:
+            await _mgmt_send_weekly_report(guild)
+        except Exception as _e:
+            print(f"[MgmtWeekly] {_e}")
+
+
+@tasks.loop(minutes=30)
+async def _mgmt_alert_loop():
+    guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
+    if not guild:
+        return
+    ch = await _mgmt_channel_obj(guild)
+    if not ch:
+        return
+    alerts = _mgmt_alert_load()
+
+    # Alert: join ticket open > 24 hours
+    for ticket_ch, age_h in _mgmt_open_join_tickets(guild):
+        if age_h < 24:
+            continue
+        key = f"stale_join_{ticket_ch.id}"
+        if alerts.get(key):
+            continue
+        psn     = _join_parse_psn(ticket_ch.topic)
+        uid_raw = _join_parse_user_id(ticket_ch.topic)
+        astr    = f"<@{uid_raw}>" if uid_raw else "Unknown"
+        emb = discord.Embed(
+            title="⏰ Stale Join Ticket",
+            description=(
+                f"{ticket_ch.mention} has been open for **{age_h:.0f} hours** with no decision.\n"
+                f"**PSN:** `{psn}` • **Applicant:** {astr}"
+            ),
+            color=discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        emb.set_footer(text="DIFF Management • Alert System")
+        try:
+            await ch.send(embed=emb)
+            alerts[key] = True
+        except Exception:
+            pass
+
+    # Alert: member has 3+ warnings in 7 days
+    week_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
+    for uid_str, warn_entries in data.get("warnings", {}).items():
+        if not isinstance(warn_entries, list):
+            continue
+        recent = [w for w in warn_entries if isinstance(w, dict) and w.get("timestamp", 0) >= week_cutoff]
+        if len(recent) < 3:
+            continue
+        key = f"multiswarn_{uid_str}"
+        if alerts.get(key):
+            continue
+        emb = discord.Embed(
+            title="🚨 Repeated Warnings",
+            description=f"<@{uid_str}> has received **{len(recent)} warnings** in the last 7 days. Consider escalating.",
+            color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        emb.set_footer(text="DIFF Management • Alert System")
+        try:
+            await ch.send(embed=emb)
+            alerts[key] = True
+        except Exception:
+            pass
+
+    # Alert: Thursday noon and no hosts have responded yet
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        if now_et.weekday() == 3 and now_et.hour >= 12:
+            host_role = guild.get_role(HOST_ROLE_ID)
+            total = len(host_role.members) if host_role else 1
+            pending = _mgmt_hosts_pending_members(guild)
+            week_key = f"empty_roster_{now_et.strftime('%Y-%m-%d')}"
+            if len(pending) >= total and not alerts.get(week_key):
+                emb = discord.Embed(
+                    title="📋 No Host Availability — Thursday Check",
+                    description=(
+                        f"It's Thursday and **none of the {total} hosts** have marked "
+                        "availability for this week."
+                    ),
+                    color=discord.Color.red(),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                emb.set_footer(text="DIFF Management • Alert System")
+                try:
+                    await ch.send(embed=emb)
+                    alerts[week_key] = True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Clean up stale-join alerts for tickets that no longer exist
+    existing = {str(c.id) for c in guild.text_channels}
+    for k in list(alerts.keys()):
+        if k.startswith("stale_join_") and k.replace("stale_join_", "") not in existing:
+            alerts.pop(k, None)
+
+    # Reset multi-warn alerts weekly
+    cur_week = f"week_{datetime.now(timezone.utc).strftime('%Y-%W')}"
+    if alerts.get("_warn_week") != cur_week:
+        for k in [k for k in list(alerts.keys()) if k.startswith("multiswarn_")]:
+            alerts.pop(k, None)
+        alerts["_warn_week"] = cur_week
+
+    _mgmt_alert_save(alerts)
+
+
+@_mgmt_daily_briefing_loop.before_loop
+async def _before_mgmt_daily():
+    await bot.wait_until_ready()
+
+@_mgmt_weekly_report_loop.before_loop
+async def _before_mgmt_weekly():
+    await bot.wait_until_ready()
+
+@_mgmt_alert_loop.before_loop
+async def _before_mgmt_alert():
+    await bot.wait_until_ready()
+
+
+@bot.command(name="managementreport", aliases=["mgreport"])
+async def _cmd_management_report(ctx: commands.Context):
+    """Post a current management snapshot (leaders/managers only)."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    )
+    if not is_staff:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    if ctx.guild:
+        await _mgmt_send_daily_briefing(ctx.guild)
+
+
+@bot.command(name="weeklyreport")
+async def _cmd_weekly_report(ctx: commands.Context):
+    """Post the weekly server report (leaders/managers only)."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    )
+    if not is_staff:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    if ctx.guild:
+        await _mgmt_send_weekly_report(ctx.guild)
+
+
+@bot.command(name="pendingjoins")
+async def _cmd_pending_joins(ctx: commands.Context):
+    """List all open join tickets with age indicators (staff only)."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    )
+    if not is_staff:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    guild = ctx.guild
+    if not guild:
+        return
+    tickets = _mgmt_open_join_tickets(guild)
+    if not tickets:
+        await ctx.send("✅ No open join tickets right now.", delete_after=10)
+        return
+    embed = discord.Embed(
+        title=f"🎮 Open Join Tickets ({len(tickets)})",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    for ticket_ch, age_h in tickets[:20]:
+        psn     = _join_parse_psn(ticket_ch.topic)
+        uid_raw = _join_parse_user_id(ticket_ch.topic)
+        astr    = f"<@{uid_raw}>" if uid_raw else "Unknown"
+        age_str = f"{age_h:.0f}h" if age_h < 48 else f"{age_h / 24:.1f}d"
+        flag    = " 🔴" if age_h >= 24 else (" 🟡" if age_h >= 12 else " 🟢")
+        embed.add_field(
+            name=f"`{psn}`{flag}",
+            value=f"{ticket_ch.mention} • {astr} • open {age_str}",
+            inline=False,
+        )
+    if len(tickets) > 20:
+        embed.set_footer(text=f"Showing 20 of {len(tickets)} — oldest first")
+    else:
+        embed.set_footer(text="🟢 <12h  🟡 12–24h  🔴 24h+")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="hoststatus")
+async def _cmd_host_status(ctx: commands.Context):
+    """Show all hosts, availability status, and meet count (leaders/managers only)."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    )
+    if not is_staff:
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    guild = ctx.guild
+    if not guild:
+        return
+    host_role = guild.get_role(HOST_ROLE_ID)
+    if not host_role:
+        await ctx.send("Host role not found.", delete_after=6)
+        return
+
+    responded = _hrsvp_responded_uids()
+    all_records = _om_load_records()
+    host_meets: dict = {}
+    for r in all_records.values():
+        hid = r.get("host_id")
+        if hid and r.get("started"):
+            host_meets[hid] = host_meets.get(hid, 0) + 1
+
+    embed = discord.Embed(
+        title=f"🎙️ Host Roster — {len(host_role.members)} hosts",
+        color=discord.Color.dark_gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    responded_lines, pending_lines = [], []
+    for m in sorted(host_role.members, key=lambda x: x.display_name.lower()):
+        cnt   = host_meets.get(m.id, 0)
+        label = f"**{m.display_name}** — {cnt} meet{'s' if cnt != 1 else ''} hosted"
+        if str(m.id) in {str(u) for u in responded}:
+            responded_lines.append(f"✅ {label}")
+        else:
+            pending_lines.append(f"⏳ {label}")
+
+    if responded_lines:
+        embed.add_field(
+            name=f"✅ Responded ({len(responded_lines)})",
+            value="\n".join(responded_lines[:15]),
+            inline=False,
+        )
+    if pending_lines:
+        embed.add_field(
+            name=f"⏳ Not Responded ({len(pending_lines)})",
+            value="\n".join(pending_lines[:15]),
+            inline=False,
+        )
+    embed.set_footer(text="DIFF Management • Host Status")
+    await ctx.send(embed=embed)
 
 
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
