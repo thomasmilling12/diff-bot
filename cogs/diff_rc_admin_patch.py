@@ -98,17 +98,11 @@ def _build_embed() -> discord.Embed:
 
     for n in (1, 2, 3):
         c = counts[n]
-        total     = c["yes"] + c["maybe"] + c["no"]
-        bar_yes   = round(c["yes"]   / max(total, 10) * 10)
-        bar_maybe = round(c["maybe"] / max(total, 10) * 10)
-        bar = "🟩" * bar_yes + "🟨" * bar_maybe + "⬜" * (10 - bar_yes - bar_maybe)
         embed.add_field(
             name=f"Meet {n}",
-            value=f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}",
+            value=f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`",
             inline=True,
         )
-
-    embed.add_field(name="\u200b", value="\u200b", inline=True)
 
     embed.add_field(
         name="📋 View Attendance",
@@ -279,18 +273,6 @@ class _StaffSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=[
-                discord.SelectOption(
-                    label="Finalize Meet 1", value="fin1", emoji="🏁",
-                    description="Mark attendees and flag no-shows for Meet 1.",
-                ),
-                discord.SelectOption(
-                    label="Finalize Meet 2", value="fin2", emoji="🏁",
-                    description="Mark attendees and flag no-shows for Meet 2.",
-                ),
-                discord.SelectOption(
-                    label="Finalize Meet 3", value="fin3", emoji="🏁",
-                    description="Mark attendees and flag no-shows for Meet 3.",
-                ),
                 discord.SelectOption(
                     label="View Attendance", value="attendance", emoji="📋",
                     description="See who voted ✅/❓/❌ for each meet.",
