@@ -131,51 +131,32 @@ def _parse_ts(date_text: str, start_time: str) -> int | None:
 
 
 def _build_embed() -> discord.Embed:
-    counts  = _get_live_counts()
-    details = _get_meet_details()
+    counts = _get_live_counts()
 
     total_yes   = sum(counts[n]["yes"]   for n in (1, 2, 3))
     total_maybe = sum(counts[n]["maybe"] for n in (1, 2, 3))
     total_no    = sum(counts[n]["no"]    for n in (1, 2, 3))
-    total_resp  = total_yes + total_maybe + total_no
 
     embed = discord.Embed(
         title="🛠️ DIFF Roll Call — Staff Tools",
         description=(
-            f"**{total_resp} total responses this week**\n"
-            f"✅ `{total_yes}` going  ·  ❓ `{total_maybe}` maybe  ·  ❌ `{total_no}` not going"
+            f"**This week's response summary**\n"
+            f"✅ `{total_yes}` attending  ·  ❓ `{total_maybe}` maybe  ·  ❌ `{total_no}` not attending\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.dark_teal(),
         timestamp=datetime.now(timezone.utc),
     )
 
     for n in (1, 2, 3):
-        c    = counts[n]
-        info = details.get(n, {})
-        cls  = info.get("class_name", "TBD")
-        dt   = info.get("date_text", "")
-        st   = info.get("start_time", "TBD")
-        hid  = info.get("host_id")
-        ts   = _parse_ts(dt, st) if cls != "TBD" and st != "TBD" else None
-
-        # Schedule line
-        if ts:
-            sched = f"<t:{ts}:F>  ·  <t:{ts}:R>"
-        elif cls != "TBD":
-            sched = f"📅 {dt}  🕒 {st}"
-        else:
-            sched = "*Awaiting schedule*"
-
-        host_str = f"<@{hid}>" if hid else "*No host*"
-        rsvp_str = f"✅ `{c['yes']}` going  ·  ❓ `{c['maybe']}` maybe  ·  ❌ `{c['no']}` not going"
-
+        c = counts[n]
         embed.add_field(
-            name=f"〔{n}〕 Meet {n}  ·  🎮 {cls}",
-            value=f"{sched}\n👤 {host_str}\n{rsvp_str}",
-            inline=False,
+            name=f"Meet {n}",
+            value=f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`",
+            inline=True,
         )
 
-    embed.set_footer(text="DIFF Roll Call • Staff Tools  •  Use the dropdown below to take action")
+    embed.set_footer(text="DIFF Roll Call • Staff Tools")
     return embed
 
 
