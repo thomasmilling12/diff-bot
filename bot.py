@@ -3449,75 +3449,118 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         import re as _re
-        slot_raw  = str(self.slot_input).strip()
-        host_raw  = str(self.host_input).strip()
-        dt_raw    = str(self.day_time_input).strip()
-        class_val = str(self.class_input).strip() or "Open Class"
-
-        slot_name = next((d for d in _HRSVP_DAYS if slot_raw.lower() in d.lower()), None)
-        if not slot_name:
-            return await interaction.response.send_message(
-                f"❌ Unknown slot '{slot_raw}'. Use: Meet 1, Meet 2, or Meet 3.", ephemeral=True
-            )
-        m = _re.search(r"(\d{15,20})", host_raw)
-        if not m:
-            return await interaction.response.send_message(
-                "❌ Couldn't parse a user ID. Paste their ID or @mention.", ephemeral=True
-            )
-        host_id = int(m.group(1))
-        guild   = interaction.guild
-        member  = guild.get_member(host_id) if guild else None
-
-        # Defer before any async network calls
-        await interaction.response.defer(ephemeral=True)
-
-        if not member:
-            try:
-                member = await guild.fetch_member(host_id)
-            except Exception:
-                return await interaction.followup.send(
-                    f"❌ Member {host_id} not found in this server.", ephemeral=True
-                )
-
-        parts    = dt_raw.split(None, 1)
-        day_val  = parts[0].capitalize() if parts else dt_raw
-        time_raw = parts[1] if len(parts) > 1 else dt_raw
-        time_val = time_raw.strip()   # plain text; timestamp computed at display time
-
-        schedule = _asched_load()
-        slot     = schedule["days"].setdefault(slot_name, {})
-        slot.update({"host_id": host_id, "host_status": "yes",
-                     "day": day_val, "time": time_val, "class": class_val})
-        schedule["updated_at"] = utc_now().isoformat()
-        _asched_save(schedule)
-        await _asched_update_panel(interaction.client)
-
-        all_filled = all(schedule["days"].get(d, {}).get("host_id") for d in _HRSVP_DAYS)
-        if all_filled:
-            await _asched_post_finalized(interaction.client)
-
-        _hrel_track_confirmed(str(host_id))
+        import traceback as _tb
         try:
-            ov_embed = discord.Embed(
-                title=f"📅 You've Been Manually Assigned — {slot_name}",
-                description="Leadership has assigned you to host this meet slot.",
-                color=discord.Color.blurple(),
-                timestamp=utc_now(),
-            )
-            ov_embed.add_field(name="🗓 Day",   value=day_val,   inline=True)
-            ov_embed.add_field(name="🕒 Time",  value=time_val,  inline=True)
-            ov_embed.add_field(name="🎮 Class", value=class_val, inline=True)
-            ov_embed.set_footer(text="DIFF Meets • Host Schedule — questions? Contact leadership.")
-            await member.send(embed=ov_embed)
-        except (discord.Forbidden, Exception):
-            pass
+            slot_raw  = self.slot_input.value.strip()
+            host_raw  = self.host_input.value.strip()
+            dt_raw    = self.day_time_input.value.strip()
+            class_val = (self.class_input.value or "").strip() or "Open Class"
 
-        fin_note = "\n📢 All slots confirmed — schedule posted to #upcoming-meet." if all_filled else ""
-        await interaction.followup.send(
-            f"✅ **{slot_name}** overridden → {member.mention}\n"
-            f"📅 {day_val}  🕒 {time_val}  🎮 {class_val}{fin_note}",
-            ephemeral=True,
-        )
+            slot_name = next((d for d in _HRSVP_DAYS if slot_raw.lower() in d.lower()), None)
+            if not slot_name:
+                return await interaction.response.send_message(
+                    f"❌ Unknown slot '{slot_raw}'. Use: Meet 1, Meet 2, or Meet 3.", ephemeral=True
+                )
+            m = _re.search(r"(\d{15,20})", host_raw)
+            if not m:
+                return await interaction.response.send_message(
+                    "❌ Couldn't parse a user ID. Paste their ID or @mention.", ephemeral=True
+                )
+            host_id = int(m.group(1))
+            guild   = interaction.guild
+            member  = guild.get_member(host_id) if guild else None
+
+            # Defer before any async network calls
+            await interaction.response.defer(ephemeral=True)
+
+            if not member:
+                try:
+                    member = await guild.fetch_member(host_id)
+                except Exception:
+                    return await interaction.followup.send(
+                        f"❌ Member {host_id} not found in this server.", ephemeral=True
+                    )
+
+            parts    = dt_raw.split(None, 1)
+            day_val  = parts[0].capitalize() if parts else dt_raw
+            time_raw = parts[1] if len(parts) > 1 else dt_raw
+            time_val = time_raw.strip()
+
+            schedule = _asched_load()
+            slot     = schedule["days"].setdefault(slot_name, {})
+            slot.update({"host_id": host_id, "host_status": "yes",
+                         "day": day_val, "time": time_val, "class": class_val})
+            schedule["updated_at"] = utc_now().isoformat()
+            _asched_save(schedule)
+
+            try:
+                await _asched_update_panel(interaction.client)
+            except Exception as _pe:
+                print(f"[OverrideSlot] Panel update failed: {_pe}")
+
+            all_filled = all(schedule["days"].get(d, {}).get("host_id") for d in _HRSVP_DAYS)
+            if all_filled:
+                try:
+                    await _asched_post_finalized(interaction.client)
+                except Exception as _fe:
+                    print(f"[OverrideSlot] Post finalized failed: {_fe}")
+
+            try:
+                _hrel_track_confirmed(str(host_id))
+            except Exception:
+                pass
+
+            try:
+                ov_embed = discord.Embed(
+                    title=f"📅 You've Been Manually Assigned — {slot_name}",
+                    description="Leadership has assigned you to host this meet slot.",
+                    color=discord.Color.blurple(),
+                    timestamp=utc_now(),
+                )
+                ov_embed.add_field(name="🗓 Day",   value=day_val,   inline=True)
+                ov_embed.add_field(name="🕒 Time",  value=time_val,  inline=True)
+                ov_embed.add_field(name="🎮 Class", value=class_val, inline=True)
+                ov_embed.set_footer(text="DIFF Meets • Host Schedule — questions? Contact leadership.")
+                await member.send(embed=ov_embed)
+            except (discord.Forbidden, Exception):
+                pass
+
+            fin_note = "\n📢 All slots confirmed — schedule posted to #upcoming-meet." if all_filled else ""
+            await interaction.followup.send(
+                f"✅ **{slot_name}** overridden → {member.mention}\n"
+                f"📅 {day_val}  🕒 {time_val}  🎮 {class_val}{fin_note}",
+                ephemeral=True,
+            )
+        except Exception as _err:
+            print(f"[OverrideSlot] on_submit error: {_err}")
+            _tb.print_exc()
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        f"❌ Override failed: {_err}", ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"❌ Override failed: {_err}", ephemeral=True
+                    )
+            except Exception:
+                pass
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        import traceback as _tb
+        print(f"[OverrideSlot Modal] on_error: {error}")
+        _tb.print_exc()
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    f"❌ Override failed: {error}", ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    f"❌ Override failed: {error}", ephemeral=True
+                )
+        except Exception:
+            pass
 
 
 class _ASchedOverrideBtn(discord.ui.Button):
@@ -3716,7 +3759,11 @@ async def _asched_update_panel(bot_client) -> None:
             return
     if not isinstance(channel, discord.TextChannel):
         return
-    embed = _asched_build_embed()
+    try:
+        embed = _asched_build_embed()
+    except Exception as _be:
+        print(f"[AutoSched] Build embed error: {_be}")
+        return
     view = AutoScheduleView(bot_client)
     async for msg in channel.history(limit=25):
         if _asched_is_sched_msg(msg, bot_client.user.id):
