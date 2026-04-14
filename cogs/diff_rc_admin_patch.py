@@ -306,21 +306,33 @@ class _StaffSelect(discord.ui.Select):
     def __init__(self):
         super().__init__(
             custom_id="diff_rollcall_finalize:select_v2",
-            placeholder="Select a staff action…",
+            placeholder="⚙️  Choose a staff action…",
             min_values=1,
             max_values=1,
             options=[
                 discord.SelectOption(
-                    label="View Attendance", value="attendance", emoji="📋",
-                    description="See who voted ✅/❓/❌ for each meet.",
+                    label="View Attendance",
+                    value="attendance",
+                    emoji="📊",
+                    description="See a full breakdown of who's going, maybe, or not going.",
                 ),
                 discord.SelectOption(
-                    label="Sync from Schedule", value="sync", emoji="🗓️",
-                    description="Pull latest dates, times, hosts from the host schedule.",
+                    label="Sync from Schedule",
+                    value="sync",
+                    emoji="🗓️",
+                    description="Update meet dates, times, classes & hosts from the schedule.",
                 ),
                 discord.SelectOption(
-                    label="Reset Roll Call", value="reset", emoji="🔄",
-                    description="Clear all responses and post a fresh roll call.",
+                    label="Refresh Panel",
+                    value="refresh",
+                    emoji="🔃",
+                    description="Re-render this panel with the latest response counts.",
+                ),
+                discord.SelectOption(
+                    label="Reset Roll Call",
+                    value="reset",
+                    emoji="🗑️",
+                    description="Wipe all responses and post a fresh roll call panel.",
                 ),
             ],
         )
@@ -379,6 +391,17 @@ class _StaffSelect(discord.ui.Select):
                 except Exception:
                     pass
                 return
+
+        if v == "refresh":
+            await interaction.response.defer(ephemeral=True)
+            try:
+                await _refresh_admin_panel()
+                await interaction.followup.send(
+                    "🔃 Panel refreshed with the latest response counts.", ephemeral=True
+                )
+            except Exception as e:
+                await interaction.followup.send(f"Refresh failed: {e}", ephemeral=True)
+            return
 
         if v == "reset":
             return await interaction.response.send_message(
