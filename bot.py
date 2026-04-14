@@ -10608,37 +10608,54 @@ async def _rc_refresh_panel(guild: discord.Guild):
         existing.cancel()
 
     async def _do_refresh():
-        await asyncio.sleep(0.5)          # brief wait to coalesce rapid clicks
-        panel   = _rc_db.get_panel(guild.id)
-        channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
-            return
-
-        # --- try stored ID first ---
-        meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
-        if panel:
-            try:
-                msg = await channel.fetch_message(panel["message_id"])
-                await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
-                return
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                print(f"[RcPanel] refresh error (stored msg): {e}")
+        try:
+            await asyncio.sleep(0.5)          # brief wait to coalesce rapid clicks
+            panel   = _rc_db.get_panel(guild.id)
+            # Prefer guild cache, fall back to bot-level lookup
+            channel = guild.get_channel(ROLL_CALL_CHANNEL_ID) or bot.get_channel(ROLL_CALL_CHANNEL_ID)
+            if not isinstance(channel, discord.TextChannel):
+                try:
+                    channel = await bot.fetch_channel(ROLL_CALL_CHANNEL_ID)
+                except Exception as _ce:
+                    print(f"[RcPanel] cannot resolve roll-call channel: {_ce}")
+                    return
+            if not isinstance(channel, discord.TextChannel):
+                print(f"[RcPanel] roll-call channel {ROLL_CALL_CHANNEL_ID} not a TextChannel")
                 return
 
-        # --- stored ID stale: scan channel and recover ---
-        rc_msg_id, _ = await _rc_scan_and_recover(channel, guild.id, guild.me.id)
-        if rc_msg_id:
-            try:
-                msg = await channel.fetch_message(rc_msg_id)
-                await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
-                return
-            except Exception as e:
-                print(f"[RcPanel] refresh error (scanned msg): {e}")
+            # --- try stored ID first ---
+            meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
+            print(f"[RcPanel] refresh — meets in DB: {[dict(r) for r in meets_by_num.values()]}")
+            if panel:
+                try:
+                    msg = await channel.fetch_message(panel["message_id"])
+                    await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
+                    print(f"[RcPanel] panel edited OK (stored msg {panel['message_id']})")
+                    return
+                except discord.NotFound:
+                    print(f"[RcPanel] stored message not found, scanning channel")
+                except Exception as e:
+                    print(f"[RcPanel] refresh error (stored msg): {e}")
+                    import traceback as _tb; _tb.print_exc()
+                    return
 
-        # --- nothing found: post fresh ---
-        await _rc_post_new_panel(guild, ping_roles=False)
+            # --- stored ID stale: scan channel and recover ---
+            rc_msg_id, _ = await _rc_scan_and_recover(channel, guild.id, guild.me.id)
+            if rc_msg_id:
+                try:
+                    msg = await channel.fetch_message(rc_msg_id)
+                    await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
+                    print(f"[RcPanel] panel edited OK (recovered msg {rc_msg_id})")
+                    return
+                except Exception as e:
+                    print(f"[RcPanel] refresh error (scanned msg): {e}")
+
+            # --- nothing found: post fresh ---
+            print(f"[RcPanel] no existing panel found — posting fresh")
+            await _rc_post_new_panel(guild, ping_roles=False)
+        except Exception as _task_err:
+            print(f"[RcPanel] _do_refresh unhandled error: {_task_err}")
+            import traceback as _tb; _tb.print_exc()
 
     task = asyncio.create_task(_do_refresh())
     _rc_refresh_tasks[guild.id] = task
@@ -10937,9 +10954,40 @@ async def _rc_sync_from_schedule(guild: discord.Guild, meets: list):
         if n not in present:
             meets.append({"meet_number": n, "class_name": "TBD", "start_time": "TBD", "host_id": None, "date_text": "TBD", "is_finalized": False})
     meets.sort(key=lambda x: x["meet_number"])
+    print(f"[RcSync] writing {len(meets)} meets to DB for guild {guild.id}: "
+          + ", ".join(f"M{m['meet_number']}={m.get('class_name','?')}/{m.get('start_time','?')}" for m in meets))
     _rc_db.upsert_meets(guild.id, meets)
+    # verify write
+    written = {r["meet_number"]: r["class_name"] for r in _rc_db.get_meets(guild.id)}
+    print(f"[RcSync] verified DB after upsert: {written}")
     await _rc_refresh_panel(guild)
     asyncio.create_task(_rc_notify_crew_of_schedule(guild, meets))
+
+
+@bot.command(name="syncrc")
+async def _cmd_syncrc(ctx: commands.Context):
+    """Staff command: manually sync the auto-schedule → roll call panel."""
+    if not _rc_is_admin(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    schedule = _asched_load()
+    rc_meets = []
+    for idx, day in enumerate(_HRSVP_DAYS, 1):
+        entry = schedule.get("days", {}).get(day, {})
+        rc_meets.append({
+            "meet_number": idx,
+            "class_name": entry.get("class", "TBD"),
+            "start_time": entry.get("time", "TBD"),
+            "host_id": entry.get("host_id"),
+            "date_text": entry.get("day", "TBD"),
+            "is_finalized": entry.get("host_id") is not None,
+        })
+    await _rc_sync_from_schedule(ctx.guild, rc_meets)
+    filled = sum(1 for m in rc_meets if m["host_id"])
+    await ctx.send(f"✅ Roll call synced from schedule ({filled}/3 slots filled).", delete_after=10)
 
 
 @tasks.loop(minutes=10)
