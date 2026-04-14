@@ -2649,13 +2649,15 @@ def _hrsvp_build_embed() -> discord.Embed:
                     dv = e.get('day', 'TBD')
                     tv = e.get('time', 'TBD')
                     ts = _parse_meet_ts(dv, tv) if not tv.startswith("<t:") else None
-                    time_display = (
-                        f"<t:{ts}:F>  (<t:{ts}:R>)" if ts
-                        else tv if tv.startswith("<t:") else tv
-                    )
+                    if ts:
+                        when_display = f"<t:{ts}:F>  (<t:{ts}:R>)"
+                    elif tv.startswith("<t:"):
+                        when_display = tv
+                    else:
+                        when_display = f"📅 {dv}  🕒 {tv}"
                     lines.append(
                         f"✅ <@{uid}>\n"
-                        f"　📅 {dv}  🕒 {time_display}  🎮 {e.get('theme', 'TBD')}"
+                        f"　{when_display}  🎮 {e.get('theme', 'TBD')}"
                     )
                 else:
                     lines.append(f"✅ <@{uid}>")
@@ -3018,12 +3020,14 @@ def _parse_meet_ts(date_val: str, time_val: str) -> int | None:
     # ── Timezone ────────────────────────────────────────────────────────────────
     try:
         from zoneinfo import ZoneInfo as _ZI
-        if any(x in combined for x in ("pst", "pdt")):
-            tz = _ZI("US/Pacific")
-        elif any(x in combined for x in ("cst", "cdt")):
-            tz = _ZI("US/Central")
+        if any(x in combined for x in ("pst", "pdt", "pacific")):
+            tz = _ZI("America/Los_Angeles")
+        elif any(x in combined for x in ("cst", "cdt", "central")):
+            tz = _ZI("America/Chicago")
+        elif any(x in combined for x in ("mst", "mdt", "mountain")):
+            tz = _ZI("America/Denver")
         else:
-            tz = _ZI("US/Eastern")
+            tz = _ZI("America/New_York")   # EST / EDT default
     except Exception:
         return None
 
@@ -13287,7 +13291,7 @@ async def _hrsvp_auto_reset_loop() -> None:
 
     # ── Startup catch-up: reset if this week's Monday reset was missed ───────
     try:
-        now_est = datetime.now(_ZI("US/Eastern"))
+        now_est = datetime.now(_ZI("America/New_York"))
         days_since_monday = now_est.weekday()            # 0=Mon … 6=Sun
         most_recent_monday = (now_est - _td(days=days_since_monday)).strftime("%Y-%m-%d")
         if _hrsvp_reset_ts_load() != most_recent_monday:
@@ -13311,7 +13315,7 @@ async def _hrsvp_auto_reset_loop() -> None:
     while not bot.is_closed():
         await asyncio.sleep(1800)
         try:
-            now_est   = datetime.now(_ZI("US/Eastern"))
+            now_est   = datetime.now(_ZI("America/New_York"))
             if now_est.weekday() == 0 and now_est.hour == 0:
                 today_str = now_est.strftime("%Y-%m-%d")
                 if _hrsvp_reset_ts_load() == today_str:
