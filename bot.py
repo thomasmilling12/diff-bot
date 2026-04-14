@@ -22177,7 +22177,9 @@ async def hoststats_cmd(
 # DIFF JOIN HUB — PLATFORM SELECT + TICKET SYSTEM (V2)
 # =========================
 
-_JOIN_MMI_INVITE = "https://discord.gg/mmi"
+_JOIN_MMI_INVITE       = "https://discord.gg/mmi"
+_JOIN_MMI_CHANNEL      = "https://discord.com/channels/726914118736543836/1247511301937430641"
+_JOIN_CREW_APP_CHANNEL = 1103847009653358612
 _JOIN_STAFF_ROLE_IDS = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
 
 
@@ -22443,7 +22445,7 @@ class JoinPlatformSelect(discord.ui.Select):
             custom_id="diff_join_platform_select",
             options=[
                 discord.SelectOption(
-                    label="PlayStation 5 / PS4",
+                    label="PlayStation 5",
                     value="playstation",
                     description="Open a private ticket, get renamed, and join our meets.",
                     emoji="🎮",
@@ -22497,15 +22499,24 @@ class JoinPlatformSelect(discord.ui.Select):
                 embed = discord.Embed(
                     title=f"{emoji} {label} — Join Info",
                     description=(
-                        f"{label} car meets are run by our partners at **MMI Meets**.\n"
-                        f"Click the link below to join their server and head to **#join-car-meet**."
+                        f"{label} car meets are handled by our partners at **MMI Meets**.\n"
+                        f"Join their server using the invite below, then head straight to the join channel."
                     ),
                     color=discord.Color.from_str("#107C10") if is_xbox else discord.Color.blurple(),
                 )
-                embed.add_field(name="🔗 MMI Meets Invite", value=_JOIN_MMI_INVITE, inline=False)
+                embed.add_field(
+                    name="1️⃣  Join MMI Meets",
+                    value=f"[Click here to join]({_JOIN_MMI_INVITE})",
+                    inline=True,
+                )
+                embed.add_field(
+                    name="2️⃣  Go to their join channel",
+                    value=f"[#join-car-meet]({_JOIN_MMI_CHANNEL})",
+                    inline=True,
+                )
                 if DIFF_LOGO_URL:
                     embed.set_thumbnail(url=DIFF_LOGO_URL)
-                embed.set_footer(text="Different Meets • GTA Car Meets")
+                embed.set_footer(text="Different Meets • GTA Car Meets  •  Only you can see this")
                 return await interaction.response.send_message(embed=embed, ephemeral=True)
 
             if platform == "join_crew":
@@ -22524,7 +22535,7 @@ class JoinPlatformSelect(discord.ui.Select):
                 )
                 embed.add_field(
                     name="Step 2 — Submit an application",
-                    value=f"Head to <#{CREW_APPLICATIONS_CHANNEL_ID}> and fill out the crew application.",
+                    value=f"Head to <#{_JOIN_CREW_APP_CHANNEL}> and fill out the crew application.",
                     inline=False,
                 )
                 embed.add_field(
@@ -22538,7 +22549,7 @@ class JoinPlatformSelect(discord.ui.Select):
                         "• Active in the server and at meets\n"
                         "• Clean car — no modded money builds\n"
                         "• Good standing (no recent bans or warnings)\n"
-                        "• PS5 or PS4 required for DIFF crew"
+                        "• **PlayStation 5 only** — this is a PS5 crew"
                     ),
                     inline=False,
                 )
@@ -22569,7 +22580,7 @@ class JoinPlatformSelect(discord.ui.Select):
                 )
                 embed.add_field(
                     name="What platform do you run on?",
-                    value="PlayStation 5 and PS4. Xbox and PC meets are handled by our partners **MMI Meets**.",
+                    value=f"**PlayStation 5 only.** Xbox and PC meets are handled by our partners **MMI Meets** — [join here]({_JOIN_MMI_INVITE}).",
                     inline=False,
                 )
                 embed.add_field(
@@ -22579,7 +22590,7 @@ class JoinPlatformSelect(discord.ui.Select):
                 )
                 embed.add_field(
                     name="How do I join the crew?",
-                    value=f"Select **How to Join the Crew** in this dropdown, or go directly to <#{CREW_APPLICATIONS_CHANNEL_ID}>.",
+                    value=f"Select **How to Join the Crew** in this dropdown, or go directly to <#{_JOIN_CREW_APP_CHANNEL}>.",
                     inline=False,
                 )
                 if DIFF_LOGO_URL:
@@ -22616,7 +22627,7 @@ class JoinPlatformSelect(discord.ui.Select):
                 )
                 embed.add_field(
                     name="🤝 Partners",
-                    value=f"Xbox and PC players are served by our partners **MMI Meets** — [join here]({_JOIN_MMI_INVITE}).",
+                    value=f"Xbox and PC players are served by our partners **MMI Meets** — [join their server]({_JOIN_MMI_INVITE}) and head to [#join-car-meet]({_JOIN_MMI_CHANNEL}).",
                     inline=False,
                 )
                 if DIFF_LOGO_URL:
