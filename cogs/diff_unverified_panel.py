@@ -244,35 +244,39 @@ class ListUnverifiedButton(discord.ui.Button):
             else:
                 older += 1
 
-        # 10 most recently joined (most actionable)
-        recent = members[-10:][::-1]  # newest first
-        recent_lines = []
-        for m in recent:
-            days = (now - m.joined_at).days if m.joined_at else None
-            duration = f"{days}d ago" if days is not None and days > 0 else "today"
-            recent_lines.append(f"• [{m.display_name}](https://discord.com/users/{m.id}) — joined **{duration}**")
+        def _member_line(m: discord.Member) -> str:
+            ts = int(m.joined_at.timestamp()) if m.joined_at else None
+            when = f"<t:{ts}:R>" if ts else "unknown"
+            return f"• **{m.display_name}** — joined {when}"
+
+        # 5 most recently joined (may still be active / likely to verify)
+        newest = members[-5:][::-1]
+        # 5 longest unverified (most overdue — may need a manual nudge)
+        oldest = members[:5]
 
         embed = discord.Embed(
-            title=f"👥 Unverified Members — {len(members)} total",
+            title=f"👥 Unverified Members — {len(members):,} total",
+            description=(
+                f"🟢 Today: **{today}**  ·  "
+                f"🟡 This week: **{week}**  ·  "
+                f"🟠 This month: **{month}**  ·  "
+                f"🔴 30+ days: **{older}**"
+            ),
             color=EMBED_COLOR,
             timestamp=now,
         )
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.add_field(
-            name="📊 Breakdown",
-            value=(
-                f"🟢 Joined today: **{today}**\n"
-                f"🟡 Joined this week: **{week}**\n"
-                f"🟠 Joined this month: **{month}**\n"
-                f"🔴 Older than 30 days: **{older}**"
-            ),
+            name="🆕 5 Newest — likely still active",
+            value="\n".join(_member_line(m) for m in newest) or "None",
             inline=False,
         )
         embed.add_field(
-            name="🕐 10 Most Recently Joined",
-            value="\n".join(recent_lines) if recent_lines else "None",
+            name="⏳ 5 Longest Waiting — may need a nudge",
+            value="\n".join(_member_line(m) for m in oldest) or "None",
             inline=False,
         )
-        embed.set_footer(text=FOOTER_TEXT)
+        embed.set_footer(text=f"{FOOTER_TEXT}  •  Only you can see this")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
