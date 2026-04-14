@@ -3476,7 +3476,7 @@ class _ASchedSubmitBtn(discord.ui.Button):
                 "start_time": entry.get("time", "TBD"),
                 "host_id": entry.get("host_id"),
                 "date_text": entry.get("day", day),
-                "is_finalized": entry.get("host_id") is not None,
+                "is_finalized": False,
             })
         await _rc_sync_from_schedule(guild, rc_meets)
         await interaction.response.send_message(
@@ -3805,7 +3805,7 @@ class AutoScheduleView(discord.ui.View):
                     "start_time": entry.get("time", "TBD"),
                     "host_id": entry.get("host_id"),
                     "date_text": entry.get("day", "TBD"),
-                    "is_finalized": entry.get("host_id") is not None,
+                    "is_finalized": False,
                 })
             await _rc_sync_from_schedule(interaction.guild, rc_meets)
 
@@ -11006,7 +11006,7 @@ async def _cmd_syncrc(ctx: commands.Context):
             "start_time": entry.get("time", "TBD"),
             "host_id": entry.get("host_id"),
             "date_text": entry.get("day", "TBD"),
-            "is_finalized": entry.get("host_id") is not None,
+            "is_finalized": False,
         })
 
     # Write meets to DB
