@@ -10996,6 +10996,7 @@ async def _cmd_syncrc(ctx: commands.Context):
         await ctx.message.delete()
     except Exception:
         pass
+
     schedule = _asched_load()
     rc_meets = []
     for idx, day in enumerate(_HRSVP_DAYS, 1):
@@ -11008,9 +11009,71 @@ async def _cmd_syncrc(ctx: commands.Context):
             "date_text": entry.get("day", "TBD"),
             "is_finalized": entry.get("host_id") is not None,
         })
-    await _rc_sync_from_schedule(ctx.guild, rc_meets)
+
+    # Write meets to DB
+    _rc_db.upsert_meets(ctx.guild.id, rc_meets)
+    written = {r["meet_number"]: r["class_name"] for r in _rc_db.get_meets(ctx.guild.id)}
+
+    # Resolve the roll call channel
+    rc_channel = (
+        ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
+        or bot.get_channel(ROLL_CALL_CHANNEL_ID)
+    )
+    if not isinstance(rc_channel, discord.TextChannel):
+        try:
+            rc_channel = await bot.fetch_channel(ROLL_CALL_CHANNEL_ID)
+        except Exception as _fe:
+            await ctx.send(f"❌ Cannot resolve roll-call channel: {_fe}", delete_after=15)
+            return
+
+    # Try stored panel ID first
+    panel = _rc_db.get_panel(ctx.guild.id)
+    meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(ctx.guild.id)}
+    edited = False
+
+    if panel:
+        try:
+            rc_msg = await rc_channel.fetch_message(panel["message_id"])
+            await rc_msg.edit(
+                embed=_rc_build_rollcall_embed(ctx.guild),
+                view=_RcRollCallView(meets_by_num),
+            )
+            edited = True
+        except discord.NotFound:
+            pass
+        except Exception as _ee:
+            await ctx.send(f"❌ Edit failed: {_ee}", delete_after=15)
+            return
+
+    # If stored ID stale, scan the channel
+    if not edited:
+        async for msg in rc_channel.history(limit=40):
+            if _rc_classify_msg(msg, ctx.guild.me.id) == "rollcall":
+                try:
+                    await msg.edit(
+                        embed=_rc_build_rollcall_embed(ctx.guild),
+                        view=_RcRollCallView(meets_by_num),
+                    )
+                    _rc_db.upsert_panel(ctx.guild.id, rc_channel.id, msg.id,
+                                        panel["admin_message_id"] if panel else None)
+                    edited = True
+                except Exception as _se:
+                    await ctx.send(f"❌ Scan-edit failed: {_se}", delete_after=15)
+                    return
+                break
+
     filled = sum(1 for m in rc_meets if m["host_id"])
-    await ctx.send(f"✅ Roll call synced from schedule ({filled}/3 slots filled).", delete_after=10)
+    if edited:
+        await ctx.send(
+            f"✅ Roll call panel updated — {filled}/3 slots pushed. DB: {written}",
+            delete_after=12,
+        )
+    else:
+        await ctx.send(
+            f"⚠️ No roll-call panel found in <#{ROLL_CALL_CHANNEL_ID}>. "
+            f"Run `!postrollcall` to post a fresh one.",
+            delete_after=15,
+        )
 
 
 @tasks.loop(minutes=10)
