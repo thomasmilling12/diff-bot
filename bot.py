@@ -26628,20 +26628,6 @@ async def _anniversary_check_task():
         _ann_save(ann)
 
         ordinal_year = _ordinal(years)
-        try:
-            dm_e = discord.Embed(
-                title=f"🎉 Happy {ordinal_year} Server Anniversary!",
-                description=(
-                    f"You joined **DIFF Meets** {years} year{'s' if years != 1 else ''} ago today!\n"
-                    "Thanks for being part of the community. 🏎️"
-                ),
-                color=0xF1C40F,
-                timestamp=datetime.now(timezone.utc),
-            )
-            dm_e.set_footer(text="DIFF Meets • Server Anniversary")
-            await member.send(embed=dm_e)
-        except Exception:
-            pass
 
         await update_member_reputation(guild, member, 1, f"Server anniversary — {years} year(s)", given_by=None)
 
@@ -26658,6 +26644,8 @@ async def _anniversary_check_task():
                 await log_ch.send(embed=log_e)
             except Exception:
                 pass
+
+        await asyncio.sleep(5)
 
 
 @_anniversary_check_task.before_loop
