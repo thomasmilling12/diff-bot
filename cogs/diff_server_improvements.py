@@ -59,6 +59,7 @@ def REP_FILE()       -> str: return _get("REPUTATION_FILE", "diff_data/diff_repu
 
 _MEET_GENERAL_CHANNEL_ID = 1485870611069796374
 _PHOTO_SUBMISSIONS_FILE  = os.path.join("diff_data", "diff_photo_submissions.json")
+_CREW_LB_STATE_FILE      = os.path.join("diff_data", "diff_crew_lb_state.json")
 
 
 def _load_json(path: str) -> dict:
@@ -79,6 +80,21 @@ def _save_photo_submissions(d: dict) -> None:
         json.dump(d, f, indent=2)
 
 
+def _load_crew_lb_state() -> str:
+    """Return the iso_week string of the last posted crew leaderboard, or ''."""
+    try:
+        with open(_CREW_LB_STATE_FILE, "r") as f:
+            return json.load(f).get("last_posted_week", "")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ""
+
+
+def _save_crew_lb_state(iso_week: str) -> None:
+    os.makedirs(os.path.dirname(_CREW_LB_STATE_FILE), exist_ok=True)
+    with open(_CREW_LB_STATE_FILE, "w") as f:
+        json.dump({"last_posted_week": iso_week}, f)
+
+
 class DiffServerImprovements(commands.Cog):
     """Background tasks: digest, meet reminders, inactive DMs, crew LB, photo submissions."""
 
@@ -87,7 +103,7 @@ class DiffServerImprovements(commands.Cog):
         self._reminded_meets: set[str] = set()
         self._digest_sent_today: str   = ""
         self._inactive_check_done: str = ""
-        self._crew_lb_done: str        = ""
+        self._crew_lb_done: str        = _load_crew_lb_state()
 
         self._daily_digest.start()
         self._meet_reminder_check.start()
@@ -399,6 +415,7 @@ class DiffServerImprovements(commands.Cog):
             return
 
         self._crew_lb_done = iso_week
+        _save_crew_lb_state(iso_week)
         guild = self.bot.get_guild(GUILD_ID())
         if not guild:
             return
