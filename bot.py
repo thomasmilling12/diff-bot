@@ -2649,13 +2649,15 @@ def _hrsvp_build_embed() -> discord.Embed:
                     dv = e.get('day', 'TBD')
                     tv = e.get('time', 'TBD')
                     ts = _parse_meet_ts(dv, tv) if not tv.startswith("<t:") else None
-                    time_display = (
-                        f"<t:{ts}:F>  (<t:{ts}:R>)" if ts
-                        else tv if tv.startswith("<t:") else tv
-                    )
+                    if ts:
+                        when_display = f"<t:{ts}:F>  (<t:{ts}:R>)"
+                    elif tv.startswith("<t:"):
+                        when_display = tv
+                    else:
+                        when_display = f"📅 {dv}  🕒 {tv}"
                     lines.append(
                         f"✅ <@{uid}>\n"
-                        f"　📅 {dv}  🕒 {time_display}  🎮 {e.get('theme', 'TBD')}"
+                        f"　{when_display}  🎮 {e.get('theme', 'TBD')}"
                     )
                 else:
                     lines.append(f"✅ <@{uid}>")
@@ -3018,12 +3020,14 @@ def _parse_meet_ts(date_val: str, time_val: str) -> int | None:
     # ── Timezone ────────────────────────────────────────────────────────────────
     try:
         from zoneinfo import ZoneInfo as _ZI
-        if any(x in combined for x in ("pst", "pdt")):
-            tz = _ZI("US/Pacific")
-        elif any(x in combined for x in ("cst", "cdt")):
-            tz = _ZI("US/Central")
+        if any(x in combined for x in ("pst", "pdt", "pacific")):
+            tz = _ZI("America/Los_Angeles")
+        elif any(x in combined for x in ("cst", "cdt", "central")):
+            tz = _ZI("America/Chicago")
+        elif any(x in combined for x in ("mst", "mdt", "mountain")):
+            tz = _ZI("America/Denver")
         else:
-            tz = _ZI("US/Eastern")
+            tz = _ZI("America/New_York")   # EST / EDT default
     except Exception:
         return None
 
@@ -3449,75 +3453,118 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         import re as _re
-        slot_raw  = str(self.slot_input).strip()
-        host_raw  = str(self.host_input).strip()
-        dt_raw    = str(self.day_time_input).strip()
-        class_val = str(self.class_input).strip() or "Open Class"
-
-        slot_name = next((d for d in _HRSVP_DAYS if slot_raw.lower() in d.lower()), None)
-        if not slot_name:
-            return await interaction.response.send_message(
-                f"❌ Unknown slot '{slot_raw}'. Use: Meet 1, Meet 2, or Meet 3.", ephemeral=True
-            )
-        m = _re.search(r"(\d{15,20})", host_raw)
-        if not m:
-            return await interaction.response.send_message(
-                "❌ Couldn't parse a user ID. Paste their ID or @mention.", ephemeral=True
-            )
-        host_id = int(m.group(1))
-        guild   = interaction.guild
-        member  = guild.get_member(host_id) if guild else None
-
-        # Defer before any async network calls
-        await interaction.response.defer(ephemeral=True)
-
-        if not member:
-            try:
-                member = await guild.fetch_member(host_id)
-            except Exception:
-                return await interaction.followup.send(
-                    f"❌ Member {host_id} not found in this server.", ephemeral=True
-                )
-
-        parts    = dt_raw.split(None, 1)
-        day_val  = parts[0].capitalize() if parts else dt_raw
-        time_raw = parts[1] if len(parts) > 1 else dt_raw
-        time_val = time_raw.strip()   # plain text; timestamp computed at display time
-
-        schedule = _asched_load()
-        slot     = schedule["days"].setdefault(slot_name, {})
-        slot.update({"host_id": host_id, "host_status": "yes",
-                     "day": day_val, "time": time_val, "class": class_val})
-        schedule["updated_at"] = utc_now().isoformat()
-        _asched_save(schedule)
-        await _asched_update_panel(interaction.client)
-
-        all_filled = all(schedule["days"].get(d, {}).get("host_id") for d in _HRSVP_DAYS)
-        if all_filled:
-            await _asched_post_finalized(interaction.client)
-
-        _hrel_track_confirmed(str(host_id))
+        import traceback as _tb
         try:
-            ov_embed = discord.Embed(
-                title=f"📅 You've Been Manually Assigned — {slot_name}",
-                description="Leadership has assigned you to host this meet slot.",
-                color=discord.Color.blurple(),
-                timestamp=utc_now(),
-            )
-            ov_embed.add_field(name="🗓 Day",   value=day_val,   inline=True)
-            ov_embed.add_field(name="🕒 Time",  value=time_val,  inline=True)
-            ov_embed.add_field(name="🎮 Class", value=class_val, inline=True)
-            ov_embed.set_footer(text="DIFF Meets • Host Schedule — questions? Contact leadership.")
-            await member.send(embed=ov_embed)
-        except (discord.Forbidden, Exception):
-            pass
+            slot_raw  = self.slot_input.value.strip()
+            host_raw  = self.host_input.value.strip()
+            dt_raw    = self.day_time_input.value.strip()
+            class_val = (self.class_input.value or "").strip() or "Open Class"
 
-        fin_note = "\n📢 All slots confirmed — schedule posted to #upcoming-meet." if all_filled else ""
-        await interaction.followup.send(
-            f"✅ **{slot_name}** overridden → {member.mention}\n"
-            f"📅 {day_val}  🕒 {time_val}  🎮 {class_val}{fin_note}",
-            ephemeral=True,
-        )
+            slot_name = next((d for d in _HRSVP_DAYS if slot_raw.lower() in d.lower()), None)
+            if not slot_name:
+                return await interaction.response.send_message(
+                    f"❌ Unknown slot '{slot_raw}'. Use: Meet 1, Meet 2, or Meet 3.", ephemeral=True
+                )
+            m = _re.search(r"(\d{15,20})", host_raw)
+            if not m:
+                return await interaction.response.send_message(
+                    "❌ Couldn't parse a user ID. Paste their ID or @mention.", ephemeral=True
+                )
+            host_id = int(m.group(1))
+            guild   = interaction.guild
+            member  = guild.get_member(host_id) if guild else None
+
+            # Defer before any async network calls
+            await interaction.response.defer(ephemeral=True)
+
+            if not member:
+                try:
+                    member = await guild.fetch_member(host_id)
+                except Exception:
+                    return await interaction.followup.send(
+                        f"❌ Member {host_id} not found in this server.", ephemeral=True
+                    )
+
+            parts    = dt_raw.split(None, 1)
+            day_val  = parts[0].capitalize() if parts else dt_raw
+            time_raw = parts[1] if len(parts) > 1 else dt_raw
+            time_val = time_raw.strip()
+
+            schedule = _asched_load()
+            slot     = schedule["days"].setdefault(slot_name, {})
+            slot.update({"host_id": host_id, "host_status": "yes",
+                         "day": day_val, "time": time_val, "class": class_val})
+            schedule["updated_at"] = utc_now().isoformat()
+            _asched_save(schedule)
+
+            try:
+                await _asched_update_panel(interaction.client)
+            except Exception as _pe:
+                print(f"[OverrideSlot] Panel update failed: {_pe}")
+
+            all_filled = all(schedule["days"].get(d, {}).get("host_id") for d in _HRSVP_DAYS)
+            if all_filled:
+                try:
+                    await _asched_post_finalized(interaction.client)
+                except Exception as _fe:
+                    print(f"[OverrideSlot] Post finalized failed: {_fe}")
+
+            try:
+                _hrel_track_confirmed(str(host_id))
+            except Exception:
+                pass
+
+            try:
+                ov_embed = discord.Embed(
+                    title=f"📅 You've Been Manually Assigned — {slot_name}",
+                    description="Leadership has assigned you to host this meet slot.",
+                    color=discord.Color.blurple(),
+                    timestamp=utc_now(),
+                )
+                ov_embed.add_field(name="🗓 Day",   value=day_val,   inline=True)
+                ov_embed.add_field(name="🕒 Time",  value=time_val,  inline=True)
+                ov_embed.add_field(name="🎮 Class", value=class_val, inline=True)
+                ov_embed.set_footer(text="DIFF Meets • Host Schedule — questions? Contact leadership.")
+                await member.send(embed=ov_embed)
+            except (discord.Forbidden, Exception):
+                pass
+
+            fin_note = "\n📢 All slots confirmed — schedule posted to #upcoming-meet." if all_filled else ""
+            await interaction.followup.send(
+                f"✅ **{slot_name}** overridden → {member.mention}\n"
+                f"📅 {day_val}  🕒 {time_val}  🎮 {class_val}{fin_note}",
+                ephemeral=True,
+            )
+        except Exception as _err:
+            print(f"[OverrideSlot] on_submit error: {_err}")
+            _tb.print_exc()
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        f"❌ Override failed: {_err}", ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"❌ Override failed: {_err}", ephemeral=True
+                    )
+            except Exception:
+                pass
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        import traceback as _tb
+        print(f"[OverrideSlot Modal] on_error: {error}")
+        _tb.print_exc()
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    f"❌ Override failed: {error}", ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    f"❌ Override failed: {error}", ephemeral=True
+                )
+        except Exception:
+            pass
 
 
 class _ASchedOverrideBtn(discord.ui.Button):
@@ -3716,7 +3763,11 @@ async def _asched_update_panel(bot_client) -> None:
             return
     if not isinstance(channel, discord.TextChannel):
         return
-    embed = _asched_build_embed()
+    try:
+        embed = _asched_build_embed()
+    except Exception as _be:
+        print(f"[AutoSched] Build embed error: {_be}")
+        return
     view = AutoScheduleView(bot_client)
     async for msg in channel.history(limit=25):
         if _asched_is_sched_msg(msg, bot_client.user.id):
@@ -10187,8 +10238,10 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
 
         if is_finalized:
             field_name = f"🏁 Meet {n} — Closed"
+            ts_fin = _parse_meet_ts(date_text, start_time)
+            when_fin = f"<t:{ts_fin}:F>" if ts_fin else f"📅 {date_text}  🕒 {start_time}"
             field_lines = [
-                f"📅 {date_text}  🕒 {start_time}  🎮 {class_name}",
+                f"📅 {when_fin}  🎮 {class_name}",
                 f"👤 **Host:** {host_text}",
                 f"✅ **{c['yes']}** yes  ·  ❓ **{c['maybe']}** maybe  ·  ❌ **{c['no']}** no",
                 "*🔒 Voting closed*",
@@ -10371,23 +10424,25 @@ class _RcMyRsvpBtn(discord.ui.Button):
 class _RcRollCallView(discord.ui.View):
     def __init__(self, meets_by_num: dict = None) -> None:
         super().__init__(timeout=None)
-        finalized = {}
-        if meets_by_num:
-            finalized = {n: bool(meets_by_num.get(n) and meets_by_num[n]["is_finalized"])
-                         for n in (1, 2, 3)}
+        from datetime import date as _date, datetime as _dt, timezone as _tz
+        today = _date.today()
         for meet_num, row_idx in ((1, 0), (2, 1), (3, 2)):
-            if finalized.get(meet_num):
-                self.add_item(discord.ui.Button(
-                    label=f"Meet {meet_num} — Finalized",
-                    style=discord.ButtonStyle.secondary,
-                    disabled=True,
-                    row=row_idx,
-                    custom_id=f"diff_rollcall:fin_{meet_num}",
-                    emoji="🏁",
-                ))
-            else:
-                for status in ("yes", "maybe", "no"):
-                    self.add_item(_RcBtn(meet_num, status, row_idx))
+            meet = (meets_by_num or {}).get(meet_num)
+            # Lock buttons on the event day itself
+            lock = False
+            if meet:
+                ts = _parse_meet_ts(
+                    meet.get("date_text", ""),
+                    meet.get("start_time", ""),
+                )
+                if ts:
+                    event_date = _dt.fromtimestamp(ts, tz=_tz.utc).date()
+                    lock = today >= event_date
+            for status in ("yes", "maybe", "no"):
+                btn = _RcBtn(meet_num, status, row_idx)
+                if lock:
+                    btn.disabled = True
+                self.add_item(btn)
         self.add_item(_RcMyRsvpBtn())
 
 
@@ -13236,7 +13291,7 @@ async def _hrsvp_auto_reset_loop() -> None:
 
     # ── Startup catch-up: reset if this week's Monday reset was missed ───────
     try:
-        now_est = datetime.now(_ZI("US/Eastern"))
+        now_est = datetime.now(_ZI("America/New_York"))
         days_since_monday = now_est.weekday()            # 0=Mon … 6=Sun
         most_recent_monday = (now_est - _td(days=days_since_monday)).strftime("%Y-%m-%d")
         if _hrsvp_reset_ts_load() != most_recent_monday:
@@ -13260,7 +13315,7 @@ async def _hrsvp_auto_reset_loop() -> None:
     while not bot.is_closed():
         await asyncio.sleep(1800)
         try:
-            now_est   = datetime.now(_ZI("US/Eastern"))
+            now_est   = datetime.now(_ZI("America/New_York"))
             if now_est.weekday() == 0 and now_est.hour == 0:
                 today_str = now_est.strftime("%Y-%m-%d")
                 if _hrsvp_reset_ts_load() == today_str:
