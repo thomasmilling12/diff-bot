@@ -1,0 +1,179 @@
+Update the Partnership System in my Discord bot for Different Meets V2.
+
+Goal:
+Make the partnership system feel complete, polished, staff-friendly, and easy for members to use. Keep the UI clean, DIFF-branded, and organized. Use discord.py / app_commands style that matches the rest of the bot. Avoid duplicate panels and make sure the system can refresh an existing panel instead of reposting.
+
+What the current system already has:
+- Public main panel with partner count, System Status: Active, and a how-it-works blurb
+- Dropdown listing all partners
+- Selecting a partner shows an ephemeral embed with description, platforms, and invite link
+- Partnership application modal exists
+- Staff commands:
+  - !addpartner
+  - !removepartner
+  - !partnerlist
+- Partner data already has a banner field, but it is usually blank and not exposed in the modal
+- Applications currently generate an Application ID, but _PSHIP_REVIEW_CHANNEL_ID is set to 0 so applications are silently dropped and go nowhere
+
+Main problems to fix:
+1. Applications are silently dropped because no staff review channel is wired up
+2. No Apply button on the public partnership panel
+3. No banner field in the Add/Application modal
+4. Partner ephemeral cards do not display banner images
+5. No Edit Partner flow for staff
+6. Remove + re-add is the only way to update a partner
+7. UX is weak because users must find the Welcome Hub to apply
+
+What I want added:
+
+1. Fix the application system
+- Applications must never silently fail
+- If the review channel is missing, unset, or invalid, the bot must refuse the submission and show a clear ephemeral error like:
+  “Partnership applications are temporarily unavailable. Please contact staff.”
+- If the review channel is valid:
+  - Send the application to the partnership review staff channel
+  - Generate a unique Application ID
+  - Include applicant info, timestamp, user ID, partner name, invite, platforms, short description, and full description
+  - DM the applicant a confirmation copy of their application
+  - Show an ephemeral success confirmation saying their application was submitted and is pending review
+- Add good logging and error handling
+
+2. Upgrade the public partnership panel
+- Keep the embed clean and professional
+- Show:
+  - Total partner count
+  - System Status: Active
+  - Short how-it-works section
+- Add buttons:
+  - Browse Partners
+  - Apply for Partnership
+  - Partnership Rules
+- Keep the dropdown for viewing partners
+- Make the Apply button available directly on the public panel, not only through the Welcome Hub
+- Keep everything DIFF styled with organized sections and polished embed formatting
+
+3. Improve the partner dropdown result
+When a user selects a partner, the ephemeral embed should show:
+- Partner name
+- Short description
+- Full description
+- Platforms
+- Invite link
+- Banner image if available
+- Nice footer / branding
+- If no banner exists, use a clean fallback or simply omit the image without breaking the embed
+
+4. Add banner support properly
+- Add a banner image URL field in the partner add/application flow
+- Validate the image URL format if possible
+- Save it in the partner data
+- Display it in the partner view embed
+- Make it editable later by staff
+
+5. Add a full staff review flow
+When an application is sent to the staff review channel, include buttons:
+- Accept
+- Deny
+- Request Changes
+- Blacklist
+- View Invite
+
+Behavior:
+- Accept:
+  - Add the partner to storage automatically
+  - Post a success log
+  - DM the applicant that they were approved
+  - Optionally prepare an announcement embed if the system already supports it
+- Deny:
+  - DM the applicant with a denial message
+  - Log the denial
+- Request Changes:
+  - DM the applicant asking them to resubmit or update information
+  - Log the action
+- Blacklist:
+  - Mark them as blacklisted in storage if your current structure supports it
+  - Prevent future applications if blacklisted
+- View Invite:
+  - Provide quick access to the submitted invite link
+
+6. Add an Edit Partner flow for staff
+Create a staff-only way to edit an existing partner without removing and re-adding them.
+Editable fields:
+- Partner name
+- Short description
+- Full description
+- Invite link
+- Platforms
+- Banner URL
+- Active / inactive status
+- Display order if supported
+
+You can implement this as:
+- slash command
+- modal
+- dropdown + modal
+- or a staff panel
+Choose the cleanest option for Discord UX.
+
+7. Improve staff management
+Keep support for the existing commands, but if possible modernize with slash commands too.
+Useful staff commands/features:
+- add partner
+- remove partner
+- edit partner
+- list partners
+- view pending applications
+- refresh public partnership panel
+- set review channel
+- set rules channel or rules link if needed
+
+8. Add safer validation
+Before staff approves or adds a partner:
+- Check that the invite link looks valid
+- Prevent duplicate partners by name or invite if possible
+- Prevent broken empty fields
+- Handle missing banner gracefully
+
+9. Add logging
+Create logs for:
+- application submitted
+- application accepted
+- application denied
+- request changes sent
+- partner edited
+- partner removed
+- partner blacklisted
+- public panel refreshed
+
+10. Keep code quality high
+Requirements:
+- Modular code
+- Clean views, modals, and helper functions
+- Strong error handling
+- Good comments
+- No duplicate command registration
+- No breaking existing DIFF bot systems
+- Match the style of the current Different Meets V2 bot
+- If panel messages already exist, refresh/edit them instead of reposting duplicates
+- Keep embeds polished with separators and readable formatting
+
+Nice extras if possible:
+- Partner status badges like Active, Verified, Featured, New, Event Partner
+- Category support for partners such as Car Meets, Communities, Content Creators, Brands/Services
+- Better ordering / sorting in the dropdown
+- Default banner fallback
+- Optional partner announcement embed when approved
+
+Important:
+- Do not silently ignore errors
+- Do not allow applications to disappear with no trace
+- Make the system feel complete and production-ready
+- Preserve current partner data if possible
+- If the current storage is JSON-based, keep it compatible or migrate safely
+
+At the end, provide:
+1. The updated code
+2. Any new config values / channel IDs / constants I need to set
+3. Any new JSON structure changes
+4. Step-by-step instructions on where to place each file in my Different Meets V2 bot
+5. A short summary of what was added

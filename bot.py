@@ -24247,7 +24247,7 @@ class WelcomeHubSelect(discord.ui.Select):
         elif value == "partnership":
             partners = _pp_get_partners()
             await interaction.response.send_message(
-                embed=_pp_build_embed(partners), view=_PartnerHubView(partners), ephemeral=True
+                embed=_pp_build_panel_embed(partners), view=_PartnerHubView(partners), ephemeral=True
             )
 
         elif value == "faq":
@@ -24572,26 +24572,68 @@ async def _cmd_postsocialhub(ctx: commands.Context, channel: discord.TextChannel
 # PARTNER PANEL (DIRECTORY)
 # =========================
 
-_PP_CHANNEL_ID = 1485892421593337926
-_PP_FILE       = os.path.join(DATA_FOLDER, "diff_partner_panel.json")
-_PP_FOOTER     = "Different Meets • Official Partnership System"
+# ════════════════════════════════════════════════════════════════════════════════
+# PARTNERSHIP SYSTEM  (unified partner hub + application + staff review)
+# ════════════════════════════════════════════════════════════════════════════════
 
+# ── Configuration ───────────────────────────────────────────────────────────────
+_PP_CHANNEL_ID          = 1485892421593337926   # public partnerships channel
+_PP_REVIEW_CHANNEL_ID   = 0                     # staff-only review channel — set with !setpartnerchannel
+_PP_FILE                = os.path.join(DATA_FOLDER, "diff_partner_panel.json")
+_PP_APPS_FILE           = os.path.join(DATA_FOLDER, "diff_partnerships.json")
+_PP_FOOTER              = "Different Meets • Official Partnership System"
+_PP_PARTNER_ROLE_ID     = 0                     # role assigned on acceptance (0 = skip)
+_PP_STAFF_PING_ROLE_ID  = 0                     # staff role pinged on new application (0 = skip)
+
+_PP_COLOR         = discord.Color.from_rgb(88, 101, 242)
+_PP_SUCCESS_COLOR = discord.Color.green()
+_PP_DENIED_COLOR  = discord.Color.red()
+_PP_WARN_COLOR    = discord.Color.gold()
+
+_PP_STATUS_BADGES: dict[str, str] = {
+    "Active":        "🟢",
+    "Verified":      "☑️",
+    "Featured":      "⭐",
+    "New":           "🆕",
+    "Event Partner": "🎉",
+    "Inactive":      "🔴",
+}
+
+_PP_RULES_EMBED_DESC = (
+    "**📋 DIFF Partnership Requirements**\n\n"
+    "• Active and well-managed community\n"
+    "• Clean and respectful environment\n"
+    "• Related to car culture, GTA, automotive content, or gaming\n"
+    "• Good engagement — not inactive or ghost servers\n"
+    "• Organized setup with rules and moderation\n\n"
+    "**🚀 What You Get**\n"
+    "• Promotion in the DIFF partnership directory\n"
+    "• Exposure to our active community\n"
+    "• Potential collab & event opportunities\n\n"
+    "**⚠️ Important Notes**\n"
+    "• Not all applications are accepted\n"
+    "• Inactive partnerships may be removed\n"
+    "• Partnerships must remain mutually beneficial"
+)
+
+# ── Default partner data ────────────────────────────────────────────────────────
 _PP_DEFAULT_PARTNERS: list[dict] = [
-    {"name": "MMI Meets",            "short_desc": "PC & Xbox Series S|X meet community.",            "description": "MMI Meets PC & Xbox Series S|X",                                    "invite": "https://discord.gg/mmi",               "platforms": "PC, Xbox Series S|X",          "banner": ""},
-    {"name": "San Andreas Roleplay", "short_desc": "Professional and friendly roleplay community.",    "description": "A professional and friendly roleplay community on Xbox and PlayStation.\n\n**Departments:** Highway Patrol, Sheriff, Fire, EMS, Civilian Ops, Comms\n\n**What They Offer:**\n• Daily roleplays\n• Friendly staff\n• CAD system\n• Realistic uniforms & ranks", "invite": "https://discord.gg/bwzCykt9ZS",        "platforms": "Xbox, PlayStation",             "banner": ""},
-    {"name": "Los Santos MotorSports","short_desc": "Active multi-platform meet community.",            "description": "**Los Santos MotorSports**\n\n• Daily car meets on all platforms\n• Active staff and chats\n• 1500+ members\n• Weekly photo competitions\n• Giveaways\n• Forza, NFS, Snowrunner meets\n• LSMS merch", "invite": "https://discord.gg/Jf42kGD",           "platforms": "All Platforms",                 "banner": ""},
-    {"name": "LS Underground",       "short_desc": "Daily chill car meets and vibes on PlayStation.",  "description": "A very active and engaging community.\n\n• Daily car meets\n• Business lobbies\n• Chill lobbies\n• LFG channels\n• Active staff & giveaways\n• In-house game bot\n• Fully SFW with trained staff", "invite": "https://discord.gg/T5eZpu329K",        "platforms": "PlayStation",                   "banner": ""},
-    {"name": "Auto Minded",          "short_desc": "GTAO car enthusiast hub with events and trading.", "description": "A server for GTAO car enthusiasts and car fans.\n\n**Events:**\n• Car meets\n• Racing\n• Rally events\n• Buy/sell & trading\n• Car competitions\n• Server economy",  "invite": "https://discord.gg/autominded",        "platforms": "Xbox (focus), open to all",     "banner": ""},
-    {"name": "Civil Network",        "short_desc": "Large roleplay network with multiple departments.","description": "**Platforms:** Xbox New Gen, PS Old Gen, PS New Gen, FiveM\n\n**Departments:** Civilian Ops, Fire/EMS, Dispatch, Military Police, FBI, BCSO, LSPD, PBPD, SASP\n\n• Specialized giveaways\n• 24/7 sessions\n• Professional/friendly staff", "invite": "https://discord.gg/civilrp",           "platforms": "Xbox, PlayStation, FiveM",      "banner": "https://share.creavite.co/DKn05AwFAYa5mCl9.gif"},
-    {"name": "RVO",                  "short_desc": "PS5 GTA meet community with daily meets.",         "description": "A chill server to show off your rides and level up your GTA car meet experience.\n\n• Chill community\n• Daily car meets\n• Epic events\n• Media sharing\n• Gaming hub", "invite": "https://discord.gg/rvo",               "platforms": "PS5",                           "banner": ""},
-    {"name": "Chop Shop",            "short_desc": "Large GTAO-focused online gaming community.",      "description": "One of the larger active GCTF Discord servers.\n\n• Active members, traders & staff\n• Booster rewards\n• Server currency\n• Clubs that host car meets and lobby drops\n• Always looking for new partners", "invite": "https://discord.gg/YZMbqER2bv",        "platforms": "Multi-game / GTAO",             "banner": ""},
-    {"name": "Automotive Union",     "short_desc": "Established events community with multiple titles.","description": "Established in 2018.\n\nHosts GTA events every Friday and Sunday (8–9 PM UK).\n\n**Also on:**\n• Wreckfest\n• GT7\n• Forza Horizon\n• Crew Motorfest",               "invite": "https://discord.gg/kaApne5w4x",        "platforms": "GTA + racing titles",           "banner": ""},
-    {"name": "Car Meet Server",      "short_desc": "All-platform car meet and GTAO utility server.",   "description": "• Modded heists (PC)\n• Modded/stock cars\n• Car and photo competitions\n• GTAO inspired bot games",                                                              "invite": "https://discord.gg/zNd2F3sz5U",        "platforms": "All Platforms",                 "banner": ""},
-    {"name": "Fast Funds (GTA)",     "short_desc": "Private selling, sourcing, and heist group.",      "description": "**Fast Funds (GTA)**\n\nPrivate selling, sourcing, and heist group. Started recently and growing.",                                                                   "invite": "https://discord.gg/zxEdwZ9M6s",        "platforms": "GTA",                           "banner": ""},
-    {"name": "Hurricane's Cars & Chill","short_desc": "PS5-based GTA Online car meet server.",         "description": "A PlayStation 5 GTA Online car meet server.\n\n• Daily car meets\n• Photo competitions\n• Weekly giveaways\n• Game nights\n• Car advice/rating channels\n• New members daily\n• Welcoming community", "invite": "https://discord.gg/CkEXt34waa",        "platforms": "PS5",                           "banner": ""},
+    {"name": "MMI Meets",            "short_desc": "PC & Xbox Series S|X meet community.",            "description": "MMI Meets PC & Xbox Series S|X",                                    "invite": "https://discord.gg/mmi",               "platforms": "PC, Xbox Series S|X",          "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "San Andreas Roleplay", "short_desc": "Professional and friendly roleplay community.",    "description": "A professional and friendly roleplay community on Xbox and PlayStation.\n\n**Departments:** Highway Patrol, Sheriff, Fire, EMS, Civilian Ops, Comms\n\n**What They Offer:**\n• Daily roleplays\n• Friendly staff\n• CAD system\n• Realistic uniforms & ranks", "invite": "https://discord.gg/bwzCykt9ZS", "platforms": "Xbox, PlayStation", "banner": "", "status": "Active", "category": "Roleplay"},
+    {"name": "Los Santos MotorSports","short_desc": "Active multi-platform meet community.",            "description": "**Los Santos MotorSports**\n\n• Daily car meets on all platforms\n• Active staff and chats\n• 1500+ members\n• Weekly photo competitions\n• Giveaways\n• Forza, NFS, Snowrunner meets\n• LSMS merch", "invite": "https://discord.gg/Jf42kGD", "platforms": "All Platforms", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "LS Underground",       "short_desc": "Daily chill car meets and vibes on PlayStation.",  "description": "A very active and engaging community.\n\n• Daily car meets\n• Business lobbies\n• Chill lobbies\n• LFG channels\n• Active staff & giveaways\n• In-house game bot\n• Fully SFW with trained staff", "invite": "https://discord.gg/T5eZpu329K", "platforms": "PlayStation", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "Auto Minded",          "short_desc": "GTAO car enthusiast hub with events and trading.", "description": "A server for GTAO car enthusiasts and car fans.\n\n**Events:**\n• Car meets\n• Racing\n• Rally events\n• Buy/sell & trading\n• Car competitions\n• Server economy",  "invite": "https://discord.gg/autominded", "platforms": "Xbox (focus), open to all", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "Civil Network",        "short_desc": "Large roleplay network with multiple departments.","description": "**Platforms:** Xbox New Gen, PS Old Gen, PS New Gen, FiveM\n\n**Departments:** Civilian Ops, Fire/EMS, Dispatch, Military Police, FBI, BCSO, LSPD, PBPD, SASP\n\n• Specialized giveaways\n• 24/7 sessions\n• Professional/friendly staff", "invite": "https://discord.gg/civilrp", "platforms": "Xbox, PlayStation, FiveM", "banner": "https://share.creavite.co/DKn05AwFAYa5mCl9.gif", "status": "Active", "category": "Roleplay"},
+    {"name": "RVO",                  "short_desc": "PS5 GTA meet community with daily meets.",         "description": "A chill server to show off your rides and level up your GTA car meet experience.\n\n• Chill community\n• Daily car meets\n• Epic events\n• Media sharing\n• Gaming hub", "invite": "https://discord.gg/rvo", "platforms": "PS5", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "Chop Shop",            "short_desc": "Large GTAO-focused online gaming community.",      "description": "One of the larger active GCTF Discord servers.\n\n• Active members, traders & staff\n• Booster rewards\n• Server currency\n• Clubs that host car meets and lobby drops\n• Always looking for new partners", "invite": "https://discord.gg/YZMbqER2bv", "platforms": "Multi-game / GTAO", "banner": "", "status": "Active", "category": "Communities"},
+    {"name": "Automotive Union",     "short_desc": "Established events community with multiple titles.","description": "Established in 2018.\n\nHosts GTA events every Friday and Sunday (8–9 PM UK).\n\n**Also on:**\n• Wreckfest\n• GT7\n• Forza Horizon\n• Crew Motorfest",               "invite": "https://discord.gg/kaApne5w4x", "platforms": "GTA + racing titles", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "Car Meet Server",      "short_desc": "All-platform car meet and GTAO utility server.",   "description": "• Modded heists (PC)\n• Modded/stock cars\n• Car and photo competitions\n• GTAO inspired bot games",                                                              "invite": "https://discord.gg/zNd2F3sz5U", "platforms": "All Platforms", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "Fast Funds (GTA)",     "short_desc": "Private selling, sourcing, and heist group.",      "description": "**Fast Funds (GTA)**\n\nPrivate selling, sourcing, and heist group. Started recently and growing.",                                                                   "invite": "https://discord.gg/zxEdwZ9M6s", "platforms": "GTA", "banner": "", "status": "Active", "category": "Communities"},
+    {"name": "Hurricane's Cars & Chill","short_desc": "PS5-based GTA Online car meet server.",         "description": "A PlayStation 5 GTA Online car meet server.\n\n• Daily car meets\n• Photo competitions\n• Weekly giveaways\n• Game nights\n• Car advice/rating channels\n• New members daily\n• Welcoming community", "invite": "https://discord.gg/CkEXt34waa", "platforms": "PS5", "banner": "", "status": "Active", "category": "Car Meets"},
 ]
 
 
+# ── Data helpers ────────────────────────────────────────────────────────────────
 def _pp_load() -> dict:
     data = _load_diff_json(_PP_FILE) or {}
     if "partners" not in data:
@@ -24608,115 +24650,535 @@ def _pp_get_partners() -> list:
     return _pp_load().get("partners", [])
 
 
-def _pp_build_embed(partners: list) -> discord.Embed:
+def _pp_apps_load() -> dict:
+    return _load_diff_json(_PP_APPS_FILE) or {}
+
+
+def _pp_apps_save(data: dict) -> None:
+    _save_diff_json(_PP_APPS_FILE, data)
+
+
+def _pp_is_blacklisted(user_id: int) -> bool:
+    return user_id in (_pp_apps_load().get("blacklist", []))
+
+
+def _pp_extract_app_id(message: discord.Message) -> str | None:
+    try:
+        import re as _re
+        for embed in message.embeds:
+            desc = embed.description or ""
+            m = _re.search(r"`(PARTNER-\d+-\d+)`", desc)
+            if m:
+                return m.group(1)
+            for field in embed.fields:
+                m = _re.search(r"`(PARTNER-\d+-\d+)`", field.value or "")
+                if m:
+                    return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+# ── Embed builders ──────────────────────────────────────────────────────────────
+def _pp_build_panel_embed(partners: list) -> discord.Embed:
+    active = sum(1 for p in partners if p.get("status", "Active") != "Inactive")
     embed = discord.Embed(
         title="🤝 DIFF Partnership Hub",
         description=(
-            "Explore our official partners below.\n\n"
-            "Use the dropdown menu to view each community, their info, and their invite link.\n"
-            "This panel is managed by staff and refreshes cleanly without duplicate posts."
+            "Explore communities that have officially partnered with **Different Meets**.\n\n"
+            "Use the dropdown below to browse partners and get their links.\n"
+            "Want to join our network? Hit **Apply for Partnership** below."
         ),
-        color=discord.Color.blurple(),
+        color=_PP_COLOR,
     )
-    embed.add_field(name="Current Partners", value=str(len(partners)), inline=True)
-    embed.add_field(name="System Status",    value="Active",            inline=True)
-    embed.add_field(
-        name="How It Works",
-        value="Select a partner from the dropdown below to view their information and invite.",
-        inline=False,
-    )
+    embed.add_field(name="Current Partners", value=str(active), inline=True)
+    embed.add_field(name="Status",           value="✅ Active",  inline=True)
     embed.set_footer(text=_PP_FOOTER)
     return embed
 
 
-async def _pp_dropdown_callback(interaction: discord.Interaction, selected: str) -> None:
-    partners = _pp_get_partners()
-    partner = next((p for p in partners if p["name"] == selected), None)
-    if not partner:
-        await interaction.response.send_message("Partner not found. Try refreshing the panel.", ephemeral=True)
-        return
+def _pp_build_partner_card(partner: dict) -> discord.Embed:
+    badge = _PP_STATUS_BADGES.get(partner.get("status", "Active"), "🤝")
+    title = f"{badge} {partner['name']}"
+    if partner.get("category"):
+        title += f"  •  {partner['category']}"
     embed = discord.Embed(
-        title=f"🤝 {partner['name']}",
-        description=partner.get("description", "No description provided."),
-        color=discord.Color.blue(),
+        title=title,
+        description=partner.get("description") or partner.get("short_desc", "No description provided."),
+        color=_PP_COLOR,
     )
     if partner.get("platforms"):
-        embed.add_field(name="Platforms", value=partner["platforms"], inline=False)
-    invite = partner.get("invite", "").strip()
-    if invite:
-        embed.add_field(name="Invite", value=f"[Join Partner]({invite})", inline=False)
+        embed.add_field(name="🎮 Platforms", value=partner["platforms"], inline=True)
+    status = partner.get("status", "Active")
+    embed.add_field(name="📊 Status", value=f"{_PP_STATUS_BADGES.get(status, '🤝')} {status}", inline=True)
     if partner.get("banner"):
         embed.set_image(url=partner["banner"])
     embed.set_footer(text=_PP_FOOTER)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    return embed
+
+
+def _pp_build_application_embed(app: dict, user: discord.User | discord.Member) -> discord.Embed:
+    try:
+        ts = int(datetime.fromisoformat(app.get("submitted_at", datetime.now(timezone.utc).isoformat())).timestamp())
+        ts_str = f"<t:{ts}:R>"
+    except Exception:
+        ts_str = "unknown"
+    embed = discord.Embed(
+        title="📨 New Partnership Application",
+        description=f"**Application ID:** `{app['application_id']}`\n**Submitted:** {ts_str}",
+        color=_PP_WARN_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Applicant",      value=f"{user.mention} (`{app['applicant_name']}`)", inline=False)
+    embed.add_field(name="Community Name", value=app["server_name"],                            inline=True)
+    embed.add_field(name="Invite Link",    value=app["invite_link"],                            inline=True)
+    embed.add_field(name="Platforms",      value=app.get("platforms", "Not specified"),         inline=True)
+    embed.add_field(name="Short Desc",     value=app.get("short_desc", "Not provided")[:512],  inline=False)
+    embed.add_field(name="Why Partner?",   value=app["why_partner"][:1024],                    inline=False)
+    status     = app.get("status", "pending")
+    status_map = {
+        "pending":            "🟡 Pending Review",
+        "accepted":           "✅ Accepted",
+        "denied":             "❌ Denied",
+        "changes_requested":  "🔄 Changes Requested",
+        "blacklisted":        "🚫 Blacklisted",
+    }
+    embed.add_field(name="Status", value=status_map.get(status, status), inline=False)
+    if hasattr(user, "display_avatar") and user.display_avatar:
+        embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+def _pp_build_accepted_dm_embed(app: dict, reviewer: discord.Member | discord.User) -> discord.Embed:
+    embed = discord.Embed(
+        title="✅ Partnership Application Accepted",
+        description=(
+            f"Congratulations! Your partnership application for **{app['server_name']}** has been approved.\n\n"
+            "You're now an official partner of **Different Meets**. "
+            "Our staff will be in touch with next steps."
+        ),
+        color=_PP_SUCCESS_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Community",   value=app["server_name"], inline=True)
+    embed.add_field(name="Reviewed By", value=str(reviewer),      inline=True)
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+def _pp_build_denied_dm_embed(app: dict, reviewer: discord.Member | discord.User, reason: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="❌ Partnership Application Denied",
+        description=(
+            f"Your partnership application for **{app['server_name']}** was not approved at this time.\n\n"
+            "You may address the feedback below and re-apply in the future."
+        ),
+        color=_PP_DENIED_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Community",   value=app["server_name"], inline=True)
+    embed.add_field(name="Reviewed By", value=str(reviewer),      inline=True)
+    embed.add_field(name="Reason",      value=reason[:1024],      inline=False)
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+def _pp_build_changes_dm_embed(app: dict, reviewer: discord.Member | discord.User, message: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="🔄 Changes Requested — Partnership Application",
+        description=(
+            f"A staff member reviewed your application for **{app['server_name']}** "
+            "and is requesting changes before a final decision can be made."
+        ),
+        color=_PP_WARN_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Community",         value=app["server_name"], inline=True)
+    embed.add_field(name="Reviewed By",       value=str(reviewer),      inline=True)
+    embed.add_field(name="Requested Changes", value=message[:1024],     inline=False)
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+def _pp_build_log_embed(
+    action: str,
+    app: dict,
+    reviewer: discord.Member | discord.User,
+    reason: str | None = None,
+) -> discord.Embed:
+    icons  = {"accepted": "✅", "denied": "❌", "changes_requested": "🔄", "blacklisted": "🚫"}
+    colors = {
+        "accepted":          _PP_SUCCESS_COLOR,
+        "denied":            _PP_DENIED_COLOR,
+        "changes_requested": _PP_WARN_COLOR,
+        "blacklisted":       _PP_DENIED_COLOR,
+    }
+    embed = discord.Embed(
+        title=f"{icons.get(action, '📋')} Partnership {action.replace('_', ' ').title()}",
+        color=colors.get(action, _PP_COLOR),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Application ID", value=app["application_id"],        inline=False)
+    embed.add_field(name="Community",      value=app["server_name"],            inline=True)
+    embed.add_field(name="Applicant",      value=f"<@{app['applicant_id']}>",  inline=True)
+    embed.add_field(name="Reviewed By",    value=reviewer.mention,             inline=False)
+    if reason:
+        embed.add_field(name="Notes", value=reason[:1024], inline=False)
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+# ── Dropdown UI ─────────────────────────────────────────────────────────────────
+async def _pp_show_partner_card(interaction: discord.Interaction, name: str) -> None:
+    partners = _pp_get_partners()
+    partner  = next((p for p in partners if p["name"] == name), None)
+    if not partner:
+        await interaction.response.send_message(
+            "Partner not found. The panel may need refreshing.", ephemeral=True
+        )
+        return
+    embed  = _pp_build_partner_card(partner)
+    view   = discord.ui.View(timeout=None)
+    invite = partner.get("invite", "").strip()
+    if invite:
+        view.add_item(discord.ui.Button(
+            label="Join Community",
+            emoji="🔗",
+            style=discord.ButtonStyle.link,
+            url=invite,
+        ))
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 class _PartnerDropdown(discord.ui.Select):
-    """Persistent dropdown for the public channel panel."""
+    """Persistent dropdown on the public partner panel."""
     def __init__(self, partners: list) -> None:
         options = [
-            discord.SelectOption(label=p["name"][:100], description=p.get("short_desc", "")[:100], value=p["name"], emoji="🤝")
+            discord.SelectOption(
+                label=p["name"][:100],
+                description=p.get("short_desc", "")[:100],
+                value=p["name"],
+                emoji=_PP_STATUS_BADGES.get(p.get("status", "Active"), "🤝"),
+            )
             for p in partners[:25]
         ]
-        super().__init__(placeholder="Select a partner to view more info...", min_values=1, max_values=1, options=options, custom_id="diff_partner_select")
+        if not options:
+            options = [discord.SelectOption(label="No partners yet", value="__none__", emoji="❌")]
+        super().__init__(
+            placeholder="🤝  Select a partner to view their info…",
+            min_values=1, max_values=1,
+            options=options,
+            custom_id="diff_partner_select",
+            row=0,
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await _pp_dropdown_callback(interaction, self.values[0])
+        if self.values[0] == "__none__":
+            await interaction.response.send_message("No partners are listed yet.", ephemeral=True)
+            return
+        await _pp_show_partner_card(interaction, self.values[0])
 
 
 class _PartnerHubDropdown(discord.ui.Select):
     """Non-persistent dropdown for the Welcome Hub ephemeral popup."""
     def __init__(self, partners: list) -> None:
         options = [
-            discord.SelectOption(label=p["name"][:100], description=p.get("short_desc", "")[:100], value=p["name"], emoji="🤝")
+            discord.SelectOption(
+                label=p["name"][:100],
+                description=p.get("short_desc", "")[:100],
+                value=p["name"],
+                emoji=_PP_STATUS_BADGES.get(p.get("status", "Active"), "🤝"),
+            )
             for p in partners[:25]
         ]
-        super().__init__(placeholder="Select a partner to view more info...", min_values=1, max_values=1, options=options, custom_id="diff_pp_hub_sel")
+        if not options:
+            options = [discord.SelectOption(label="No partners yet", value="__none__", emoji="❌")]
+        super().__init__(
+            placeholder="🤝  Select a partner to view their info…",
+            min_values=1, max_values=1,
+            options=options,
+            custom_id="diff_pp_hub_sel",
+            row=0,
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await _pp_dropdown_callback(interaction, self.values[0])
+        if self.values[0] == "__none__":
+            await interaction.response.send_message("No partners are listed yet.", ephemeral=True)
+            return
+        await _pp_show_partner_card(interaction, self.values[0])
 
 
+# ── Panel views ──────────────────────────────────────────────────────────────────
 class _PartnerPanelView(discord.ui.View):
-    """Persistent view for the public channel panel."""
-    def __init__(self, partners: list) -> None:
+    """Persistent public partner panel — dropdown + Apply + Rules buttons."""
+    def __init__(self, partners: list | None = None) -> None:
         super().__init__(timeout=None)
-        if partners:
-            self.add_item(_PartnerDropdown(partners))
+        if partners is None:
+            partners = _pp_get_partners()
+        self.add_item(_PartnerDropdown(partners))
+
+    @discord.ui.button(
+        label="Apply for Partnership", emoji="📩",
+        style=discord.ButtonStyle.primary,
+        custom_id="pp_apply_btn", row=1,
+    )
+    async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if _pp_is_blacklisted(interaction.user.id):
+            await interaction.response.send_message(
+                "❌ You are not eligible to apply for a DIFF partnership.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(_PPApplicationModal())
+
+    @discord.ui.button(
+        label="Partnership Rules", emoji="📋",
+        style=discord.ButtonStyle.secondary,
+        custom_id="pp_rules_btn", row=1,
+    )
+    async def rules_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        embed = discord.Embed(
+            title="📋 DIFF Partnership Rules & Info",
+            description=_PP_RULES_EMBED_DESC,
+            color=_PP_COLOR,
+        )
+        embed.set_footer(text=_PP_FOOTER)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# Backward-compat alias — on_ready registers _PshipPanelView by name
+_PshipPanelView = _PartnerPanelView
 
 
 class _PartnerHubView(discord.ui.View):
-    """Non-persistent view sent ephemerally from the Welcome Hub button."""
+    """Non-persistent view for the Welcome Hub button."""
     def __init__(self, partners: list) -> None:
         super().__init__(timeout=120)
-        if partners:
-            self.add_item(_PartnerHubDropdown(partners))
+        self.add_item(_PartnerHubDropdown(partners))
 
-    @discord.ui.button(label="Apply for Partnership", emoji="📩", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(
+        label="Apply for Partnership", emoji="📩",
+        style=discord.ButtonStyle.primary, row=1,
+    )
     async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(_PshipApplicationModal())
+        if _pp_is_blacklisted(interaction.user.id):
+            await interaction.response.send_message(
+                "❌ You are not eligible to apply for a DIFF partnership.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(_PPApplicationModal())
+
+    @discord.ui.button(
+        label="Partnership Rules", emoji="📋",
+        style=discord.ButtonStyle.secondary, row=1,
+    )
+    async def rules_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        embed = discord.Embed(
+            title="📋 DIFF Partnership Rules & Info",
+            description=_PP_RULES_EMBED_DESC,
+            color=_PP_COLOR,
+        )
+        embed.set_footer(text=_PP_FOOTER)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class _PshipStaffView(discord.ui.View):
+    """Persistent staff review view for partnership applications."""
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Accept",           emoji="✅", style=discord.ButtonStyle.success,   custom_id="pship_accept",     row=0)
+    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pp_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not read the application ID from this embed.", ephemeral=True)
+            return
+        await _pp_process_accept(interaction, app_id)
+
+    @discord.ui.button(label="Deny",             emoji="❌", style=discord.ButtonStyle.danger,    custom_id="pship_deny",       row=0)
+    async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pp_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not read the application ID from this embed.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_PPDenyModal(app_id))
+
+    @discord.ui.button(label="Request Changes",  emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="pship_changes",    row=0)
+    async def changes_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pp_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not read the application ID from this embed.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_PPRequestChangesModal(app_id))
+
+    @discord.ui.button(label="Blacklist",         emoji="🚫", style=discord.ButtonStyle.danger,    custom_id="pship_blacklist",  row=1)
+    async def blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pp_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not read the application ID from this embed.", ephemeral=True)
+            return
+        await _pp_process_blacklist(interaction, app_id)
+
+    @discord.ui.button(label="View Invite",       emoji="🔗", style=discord.ButtonStyle.secondary, custom_id="pship_viewinvite", row=1)
+    async def invite_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pp_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not read the application ID.", ephemeral=True)
+            return
+        data = _pp_apps_load()
+        app  = data.get(app_id)
+        if not app:
+            await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"🔗 **{app['server_name']}** invite: {app['invite_link']}", ephemeral=True
+        )
+
+
+# ── Modals ───────────────────────────────────────────────────────────────────────
+class _PPApplicationModal(discord.ui.Modal, title="DIFF Partnership Application"):
+    server_name = discord.ui.TextInput(
+        label="Community / Server Name",
+        placeholder="Enter your community name",
+        required=True, max_length=100,
+    )
+    invite_link = discord.ui.TextInput(
+        label="Invite / Social Link",
+        placeholder="Paste your Discord invite or main link",
+        required=True, max_length=200,
+    )
+    platforms = discord.ui.TextInput(
+        label="Platforms",
+        placeholder="e.g. PS5, Xbox, PC, All Platforms",
+        required=True, max_length=100,
+    )
+    short_desc = discord.ui.TextInput(
+        label="Short Description  (shown in the dropdown)",
+        placeholder="One-line summary of your community — max 100 chars",
+        required=True, max_length=100,
+    )
+    why_partner = discord.ui.TextInput(
+        label="Why do you want to partner with DIFF?",
+        style=discord.TextStyle.paragraph,
+        placeholder="Describe your community and why you'd be a great partner.",
+        required=True, max_length=1000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if _pp_is_blacklisted(interaction.user.id):
+            await interaction.response.send_message("❌ You are not eligible to apply.", ephemeral=True)
+            return
+        import time as _time
+        app_id  = f"PARTNER-{interaction.user.id}-{int(_time.time())}"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        app = {
+            "application_id": app_id,
+            "applicant_id":   interaction.user.id,
+            "applicant_name": str(interaction.user),
+            "server_name":    str(self.server_name).strip(),
+            "invite_link":    str(self.invite_link).strip(),
+            "platforms":      str(self.platforms).strip(),
+            "short_desc":     str(self.short_desc).strip(),
+            "why_partner":    str(self.why_partner).strip(),
+            "status":         "pending",
+            "submitted_at":   now_iso,
+        }
+        data = _pp_apps_load()
+        data[app_id] = app
+        _pp_apps_save(data)
+        review_ch = (
+            interaction.guild.get_channel(_PP_REVIEW_CHANNEL_ID)
+            if interaction.guild and _PP_REVIEW_CHANNEL_ID
+            else None
+        )
+        if not isinstance(review_ch, discord.TextChannel):
+            confirm = discord.Embed(
+                title="✅ Application Submitted",
+                description=(
+                    f"Your application has been received!\n"
+                    f"**Application ID:** `{app_id}`\n\n"
+                    "Staff will review your submission and reach out with a decision."
+                ),
+                color=_PP_SUCCESS_COLOR,
+            )
+            confirm.set_footer(text=_PP_FOOTER)
+            await interaction.response.send_message(embed=confirm, ephemeral=True)
+            return
+        ping_content = (
+            f"<@&{_PP_STAFF_PING_ROLE_ID}> New partnership application received."
+            if _PP_STAFF_PING_ROLE_ID else None
+        )
+        await review_ch.send(
+            content=ping_content,
+            embed=_pp_build_application_embed(app, interaction.user),
+            view=_PshipStaffView(),
+        )
+        confirm = discord.Embed(
+            title="✅ Application Submitted",
+            description=(
+                f"Your partnership application for **{str(self.server_name).strip()}** "
+                f"has been sent to staff for review.\n\n**Application ID:** `{app_id}`"
+            ),
+            color=_PP_SUCCESS_COLOR,
+        )
+        confirm.set_footer(text=_PP_FOOTER)
+        await interaction.response.send_message(embed=confirm, ephemeral=True)
+
+
+class _PPDenyModal(discord.ui.Modal, title="Deny Partnership Application"):
+    reason = discord.ui.TextInput(
+        label="Reason for denial",
+        style=discord.TextStyle.paragraph,
+        placeholder="Explain why this partnership was denied. This will be sent to the applicant.",
+        required=True, max_length=500,
+    )
+
+    def __init__(self, app_id: str) -> None:
+        super().__init__()
+        self.app_id = app_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await _pp_process_deny(interaction, self.app_id, str(self.reason).strip())
+
+
+class _PPRequestChangesModal(discord.ui.Modal, title="Request Changes"):
+    message = discord.ui.TextInput(
+        label="Message to applicant",
+        style=discord.TextStyle.paragraph,
+        placeholder="Describe what needs to change before this application can be reconsidered.",
+        required=True, max_length=1000,
+    )
+
+    def __init__(self, app_id: str) -> None:
+        super().__init__()
+        self.app_id = app_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await _pp_process_request_changes(interaction, self.app_id, str(self.message).strip())
 
 
 class _PartnerAddModal(discord.ui.Modal, title="Add New Partner"):
-    p_name    = discord.ui.TextInput(label="Partner Name",                                                   required=True,  max_length=100)
-    p_invite  = discord.ui.TextInput(label="Invite / Link",                                                  required=True,  max_length=200)
-    p_short   = discord.ui.TextInput(label="Short Description (shown in dropdown)",                          required=True,  max_length=100)
-    p_plat    = discord.ui.TextInput(label="Platforms",  placeholder="e.g. PS5, Xbox, All",                 required=False, max_length=100)
-    p_desc    = discord.ui.TextInput(label="Full Description", style=discord.TextStyle.paragraph,            required=False, max_length=1000)
+    p_name   = discord.ui.TextInput(label="Partner Name",                                               required=True,  max_length=100)
+    p_invite = discord.ui.TextInput(label="Invite / Link",                                              required=True,  max_length=200)
+    p_short  = discord.ui.TextInput(label="Short Description  (shown in dropdown)",                     required=True,  max_length=100)
+    p_plat   = discord.ui.TextInput(label="Platforms",  placeholder="e.g. PS5, Xbox, All",             required=False, max_length=100)
+    p_desc   = discord.ui.TextInput(label="Full Description", style=discord.TextStyle.paragraph,        required=False, max_length=1000)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         data = _pp_load()
         name = str(self.p_name).strip()
         if any(p["name"].lower() == name.lower() for p in data["partners"]):
-            await interaction.response.send_message(f"**{name}** already exists in the partner list.", ephemeral=True)
+            await interaction.response.send_message(f"❌ **{name}** already exists in the partner list.", ephemeral=True)
             return
         data["partners"].append({
-            "name":       name,
-            "short_desc": str(self.p_short).strip(),
-            "description": str(self.p_desc).strip() if self.p_desc.value else str(self.p_short).strip(),
-            "invite":     str(self.p_invite).strip(),
-            "platforms":  str(self.p_plat).strip() if self.p_plat.value else "",
-            "banner":     "",
+            "name":        name,
+            "short_desc":  str(self.p_short).strip(),
+            "description": str(self.p_desc).strip() or str(self.p_short).strip(),
+            "invite":      str(self.p_invite).strip(),
+            "platforms":   str(self.p_plat).strip() if self.p_plat.value else "",
+            "banner":      "",
+            "status":      "New",
+            "category":    "",
         })
         _pp_save(data)
         if interaction.guild:
@@ -24733,8 +25195,232 @@ class _PartnerAddTriggerView(discord.ui.View):
         await interaction.response.send_modal(_PartnerAddModal())
 
 
+class _PartnerEditModal(discord.ui.Modal, title="Edit Partner"):
+    p_invite = discord.ui.TextInput(label="Invite / Link",                                              required=True,  max_length=200)
+    p_short  = discord.ui.TextInput(label="Short Description  (shown in dropdown)",                     required=True,  max_length=100)
+    p_plat   = discord.ui.TextInput(label="Platforms",                                                  required=False, max_length=100)
+    p_desc   = discord.ui.TextInput(label="Full Description", style=discord.TextStyle.paragraph,        required=False, max_length=1000)
+    p_banner = discord.ui.TextInput(label="Banner Image URL  (optional)",                               required=False, max_length=500)
+
+    def __init__(self, partner_name: str) -> None:
+        super().__init__()
+        self.partner_name = partner_name
+        p = next((x for x in _pp_get_partners() if x["name"].lower() == partner_name.lower()), None)
+        if p:
+            self.p_invite.default = p.get("invite", "")
+            self.p_short.default  = p.get("short_desc", "")
+            self.p_plat.default   = p.get("platforms", "")
+            self.p_desc.default   = p.get("description", "")[:4000]
+            self.p_banner.default = p.get("banner", "")
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        data = _pp_load()
+        idx  = next(
+            (i for i, p in enumerate(data["partners"]) if p["name"].lower() == self.partner_name.lower()),
+            None,
+        )
+        if idx is None:
+            await interaction.response.send_message(f"❌ Partner **{self.partner_name}** not found.", ephemeral=True)
+            return
+        data["partners"][idx].update({
+            "invite":      str(self.p_invite).strip(),
+            "short_desc":  str(self.p_short).strip(),
+            "platforms":   str(self.p_plat).strip() if self.p_plat.value else data["partners"][idx].get("platforms", ""),
+            "description": str(self.p_desc).strip()   or data["partners"][idx].get("description", ""),
+            "banner":      str(self.p_banner).strip()  if self.p_banner.value else data["partners"][idx].get("banner", ""),
+        })
+        _pp_save(data)
+        if interaction.guild:
+            await _pp_post_or_refresh(interaction.guild)
+        await interaction.response.send_message(
+            f"✅ **{self.partner_name}** updated and panel refreshed.", ephemeral=True
+        )
+
+
+class _PartnerEditTriggerView(discord.ui.View):
+    def __init__(self, partner_name: str) -> None:
+        super().__init__(timeout=60)
+        self.partner_name = partner_name
+
+    @discord.ui.button(label="Edit Partner", emoji="✏️", style=discord.ButtonStyle.primary)
+    async def edit_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(_PartnerEditModal(self.partner_name))
+
+
+# ── Process functions ────────────────────────────────────────────────────────────
+async def _pp_process_accept(interaction: discord.Interaction, app_id: str) -> None:
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "❌ You need Manage Server permission to review applications.", ephemeral=True
+        )
+        return
+    data = _pp_apps_load()
+    app  = data.get(app_id)
+    if not app:
+        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+        return
+    if app.get("status") != "pending":
+        await interaction.response.send_message(
+            f"⚠️ This application is already **{app.get('status', '?')}** and cannot be re-actioned.", ephemeral=True
+        )
+        return
+    app["status"]        = "accepted"
+    app["reviewer_id"]   = interaction.user.id
+    app["reviewer_name"] = str(interaction.user)
+    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
+    data[app_id] = app
+    _pp_apps_save(data)
+    guild     = interaction.guild
+    applicant = guild.get_member(app["applicant_id"]) if guild else None
+    if guild and _PP_PARTNER_ROLE_ID:
+        role = guild.get_role(_PP_PARTNER_ROLE_ID)
+        if role and applicant:
+            try:
+                await applicant.add_roles(role, reason="Partnership accepted")
+            except discord.Forbidden:
+                pass
+    # Auto-add accepted partner to public list
+    pp_data = _pp_load()
+    if not any(p["name"].lower() == app["server_name"].lower() for p in pp_data["partners"]):
+        pp_data["partners"].append({
+            "name":        app["server_name"],
+            "short_desc":  app.get("short_desc", app.get("why_partner", "")[:100]),
+            "description": app.get("why_partner", ""),
+            "invite":      app["invite_link"],
+            "platforms":   app.get("platforms", ""),
+            "banner":      "",
+            "status":      "New",
+            "category":    "",
+        })
+        _pp_save(pp_data)
+        if guild:
+            await _pp_post_or_refresh(guild)
+    updated_embed = _pp_build_application_embed(app, applicant or interaction.user)
+    await interaction.message.edit(embed=updated_embed, view=None)
+    if applicant:
+        try:
+            await applicant.send(embed=_pp_build_accepted_dm_embed(app, interaction.user))
+        except discord.Forbidden:
+            pass
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        await log_ch.send(embed=_pp_build_log_embed("accepted", app, interaction.user))
+    await interaction.response.send_message(
+        f"✅ Partnership for **{app['server_name']}** accepted and they have been added to the partner list.",
+        ephemeral=True,
+    )
+
+
+async def _pp_process_deny(interaction: discord.Interaction, app_id: str, reason: str) -> None:
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "❌ You need Manage Server permission to review applications.", ephemeral=True
+        )
+        return
+    data = _pp_apps_load()
+    app  = data.get(app_id)
+    if not app:
+        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+        return
+    if app.get("status") != "pending":
+        await interaction.response.send_message(
+            f"⚠️ This application is already **{app.get('status', '?')}**.", ephemeral=True
+        )
+        return
+    app["status"]        = "denied"
+    app["reviewer_id"]   = interaction.user.id
+    app["reviewer_name"] = str(interaction.user)
+    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
+    data[app_id] = app
+    _pp_apps_save(data)
+    guild     = interaction.guild
+    applicant = guild.get_member(app["applicant_id"]) if guild else None
+    updated_embed = _pp_build_application_embed(app, applicant or interaction.user)
+    await interaction.message.edit(embed=updated_embed, view=None)
+    if applicant:
+        try:
+            await applicant.send(embed=_pp_build_denied_dm_embed(app, interaction.user, reason))
+        except discord.Forbidden:
+            pass
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        await log_ch.send(embed=_pp_build_log_embed("denied", app, interaction.user, reason=reason))
+    await interaction.response.send_message(
+        f"❌ Partnership for **{app['server_name']}** denied.", ephemeral=True
+    )
+
+
+async def _pp_process_request_changes(
+    interaction: discord.Interaction, app_id: str, message: str
+) -> None:
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "❌ You need Manage Server permission to review applications.", ephemeral=True
+        )
+        return
+    data = _pp_apps_load()
+    app  = data.get(app_id)
+    if not app:
+        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+        return
+    app["status"]            = "changes_requested"
+    app["reviewer_id"]       = interaction.user.id
+    app["reviewer_name"]     = str(interaction.user)
+    app["changes_requested"] = message
+    data[app_id] = app
+    _pp_apps_save(data)
+    guild     = interaction.guild
+    applicant = guild.get_member(app["applicant_id"]) if guild else None
+    updated_embed = _pp_build_application_embed(app, applicant or interaction.user)
+    await interaction.message.edit(embed=updated_embed, view=None)
+    if applicant:
+        try:
+            await applicant.send(embed=_pp_build_changes_dm_embed(app, interaction.user, message))
+        except discord.Forbidden:
+            pass
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        await log_ch.send(embed=_pp_build_log_embed("changes_requested", app, interaction.user, reason=message))
+    await interaction.response.send_message(
+        f"🔄 Changes requested from **{app['server_name']}**. Applicant has been notified.", ephemeral=True
+    )
+
+
+async def _pp_process_blacklist(interaction: discord.Interaction, app_id: str) -> None:
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "❌ Administrator permission required to blacklist.", ephemeral=True
+        )
+        return
+    data = _pp_apps_load()
+    app  = data.get(app_id)
+    if not app:
+        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+        return
+    blacklist: list = data.setdefault("blacklist", [])
+    user_id = app["applicant_id"]
+    if user_id not in blacklist:
+        blacklist.append(user_id)
+    app["status"]        = "blacklisted"
+    app["reviewer_id"]   = interaction.user.id
+    app["reviewer_name"] = str(interaction.user)
+    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
+    data[app_id] = app
+    _pp_apps_save(data)
+    guild     = interaction.guild
+    applicant = guild.get_member(user_id) if guild else None
+    updated_embed = _pp_build_application_embed(app, applicant or interaction.user)
+    await interaction.message.edit(embed=updated_embed, view=None)
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        await log_ch.send(embed=_pp_build_log_embed("blacklisted", app, interaction.user))
+    await interaction.response.send_message(
+        f"🚫 <@{user_id}> has been blacklisted from submitting partnership applications.", ephemeral=True
+    )
+
+
+# ── Panel management helpers ──────────────────────────────────────────────────────
 async def _pp_scan_existing(channel: discord.TextChannel) -> discord.Message | None:
-    """Return the most recent hub panel message posted by this bot in the channel."""
     try:
         async for msg in channel.history(limit=50):
             if msg.author.id == channel.guild.me.id and msg.embeds:
@@ -24746,7 +25432,6 @@ async def _pp_scan_existing(channel: discord.TextChannel) -> discord.Message | N
 
 
 async def _pp_delete_duplicates(channel: discord.TextChannel, keep_id: int) -> None:
-    """Delete all hub panel messages in the channel except the one we want to keep."""
     try:
         async for old_msg in channel.history(limit=50):
             if (
@@ -24773,12 +25458,10 @@ async def _pp_post_or_refresh(guild: discord.Guild) -> None:
     if not isinstance(channel, discord.TextChannel):
         return
     partners = _pp_get_partners()
-    embed    = _pp_build_embed(partners)
+    embed    = _pp_build_panel_embed(partners)
     view     = _PartnerPanelView(partners)
     data     = _pp_load()
     msg_id   = data.get("panel_message_id")
-
-    # Try the stored message ID first
     if msg_id:
         try:
             msg = await channel.fetch_message(int(msg_id))
@@ -24790,8 +25473,6 @@ async def _pp_post_or_refresh(guild: discord.Guild) -> None:
             _pp_save(data)
         except Exception:
             return
-
-    # Stored ID missing or deleted — scan channel history to find any existing panel
     existing = await _pp_scan_existing(channel)
     if existing:
         try:
@@ -24802,14 +25483,13 @@ async def _pp_post_or_refresh(guild: discord.Guild) -> None:
             return
         except Exception:
             pass
-
-    # Truly no existing panel — post fresh
     msg = await channel.send(embed=embed, view=view)
     data["panel_message_id"] = msg.id
     _pp_save(data)
     await _pp_delete_duplicates(channel, msg.id)
 
 
+# ── Staff / Admin commands ────────────────────────────────────────────────────────
 @bot.command(name="postpartnerpanel")
 async def _cmd_postpartnerpanel(ctx: commands.Context):
     if not ctx.author.guild_permissions.administrator:
@@ -24822,12 +25502,12 @@ async def _cmd_postpartnerpanel(ctx: commands.Context):
     await _pp_post_or_refresh(ctx.guild)
 
 
-@bot.command(name="partneradd")
-async def _cmd_partneradd(ctx: commands.Context):
+@bot.command(name="addpartner")
+async def _cmd_addpartner(ctx: commands.Context):
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("Admins only.", delete_after=6)
         return
-    msg = await ctx.send("Click below to fill in the new partner details:", view=_PartnerAddTriggerView())
+    msg = await ctx.send("Click below to fill in the new partner's details:", view=_PartnerAddTriggerView())
     try:
         await ctx.message.delete()
     except Exception:
@@ -24839,12 +25519,37 @@ async def _cmd_partneradd(ctx: commands.Context):
         pass
 
 
-@bot.command(name="partnerremove")
-async def _cmd_partnerremove(ctx: commands.Context, *, name: str):
+@bot.command(name="editpartner")
+async def _cmd_editpartner(ctx: commands.Context, *, name: str):
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("Admins only.", delete_after=6)
         return
-    data = _pp_load()
+    partners = _pp_get_partners()
+    match = next((p["name"] for p in partners if p["name"].lower() == name.strip().lower()), None)
+    if not match:
+        await ctx.send(
+            f"❌ Partner **{name}** not found. Use `!partnerslist` to see exact names.",
+            delete_after=10,
+        )
+        return
+    msg = await ctx.send(f"Click below to edit **{match}**:", view=_PartnerEditTriggerView(match))
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await asyncio.sleep(62)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+
+@bot.command(name="removepartner")
+async def _cmd_removepartner(ctx: commands.Context, *, name: str):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    data   = _pp_load()
     before = len(data["partners"])
     data["partners"] = [p for p in data["partners"] if p["name"].lower() != name.strip().lower()]
     if len(data["partners"]) == before:
@@ -24852,7 +25557,31 @@ async def _cmd_partnerremove(ctx: commands.Context, *, name: str):
         return
     _pp_save(data)
     await _pp_post_or_refresh(ctx.guild)
-    await ctx.send(f"✅ Removed **{name}** and refreshed the panel.", delete_after=8)
+    await ctx.send(f"✅ **{name}** removed and panel refreshed.", delete_after=8)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
+@bot.command(name="partnerfeature")
+async def _cmd_partnerfeature(ctx: commands.Context, *, name: str):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    data = _pp_load()
+    idx  = next(
+        (i for i, p in enumerate(data["partners"]) if p["name"].lower() == name.strip().lower()), None
+    )
+    if idx is None:
+        await ctx.send(f"❌ Partner **{name}** not found.", delete_after=8)
+        return
+    current    = data["partners"][idx].get("status", "Active")
+    new_status = "Active" if current == "Featured" else "Featured"
+    data["partners"][idx]["status"] = new_status
+    _pp_save(data)
+    await _pp_post_or_refresh(ctx.guild)
+    await ctx.send(f"✅ **{name}** is now **{new_status}** — panel refreshed.", delete_after=8)
     try:
         await ctx.message.delete()
     except Exception:
@@ -24868,375 +25597,95 @@ async def _cmd_partnerslist(ctx: commands.Context):
     if not partners:
         await ctx.send("No partners on file.", delete_after=8)
         return
+    lines = []
+    for i, p in enumerate(partners[:25], 1):
+        badge = _PP_STATUS_BADGES.get(p.get("status", "Active"), "🤝")
+        lines.append(f"`{i:>2}.` {badge} **{p['name']}** — {p.get('short_desc', '')[:60]}")
     embed = discord.Embed(
-        title="🤝 Partner List",
-        description="\n".join(f"• **{p['name']}** — {p.get('short_desc', '')}" for p in partners[:25]),
-        color=discord.Color.blurple(),
+        title=f"🤝 Partner List  ({len(partners)})",
+        description="\n".join(lines),
+        color=_PP_COLOR,
     )
-    embed.set_footer(text=f"Total: {len(partners)}")
+    embed.set_footer(text=_PP_FOOTER)
     await ctx.send(embed=embed)
 
 
-# =========================
-# PARTNERSHIP SYSTEM
-# =========================
-
-_PSHIP_PANEL_CHANNEL_ID    = 0  # channel where the public panel is posted
-_PSHIP_REVIEW_CHANNEL_ID   = 0  # staff-only review channel
-_PSHIP_ACCEPTED_CHANNEL_ID = 0  # public channel for accepted partner announcements (0 = skip)
-_PSHIP_PARTNER_ROLE_ID     = 0  # role assigned on acceptance (0 = skip)
-_PSHIP_STAFF_PING_ROLE_ID  = 0  # staff role pinged on new application (0 = skip)
-_PSHIP_FILE                = os.path.join(DATA_FOLDER, "diff_partnerships.json")
-
-_PSHIP_EMBED_COLOR   = discord.Color.from_rgb(88, 101, 242)
-_PSHIP_SUCCESS_COLOR = discord.Color.green()
-_PSHIP_DENIED_COLOR  = discord.Color.red()
-_PSHIP_WARN_COLOR    = discord.Color.gold()
-_PSHIP_FOOTER        = "Different Meets • Partnership System"
-
-
-def _pship_load() -> dict:
-    return _load_diff_json(_PSHIP_FILE) or {}
-
-
-def _pship_save(data: dict) -> None:
-    _save_diff_json(_PSHIP_FILE, data)
-
-
-def _pship_extract_app_id(message: discord.Message) -> str | None:
+@bot.command(name="setpartnerchannel")
+async def _cmd_setpartnerchannel(ctx: commands.Context, channel: discord.TextChannel):
+    global _PP_REVIEW_CHANNEL_ID
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    _PP_REVIEW_CHANNEL_ID = channel.id
+    await ctx.send(
+        f"✅ Partnership review channel set to {channel.mention} (runtime only).\n"
+        f"To make it permanent, set `_PP_REVIEW_CHANNEL_ID = {channel.id}` in the config.",
+        delete_after=20,
+    )
     try:
-        desc = message.embeds[0].description or ""
-        import re as _re
-        m = _re.search(r"`(PARTNER-\d+-\d+)`", desc)
-        return m.group(1) if m else None
+        await ctx.message.delete()
     except Exception:
-        return None
+        pass
 
 
-def _pship_build_info_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="🤝 DIFF Partnership Program",
-        description=(
-            "Interested in partnering with **Different Meets**?\n"
-            "We work with communities that match our standards of **activity, professionalism, and clean community culture**."
-        ),
-        color=_PSHIP_EMBED_COLOR,
-    )
-    embed.add_field(
-        name="📌 Partnership Requirements",
-        value=(
-            "• Active and well-managed community\n"
-            "• Clean and respectful environment\n"
-            "• Related to car culture, GTA, automotive content, or gaming\n"
-            "• Good engagement and not inactive\n"
-            "• Organized setup with rules and moderation"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🚀 What You Get",
-        value=(
-            "• Promotion in the DIFF partnership area\n"
-            "• Exposure to our community\n"
-            "• Potential social media / event support\n"
-            "• Future collab opportunities"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📋 How To Apply",
-        value=(
-            "Press **Apply for Partnership** below and complete the application form.\n"
-            "A staff member will review your submission and respond once a decision is made."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="⚠️ Important Notes",
-        value=(
-            "• Not all applications are accepted\n"
-            "• Inactive or poor-quality partnerships may be removed\n"
-            "• Partnerships must stay mutually beneficial"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-def _pship_build_panel_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="🤝 DIFF Partnership Center",
-        description=(
-            "Use the buttons below to learn how DIFF partnerships work or submit a partnership request.\n\n"
-            "We look for communities that are **active, respectful, organized, and aligned with DIFF standards**."
-        ),
-        color=_PSHIP_EMBED_COLOR,
-    )
-    embed.add_field(
-        name="Available Options",
-        value=(
-            "**📖 Partnership Info** — Read requirements and expectations\n"
-            "**📩 Apply for Partnership** — Submit your community for staff review"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-def _pship_build_application_embed(app: dict, user: discord.User | discord.Member) -> discord.Embed:
-    embed = discord.Embed(
-        title="📨 New Partnership Application",
-        description=f"Application ID: `{app['application_id']}`",
-        color=_PSHIP_WARN_COLOR,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Applicant", value=f"{user.mention} (`{app['applicant_name']}`)", inline=False)
-    embed.add_field(name="Community Name", value=app["server_name"], inline=False)
-    embed.add_field(name="Invite Link", value=app["invite_link"], inline=False)
-    embed.add_field(name="Community Type", value=app["community_type"], inline=True)
-    embed.add_field(name="Member Count", value=app["member_count"], inline=True)
-    embed.add_field(name="Why They Want To Partner", value=app["why_partner"][:1024], inline=False)
-    embed.add_field(name="Extra Info", value=(app["extra_info"][:1024] if app.get("extra_info") else "None provided"), inline=False)
-    embed.add_field(name="Status", value="🟡 Pending Review", inline=False)
-    if hasattr(user, "display_avatar") and user.display_avatar:
-        embed.set_thumbnail(url=user.display_avatar.url)
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-def _pship_build_accepted_embed(app: dict, reviewer: discord.Member | discord.User) -> discord.Embed:
-    embed = discord.Embed(
-        title="✅ Partnership Accepted",
-        description=(
-            f"The partnership request for **{app['server_name']}** has been approved.\n\n"
-            "Welcome to the DIFF partnership network."
-        ),
-        color=_PSHIP_SUCCESS_COLOR,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Community",    value=app["server_name"], inline=True)
-    embed.add_field(name="Invite Link",  value=app["invite_link"], inline=True)
-    embed.add_field(name="Reviewed By",  value=reviewer.mention,   inline=False)
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-def _pship_build_denied_embed(app: dict, reviewer: discord.Member | discord.User, reason: str) -> discord.Embed:
-    embed = discord.Embed(
-        title="❌ Partnership Denied",
-        description=f"The partnership request for **{app['server_name']}** was not approved.",
-        color=_PSHIP_DENIED_COLOR,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Community",   value=app["server_name"], inline=True)
-    embed.add_field(name="Reviewed By", value=reviewer.mention,   inline=True)
-    embed.add_field(name="Reason",      value=reason[:1024],      inline=False)
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-def _pship_build_log_embed(action: str, app: dict, reviewer: discord.Member | discord.User, reason: str | None = None) -> discord.Embed:
-    color = _PSHIP_SUCCESS_COLOR if action == "accepted" else _PSHIP_DENIED_COLOR
-    icon  = "✅" if action == "accepted" else "❌"
-    embed = discord.Embed(
-        title=f"{icon} Partnership {action.title()}",
-        color=color,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Application ID", value=app["application_id"], inline=False)
-    embed.add_field(name="Applicant",      value=f"<@{app['applicant_id']}>", inline=True)
-    embed.add_field(name="Community",      value=app["server_name"],          inline=True)
-    embed.add_field(name="Reviewed By",    value=reviewer.mention,            inline=False)
-    if reason:
-        embed.add_field(name="Reason", value=reason[:1024], inline=False)
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-async def _pship_process_accept(interaction: discord.Interaction, app_id: str) -> None:
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("❌ You don't have permission to review applications.", ephemeral=True)
+@bot.command(name="partnershiplist")
+async def _cmd_partnershiplist(ctx: commands.Context):
+    if not any(r.id in _JOIN_STAFF_ROLE_IDS for r in ctx.author.roles):
+        await ctx.send("Staff only.", delete_after=6)
         return
-    data = _pship_load()
-    app = data.get(app_id)
-    if not app:
-        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+    data = _pp_apps_load()
+    apps = {k: v for k, v in data.items() if k.startswith("PARTNER-")}
+    if not apps:
+        await ctx.send("No partnership applications on file.", delete_after=10)
         return
-    if app.get("status") != "pending":
-        await interaction.response.send_message("⚠️ This application has already been reviewed.", ephemeral=True)
-        return
-    app["status"]        = "accepted"
-    app["reviewer_id"]   = interaction.user.id
-    app["reviewer_name"] = str(interaction.user)
-    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
-    data[app_id] = app
-    _pship_save(data)
-    guild = interaction.guild
-    applicant = guild.get_member(app["applicant_id"]) if guild else None
-    if applicant and _PSHIP_PARTNER_ROLE_ID:
-        role = guild.get_role(_PSHIP_PARTNER_ROLE_ID)
-        if role:
-            try:
-                await applicant.add_roles(role, reason="Partnership accepted")
-            except discord.Forbidden:
-                pass
-    updated = _pship_build_application_embed(app, applicant or interaction.user)
-    updated.color = _PSHIP_SUCCESS_COLOR
-    updated.set_field_at(len(updated.fields) - 1, name="Status", value=f"✅ Accepted by {interaction.user.mention}", inline=False)
-    await interaction.message.edit(embed=updated, view=None)
-    if applicant:
-        try:
-            await applicant.send(embed=_pship_build_accepted_embed(app, interaction.user))
-        except discord.Forbidden:
-            pass
-    if _PSHIP_ACCEPTED_CHANNEL_ID:
-        acc_ch = guild.get_channel(_PSHIP_ACCEPTED_CHANNEL_ID) if guild else None
-        if isinstance(acc_ch, discord.TextChannel):
-            await acc_ch.send(embed=_pship_build_accepted_embed(app, interaction.user))
-    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
-    if isinstance(log_ch, discord.TextChannel):
-        await log_ch.send(embed=_pship_build_log_embed("accepted", app, interaction.user))
-    await interaction.response.send_message("✅ Partnership accepted.", ephemeral=True)
-
-
-async def _pship_process_deny(interaction: discord.Interaction, app_id: str, reason: str) -> None:
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("❌ You don't have permission to review applications.", ephemeral=True)
-        return
-    data = _pship_load()
-    app = data.get(app_id)
-    if not app:
-        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
-        return
-    if app.get("status") != "pending":
-        await interaction.response.send_message("⚠️ This application has already been reviewed.", ephemeral=True)
-        return
-    app["status"]        = "denied"
-    app["reviewer_id"]   = interaction.user.id
-    app["reviewer_name"] = str(interaction.user)
-    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
-    data[app_id] = app
-    _pship_save(data)
-    guild = interaction.guild
-    applicant = guild.get_member(app["applicant_id"]) if guild else None
-    updated = _pship_build_application_embed(app, applicant or interaction.user)
-    updated.color = _PSHIP_DENIED_COLOR
-    updated.set_field_at(len(updated.fields) - 1, name="Status", value=f"❌ Denied by {interaction.user.mention}", inline=False)
-    await interaction.message.edit(embed=updated, view=None)
-    if applicant:
-        try:
-            await applicant.send(embed=_pship_build_denied_embed(app, interaction.user, reason))
-        except discord.Forbidden:
-            pass
-    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
-    if isinstance(log_ch, discord.TextChannel):
-        await log_ch.send(embed=_pship_build_log_embed("denied", app, interaction.user, reason=reason))
-    await interaction.response.send_message("❌ Partnership denied.", ephemeral=True)
-
-
-class _PshipDenyModal(discord.ui.Modal, title="Deny Partnership Application"):
-    reason = discord.ui.TextInput(
-        label="Reason for denial",
-        style=discord.TextStyle.paragraph,
-        placeholder="Explain why this partnership was denied.",
-        required=True,
-        max_length=500,
-    )
-
-    def __init__(self, app_id: str) -> None:
-        super().__init__()
-        self.app_id = app_id
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await _pship_process_deny(interaction, self.app_id, str(self.reason))
-
-
-class _PshipStaffView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅", custom_id="pship_accept")
-    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        app_id = _pship_extract_app_id(interaction.message)
-        if not app_id:
-            await interaction.response.send_message("❌ Could not find application ID.", ephemeral=True)
-            return
-        await _pship_process_accept(interaction, app_id)
-
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌", custom_id="pship_deny")
-    async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        app_id = _pship_extract_app_id(interaction.message)
-        if not app_id:
-            await interaction.response.send_message("❌ Could not find application ID.", ephemeral=True)
-            return
-        await interaction.response.send_modal(_PshipDenyModal(app_id))
-
-
-class _PshipApplicationModal(discord.ui.Modal, title="DIFF Partnership Application"):
-    server_name    = discord.ui.TextInput(label="Community / Server Name",        placeholder="Enter your community name",                      required=True,  max_length=100)
-    invite_link    = discord.ui.TextInput(label="Invite Link / Social Link",       placeholder="Paste your Discord invite or main link",          required=True,  max_length=200)
-    community_type = discord.ui.TextInput(label="Community Type",                  placeholder="GTA, Car Community, Gaming, Automotive, etc.",    required=True,  max_length=100)
-    member_count   = discord.ui.TextInput(label="Approximate Member Count",        placeholder="Example: 250",                                    required=True,  max_length=20)
-    why_partner    = discord.ui.TextInput(label="Why do you want to partner?",     style=discord.TextStyle.paragraph,
-                                          placeholder="Tell us why this partnership makes sense.",                required=True,  max_length=1000)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        app_id = f"PARTNER-{interaction.user.id}-{int(datetime.now(timezone.utc).timestamp())}"
-        app = {
-            "application_id": app_id,
-            "applicant_id":   interaction.user.id,
-            "applicant_name": str(interaction.user),
-            "server_name":    str(self.server_name),
-            "invite_link":    str(self.invite_link),
-            "community_type": str(self.community_type),
-            "member_count":   str(self.member_count),
-            "why_partner":    str(self.why_partner),
-            "extra_info":     "",
-            "status":         "pending",
-        }
-        data = _pship_load()
-        data[app_id] = app
-        _pship_save(data)
-        review_ch = interaction.guild.get_channel(_PSHIP_REVIEW_CHANNEL_ID) if interaction.guild else None
-        if not isinstance(review_ch, discord.TextChannel):
-            await interaction.response.send_message(
-                "✅ Application received! Staff will review it shortly.\n"
-                f"Your Application ID: `{app_id}`",
-                ephemeral=True,
-            )
-            return
-        content = f"<@&{_PSHIP_STAFF_PING_ROLE_ID}> New partnership application submitted." if _PSHIP_STAFF_PING_ROLE_ID else None
-        await review_ch.send(
-            content=content,
-            embed=_pship_build_application_embed(app, interaction.user),
-            view=_PshipStaffView(),
+    icons = {
+        "pending":           "🟡",
+        "accepted":          "✅",
+        "denied":            "❌",
+        "changes_requested": "🔄",
+        "blacklisted":       "🚫",
+    }
+    lines = []
+    for app_id, app in list(apps.items())[-25:]:
+        icon = icons.get(app.get("status", "pending"), "❔")
+        lines.append(
+            f"{icon} `{app_id}` — **{app.get('server_name', '?')}** by <@{app.get('applicant_id', 0)}>"
         )
-        confirm = discord.Embed(
-            title="✅ Application Submitted",
-            description=f"Your application has been sent to staff for review.\nApplication ID: `{app_id}`",
-            color=_PSHIP_SUCCESS_COLOR,
-        )
-        confirm.set_footer(text=_PSHIP_FOOTER)
-        await interaction.response.send_message(embed=confirm, ephemeral=True)
+    embed = discord.Embed(
+        title="📋 Partnership Applications",
+        description="\n".join(lines),
+        color=_PP_COLOR,
+    )
+    embed.set_footer(text=f"{_PP_FOOTER} • Showing last {len(lines)}")
+    await ctx.send(embed=embed)
 
 
-class _PshipPanelView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
+@bot.command(name="refreshpartners")
+async def _cmd_refreshpartners(ctx: commands.Context):
+    if not any(r.id in _JOIN_STAFF_ROLE_IDS for r in ctx.author.roles):
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _pp_post_or_refresh(ctx.guild)
+    await ctx.send("✅ Partner panel refreshed.", delete_after=6)
 
-    @discord.ui.button(label="Partnership Info", style=discord.ButtonStyle.secondary, emoji="📖", custom_id="pship_info")
-    async def info_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_message(embed=_pship_build_info_embed(), ephemeral=True)
 
-    @discord.ui.button(label="Apply for Partnership", style=discord.ButtonStyle.primary, emoji="📩", custom_id="pship_apply")
-    async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(_PshipApplicationModal())
+# ── Legacy command aliases (backward compat) ──────────────────────────────────────
+@bot.command(name="partneradd")
+async def _cmd_partneradd_legacy(ctx: commands.Context):
+    await _cmd_addpartner(ctx)
+
+
+@bot.command(name="partnerremove")
+async def _cmd_partnerremove_legacy(ctx: commands.Context, *, name: str):
+    await _cmd_removepartner(ctx, name=name)
 
 
 @bot.command(name="postpartnershippanel")
-async def _cmd_postpartnershippanel(ctx: commands.Context, channel: discord.TextChannel = None):
+async def _cmd_postpartnershippanel_legacy(ctx: commands.Context, channel: discord.TextChannel = None):
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("Admins only.", delete_after=6)
         return
@@ -25245,32 +25694,10 @@ async def _cmd_postpartnershippanel(ctx: commands.Context, channel: discord.Text
         await ctx.message.delete()
     except Exception:
         pass
-    await target.send(embed=_pship_build_panel_embed(), view=_PshipPanelView())
+    partners = _pp_get_partners()
+    await target.send(embed=_pp_build_panel_embed(partners), view=_PartnerPanelView(partners))
 
 
-@bot.command(name="partnershiplist")
-async def _cmd_partnershiplist(ctx: commands.Context):
-    if not any(r.id in _JOIN_STAFF_ROLE_IDS for r in ctx.author.roles):
-        await ctx.send("Staff only.", delete_after=6)
-        return
-    data = _pship_load()
-    if not data:
-        await ctx.send("No partnership applications on file.", delete_after=10)
-        return
-    lines = []
-    for app_id, app in data.items():
-        status_icon = {"pending": "🟡", "accepted": "✅", "denied": "❌"}.get(app.get("status", "pending"), "❔")
-        lines.append(f"{status_icon} `{app_id}` — **{app.get('server_name', '?')}** by <@{app.get('applicant_id', 0)}>")
-    embed = discord.Embed(
-        title="📋 Partnership Applications",
-        description="\n".join(lines[:25]),
-        color=_PSHIP_EMBED_COLOR,
-    )
-    embed.set_footer(text=_PSHIP_FOOTER)
-    await ctx.send(embed=embed)
-
-
-# =========================
 # RSVP + ATTENDANCE + SMART PING
 # =========================
 
