@@ -79,53 +79,51 @@ def _get_live_counts() -> dict:
 
 
 def _build_embed() -> discord.Embed:
-    counts    = _get_live_counts()
-    finalized = _get_finalized_meets()
+    counts = _get_live_counts()
+
+    total_yes   = sum(counts[n]["yes"]   for n in (1, 2, 3))
+    total_maybe = sum(counts[n]["maybe"] for n in (1, 2, 3))
+    total_no    = sum(counts[n]["no"]    for n in (1, 2, 3))
 
     embed = discord.Embed(
         title="🛠️ DIFF Roll Call — Staff Tools",
         description=(
-            "Use the dropdown below to manage this week's roll call.\n"
+            f"**This week's response summary**\n"
+            f"✅ `{total_yes}` attending  ·  ❓ `{total_maybe}` maybe  ·  ❌ `{total_no}` not attending\n"
             "━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.dark_teal(),
         timestamp=datetime.now(timezone.utc),
     )
 
-    count_lines = []
     for n in (1, 2, 3):
         c = counts[n]
         total     = c["yes"] + c["maybe"] + c["no"]
         bar_yes   = round(c["yes"]   / max(total, 10) * 10)
         bar_maybe = round(c["maybe"] / max(total, 10) * 10)
         bar = "🟩" * bar_yes + "🟨" * bar_maybe + "⬜" * (10 - bar_yes - bar_maybe)
-        count_lines.append(
-            f"**Meet {n}** — ✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}"
+        embed.add_field(
+            name=f"Meet {n}",
+            value=f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}",
+            inline=True,
         )
-    embed.add_field(
-        name="📊 Live RSVP Counts",
-        value="\n\n".join(count_lines),
-        inline=False,
-    )
-    embed.add_field(
-        name="🏁 Finalize Attendance",
-        value="Select a meet → paste who actually attended. Stats and no-shows update automatically.",
-        inline=False,
-    )
+
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+
     embed.add_field(
         name="📋 View Attendance",
-        value="See who voted for each meet, with full ✅/❓/❌ breakdown.",
-        inline=False,
+        value="See who voted for each meet.",
+        inline=True,
     )
     embed.add_field(
         name="🗓️ Sync from Schedule",
-        value="Pull the latest dates, times, hosts, and classes from the host schedule panel.",
-        inline=False,
+        value="Pull hosts, dates & classes from the schedule.",
+        inline=True,
     )
     embed.add_field(
         name="🔄 Reset Roll Call",
-        value="Clears all responses and reposts a fresh roll call for a new week.",
-        inline=False,
+        value="Clear all responses and repost for a new week.",
+        inline=True,
     )
     embed.set_footer(text="DIFF Roll Call • Staff Tools")
     return embed
