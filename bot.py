@@ -26435,10 +26435,25 @@ async def _cmd_cooldown_list(ctx: commands.Context):
 
 # ── Stale Join Ticket Alert Task ───────────────────────────────────────────────
 _STALE_JOIN_HOURS = 24
+_STALE_JOIN_MSG_FILE = os.path.join("diff_data", "diff_stale_join_msg.json")
+
+def _stale_join_msg_load() -> int | None:
+    try:
+        with open(_STALE_JOIN_MSG_FILE) as f:
+            return json.load(f).get("message_id")
+    except Exception:
+        return None
+
+def _stale_join_msg_save(message_id: int | None):
+    try:
+        with open(_STALE_JOIN_MSG_FILE, "w") as f:
+            json.dump({"message_id": message_id}, f)
+    except Exception:
+        pass
 
 @tasks.loop(minutes=30)
 async def _stale_join_alert_task():
-    """Alert staff every 30 min if a join ticket has been open > 24h without a decision."""
+    """Alert staff when join tickets have been open > 24h. Edits existing alert instead of spamming."""
     await bot.wait_until_ready()
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -26464,15 +26479,24 @@ async def _stale_join_alert_task():
         if age_h >= _STALE_JOIN_HOURS:
             stale.append((ch_id_str, entry, age_h))
 
+    # If no stale tickets, delete any existing alert and clear saved ID
     if not stale:
+        saved_id = _stale_join_msg_load()
+        if saved_id:
+            try:
+                old_msg = await mgmt_ch.fetch_message(saved_id)
+                await old_msg.delete()
+            except Exception:
+                pass
+            _stale_join_msg_save(None)
         return
 
     lines = []
     for ch_id_str, entry, age_h in sorted(stale, key=lambda x: -x[2]):
-        psn  = entry.get("psn", "unknown")
-        uid  = entry.get("user_id")
-        name = entry.get("channel_name", ch_id_str)
-        h    = int(age_h)
+        psn      = entry.get("psn", "unknown")
+        uid      = entry.get("user_id")
+        name     = entry.get("channel_name", ch_id_str)
+        h        = int(age_h)
         user_str = f"<@{uid}>" if uid else "Unknown"
         lines.append(f"• **#{name}** — {user_str} (PSN: {psn}) — open **{h}h**")
 
@@ -26482,9 +26506,24 @@ async def _stale_join_alert_task():
         color=discord.Color.orange(),
         timestamp=now,
     )
-    embed.set_footer(text="DIFF Management • Stale Alert")
+    embed.set_footer(text="DIFF Management • Stale Alert  •  Last checked: " + now.strftime("%I:%M %p UTC"))
+
+    # Try to edit the existing alert message instead of posting a new one
+    saved_id = _stale_join_msg_load()
+    if saved_id:
+        try:
+            old_msg = await mgmt_ch.fetch_message(saved_id)
+            await old_msg.edit(embed=embed)
+            return
+        except discord.NotFound:
+            _stale_join_msg_save(None)
+        except Exception:
+            pass
+
+    # No existing message — post a fresh one and save its ID
     try:
-        await mgmt_ch.send(embed=embed)
+        new_msg = await mgmt_ch.send(embed=embed)
+        _stale_join_msg_save(new_msg.id)
     except Exception:
         pass
 
