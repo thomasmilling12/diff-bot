@@ -95,19 +95,13 @@ def _build_embed() -> discord.Embed:
     count_lines = []
     for n in (1, 2, 3):
         c = counts[n]
-        if n in finalized:
-            count_lines.append(
-                f"**Meet {n}** — ✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n"
-                f"🏁 *Finalized*"
-            )
-        else:
-            total     = c["yes"] + c["maybe"] + c["no"]
-            bar_yes   = round(c["yes"]   / max(total, 10) * 10)
-            bar_maybe = round(c["maybe"] / max(total, 10) * 10)
-            bar = "🟩" * bar_yes + "🟨" * bar_maybe + "⬜" * (10 - bar_yes - bar_maybe)
-            count_lines.append(
-                f"**Meet {n}** — ✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}"
-            )
+        total     = c["yes"] + c["maybe"] + c["no"]
+        bar_yes   = round(c["yes"]   / max(total, 10) * 10)
+        bar_maybe = round(c["maybe"] / max(total, 10) * 10)
+        bar = "🟩" * bar_yes + "🟨" * bar_maybe + "⬜" * (10 - bar_yes - bar_maybe)
+        count_lines.append(
+            f"**Meet {n}** — ✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`\n{bar}"
+        )
     embed.add_field(
         name="📊 Live RSVP Counts",
         value="\n\n".join(count_lines),

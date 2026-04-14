@@ -10346,7 +10346,6 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
                 f"📅 {when_fin}  🎮 {class_name}",
                 f"👤 **Host:** {host_text}",
                 f"✅ **{c['yes']}** yes  ·  ❓ **{c['maybe']}** maybe  ·  ❌ **{c['no']}** no",
-                "*🔒 Voting closed*",
             ]
         else:
             if class_name == "TBD" or start_time == "TBD":
