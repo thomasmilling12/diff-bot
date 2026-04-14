@@ -5,7 +5,7 @@ import io
 import json
 import logging
 import os
-import random
+import randomall
 import re
 import sqlite3
 import sys
@@ -2618,10 +2618,24 @@ def _hrsvp_build_embed() -> discord.Embed:
     data = _hrsvp_load()
     _DIV = "─" * 30
 
+    # ── Response summary counts ───────────────────────────────
+    all_responded_uids: set = set()
+    for day in _HRSVP_DAYS:
+        d = data.get(day, {})
+        for bucket in ("yes", "no", "maybe"):
+            for e in d.get(bucket, []):
+                all_responded_uids.add(_hrsvp_uid(e))
+    total_responders = len(all_responded_uids)
+    slots_with_host  = sum(1 for day in _HRSVP_DAYS if data.get(day, {}).get("yes", []))
+    slots_needed     = len(_HRSVP_DAYS)
+    slot_bar         = "🟩" * slots_with_host + "⬜" * (slots_needed - slots_with_host)
+
     embed = discord.Embed(
         title="📋 DIFF Host Availability — Meet Schedule",
         description=(
-            "**Hosts, mark your availability for each meet slot below.**\n\n"
+            f"**Hosts, mark your availability for each meet slot below.**\n\n"
+            f"📊 {slot_bar}  **{slots_with_host}/{slots_needed} slots have a confirmed host**\n"
+            f"👥 **{total_responders} host{'s' if total_responders != 1 else ''}** have responded so far\n\n"
             "• ✅ **Available** — opens a form for your day, time & class\n"
             "• ❓ **Maybe** — opens a form to note your preferred day\n"
             "• ❌ **Unavailable** — marks you as unable to host\n"
@@ -2640,7 +2654,15 @@ def _hrsvp_build_embed() -> discord.Embed:
         no_entries    = d.get("no", [])
         maybe_entries = d.get("maybe", [])
 
-        lines = []
+        # Slot status badge
+        if yes_entries:
+            slot_status = f"🟢 **{len(yes_entries)} host{'s' if len(yes_entries) != 1 else ''} available**"
+        elif maybe_entries:
+            slot_status = f"🟡 **{len(maybe_entries)} maybe** — still needs a host"
+        else:
+            slot_status = "🔴 **Open — no hosts yet**"
+
+        lines = [slot_status]
 
         if yes_entries:
             for e in yes_entries:
@@ -2662,7 +2684,7 @@ def _hrsvp_build_embed() -> discord.Embed:
                 else:
                     lines.append(f"✅ <@{uid}>")
         else:
-            lines.append("✅ *No hosts yet*")
+            lines.append("✅ *No confirmed hosts yet*")
 
         if maybe_entries:
             for e in maybe_entries:
@@ -2742,8 +2764,12 @@ class _HrsvpMyStatusBtn(discord.ui.Button):
             for e in slot.get("yes", []):
                 if _hrsvp_uid(e) == uid:
                     if isinstance(e, dict):
+                        dv = e.get('day', 'TBD')
+                        tv = e.get('time', 'TBD')
+                        ts = _parse_meet_ts(dv, tv) if dv and tv != 'TBD' else None
+                        when_str = f"<t:{ts}:F>" if ts else f"{dv} · {tv}"
                         lines.append(
-                            f"✅ **{day}** — {e.get('day','TBD')} · {e.get('time','TBD')} · {e.get('theme','TBD')}"
+                            f"✅ **{day}** — {when_str} · 🎮 {e.get('theme','TBD')}"
                         )
                     else:
                         lines.append(f"✅ **{day}** — Available")
@@ -10749,36 +10775,67 @@ _EVERYONE_CHAT_CHANNEL_ID = 1047335231826436166
 
 async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
     """Post roll call reminder to crew chat and DM crew members who haven't responded yet."""
-    # Build a short schedule summary for the embed
-    summary_lines = []
-    for m in sorted(meets, key=lambda x: x["meet_number"]):
-        n = m["meet_number"]
-        host_id = m.get("host_id")
-        host_str = f"<@{host_id}>" if host_id else "*TBD*"
-        cls = m.get("class_name", "TBD")
-        t   = m.get("start_time", "TBD")
-        summary_lines.append(f"**Meet {n}** — 🎮 {cls} | 🕒 {t} | 👤 {host_str}")
 
+    # ── Sort meets chronologically ────────────────────────────
+    def _meet_sort_key(m):
+        dt = m.get("date_text", "")
+        t  = m.get("start_time", "TBD")
+        ts = _parse_meet_ts(dt, t) if dt and t != "TBD" else None
+        return ts or 0
+
+    sorted_meets = sorted(meets, key=_meet_sort_key)
+
+    # ── Build per-meet field data ─────────────────────────────
+    meet_fields = []
+    for m in sorted_meets:
+        n       = m["meet_number"]
+        host_id = m.get("host_id")
+        cls     = m.get("class_name", "TBD")
+        t       = m.get("start_time", "TBD")
+        dt      = m.get("date_text", "")
+        ts      = _parse_meet_ts(dt, t) if dt and t != "TBD" else None
+        when    = f"<t:{ts}:F>  ·  <t:{ts}:R>" if ts else f"🕒 {t}"
+        host_str = f"<@{host_id}>" if host_id else "*TBD*"
+        field_val = f"🎮 {cls}\n📅 {when}\n👤 {host_str}"
+        meet_fields.append((f"Meet {n}", field_val))
+
+    # ── Count crew who haven't responded ─────────────────────
+    crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+    all_responses = _rc_db.get_all_responses(guild.id)
+    responded_ids: set = set()
+    for meet_responses in all_responses.values():
+        for uid_list in meet_responses.values():
+            for uid in uid_list:
+                responded_ids.add(str(uid))
+    total_crew    = len(crew_role.members) if crew_role else 0
+    not_responded = sum(1 for m in (crew_role.members if crew_role else []) if str(m.id) not in responded_ids)
+    pending_note  = (
+        f"\n\n⚠️ **{not_responded} of {total_crew} crew members** haven't responded yet."
+        if total_crew > 0 else ""
+    )
+
+    # ── Channel embed ─────────────────────────────────────────
     embed = discord.Embed(
         title="📋 Roll Call is Open — Mark Your Attendance!",
         description=(
-            "The meet schedule has been updated. Head to the roll call and mark whether you're attending each meet.\n\n"
-            + "\n".join(summary_lines)
-            + f"\n\n📌 **[Open the Roll Call]({ROLL_CALL_URL})**\n\n"
-            "✅ Attending  •  ❓ Maybe  •  ❌ Not Attending\n\n"
-            "⚠️ No-shows are tracked — make sure your response is accurate."
+            "The meet schedule has been set. Mark your attendance for each meet below."
+            f"\n\n📌 **[Open the Roll Call]({ROLL_CALL_URL})**"
+            "\n\n✅ Attending  •  ❓ Maybe  •  ❌ Not Attending"
+            "\n⚠️ No-shows are tracked — make sure your response is accurate."
+            + pending_note
         ),
         color=discord.Color.green(),
         timestamp=utc_now(),
     )
+    for name, value in meet_fields:
+        embed.add_field(name=name, value=value, inline=True)
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text="DIFF Meets • Roll Call System")
 
     # ── Channel post ──────────────────────────────────────────
     crew_ch = guild.get_channel(_CREW_CHAT_CHANNEL_ID)
     if isinstance(crew_ch, discord.TextChannel):
-        crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
-        ps5_role  = guild.get_role(PS5_ROLE_ID)
+        ps5_role = guild.get_role(PS5_ROLE_ID)
         pings = " ".join(r.mention for r in [crew_role, ps5_role] if r)
         try:
             await crew_ch.send(content=pings or None, embed=embed)
@@ -10786,29 +10843,22 @@ async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
             print(f"[RollCallNotify] Channel post failed: {_ce}")
 
     # ── DM crew members who haven't responded to any meet yet ─
-    crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
     if not crew_role:
         return
-    # Collect user IDs who already have any response in the DB
-    all_responses = _rc_db.get_all_responses(guild.id)
-    responded_ids: set = set()
-    for meet_responses in all_responses.values():
-        for uid_list in meet_responses.values():
-            for uid in uid_list:
-                responded_ids.add(str(uid))
 
     dm_embed = discord.Embed(
         title="📋 Roll Call is Open — Mark Your Attendance!",
         description=(
-            "Hey! The DIFF Meet schedule has been set. Don't forget to mark your attendance in the roll call.\n\n"
-            + "\n".join(summary_lines)
-            + f"\n\n📌 **[Open the Roll Call]({ROLL_CALL_URL})**\n\n"
-            "✅ Attending  •  ❓ Maybe  •  ❌ Not Attending\n\n"
-            "⚠️ No-shows are tracked — make sure your response is accurate."
+            "Hey! The DIFF Meet schedule has been set. Don't forget to mark your attendance in the roll call."
+            f"\n\n📌 **[Open the Roll Call]({ROLL_CALL_URL})**"
+            "\n\n✅ Attending  •  ❓ Maybe  •  ❌ Not Attending"
+            "\n⚠️ No-shows are tracked — make sure your response is accurate."
         ),
         color=discord.Color.green(),
         timestamp=utc_now(),
     )
+    for name, value in meet_fields:
+        dm_embed.add_field(name=name, value=value, inline=True)
     dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
     dm_embed.set_footer(text="DIFF Meets • Roll Call System")
 
