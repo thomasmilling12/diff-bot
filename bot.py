@@ -3638,15 +3638,34 @@ class _ASchedOverrideBtn(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
-            for r in getattr(interaction.user, "roles", [])
-        ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
-        if not is_staff:
-            return await interaction.response.send_message(
-                "Only leadership can override schedule slots.", ephemeral=True
+        try:
+            user   = interaction.user
+            roles  = getattr(user, "roles", [])
+            perms  = getattr(user, "guild_permissions", None)
+            is_admin = getattr(perms, "administrator", False)
+            is_owner = (
+                interaction.guild is not None
+                and interaction.guild.owner_id == getattr(user, "id", None)
             )
-        await interaction.response.send_modal(_ASchedOverrideModal())
+            is_staff = is_admin or is_owner or any(
+                r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+                for r in roles
+            )
+            if not is_staff:
+                return await interaction.response.send_message(
+                    "Only leadership can override schedule slots.", ephemeral=True
+                )
+            await interaction.response.send_modal(_ASchedOverrideModal())
+        except Exception as _e:
+            print(f"[OverrideBtn] callback error: {_e}")
+            import traceback as _tb; _tb.print_exc()
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(f"❌ Override failed to open: {_e}", ephemeral=True)
+                else:
+                    await interaction.followup.send(f"❌ Override failed to open: {_e}", ephemeral=True)
+            except Exception:
+                pass
 
 
 class _ASchedPingNonRespondersBtn(discord.ui.Button):
