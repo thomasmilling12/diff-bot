@@ -18593,11 +18593,19 @@ class _TicketRatingButton(discord.ui.Button):
 
 
 class _TicketRatingView(discord.ui.View):
-    """Adds ⭐1–⭐5 rating buttons to the ticket-closed DM."""
-    def __init__(self, channel_name: str, ticket_type: str):
+    """Adds a View Transcript link button + ⭐1–⭐5 rating buttons to the ticket-closed DM."""
+    def __init__(self, channel_name: str, ticket_type: str, transcript_url: str | None = None):
         super().__init__(timeout=None)
         import uuid as _uuid
         uid = _uuid.uuid4().hex[:10]
+        if transcript_url:
+            self.add_item(discord.ui.Button(
+                label="View Transcript",
+                emoji="📋",
+                style=discord.ButtonStyle.link,
+                url=transcript_url,
+                row=0,
+            ))
         _styles = [
             discord.ButtonStyle.danger,   # 1 — red
             discord.ButtonStyle.danger,   # 2 — red
@@ -19150,11 +19158,12 @@ async def _post_transcript_to_channel(
     channel_name: str,
     ticket_type: str,
     outcome: str = "",
-) -> None:
-    """Send a transcript HTML file to the dedicated transcripts channel."""
+) -> str | None:
+    """Send a transcript HTML file to the dedicated transcripts channel.
+    Returns the CDN URL of the uploaded file, or None on failure."""
     tc = guild.get_channel(TICKET_TRANSCRIPTS_CHANNEL_ID)
     if not isinstance(tc, discord.TextChannel):
-        return
+        return None
     ref_embed = discord.Embed(
         title=f"📄 {ticket_type} Transcript",
         color=discord.Color.blurple(),
@@ -19165,9 +19174,12 @@ async def _post_transcript_to_channel(
         ref_embed.add_field(name="📋 Outcome", value=outcome, inline=True)
     ref_embed.set_footer(text="Different Meets • Transcripts")
     try:
-        await tc.send(embed=ref_embed, file=transcript_file)
+        msg = await tc.send(embed=ref_embed, file=transcript_file)
+        if msg.attachments:
+            return msg.attachments[0].url
     except discord.HTTPException:
         pass
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -19343,11 +19355,12 @@ class SupportCloseButton(discord.ui.View):
                 await logs_channel.send(embed=close_embed)
             except discord.HTTPException:
                 pass
-            if transcript_file and interaction.guild:
-                await _post_transcript_to_channel(
-                    interaction.guild, transcript_file,
-                    channel.name, "Support Ticket",
-                )
+        _transcript_url: str | None = None
+        if transcript_file and interaction.guild:
+            _transcript_url = await _post_transcript_to_channel(
+                interaction.guild, transcript_file,
+                channel.name, "Support Ticket",
+            )
 
         if owner_id:
             try:
@@ -19357,14 +19370,14 @@ class SupportCloseButton(discord.ui.View):
                         title="🔒 Your Ticket Has Been Closed",
                         description=(
                             f"Your **{ticket.label}** ticket in **{interaction.guild.name}** has been closed.\n\n"
-                            "If you still need help, feel free to open a new ticket from the support panel.\n\n"
-                            "⭐ **How was your experience?** Tap a star below to rate this ticket."
+                            "Your full ticket transcript is available via the button below — you can open it in your browser to view the full conversation.\n\n"
+                            "If you still need help, feel free to open a new ticket from the support panel."
                         ),
                         color=_TICKET_COLORS.get(ticket.key, discord.Color.red()),
                         timestamp=datetime.now(timezone.utc),
                     )
                     dm_embed.set_footer(text="Different Meets • Support System")
-                    close_view = _TicketRatingView(channel_name=channel.name, ticket_type=ticket.label)
+                    close_view = _TicketRatingView(channel_name=channel.name, ticket_type=ticket.label, transcript_url=_transcript_url)
                     try:
                         await owner.send(embed=dm_embed, view=close_view)
                     except Exception:
@@ -23798,8 +23811,9 @@ class JoinTicketView(discord.ui.View):
                 await logs_channel.send(embed=close_embed)
             except discord.HTTPException:
                 pass
+        _join_transcript_url: str | None = None
         if transcript_file:
-            await _post_transcript_to_channel(
+            _join_transcript_url = await _post_transcript_to_channel(
                 interaction.guild, transcript_file,
                 interaction.channel.name, "Join Application",
                 outcome=outcome_val,
@@ -23814,8 +23828,8 @@ class JoinTicketView(discord.ui.View):
                         title="🔒 Your Join Ticket Has Been Closed",
                         description=(
                             f"Your join ticket in **{interaction.guild.name}** has been closed.\n\n"
-                            "If you have any questions, feel free to open a new support ticket from the server.\n\n"
-                            "⭐ **How was your experience?** Tap a star below to rate your join ticket."
+                            "Your full ticket transcript is available via the button below — you can open it in your browser to view the full conversation.\n\n"
+                            "If you have any questions, feel free to open a new support ticket from the server."
                         ),
                         color=embed_colour,
                         timestamp=now,
@@ -23823,7 +23837,7 @@ class JoinTicketView(discord.ui.View):
                     if psn:
                         dm_embed.add_field(name="🎮 PSN", value=f"`{psn}`", inline=True)
                     dm_embed.set_footer(text="Different Meets • Join Hub")
-                    dm_view = _TicketRatingView(channel_name=interaction.channel.name, ticket_type="Join Application")
+                    dm_view = _TicketRatingView(channel_name=interaction.channel.name, ticket_type="Join Application", transcript_url=_join_transcript_url)
                     await owner.send(embed=dm_embed, view=dm_view)
             except Exception:
                 pass
