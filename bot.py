@@ -2715,11 +2715,19 @@ class _HrsvpResetConfirmModal(discord.ui.Modal, title="Confirm Reset"):
             return await interaction.response.send_message(
                 "❌ Reset cancelled — you didn't type RESET.", ephemeral=True
             )
-        _hrsvp_reset()
-        await _hrsvp_update_panel(interaction.client)
-        await interaction.response.send_message(
-            "🗑️ All host availability responses have been cleared for the new week.", ephemeral=True
-        )
+        await interaction.response.defer(ephemeral=True)
+        try:
+            _hrsvp_reset()
+            await _hrsvp_update_panel(interaction.client)
+            await interaction.followup.send(
+                "🗑️ All host availability responses have been cleared for the new week.", ephemeral=True
+            )
+        except Exception as _e:
+            print(f"[HRSVP] Reset on_submit error: {_e}")
+            try:
+                await interaction.followup.send("❌ Reset failed. Try again.", ephemeral=True)
+            except Exception:
+                pass
 
 
 class _HrsvpResetBtn(discord.ui.Button):
@@ -2826,32 +2834,40 @@ class _HostAvailModal(discord.ui.Modal):
         if not interaction.user:
             await interaction.response.defer()
             return
-        uid       = str(interaction.user.id)
-        raw_dt    = str(self.day_time_input).strip()
-        theme_val = str(self.theme_input).strip() or "Open Class"
+        await interaction.response.defer(ephemeral=True)
+        try:
+            uid       = str(interaction.user.id)
+            raw_dt    = str(self.day_time_input).strip()
+            theme_val = str(self.theme_input).strip() or "Open Class"
 
-        # Split "Sunday 8:00 PM EST" → day_val + time_val (store plain text)
-        parts     = raw_dt.split(None, 1)
-        day_val   = parts[0].capitalize() if parts else raw_dt
-        time_raw  = parts[1] if len(parts) > 1 else raw_dt
-        time_val  = time_raw.strip()   # keep as plain text; timestamps computed at display time
+            # Split "Sunday 8:00 PM EST" → day_val + time_val (store plain text)
+            parts    = raw_dt.split(None, 1)
+            day_val  = parts[0].capitalize() if parts else raw_dt
+            time_raw = parts[1] if len(parts) > 1 else raw_dt
+            time_val = time_raw.strip()
 
-        data = _hrsvp_load()
-        slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
-        for c in ("yes", "no", "maybe"):
-            slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
-        slot["yes"].append({"uid": uid, "day": day_val, "time": time_val, "theme": theme_val})
-        _hrsvp_save(data)
-        _hrel_track_rsvp(uid)
-        await _hrsvp_update_panel(interaction.client)
-        ts = _parse_meet_ts(day_val, time_val)
-        time_display = f"<t:{ts}:F>  (<t:{ts}:R>)" if ts else time_val
-        await interaction.response.send_message(
-            f"✅ **{self.day}** — you're marked available!\n"
-            f"📅 **Day:** {day_val}  🕒 **Time:** {time_display}  🎮 **Class:** {theme_val}\n\n"
-            f"*You can update this anytime by clicking the button again.*",
-            ephemeral=True,
-        )
+            data = _hrsvp_load()
+            slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
+            for c in ("yes", "no", "maybe"):
+                slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
+            slot["yes"].append({"uid": uid, "day": day_val, "time": time_val, "theme": theme_val})
+            _hrsvp_save(data)
+            _hrel_track_rsvp(uid)
+            await _hrsvp_update_panel(interaction.client)
+            ts = _parse_meet_ts(day_val, time_val)
+            time_display = f"<t:{ts}:F>  (<t:{ts}:R>)" if ts else time_val
+            await interaction.followup.send(
+                f"✅ **{self.day}** — you're marked available!\n"
+                f"📅 **Day:** {day_val}  🕒 **Time:** {time_display}  🎮 **Class:** {theme_val}\n\n"
+                f"*You can update this anytime by clicking the button again.*",
+                ephemeral=True,
+            )
+        except Exception as _e:
+            print(f"[HRSVP] AvailModal on_submit error: {_e}")
+            try:
+                await interaction.followup.send("❌ Something went wrong saving your response. Try again.", ephemeral=True)
+            except Exception:
+                pass
 
 
 class _HostMaybeModal(discord.ui.Modal):
@@ -2870,20 +2886,28 @@ class _HostMaybeModal(discord.ui.Modal):
         if not interaction.user:
             await interaction.response.defer()
             return
-        uid      = str(interaction.user.id)
-        day_pref = str(self.day_pref).strip()
-        data     = _hrsvp_load()
-        slot     = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
-        for c in ("yes", "no", "maybe"):
-            slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
-        slot["maybe"].append({"uid": uid, "day": day_pref})
-        _hrsvp_save(data)
-        await _hrsvp_update_panel(interaction.client)
-        pref_str = f" — preference: **{day_pref}**" if day_pref else ""
-        await interaction.response.send_message(
-            f"❓ **{self.day}** — marked as Maybe{pref_str}.\n*Leadership will follow up if needed.*",
-            ephemeral=True,
-        )
+        await interaction.response.defer(ephemeral=True)
+        try:
+            uid      = str(interaction.user.id)
+            day_pref = str(self.day_pref).strip()
+            data     = _hrsvp_load()
+            slot     = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
+            for c in ("yes", "no", "maybe"):
+                slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
+            slot["maybe"].append({"uid": uid, "day": day_pref})
+            _hrsvp_save(data)
+            await _hrsvp_update_panel(interaction.client)
+            pref_str = f" — preference: **{day_pref}**" if day_pref else ""
+            await interaction.followup.send(
+                f"❓ **{self.day}** — marked as Maybe{pref_str}.\n*Leadership will follow up if needed.*",
+                ephemeral=True,
+            )
+        except Exception as _e:
+            print(f"[HRSVP] MaybeModal on_submit error: {_e}")
+            try:
+                await interaction.followup.send("❌ Something went wrong saving your response. Try again.", ephemeral=True)
+            except Exception:
+                pass
 
 
 class _HostRSVPBtn(discord.ui.Button):
@@ -2914,18 +2938,26 @@ class _HostRSVPBtn(discord.ui.Button):
             await interaction.response.send_modal(_HostMaybeModal(self.day))
             return
         # "no" → instant mark, confirm ephemerally
-        uid  = str(interaction.user.id)
-        data = _hrsvp_load()
-        slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
-        for c in ("yes", "no", "maybe"):
-            slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
-        slot["no"].append(uid)
-        _hrsvp_save(data)
-        await _hrsvp_update_panel(interaction.client)
-        await interaction.response.send_message(
-            f"❌ **{self.day}** — you're marked as unavailable.\n*Changed your mind? Hit the button again.*",
-            ephemeral=True,
-        )
+        await interaction.response.defer(ephemeral=True)
+        try:
+            uid  = str(interaction.user.id)
+            data = _hrsvp_load()
+            slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
+            for c in ("yes", "no", "maybe"):
+                slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
+            slot["no"].append(uid)
+            _hrsvp_save(data)
+            await _hrsvp_update_panel(interaction.client)
+            await interaction.followup.send(
+                f"❌ **{self.day}** — you're marked as unavailable.\n*Changed your mind? Hit the button again.*",
+                ephemeral=True,
+            )
+        except Exception as _e:
+            print(f"[HRSVP] NoBtn callback error: {_e}")
+            try:
+                await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
+            except Exception:
+                pass
 
 
 def _hrsvp_is_rsvp_msg(msg: discord.Message, bot_id: int) -> bool:
