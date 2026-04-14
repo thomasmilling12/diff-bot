@@ -22216,33 +22216,34 @@ def _join_sanitize_channel_name(psn: str) -> str:
 
 def _join_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🎮 DIFF MEETS — OFFICIAL JOIN HUB",
-        description="👋 **Select your platform** below to join our GTA car meets.",
+        title="🏁 DIFF MEETS — JOIN HUB",
+        description=(
+            "Welcome to **Different Meets** — a PlayStation GTA V Online car meet community.\n"
+            "Select your platform below to get started."
+        ),
         color=discord.Color.from_str("#00439C"),
     )
     embed.add_field(
-        name="⚠️ Attention",
-        value="Only **clean customized vehicles** are allowed at our meets.",
+        name="🚗 Before You Join",
+        value=(
+            "Only **clean, customized vehicles** are allowed at our meets.\n"
+            "No modded money cars, weaponized vehicles, or stock builds."
+        ),
         inline=False,
     )
     embed.add_field(
-        name="🤝 Want to join the crew too?",
+        name="📋 Want to join the crew?",
         value="Head to the crew application area after getting set up here.",
         inline=False,
     )
     embed.add_field(
         name="🎮 PlayStation",
-        value="Enter your PSN and open a private join ticket",
+        value="Private ticket → PSN rename → you're in.",
         inline=True,
     )
     embed.add_field(
-        name="🟢 Xbox",
-        value="Redirects to our partners at **MMI Meets**",
-        inline=True,
-    )
-    embed.add_field(
-        name="💻 PC",
-        value="Redirects to our partners at **MMI Meets**",
+        name="🟢 Xbox  ·  💻 PC",
+        value="Handled by our partners at **MMI Meets**.",
         inline=True,
     )
     if DIFF_LOGO_URL:
@@ -22436,27 +22437,27 @@ async def _join_build_transcript(channel: discord.TextChannel) -> discord.File:
 class JoinPlatformSelect(discord.ui.Select):
     def __init__(self) -> None:
         super().__init__(
-            placeholder="Select your platform to get started...",
+            placeholder="🎮  Choose your platform to get started…",
             min_values=1,
             max_values=1,
             custom_id="diff_join_platform_select",
             options=[
                 discord.SelectOption(
-                    label="PlayStation",
+                    label="PlayStation 5 / PS4",
                     value="playstation",
-                    description="Enter PSN, get renamed, then open a ticket",
+                    description="Open a private ticket, get renamed, and join our meets.",
                     emoji="🎮",
                 ),
                 discord.SelectOption(
-                    label="Xbox",
+                    label="Xbox Series X|S",
                     value="xbox",
-                    description="Join our partners on Xbox Series X|S",
+                    description="Redirected to our Xbox partners at MMI Meets.",
                     emoji="🟢",
                 ),
                 discord.SelectOption(
                     label="PC",
                     value="pc",
-                    description="Join our partners on PC",
+                    description="Redirected to our PC partners at MMI Meets.",
                     emoji="💻",
                 ),
             ],
@@ -22472,19 +22473,18 @@ class JoinPlatformSelect(discord.ui.Select):
             platform = self.values[0]
 
             if platform in ("xbox", "pc"):
-                label = "Xbox Series X|S" if platform == "xbox" else "PC"
+                is_xbox = platform == "xbox"
+                label   = "Xbox Series X|S" if is_xbox else "PC"
+                emoji   = "🟢" if is_xbox else "💻"
                 embed = discord.Embed(
-                    title="🟢 Xbox Join Info" if platform == "xbox" else "💻 PC Join Info",
-                    description="\n".join([
-                        f"Your {label} car meets are handled via our partner **MMI Meets**.",
-                        "",
-                        "**Join their server for more information:**",
-                        _JOIN_MMI_INVITE,
-                        "",
-                        "Then go to **#join-car-meet**.",
-                    ]),
-                    color=discord.Color.from_str("#111111"),
+                    title=f"{emoji} {label} — Join Info",
+                    description=(
+                        f"{label} car meets are run by our partners at **MMI Meets**.\n"
+                        f"Click the link below to join their server and head to **#join-car-meet**."
+                    ),
+                    color=discord.Color.from_str("#107C10") if is_xbox else discord.Color.blurple(),
                 )
+                embed.add_field(name="🔗 MMI Meets Invite", value=_JOIN_MMI_INVITE, inline=False)
                 if DIFF_LOGO_URL:
                     embed.set_thumbnail(url=DIFF_LOGO_URL)
                 embed.set_footer(text="Different Meets • GTA Car Meets")
