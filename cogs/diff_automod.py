@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -330,14 +331,47 @@ class AutoModCog(commands.Cog):
         await self._backup_roles(member)
 
         now = _utcnow()
-        role_list = [r.mention for r in member.roles if r.name != "@everyone"]
-        roles_str = " · ".join(role_list[:15]) if role_list else "No roles"
         member_count = member.guild.member_count
 
+        # ── Audit log: detect kick or ban ─────────────────────
+        action_type = "left"      # "left" | "kicked" | "banned"
+        actioned_by: discord.Member | None = None
+        audit_reason: str | None = None
+        try:
+            await asyncio.sleep(1.0)   # give Discord a moment to write the audit log
+            async for entry in member.guild.audit_logs(limit=8, oldest_first=False):
+                if entry.target and entry.target.id == member.id:
+                    if entry.action == discord.AuditLogAction.kick:
+                        if (now - entry.created_at.replace(tzinfo=timezone.utc)).total_seconds() < 10:
+                            action_type = "kicked"
+                            actioned_by = entry.user
+                            audit_reason = entry.reason
+                            break
+                    elif entry.action == discord.AuditLogAction.ban:
+                        if (now - entry.created_at.replace(tzinfo=timezone.utc)).total_seconds() < 10:
+                            action_type = "banned"
+                            actioned_by = entry.user
+                            audit_reason = entry.reason
+                            break
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        # ── Title / colour based on action ────────────────────
+        if action_type == "kicked":
+            title  = "👢 Member Kicked"
+            colour = discord.Color.orange()
+        elif action_type == "banned":
+            title  = "🔨 Member Banned"
+            colour = discord.Color.red()
+        else:
+            title  = "📤 Member Left"
+            colour = discord.Color.dark_grey()
+
+        # ── Stay duration ─────────────────────────────────────
         if member.joined_at:
-            joined_at = member.joined_at.replace(tzinfo=timezone.utc)
-            time_in_server = now - joined_at
-            days = time_in_server.days
+            joined_at_utc = member.joined_at.replace(tzinfo=timezone.utc)
+            delta = now - joined_at_utc
+            days  = delta.days
             if days >= 365:
                 duration = f"{days // 365}y {(days % 365) // 30}mo"
             elif days >= 30:
@@ -345,7 +379,7 @@ class AutoModCog(commands.Cog):
             elif days >= 1:
                 duration = f"{days}d"
             else:
-                hours = time_in_server.seconds // 3600
+                hours = delta.seconds // 3600
                 duration = f"{hours}h" if hours else "< 1h"
             joined_value = (
                 f"{discord.utils.format_dt(member.joined_at, style='D')}\n"
@@ -353,19 +387,62 @@ class AutoModCog(commands.Cog):
             )
         else:
             joined_value = "Unknown"
+            duration = "?"
 
-        embed = discord.Embed(
-            title="📤 Member Left",
-            color=discord.Color.dark_red(),
-            timestamp=now,
+        # ── Account age ───────────────────────────────────────
+        created_at = member.created_at.replace(tzinfo=timezone.utc)
+        acct_age_days = (now - created_at).days
+        if acct_age_days >= 365:
+            acct_age_str = f"{acct_age_days // 365}y {(acct_age_days % 365) // 30}mo"
+        elif acct_age_days >= 30:
+            acct_age_str = f"{acct_age_days // 30}mo {acct_age_days % 30}d"
+        else:
+            acct_age_str = f"{acct_age_days}d"
+        acct_created_value = (
+            f"{discord.utils.format_dt(member.created_at, style='D')}\n"
+            f"{discord.utils.format_dt(member.created_at, style='R')} · age **{acct_age_str}**"
         )
+        new_account_flag = acct_age_days < 30
+
+        # ── Roles + never-verified check ─────────────────────
+        role_ids = {r.id for r in member.roles}
+        never_verified = AUTO_ROLE_ID in role_ids
+        role_list = [r.mention for r in member.roles if r.name != "@everyone" and r.id != AUTO_ROLE_ID]
+        roles_str = " · ".join(role_list[:15]) if role_list else "No roles"
+
+        # ── Build embed ───────────────────────────────────────
+        embed = discord.Embed(title=title, color=colour, timestamp=now)
         embed.set_author(name=f"{member.display_name} ({member})", icon_url=member.display_avatar.url)
-        embed.add_field(name="👤 User", value=f"[{member.display_name}](https://discord.com/users/{member.id})", inline=True)
+        embed.set_thumbnail(url=member.display_avatar.url)
+
+        embed.add_field(
+            name="👤 User",
+            value=f"[{member.display_name}](https://discord.com/users/{member.id})\n`{member.id}`",
+            inline=True,
+        )
         embed.add_field(name="📅 Joined Server", value=joined_value, inline=True)
         embed.add_field(name="👥 Members", value=f"#{member_count:,}", inline=True)
-        if roles_str:
-            embed.add_field(name="🏷️ Roles", value=roles_str[:1024], inline=False)
-        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="📆 Account Created", value=acct_created_value, inline=True)
+
+        # Flags row
+        flags: list[str] = []
+        if never_verified:
+            flags.append("🔒 Never verified")
+        if new_account_flag:
+            flags.append("⚠️ New account (< 30d)")
+        if flags:
+            embed.add_field(name="⚑ Flags", value="  •  ".join(flags), inline=True)
+
+        # Kick / Ban actor
+        if actioned_by:
+            reason_line = f"\n**Reason:** {audit_reason}" if audit_reason else ""
+            embed.add_field(
+                name="🛡️ Actioned By",
+                value=f"{actioned_by.mention}{reason_line}",
+                inline=True,
+            )
+
+        embed.add_field(name="🏷️ Roles", value=roles_str[:1024], inline=False)
         embed.set_footer(text="DIFF Meets • Leave Logs")
         await self._send_log(embed, JOIN_LEAVE_LOG_CHANNEL_ID)
 
