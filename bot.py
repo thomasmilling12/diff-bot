@@ -19159,11 +19159,26 @@ async def _post_transcript_to_channel(
     ticket_type: str,
     outcome: str = "",
 ) -> str | None:
-    """Send a transcript HTML file to the dedicated transcripts channel.
+    """Upload transcript to staff-logs (silent, file only) to get a CDN URL,
+    then post a clean embed + link button in the transcripts channel.
     Returns the CDN URL of the uploaded file, or None on failure."""
+
+    # ── Step 1: upload the raw file to staff-logs to get a stable CDN URL ────
+    file_url: str | None = None
+    logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(logs_ch, discord.TextChannel):
+        try:
+            archive_msg = await logs_ch.send(file=transcript_file)
+            if archive_msg.attachments:
+                file_url = archive_msg.attachments[0].url
+        except discord.HTTPException:
+            pass
+
+    # ── Step 2: post clean embed + button in the transcripts channel ──────────
     tc = guild.get_channel(TICKET_TRANSCRIPTS_CHANNEL_ID)
     if not isinstance(tc, discord.TextChannel):
-        return None
+        return file_url
+
     ref_embed = discord.Embed(
         title=f"📄 {ticket_type} Transcript",
         color=discord.Color.blurple(),
@@ -19173,13 +19188,26 @@ async def _post_transcript_to_channel(
     if outcome:
         ref_embed.add_field(name="📋 Outcome", value=outcome, inline=True)
     ref_embed.set_footer(text="Different Meets • Transcripts")
+
+    view: discord.ui.View | None = None
+    if file_url:
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(
+            label="View Transcript",
+            emoji="📋",
+            style=discord.ButtonStyle.link,
+            url=file_url,
+        ))
+
     try:
-        msg = await tc.send(embed=ref_embed, file=transcript_file)
-        if msg.attachments:
-            return msg.attachments[0].url
+        if view:
+            await tc.send(embed=ref_embed, view=view)
+        else:
+            await tc.send(embed=ref_embed)
     except discord.HTTPException:
         pass
-    return None
+
+    return file_url
 
 
 # ─────────────────────────────────────────────────────────────────────────────
