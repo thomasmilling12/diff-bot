@@ -137,16 +137,21 @@ class PingButton(discord.ui.Button):
         count = len(_unverified_members(interaction.guild))
 
         ping_embed = discord.Embed(
-            title="📌 Verification Reminder",
+            title="🔔 Verification Reminder",
             description=(
-                f"You're seeing this because you haven't verified yet.\n"
-                f"Follow the steps below to unlock full access to DIFF.\n\n"
-                f"📜 **Step 1** — Read the rules in <#{RULES_CHANNEL_ID}>\n"
-                f"✅ **Step 2** — Complete verification and click the button\n"
-                f"🎮 **Step 3** — Head to <#{JOIN_MEETS_CHANNEL}> to join meets"
+                f"You're **not verified yet** — complete the steps below to unlock full access to DIFF."
             ),
             color=discord.Color.red(),
             timestamp=datetime.now(timezone.utc),
+        )
+        ping_embed.add_field(
+            name="How to Verify",
+            value=(
+                f"1️⃣  Read the rules in <#{RULES_CHANNEL_ID}>\n"
+                f"2️⃣  Click the **Verify** button at the bottom of that channel\n"
+                f"3️⃣  Head to <#{JOIN_MEETS_CHANNEL}> to join meets"
+            ),
+            inline=False,
         )
         ping_embed.set_thumbnail(url=DIFF_LOGO_URL)
         ping_embed.set_footer(
@@ -166,16 +171,23 @@ class PingButton(discord.ui.Button):
         for m in role.members:
             try:
                 dm_embed = discord.Embed(
-                    title="📌 DIFF — Verification Reminder",
+                    title="🔔 DIFF — Verification Reminder",
                     description=(
-                        f"Hey {m.display_name}! A staff member has sent a verification reminder.\n\n"
-                        f"📜 **Step 1** — Read the rules in <#{RULES_CHANNEL_ID}>\n"
-                        f"✅ **Step 2** — Complete verification\n"
-                        f"🎮 **Step 3** — Head to <#{JOIN_MEETS_CHANNEL}> to join meets\n\n"
-                        f"Complete this to unlock full access to **{interaction.guild.name}**!"
+                        f"Hey **{m.display_name}** — a staff member sent you this reminder.\n"
+                        f"You haven't verified in **{interaction.guild.name}** yet.\n"
+                        f"Complete the steps below to unlock full server access."
                     ),
                     color=discord.Color.red(),
                     timestamp=datetime.now(timezone.utc),
+                )
+                dm_embed.add_field(
+                    name="Steps to Verify",
+                    value=(
+                        f"1️⃣  Read the rules in <#{RULES_CHANNEL_ID}>\n"
+                        f"2️⃣  Click the **Verify** button at the bottom\n"
+                        f"3️⃣  Head to <#{JOIN_MEETS_CHANNEL}> to join meets"
+                    ),
+                    inline=False,
                 )
                 dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
                 dm_embed.set_footer(text=FOOTER_TEXT)
@@ -285,46 +297,53 @@ class UnverifiedPanelCog(commands.Cog):
 
     def _build_embed(self, guild: Optional[discord.Guild] = None) -> discord.Embed:
         count = len(_unverified_members(guild)) if guild else 0
-        count_str = f"**{count}** unverified member{'s' if count != 1 else ''} right now." if guild else ""
 
         embed = discord.Embed(
-            title="📍 DIFF Unverified Members",
+            title="🔒 Verification Required",
             description=(
-                "If you're seeing this channel, you haven't completed server verification yet.\n"
-                "Follow the steps below to unlock full access to DIFF.\n\n"
-                + (f"👥 There are currently {count_str}" if count_str else "")
+                "You're seeing this because you **haven't verified yet**.\n"
+                "Complete the steps below to unlock full access to DIFF."
             ),
             color=EMBED_COLOR,
+            timestamp=datetime.now(timezone.utc),
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+        if count:
+            word = "member" if count == 1 else "members"
+            embed.add_field(
+                name="👥 Currently Unverified",
+                value=f"**{count}** {word} waiting to verify.",
+                inline=False,
+            )
+
         embed.add_field(
-            name="✅ How to Get Verified",
+            name="✅ How to Verify",
             value=(
-                f"• Go to <#{RULES_CHANNEL_ID}> and read the rules\n"
-                f"• Click the verification button at the bottom of that channel\n"
-                f"• Once complete, your access will be unlocked automatically"
+                f"1️⃣  Head to <#{RULES_CHANNEL_ID}> and read the rules\n"
+                f"2️⃣  Click the **Verify** button at the bottom of that channel\n"
+                f"3️⃣  Access unlocks automatically — no wait, no staff needed"
             ),
             inline=False,
         )
         embed.add_field(
-            name="🎮 After Verifying",
+            name="🚗 After You're Verified",
             value=(
-                f"• Head to <#{JOIN_MEETS_CHANNEL}> to see how to join meets\n"
+                f"• Go to <#{JOIN_MEETS_CHANNEL}> to set up for car meets\n"
                 f"• Explore the rest of the server\n"
-                f"• Follow any announcements from staff"
+                f"• Stay up to date with announcements from staff"
             ),
             inline=False,
         )
         embed.add_field(
-            name="🔔 Staff Actions",
+            name="🛠️ Staff Actions",
             value=(
-                "**Ping Unverified Role** — sends a reminder ping in this channel and DMs all unverified members *(10 min cooldown)*\n"
-                "**List Unverified Members** — shows a private list of who still needs to verify"
+                "📣 **Ping Unverified Role** — pings this channel & DMs all unverified members *(10 min cooldown)*\n"
+                "👥 **List Unverified Members** — shows a private list of who still needs to verify"
             ),
             inline=False,
         )
-        embed.set_footer(text=f"{FOOTER_TEXT}  |  {PANEL_TAG}")
-        embed.timestamp = datetime.now(timezone.utc)
+        embed.set_footer(text=FOOTER_TEXT)
         return embed
 
     async def _get_channel(self) -> Optional[discord.TextChannel]:
