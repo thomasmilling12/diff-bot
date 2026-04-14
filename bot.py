@@ -10234,8 +10234,10 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
 
         if is_finalized:
             field_name = f"🏁 Meet {n} — Closed"
+            ts_fin = _parse_meet_ts(date_text, start_time)
+            when_fin = f"<t:{ts_fin}:F>" if ts_fin else f"📅 {date_text}  🕒 {start_time}"
             field_lines = [
-                f"📅 {date_text}  🕒 {start_time}  🎮 {class_name}",
+                f"📅 {when_fin}  🎮 {class_name}",
                 f"👤 **Host:** {host_text}",
                 f"✅ **{c['yes']}** yes  ·  ❓ **{c['maybe']}** maybe  ·  ❌ **{c['no']}** no",
                 "*🔒 Voting closed*",
