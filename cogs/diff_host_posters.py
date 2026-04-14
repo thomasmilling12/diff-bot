@@ -46,6 +46,22 @@ def _try_parse_ts(date_str: str, time_str: str) -> int | None:
         return None
 
 
+_MEET_NUM_EMOJI = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣"}
+
+def _meet_number_reaction(host_id: int) -> str:
+    """Return 1️⃣/2️⃣/3️⃣ if the host is in the current schedule, else 🏁."""
+    try:
+        m        = _main()
+        schedule = m._asched_load()
+        days     = schedule.get("days", {})
+        for idx, day in enumerate(m._HRSVP_DAYS, 1):
+            if days.get(day, {}).get("host_id") == host_id:
+                return _MEET_NUM_EMOJI[idx]
+    except Exception:
+        pass
+    return "🏁"
+
+
 def _build_embed(
     host: discord.Member | None,
     date: str,
@@ -125,6 +141,13 @@ class DiffHostPosters(commands.Cog, name="DiffHostPosters"):
             await message.reply(embed=embed, mention_author=False)
         except Exception as e:
             print(f"[HostPosters] Embed reply error: {e}")
+
+        # ── React with meet number so crew can identify their poster ─────────────
+        try:
+            reaction = _meet_number_reaction(message.author.id)
+            await message.add_reaction(reaction)
+        except Exception as e:
+            print(f"[HostPosters] Reaction error: {e}")
 
         # ── B: Forward images + embed to meet-info ────────────────────────────────
         try:
@@ -243,6 +266,13 @@ class DiffHostPosters(commands.Cog, name="DiffHostPosters"):
             send_kwargs["files"] = files
 
         poster_msg = await poster_ch.send(**send_kwargs)
+
+        # ── React with meet number so crew can identify their poster ─────────────
+        try:
+            reaction = _meet_number_reaction(host.id if host else 0)
+            await poster_msg.add_reaction(reaction)
+        except Exception as e:
+            print(f"[HostPosters] !postmeet reaction error: {e}")
 
         # ── D: Thread ─────────────────────────────────────────────────────────────
         try:
