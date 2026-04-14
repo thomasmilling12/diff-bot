@@ -13479,6 +13479,7 @@ async def on_ready():
     _safe_add_view(_PshipPanelView(),                     "_PshipPanelView")
     _safe_add_view(_PshipStaffView(),                     "_PshipStaffView")
     _safe_add_view(_PartnerPanelView(_pp_get_partners()), "_PartnerPanelView")
+    _safe_add_view(_PPPartnerTicketCloseView(),            "_PPPartnerTicketCloseView")
     _safe_add_view(_RsvpView(),                           "_RsvpView")
     _safe_add_view(_IgDropView(),                         "_IgDropView")
     for _g in bot.guilds:
@@ -24582,8 +24583,26 @@ _PP_REVIEW_CHANNEL_ID   = 0                     # staff-only review channel — 
 _PP_FILE                = os.path.join(DATA_FOLDER, "diff_partner_panel.json")
 _PP_APPS_FILE           = os.path.join(DATA_FOLDER, "diff_partnerships.json")
 _PP_FOOTER              = "Different Meets • Official Partnership System"
-_PP_PARTNER_ROLE_ID     = 0                     # role assigned on acceptance (0 = skip)
-_PP_STAFF_PING_ROLE_ID  = 0                     # staff role pinged on new application (0 = skip)
+_PP_PARTNER_ROLE_ID       = 0                   # role assigned on acceptance (0 = skip)
+_PP_STAFF_PING_ROLE_ID    = 0                   # staff role pinged on new application (0 = skip)
+_PP_TICKET_CATEGORY_ID    = JOIN_TICKET_CATEGORY_ID  # category for partner onboarding tickets
+
+# ── DIFF partner ad — posted in every new partner's onboarding ticket ────────────
+_PP_PARTNER_AD_TEXT = (
+    "## 🤝 Your Partner Ad\n\n"
+    "Please **copy and post** the text below into your server's partnership or advertisement channel. "
+    "This is our official DIFF server ad.\n\n"
+    "─────────────────────────────────\n\n"
+    "🚗 **Different Meets — Official PS5 GTA Car Meets**\n\n"
+    "The home of clean, organised PS5 GTA Online car meets.\n\n"
+    "🏆 Active community\n"
+    "🎮 Daily car meets\n"
+    "📸 Photo competitions\n"
+    "🎉 Events & giveaways\n"
+    "🤝 Trusted partnership network\n\n"
+    "👉 **Join us:** https://discord.gg/diffmeets\n\n"
+    "─────────────────────────────────"
+)
 
 _PP_COLOR         = discord.Color.from_rgb(88, 101, 242)
 _PP_SUCCESS_COLOR = discord.Color.green()
@@ -25247,6 +25266,141 @@ class _PartnerEditTriggerView(discord.ui.View):
         await interaction.response.send_modal(_PartnerEditModal(self.partner_name))
 
 
+# ── Partner onboarding ticket ───────────────────────────────────────────────────
+class _PPPartnerTicketCloseView(discord.ui.View):
+    """Persistent close button inside a partner onboarding ticket."""
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Close Ticket", emoji="🔒",
+        style=discord.ButtonStyle.danger,
+        custom_id="pp_ticket_close",
+    )
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        is_staff = (
+            interaction.user.guild_permissions.manage_guild
+            or any(r.id in _JOIN_STAFF_ROLE_IDS for r in interaction.user.roles)
+        )
+        if not is_staff:
+            await interaction.response.send_message(
+                "❌ Only staff can close this ticket.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            "🔒 Closing this ticket in 5 seconds…", ephemeral=False
+        )
+        closing = discord.Embed(
+            title="🔒 Partner Ticket Closed",
+            description=f"Closed by {interaction.user.mention}.",
+            color=_PP_DENIED_COLOR,
+            timestamp=datetime.now(timezone.utc),
+        )
+        closing.set_footer(text=_PP_FOOTER)
+        await interaction.channel.send(embed=closing)
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.delete(reason=f"Partner ticket closed by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.channel.send("❌ Missing permissions to delete this channel.")
+        except Exception:
+            pass
+
+
+async def _pp_create_partner_ticket(
+    guild: discord.Guild,
+    app: dict,
+    applicant: discord.Member | None,
+    reviewer: discord.Member | discord.User,
+) -> discord.TextChannel | None:
+    """Create a private onboarding ticket when a partnership is accepted."""
+    category = guild.get_channel(_PP_TICKET_CATEGORY_ID)
+    if not isinstance(category, discord.CategoryChannel):
+        try:
+            category = await guild.fetch_channel(_PP_TICKET_CATEGORY_ID)
+        except Exception:
+            category = None
+    if not isinstance(category, discord.CategoryChannel):
+        return None
+
+    safe_name = "".join(
+        c if c.isalnum() or c in "-_" else "-"
+        for c in app["server_name"].lower().replace(" ", "-")
+    )[:80]
+    channel_name = f"partner-{safe_name}"
+
+    overwrites: dict = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            read_message_history=True, manage_channels=True,
+            manage_messages=True, attach_files=True, embed_links=True,
+        ),
+    }
+    if applicant:
+        overwrites[applicant] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            read_message_history=True, attach_files=True, embed_links=True,
+        )
+    for role_id in _JOIN_STAFF_ROLE_IDS:
+        role = guild.get_role(role_id)
+        if role:
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True,
+                read_message_history=True, manage_messages=True,
+                attach_files=True, embed_links=True,
+            )
+
+    try:
+        channel = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites,
+            topic=f"PARTNER_TICKET | APP:{app['application_id']} | USER:{app['applicant_id']}",
+            reason=f"Partner onboarding ticket for {app['server_name']}",
+        )
+    except Exception as e:
+        print(f"[PartnerTicket] Failed to create channel: {e}")
+        return None
+
+    # ── Welcome embed ──────────────────────────────────────────────────────────
+    welcome = discord.Embed(
+        title=f"🎉 Welcome, {app['server_name']}!",
+        description=(
+            f"Congratulations — your partnership with **Different Meets** has been approved by {reviewer.mention}.\n\n"
+            "This ticket is your **onboarding space**. Staff will guide you through the next steps here.\n\n"
+            "**What happens next:**\n"
+            "• Post the DIFF partner ad (below) in your server's partnership or advertisement channel\n"
+            "• Staff will verify it's been posted\n"
+            "• Once done, this ticket will be closed"
+        ),
+        color=_PP_SUCCESS_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    welcome.add_field(name="Community",    value=app["server_name"],  inline=True)
+    welcome.add_field(name="Invite",       value=app["invite_link"],  inline=True)
+    welcome.add_field(name="Reviewed By",  value=reviewer.mention,   inline=False)
+    welcome.set_footer(text=_PP_FOOTER)
+    if DIFF_LOGO_URL:
+        welcome.set_thumbnail(url=DIFF_LOGO_URL)
+
+    mention = applicant.mention if applicant else f"<@{app['applicant_id']}>"
+    await channel.send(content=mention, embed=welcome)
+
+    # ── Partner ad block ───────────────────────────────────────────────────────
+    ad_embed = discord.Embed(
+        title="📋 DIFF Partner Ad — Post This in Your Server",
+        description=_PP_PARTNER_AD_TEXT,
+        color=_PP_COLOR,
+    )
+    ad_embed.set_footer(text=_PP_FOOTER)
+    if DIFF_BANNER_URL:
+        ad_embed.set_image(url=DIFF_BANNER_URL)
+    await channel.send(embed=ad_embed, view=_PPPartnerTicketCloseView())
+
+    return channel
+
+
 # ── Process functions ────────────────────────────────────────────────────────────
 async def _pp_process_accept(interaction: discord.Interaction, app_id: str) -> None:
     if not interaction.user.guild_permissions.manage_guild:
@@ -25305,8 +25459,13 @@ async def _pp_process_accept(interaction: discord.Interaction, app_id: str) -> N
     log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
     if isinstance(log_ch, discord.TextChannel):
         await log_ch.send(embed=_pp_build_log_embed("accepted", app, interaction.user))
+    # Create onboarding ticket
+    ticket_ch = None
+    if guild:
+        ticket_ch = await _pp_create_partner_ticket(guild, app, applicant, interaction.user)
+    ticket_note = f" A ticket has been created: {ticket_ch.mention}" if ticket_ch else ""
     await interaction.response.send_message(
-        f"✅ Partnership for **{app['server_name']}** accepted and they have been added to the partner list.",
+        f"✅ Partnership for **{app['server_name']}** accepted and they have been added to the partner list.{ticket_note}",
         ephemeral=True,
     )
 
