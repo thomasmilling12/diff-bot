@@ -3414,12 +3414,15 @@ class _ASchedReminderBtn(discord.ui.Button):
         schedule = _asched_load()
         lines = []
         for day in _HRSVP_DAYS:
-            entry = schedule["days"].get(day, {})
-            host_id = entry.get("host_id")
+            entry    = schedule["days"].get(day, {})
+            host_id  = entry.get("host_id")
             host_str = f"<@{host_id}>" if host_id else "*TBD*"
-            lines.append(
-                f"**{day}** — 🎮 {entry.get('class', 'TBD')} | 🕒 {entry.get('time', 'TBD')} | 👤 {host_str}"
-            )
+            cls_val  = entry.get('class', 'TBD')
+            time_val = entry.get('time', 'TBD')
+            date_val = entry.get('day', '')
+            meet_ts  = _parse_meet_ts(date_val, time_val) if date_val and time_val != 'TBD' else None
+            when_str = f"<t:{meet_ts}:F>  ·  <t:{meet_ts}:R>" if meet_ts else f"🕒 {time_val}"
+            lines.append(f"**{day}** — 🎮 {cls_val} | 📅 {when_str} | 👤 {host_str}")
         remind_embed = discord.Embed(
             title="📅 Upcoming DIFF Meets — This Week's Schedule",
             description="\n".join(lines),
