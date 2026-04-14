@@ -3554,13 +3554,36 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
             slot     = schedule["days"].setdefault(slot_name, {})
             slot.update({"host_id": host_id, "host_status": "yes",
                          "day": day_val, "time": time_val, "class": class_val})
+            slot["locked"] = True   # lock so Rebuild Schedule doesn't overwrite
             schedule["updated_at"] = utc_now().isoformat()
             _asched_save(schedule)
+
+            # ── Inject synthetic HRSVP entry so the availability panel reflects the override ──
+            try:
+                hrsvp = _hrsvp_load()
+                uid_str = str(host_id)
+                synthetic = {"uid": uid_str, "day": day_val, "time": time_val, "theme": class_val}
+                for day_key in _HRSVP_DAYS:
+                    bucket = hrsvp.setdefault(day_key, {"yes": [], "no": [], "maybe": []})
+                    # Remove this host from all slots first (clean slate)
+                    for b in ("yes", "no", "maybe"):
+                        bucket[b] = [e for e in bucket.get(b, [])
+                                     if _hrsvp_uid(e) != uid_str]
+                # Add as confirmed yes for the overridden slot
+                hrsvp.setdefault(slot_name, {"yes": [], "no": [], "maybe": []})["yes"].append(synthetic)
+                _hrsvp_save(hrsvp)
+            except Exception as _he:
+                print(f"[OverrideSlot] HRSVP inject failed: {_he}")
 
             try:
                 await _asched_update_panel(interaction.client)
             except Exception as _pe:
-                print(f"[OverrideSlot] Panel update failed: {_pe}")
+                print(f"[OverrideSlot] Schedule panel update failed: {_pe}")
+
+            try:
+                await _hrsvp_update_panel(interaction.client)
+            except Exception as _pe:
+                print(f"[OverrideSlot] HRSVP panel update failed: {_pe}")
 
             all_filled = all(schedule["days"].get(d, {}).get("host_id") for d in _HRSVP_DAYS)
             if all_filled:
