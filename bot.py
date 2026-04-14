@@ -22882,14 +22882,29 @@ class JoinPlatformView(discord.ui.View):
             await interaction.response.send_message("🔔 Meet notifications **ON** — you'll be pinged for meets.", ephemeral=True)
 
 
+_JOIN_DENY_PRESETS = [
+    ("neon_underglow",   "Neon lights / underglow",          "Your build has neon lights or underglow. Clean builds only — no neon, underglow, or tire lettering allowed at DIFF meets."),
+    ("wheels",           "Poor wheel choice",                 "The wheel choice on your build doesn't meet our standards. Wheels should complement the car's style — avoid oversized, off-road, or mismatched rims."),
+    ("spoiler",          "Oversized spoiler",                 "Your build has a large or oversized spoiler. We look for clean, tasteful builds — large race wings don't fit our meet style."),
+    ("tire_lettering",   "Tire lettering",                    "Your build has tire lettering. This doesn't fit the clean build aesthetic we look for at DIFF meets."),
+    ("build_standards",  "Builds don't meet DIFF standards",  "Your overall build style doesn't meet DIFF's standards. We look for clean, customised vehicles — no stock cars, modded money builds, or overly extreme modifications."),
+    ("photo_quality",    "Blurry / low-quality photos",       "Some of your photos were too blurry or low-quality to properly review your builds. Please retake clearer photos and reapply."),
+    ("not_enough_cars",  "Not enough build variety",          "We need to see more unique builds to review your application. Please submit photos of additional cars and reapply."),
+    ("custom",           "Custom reason…",                    ""),
+]
+
 class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
-    reason = discord.ui.TextInput(
-        label="Reason for denial",
-        style=discord.TextStyle.paragraph,
-        placeholder="e.g. Photos too blurry, builds don't meet standards, insufficient car variety…",
-        required=True,
-        max_length=500,
-    )
+    def __init__(self, preset_reason: str = "") -> None:
+        super().__init__()
+        self.reason = discord.ui.TextInput(
+            label="Reason for denial",
+            style=discord.TextStyle.paragraph,
+            placeholder="e.g. Neon lights / underglow, poor wheel choice, builds don't meet standards…",
+            default=preset_reason,
+            required=True,
+            max_length=500,
+        )
+        self.add_item(self.reason)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not isinstance(interaction.channel, discord.TextChannel):
@@ -22995,6 +23010,31 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
             await interaction.channel.delete(reason=f"Join application denied by {interaction.user}")
         except discord.HTTPException:
             pass
+
+
+class _JoinDenyReasonSelect(discord.ui.Select):
+    def __init__(self) -> None:
+        options = [
+            discord.SelectOption(label=label, value=value, description=desc[:100] if desc else "Enter a custom reason")
+            for value, label, desc in _JOIN_DENY_PRESETS
+        ]
+        super().__init__(
+            placeholder="Choose a denial reason…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected = self.values[0]
+        preset_reason = next((desc for val, _, desc in _JOIN_DENY_PRESETS if val == selected), "")
+        await interaction.response.send_modal(JoinDenyModal(preset_reason=preset_reason))
+
+
+class _JoinDenySelectView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=120)
+        self.add_item(_JoinDenyReasonSelect())
 
 
 class JoinRequestInfoModal(discord.ui.Modal, title="Request More Info"):
@@ -23406,7 +23446,11 @@ class JoinTicketView(discord.ui.View):
             return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
-        await interaction.response.send_modal(JoinDenyModal())
+        await interaction.response.send_message(
+            "**Select a denial reason** — you can edit the text before it sends:",
+            view=_JoinDenySelectView(),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Request Info", emoji="📋", style=discord.ButtonStyle.primary, custom_id="diff_join_request_info")
     async def request_info(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
