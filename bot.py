@@ -22251,8 +22251,7 @@ def _join_build_panel_embed() -> discord.Embed:
     )
     if DIFF_LOGO_URL:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-    if DIFF_BANNER_URL:
-        embed.set_image(url=DIFF_BANNER_URL)
+    embed.set_image(url="https://media.discordapp.net/attachments/1485265848099799163/1486054805796557033/diff_classic.png?format=webp&quality=lossless")
     embed.set_footer(text="Different Meets • GTA Car Meets")
     return embed
 
