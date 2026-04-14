@@ -10534,8 +10534,8 @@ class _RcRollCallView(discord.ui.View):
             lock = False
             if meet:
                 ts = _parse_meet_ts(
-                    meet.get("date_text", ""),
-                    meet.get("start_time", ""),
+                    meet["date_text"] if "date_text" in meet.keys() else "",
+                    meet["start_time"] if "start_time" in meet.keys() else "",
                 )
                 if ts:
                     event_date = _dt.fromtimestamp(ts, tz=_tz.utc).date()
