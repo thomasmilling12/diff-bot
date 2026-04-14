@@ -22432,8 +22432,184 @@ def _join_build_ticket_embed(
     return embed
 
 
-async def _join_build_transcript(channel: discord.TextChannel) -> discord.File:
-    return await _build_html_transcript(channel, limit=300)
+async def _join_build_transcript(
+    channel: discord.TextChannel,
+    meta: dict | None = None,
+) -> discord.File:
+    """Build an HTML transcript for a join ticket, with an optional summary banner."""
+    msgs: list[discord.Message] = []
+    async for m in channel.history(limit=300, oldest_first=True):
+        msgs.append(m)
+
+    server_name = _esc(channel.guild.name) if channel.guild else "Unknown Server"
+    generated   = datetime.now(_EST_TZ).strftime("%d %b %Y at %I:%M %p EST")
+    ch_name     = _esc(channel.name)
+
+    # ── Mention map ───────────────────────────────────────────────────────────
+    mention_map: dict[int, str] = {}
+    guild = channel.guild
+    if guild:
+        for msg in msgs:
+            for uid in [msg.author.id] + [u.id for u in msg.mentions]:
+                if uid not in mention_map:
+                    member = guild.get_member(uid)
+                    if member:
+                        mention_map[uid] = member.display_name
+                    else:
+                        try:
+                            mention_map[uid] = (await guild.fetch_member(uid)).display_name
+                        except Exception:
+                            pass
+
+    # ── Ticket summary banner ─────────────────────────────────────────────────
+    banner_html = ""
+    if meta:
+        status       = meta.get("status", "Pending")
+        psn          = _esc(meta.get("psn") or "—")
+        reviewed_by  = _esc(meta.get("reviewed_by") or "—")
+        deny_reason  = _esc(meta.get("deny_reason") or "")
+        opened_at_s  = meta.get("opened_at") or ""
+        closed_at_s  = meta.get("closed_at") or ""
+        response_time = meta.get("response_time") or ""
+
+        if status == "Accepted":
+            verdict_colour = "#57f287"
+            verdict_icon   = "✅"
+        elif status == "Denied":
+            verdict_colour = "#ed4245"
+            verdict_icon   = "❌"
+        else:
+            verdict_colour = "#faa61a"
+            verdict_icon   = "🕐"
+
+        deny_row = ""
+        if deny_reason:
+            deny_row = (
+                f'<div class="jt-row"><span class="jt-label">Denial Reason</span>'
+                f'<span class="jt-val">{deny_reason}</span></div>'
+            )
+
+        banner_html = f"""
+<div class="jt-banner" style="border-color:{verdict_colour}">
+  <div class="jt-verdict" style="color:{verdict_colour}">{verdict_icon} {status}</div>
+  <div class="jt-grid">
+    <div class="jt-row"><span class="jt-label">Channel</span><span class="jt-val">#{ch_name}</span></div>
+    <div class="jt-row"><span class="jt-label">PSN</span><span class="jt-val">{psn}</span></div>
+    <div class="jt-row"><span class="jt-label">Reviewed By</span><span class="jt-val">{reviewed_by}</span></div>
+    <div class="jt-row"><span class="jt-label">Opened</span><span class="jt-val">{_esc(opened_at_s)}</span></div>
+    <div class="jt-row"><span class="jt-label">Closed</span><span class="jt-val">{_esc(closed_at_s)}</span></div>
+    {'<div class="jt-row"><span class="jt-label">Response Time</span><span class="jt-val">' + response_time + '</span></div>' if response_time else ''}
+    {deny_row}
+  </div>
+</div>"""
+
+    # ── Message rows (same logic as _build_html_transcript) ───────────────────
+    rows: list[str] = []
+    last_date       = None
+    last_author_id: int | None = None
+    last_ts         = None
+
+    for msg in msgs:
+        ts_utc = msg.created_at.replace(tzinfo=timezone.utc)
+        ts     = ts_utc.astimezone(_EST_TZ)
+        date_label = ts.strftime("%B %d, %Y")
+        if date_label != last_date:
+            rows.append(
+                f'<div class="divider"><div class="divider-line"></div>'
+                f'<div class="divider-text">{date_label}</div>'
+                f'<div class="divider-line"></div></div>'
+            )
+            last_date      = date_label
+            last_author_id = None
+
+        same_author = (
+            last_author_id == msg.author.id
+            and last_ts is not None
+            and (ts_utc - last_ts).total_seconds() < 420
+        )
+        is_first       = not same_author
+        last_author_id = msg.author.id
+        last_ts        = ts_utc
+
+        time_str  = ts.strftime("%-I:%M %p")
+        full_time = ts.strftime("%d %b %Y %-I:%M %p EST")
+        au_class  = _author_class(msg.author)
+        is_bot    = getattr(msg.author, "bot", False)
+        badge     = '<span class="badge">APP</span>' if is_bot else ""
+
+        msg_html = [f'<div class="msg {"first" if is_first else ""}">']
+        if is_first:
+            msg_html.append(f'<div class="av">{_avatar_html(msg.author)}</div>')
+            author_name = _esc(
+                mention_map.get(msg.author.id)
+                or getattr(msg.author, "display_name", None)
+                or str(msg.author)
+            )
+            msg_html.append(
+                f'<div><div class="mh">'
+                f'<span class="au {au_class}">{author_name}{badge}</span>'
+                f'<span class="ts" title="{full_time}">{full_time}</span>'
+                f'</div>'
+            )
+        else:
+            msg_html.append(
+                f'<div><span class="ts" title="{full_time}" style="position:absolute;left:20px;top:7px;font-size:10px">{time_str}</span>'
+            )
+
+        if msg.content:
+            msg_html.append(f'<div class="ct">{_md(msg.content, mention_map)}</div>')
+
+        for att in msg.attachments:
+            is_img = att.content_type and att.content_type.startswith("image/")
+            if is_img:
+                msg_html.append(
+                    f'<img class="att-img" src="{_esc(att.url)}" alt="{_esc(att.filename)}" '
+                    f'onerror="this.style.display:\'none\'">'
+                )
+            else:
+                icon = "🎬" if att.content_type and att.content_type.startswith("video/") else "📄"
+                size = _size_label(att.size) if att.size else ""
+                msg_html.append(
+                    f'<div class="att"><span style="font-size:28px">{icon}</span>'
+                    f'<div><a class="att-name" href="{_esc(att.url)}" target="_blank">{_esc(att.filename)}</a>'
+                    f'<div class="att-size">{size}</div></div></div>'
+                )
+
+        for emb in msg.embeds:
+            msg_html.append(_render_embed(emb, mention_map))
+
+        msg_html.append("</div></div>")
+        rows.append("".join(msg_html))
+
+    msgs_body = "".join(rows) if rows else "<p style=\"padding:24px;color:#949ba4\">No messages found.</p>"
+
+    _jt_css = """
+.jt-banner{background:#1e1f22;border-left:4px solid;border-radius:0 8px 8px 0;
+  margin:16px;padding:16px 20px;max-width:680px}
+.jt-verdict{font-size:18px;font-weight:700;margin-bottom:12px}
+.jt-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 20px}
+.jt-row{display:flex;flex-direction:column}
+.jt-label{font-size:11px;font-weight:700;color:#949ba4;text-transform:uppercase;letter-spacing:.05em}
+.jt-val{font-size:14px;color:#dcddde;margin-top:2px}
+"""
+
+    html = (
+        f'<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>#{ch_name} \u2014 Transcript</title>'
+        f'<style>{_TRANSCRIPT_CSS}{_jt_css}</style></head><body>'
+        f'<div class="hdr"><span class="hdr-icon">\U0001f512</span><div>'
+        f'<div class="hdr-title">#{ch_name}</div>'
+        f'<div class="hdr-meta">{server_name} &nbsp;\u2022&nbsp; {len(msgs)} messages &nbsp;\u2022&nbsp; Generated {generated}</div>'
+        f'</div></div>'
+        f'{banner_html}'
+        f'<div class="msgs">{msgs_body}</div>'
+        f'</body></html>'
+    )
+
+    import io as _io
+    buf = _io.BytesIO(html.encode("utf-8"))
+    return discord.File(buf, filename=f"{channel.name[:80]}-transcript.html")
 
 
 class JoinPlatformSelect(discord.ui.Select):
@@ -23484,42 +23660,102 @@ class JoinTicketView(discord.ui.View):
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
 
-        await interaction.response.send_message("Closing ticket and saving transcript...", ephemeral=True)
+        await interaction.response.send_message("🔒 Closing ticket and saving transcript…", ephemeral=True)
 
+        now     = datetime.now(_EST_TZ)
+        now_utc = datetime.now(timezone.utc)
+        uid_raw = _join_parse_user_id(interaction.channel.topic)
+        psn     = _join_parse_psn(interaction.channel.topic)
+
+        # ── Pull outcome from stored data ─────────────────────────────────────
+        extra      = _join_extra_load()
+        ticket_data = extra.get(str(interaction.channel.id), {})
+        status      = ticket_data.get("status", "Pending")
+        reviewed_by = ticket_data.get("reviewed_by", "")
+        deny_reason = ticket_data.get("deny_reason", "")
+
+        # ── Response time ─────────────────────────────────────────────────────
+        response_time_str = ""
+        opened_at_str     = ""
+        opened_at_iso     = ticket_data.get("opened_at") or (
+            interaction.channel.created_at.isoformat() if interaction.channel.created_at else ""
+        )
+        if opened_at_iso:
+            try:
+                opened_dt = datetime.fromisoformat(opened_at_iso).replace(tzinfo=timezone.utc)
+                delta_s   = int((now_utc - opened_dt).total_seconds())
+                h, rem    = divmod(delta_s, 3600)
+                m_        = rem // 60
+                response_time_str = f"{h}h {m_}m" if h else f"{m_}m"
+                opened_at_str = opened_dt.astimezone(_EST_TZ).strftime("%d %b %Y %-I:%M %p EST")
+            except Exception:
+                pass
+        closed_at_str = now.strftime("%d %b %Y %-I:%M %p EST")
+
+        # ── Build transcript with ticket summary banner ───────────────────────
+        transcript_meta = {
+            "status":        status,
+            "psn":           psn or "",
+            "reviewed_by":   reviewed_by or str(interaction.user),
+            "deny_reason":   deny_reason,
+            "opened_at":     opened_at_str,
+            "closed_at":     closed_at_str,
+            "response_time": response_time_str,
+        }
         transcript_file: discord.File | None = None
         try:
-            transcript_file = await _join_build_transcript(interaction.channel)
+            transcript_file = await _join_build_transcript(interaction.channel, meta=transcript_meta)
         except Exception:
             pass
 
-        from datetime import timezone as _tz
-        now = datetime.now(_EST_TZ)
-        uid_raw = _join_parse_user_id(interaction.channel.topic)
-        psn = _join_parse_psn(interaction.channel.topic)
+        # ── Outcome colour / label ────────────────────────────────────────────
+        if status == "Accepted":
+            embed_colour   = discord.Color.green()
+            outcome_val    = "✅ Accepted"
+        elif status == "Denied":
+            embed_colour   = discord.Color.red()
+            outcome_val    = "❌ Denied"
+        else:
+            embed_colour   = discord.Color.greyple()
+            outcome_val    = "🕐 No Decision"
+
+        # ── Close embed ───────────────────────────────────────────────────────
+        close_embed = discord.Embed(
+            title="🔒 Join Ticket Closed",
+            color=embed_colour,
+            timestamp=now,
+        )
+
+        close_embed.add_field(name="📁 Channel",   value=f"`{interaction.channel.name}`", inline=True)
+        close_embed.add_field(name="🔒 Closed By", value=interaction.user.mention,        inline=True)
+        close_embed.add_field(name="📋 Outcome",   value=outcome_val,                     inline=True)
+
+        if uid_raw and uid_raw.isdigit():
+            _applicant = interaction.guild.get_member(int(uid_raw))
+            _applicant_val = (
+                f"{_applicant.mention}\n`{uid_raw}`"
+                if _applicant else f"<@{uid_raw}>\n`{uid_raw}`"
+            )
+            close_embed.add_field(name="👤 Applicant", value=_applicant_val, inline=True)
+
+        if psn:
+            close_embed.add_field(name="🎮 PSN", value=f"`{psn}`", inline=True)
+
+        if response_time_str:
+            close_embed.add_field(name="⏱️ Response Time", value=response_time_str, inline=True)
+
+        close_embed.add_field(name="⏰ Closed At", value=f"<t:{int(now_utc.timestamp())}:F>", inline=True)
+
+        if deny_reason:
+            close_embed.add_field(name="📝 Denial Reason", value=deny_reason[:512], inline=False)
+
+        if DIFF_LOGO_URL:
+            close_embed.set_thumbnail(url=DIFF_LOGO_URL)
+        close_embed.set_footer(text="Different Meets • Join Hub")
+
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
-            close_embed = discord.Embed(
-                title="🔒 Join Ticket Closed",
-                color=discord.Color.greyple(),
-                timestamp=now,
-            )
-            close_embed.add_field(name="📁 Channel", value=f"`{interaction.channel.name}`", inline=True)
-            close_embed.add_field(name="🔒 Closed By", value=f"[{interaction.user.display_name}](https://discord.com/users/{interaction.user.id})", inline=True)
-            if uid_raw and uid_raw.isdigit():
-                _applicant = interaction.guild.get_member(int(uid_raw))
-                _applicant_val = (
-                    f"[{_applicant.display_name}](https://discord.com/users/{_applicant.id})"
-                    if _applicant else f"[Unknown User](https://discord.com/users/{uid_raw})"
-                )
-                close_embed.add_field(name="👤 Applicant", value=_applicant_val, inline=True)
-            if psn:
-                close_embed.add_field(name="🎮 PSN", value=f"`{psn}`", inline=True)
-            close_embed.add_field(name="⏰ Closed At", value=f"<t:{int(now.timestamp())}:F>", inline=True)
-            if DIFF_LOGO_URL:
-                close_embed.set_thumbnail(url=DIFF_LOGO_URL)
-            close_embed.set_footer(text="Different Meets • Join Hub")
             try:
-                # Attach transcript directly — CDN links expire, file attachments don't
                 if transcript_file:
                     await logs_channel.send(embed=close_embed, file=transcript_file)
                 else:
@@ -23527,7 +23763,7 @@ class JoinTicketView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
-        # DM the ticket owner
+        # ── DM the ticket owner ───────────────────────────────────────────────
         if uid_raw and uid_raw.isdigit():
             try:
                 owner = interaction.guild.get_member(int(uid_raw))
@@ -23539,7 +23775,7 @@ class JoinTicketView(discord.ui.View):
                             "If you have any questions, feel free to open a new support ticket from the server.\n\n"
                             "⭐ **How was your experience?** Tap a star below to rate your join ticket."
                         ),
-                        color=discord.Color.greyple(),
+                        color=embed_colour,
                         timestamp=now,
                     )
                     if psn:
