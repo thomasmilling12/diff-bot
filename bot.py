@@ -3311,10 +3311,14 @@ def _asched_build_finalized_embed() -> discord.Embed:
     """Clean, community-facing embed for the upcoming-meet channel. No management details."""
     schedule = _asched_load()
 
+    rc_mention = f"<#{ROLL_CALL_CHANNEL_ID}>"
     embed = discord.Embed(
-        title="📅 DIFF PS5 Weekly Schedule",
-        description="All 3 meets are confirmed for this week. Mark your calendar! 🗓️",
-        color=0x57F287,   # always green — only posted when all 3 slots confirmed
+        title="🗓️ DIFF PS5 Weekly Car Meet Schedule",
+        description=(
+            "All **3 meets** are locked in for this week — see you on the streets! 🚗💨\n"
+            f"Head to {rc_mention} to mark your attendance."
+        ),
+        color=0x57F287,
         timestamp=utc_now(),
     )
     embed.set_author(
@@ -3324,7 +3328,7 @@ def _asched_build_finalized_embed() -> discord.Embed:
     if DIFF_LOGO_URL:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
 
-    _NUMS = ["〔1〕", "〔2〕", "〔3〕"]
+    _NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
 
     for idx, day in enumerate(_HRSVP_DAYS, start=1):
         entry     = schedule["days"].get(day, {})
@@ -3332,37 +3336,30 @@ def _asched_build_finalized_embed() -> discord.Embed:
         class_val = entry.get("class", "TBD")
         time_val  = entry.get("time",  "TBD")
         date_val  = entry.get("day",   "TBD")
-        num_tag   = _NUMS[idx - 1]
 
         host_str = f"<@{host_id}>" if host_id else "*TBD*"
         meet_ts  = _parse_meet_ts(date_val, time_val)
 
         if meet_ts:
-            when_line = f"📅 <t:{meet_ts}:D>  ·  🕒 <t:{meet_ts}:t>  ·  <t:{meet_ts}:R>"
+            when_line = f"<t:{meet_ts}:F>  ·  <t:{meet_ts}:R>"
         else:
-            when_line = f"📅 {date_val}  ·  🕒 {time_val}"
-
-        field_lines = [
-            f"🎮 **{class_val}**",
-            when_line,
-            f"👤 {host_str}",
-        ]
+            when_line = f"📅 {date_val}  🕒 {time_val}"
 
         embed.add_field(
-            name=f"{num_tag} Meet {idx}",
-            value="\n".join(field_lines),
+            name=f"{_NUM_EMOJI[idx - 1]}  {class_val}",
+            value=f"{when_line}\n👤 {host_str}",
             inline=False,
         )
 
     embed.add_field(
         name="\u200b",
         value=(
-            "*All meets are based on host work & IRL schedules.*\n"
-            "*Meet details are subject to change.*"
+            "-# *Meets are subject to change based on host availability.*\n"
+            "-# *All times are displayed in your local timezone.*"
         ),
         inline=False,
     )
-    embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets • Times shown in your local timezone")
+    embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets")
     return embed
 
 
