@@ -10755,9 +10755,12 @@ async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
         n = m["meet_number"]
         host_id = m.get("host_id")
         host_str = f"<@{host_id}>" if host_id else "*TBD*"
-        cls = m.get("class_name", "TBD")
-        t   = m.get("start_time", "TBD")
-        summary_lines.append(f"**Meet {n}** — 🎮 {cls} | 🕒 {t} | 👤 {host_str}")
+        cls  = m.get("class_name", "TBD")
+        t    = m.get("start_time", "TBD")
+        dt   = m.get("date_text", "")
+        ts   = _parse_meet_ts(dt, t) if dt and t != "TBD" else None
+        when = f"<t:{ts}:F>" if ts else f"🕒 {t}"
+        summary_lines.append(f"**Meet {n}** — 🎮 {cls} | 📅 {when} | 👤 {host_str}")
 
     embed = discord.Embed(
         title="📋 Roll Call is Open — Mark Your Attendance!",
