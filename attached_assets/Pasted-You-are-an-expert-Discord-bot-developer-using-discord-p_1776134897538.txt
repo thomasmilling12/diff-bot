@@ -1,0 +1,69 @@
+You are an expert Discord bot developer using discord.py.
+
+I need you to audit and upgrade my Discord bot called "Different Meets V2" to prevent Discord anti-spam quarantine issues and make it production-safe.
+
+The bot currently includes:
+- Automated panels and embeds
+- Announcement systems
+- Command handling (slash + prefix)
+- Logging systems
+- Potential voice/TTS integrations
+
+⚠️ CURRENT ISSUES:
+- Bot was flagged and quarantined by Discord
+- Possible duplicate command execution
+- Too many messages sent too quickly
+- Panels may be reposting instead of editing
+- Possible event loops triggering multiple times
+- Voice join/leave instability (if present)
+
+🎯 YOUR TASK:
+Refactor and improve the bot with the following requirements:
+
+1. Anti-Spam Protection
+- Add global rate limiting (2–3 seconds between actions)
+- Prevent duplicate message processing (dedupe system using message IDs)
+- Add per-user cooldowns for commands
+- Ignore spammy/empty/duplicate messages
+
+2. Safe Message Handling
+- Ensure embeds/panels EDIT existing messages instead of sending new ones
+- Prevent multiple sends from the same trigger
+- Add a queue system for outgoing messages (asyncio queue with delay)
+
+3. Command System Fix
+- Ensure commands are not registered twice
+- Ensure bot.tree.sync() is only called once in on_ready
+- Prevent double responses from slash + prefix overlap
+
+4. Event Safety
+- Fix on_message so it does not trigger commands multiple times
+- Prevent infinite loops or repeated triggers
+
+5. Voice Safety (if applicable)
+- Bot joins voice channel ONLY once
+- Bot leaves ONLY when channel is empty
+- Prevent reconnect spam
+- Add cooldown for voice actions
+
+6. Logging & Debug
+- Add clean logging to track when actions happen
+- Detect and log duplicate triggers
+
+7. Code Structure
+- Clean, organized, modular (cogs if possible)
+- Production-ready formatting
+- Comments explaining important safety logic
+
+8. Stability
+- Ensure bot can run 24/7 without spamming or crashing
+- Avoid excessive API calls
+
+🎯 OUTPUT:
+- Provide the improved full code or updated sections
+- Clearly explain what was fixed and why
+- Keep everything compatible with discord.py (latest version)
+
+This bot is for a private car meet community and must follow Discord ToS strictly.
+
+Focus on safety, efficiency, and clean behavior.

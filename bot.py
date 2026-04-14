@@ -26349,6 +26349,7 @@ def _is_staff_member(member: discord.Member) -> bool:
 
 
 @bot.command(name="bulkwarn")
+@commands.cooldown(1, 15, commands.BucketType.user)
 @commands.has_permissions(administrator=True)
 async def _cmd_bulk_warn(ctx: commands.Context, members: commands.Greedy[discord.Member], *, reason: str = "No reason provided"):
     """Warn multiple members at once. Usage: !bulkwarn @A @B @C reason here"""
@@ -26422,6 +26423,7 @@ def _parse_duration(text: str) -> timedelta | None:
 
 
 @bot.command(name="bulkmute")
+@commands.cooldown(1, 15, commands.BucketType.user)
 @commands.has_permissions(administrator=True)
 async def _cmd_bulk_mute(ctx: commands.Context, members: commands.Greedy[discord.Member], *, args: str = "1h No reason provided"):
     """Timeout multiple members at once. Usage: !bulkmute @A @B 2h spamming"""
@@ -26477,6 +26479,7 @@ async def _cmd_bulk_mute(ctx: commands.Context, members: commands.Greedy[discord
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @bot.command(name="repleaderboard", aliases=["replb", "repscore"])
+@commands.cooldown(1, 30, commands.BucketType.user)
 async def _cmd_rep_leaderboard(ctx: commands.Context):
     """Show the top members by reputation score."""
     try:
@@ -26512,6 +26515,7 @@ async def _cmd_rep_leaderboard(ctx: commands.Context):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @bot.command(name="meethistory", aliases=["mhist", "meethist"])
+@commands.cooldown(1, 20, commands.BucketType.user)
 async def _cmd_meet_history(ctx: commands.Context, member: discord.Member = None):
     """Show meet history for a member (defaults to yourself)."""
     target = member or ctx.author
@@ -26722,6 +26726,7 @@ async def _before_host_avail_weekly_dm():
 
 
 @bot.command(name="sendweeklyhostdm", aliases=["hostsummary"])
+@commands.cooldown(1, 300, commands.BucketType.guild)
 async def _cmd_send_weekly_host_dm(ctx: commands.Context):
     """Manually trigger the weekly host availability DM (staff only)."""
     if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
@@ -26789,6 +26794,7 @@ async def _cmd_send_weekly_host_dm(ctx: commands.Context):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @bot.command(name="diffhelp", aliases=["commands", "bothelp"])
+@commands.cooldown(1, 30, commands.BucketType.user)
 async def _cmd_diff_help(ctx: commands.Context):
     """Show a categorised list of all bot commands."""
     is_staff = isinstance(ctx.author, discord.Member) and _is_staff_member(ctx.author)
