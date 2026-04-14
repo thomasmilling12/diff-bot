@@ -19159,26 +19159,29 @@ async def _post_transcript_to_channel(
     ticket_type: str,
     outcome: str = "",
 ) -> str | None:
-    """Upload transcript to staff-logs (silent, file only) to get a CDN URL,
-    then post a clean embed + link button in the transcripts channel.
+    """Upload transcript to the transcripts channel to get a CDN URL, delete
+    the raw file message, then post a clean embed + link button.
+    Staff-logs receives only the close embed (caller's responsibility).
     Returns the CDN URL of the uploaded file, or None on failure."""
 
-    # ── Step 1: upload the raw file to staff-logs to get a stable CDN URL ────
-    file_url: str | None = None
-    logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-    if isinstance(logs_ch, discord.TextChannel):
-        try:
-            archive_msg = await logs_ch.send(file=transcript_file)
-            if archive_msg.attachments:
-                file_url = archive_msg.attachments[0].url
-        except discord.HTTPException:
-            pass
-
-    # ── Step 2: post clean embed + button in the transcripts channel ──────────
     tc = guild.get_channel(TICKET_TRANSCRIPTS_CHANNEL_ID)
     if not isinstance(tc, discord.TextChannel):
-        return file_url
+        return None
 
+    # ── Step 1: upload raw file → grab CDN URL → delete immediately ──────────
+    file_url: str | None = None
+    try:
+        upload_msg = await tc.send(file=transcript_file)
+        if upload_msg.attachments:
+            file_url = upload_msg.attachments[0].url
+        try:
+            await upload_msg.delete()
+        except discord.HTTPException:
+            pass
+    except discord.HTTPException:
+        pass
+
+    # ── Step 2: post clean embed + button (no file attached) ─────────────────
     ref_embed = discord.Embed(
         title=f"📄 {ticket_type} Transcript",
         color=discord.Color.blurple(),
