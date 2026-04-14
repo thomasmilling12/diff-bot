@@ -10500,26 +10500,64 @@ class _RcMyRsvpBtn(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        uid       = interaction.user.id
-        guild     = interaction.guild
-        responses = _rc_db.get_all_responses(guild.id)
-        meets     = _rc_db.get_meets(guild.id)
-        meets_by_num = {row["meet_number"]: row for row in meets}
-        status_labels = {"yes": "✅ Attending", "maybe": "❓ Maybe", "no": "❌ Not Attending"}
-        lines = []
+        uid          = interaction.user.id
+        guild        = interaction.guild
+        responses    = _rc_db.get_all_responses(guild.id)
+        meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
+
+        status_emoji  = {"yes": "✅", "maybe": "❓", "no": "❌"}
+        status_label  = {"yes": "Attending", "maybe": "Maybe", "no": "Not Attending"}
+
+        answered = []
         for n in (1, 2, 3):
-            r    = responses.get(n, {})
-            meet = meets_by_num.get(n)
-            info = ""
-            if meet and meet["class_name"] != "TBD":
-                info = f" — {meet['date_text']} · {meet['start_time']} · {meet['class_name']}"
+            r = responses.get(n, {})
             found = next((s for s in ("yes", "maybe", "no") if uid in r.get(s, [])), None)
-            lines.append(f"**Meet {n}**{info}\n　{status_labels.get(found, '⬜ No response yet')}")
-        await interaction.response.send_message(
-            "**Your current RSVP:**\n\n" + "\n\n".join(lines)
-            + "\n\n*Update anytime by clicking the buttons above.*",
-            ephemeral=True,
+            answered.append(found)
+
+        # Pick embed colour: green = all yes, orange = any maybe, red = any no, grey = no responses
+        if all(a == "yes" for a in answered if a):
+            color = discord.Color.green()
+        elif any(a == "maybe" for a in answered):
+            color = discord.Color.orange()
+        elif any(a == "no" for a in answered):
+            color = discord.Color.red()
+        else:
+            color = discord.Color.greyple()
+
+        embed = discord.Embed(
+            title="📊 Your Roll Call RSVP",
+            description="Here's how you've responded for each meet this week.",
+            color=color,
+            timestamp=datetime.now(timezone.utc),
         )
+
+        for n, found in zip((1, 2, 3), answered):
+            meet  = meets_by_num.get(n)
+            cls   = meet["class_name"] if meet else "TBD"
+            dt    = meet["date_text"]  if meet else ""
+            st    = meet["start_time"] if meet else "TBD"
+            ts    = _parse_meet_ts(dt, st) if meet and cls != "TBD" else None
+
+            if ts:
+                when = f"<t:{ts}:F>\n<t:{ts}:R>"
+            elif cls != "TBD":
+                when = f"📅 {dt}  🕒 {st}"
+            else:
+                when = "*Schedule not posted yet*"
+
+            status_str = (
+                f"{status_emoji[found]} **{status_label[found]}**"
+                if found else "⬜ *No response yet*"
+            )
+
+            embed.add_field(
+                name=f"Meet {n}  ·  🎮 {cls}",
+                value=f"{when}\n{status_str}",
+                inline=False,
+            )
+
+        embed.set_footer(text="Update anytime by clicking the buttons above  •  Only you can see this")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class _RcRollCallView(discord.ui.View):
