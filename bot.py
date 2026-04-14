@@ -22460,6 +22460,24 @@ class JoinPlatformSelect(discord.ui.Select):
                     description="Redirected to our PC partners at MMI Meets.",
                     emoji="💻",
                 ),
+                discord.SelectOption(
+                    label="How to Join the Crew",
+                    value="join_crew",
+                    description="Steps to become an official DIFF crew member.",
+                    emoji="📋",
+                ),
+                discord.SelectOption(
+                    label="FAQ",
+                    value="faq",
+                    description="Answers to the most common questions about our meets.",
+                    emoji="❓",
+                ),
+                discord.SelectOption(
+                    label="Server Info",
+                    value="server_info",
+                    description="Learn about DIFF Meets and our community.",
+                    emoji="ℹ️",
+                ),
             ],
         )
 
@@ -22488,6 +22506,122 @@ class JoinPlatformSelect(discord.ui.Select):
                 if DIFF_LOGO_URL:
                     embed.set_thumbnail(url=DIFF_LOGO_URL)
                 embed.set_footer(text="Different Meets • GTA Car Meets")
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+            if platform == "join_crew":
+                embed = discord.Embed(
+                    title="📋 How to Join the DIFF Crew",
+                    description=(
+                        "Joining the **Different Meets crew** is separate from joining our car meets.\n"
+                        "Here's how the process works:"
+                    ),
+                    color=discord.Color.gold(),
+                )
+                embed.add_field(
+                    name="Step 1 — Attend meets & get to know us",
+                    value="Come to a few meets, be active in the server, and get familiar with the community.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Step 2 — Submit an application",
+                    value=f"Head to <#{CREW_APPLICATIONS_CHANNEL_ID}> and fill out the crew application.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Step 3 — Wait for a response",
+                    value="Staff review all applications manually. You'll receive a DM or ticket with the decision.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="⚠️ Requirements",
+                    value=(
+                        "• Active in the server and at meets\n"
+                        "• Clean car — no modded money builds\n"
+                        "• Good standing (no recent bans or warnings)\n"
+                        "• PS5 or PS4 required for DIFF crew"
+                    ),
+                    inline=False,
+                )
+                if DIFF_LOGO_URL:
+                    embed.set_thumbnail(url=DIFF_LOGO_URL)
+                embed.set_footer(text="Different Meets • Crew Applications")
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+            if platform == "faq":
+                embed = discord.Embed(
+                    title="❓ Frequently Asked Questions",
+                    color=discord.Color.blurple(),
+                )
+                embed.add_field(
+                    name="Do I need to be in the crew to attend meets?",
+                    value="No — anyone with a clean car is welcome. Select **PlayStation** in the dropdown to get set up.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="What cars are allowed?",
+                    value=f"Clean, customized vehicles only. No weaponized, armored, or stock builds. See <#{RULES_CHANNEL_ID}> for the full list.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="How often are meets held?",
+                    value="Three meets per week. Check <#{UPCOMING_MEET_CHANNEL_ID}> for the current schedule.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="What platform do you run on?",
+                    value="PlayStation 5 and PS4. Xbox and PC meets are handled by our partners **MMI Meets**.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="I got a warning — what does that mean?",
+                    value=f"Warnings are issued for rule breaks. A second warning can result in removal from meets. Full details in <#{RULES_CHANNEL_ID}>.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="How do I join the crew?",
+                    value=f"Select **How to Join the Crew** in this dropdown, or go directly to <#{CREW_APPLICATIONS_CHANNEL_ID}>.",
+                    inline=False,
+                )
+                if DIFF_LOGO_URL:
+                    embed.set_thumbnail(url=DIFF_LOGO_URL)
+                embed.set_footer(text="Different Meets • FAQ  •  Only you can see this")
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+            if platform == "server_info":
+                embed = discord.Embed(
+                    title="ℹ️ About Different Meets",
+                    description=(
+                        "**Different Meets (DIFF)** is a PlayStation GTA V Online car meet community "
+                        "focused on clean, customized builds and good vibes."
+                    ),
+                    color=discord.Color.from_str("#00439C"),
+                )
+                embed.add_field(
+                    name="🚗 What are car meets?",
+                    value=(
+                        "We gather in GTA Online sessions to show off our builds, cruise together, "
+                        "and run organised events. No racing, no fighting — just cars."
+                    ),
+                    inline=False,
+                )
+                embed.add_field(
+                    name="📅 When are meets?",
+                    value=f"Three meets every week. Check <#{UPCOMING_MEET_CHANNEL_ID}> for dates, times, and classes.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="📖 Rules",
+                    value=f"Read the full server and meet rules in <#{RULES_CHANNEL_ID}> before attending.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="🤝 Partners",
+                    value=f"Xbox and PC players are served by our partners **MMI Meets** — [join here]({_JOIN_MMI_INVITE}).",
+                    inline=False,
+                )
+                if DIFF_LOGO_URL:
+                    embed.set_thumbnail(url=DIFF_LOGO_URL)
+                embed.set_footer(text="Different Meets • GTA Car Meets  •  Only you can see this")
                 return await interaction.response.send_message(embed=embed, ephemeral=True)
 
             category = interaction.guild.get_channel(JOIN_TICKET_CATEGORY_ID)
