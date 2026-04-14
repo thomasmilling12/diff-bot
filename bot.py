@@ -23460,6 +23460,23 @@ class JoinTicketView(discord.ui.View):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
         await interaction.response.send_modal(JoinRequestInfoModal())
 
+    @discord.ui.button(label="Transcript", emoji="📄", style=discord.ButtonStyle.secondary, custom_id="diff_join_transcript")
+    async def transcript(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not self._staff_check(interaction):
+            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Channel error.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            transcript_file = await _join_build_transcript(interaction.channel)
+            await interaction.followup.send(
+                "📄 Here's the current transcript for this ticket:",
+                file=transcript_file,
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"Failed to generate transcript: {e}", ephemeral=True)
+
     @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="diff_join_close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._staff_check(interaction):
