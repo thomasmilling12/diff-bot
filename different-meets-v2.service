@@ -1,0 +1,21 @@
+[Unit]
+Description=Different Meets V2 Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thomas
+WorkingDirectory=/home/thomas/diff-bot
+ExecStart=/home/thomas/diff-bot/.venv/bin/python bot.py
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=0
+
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
