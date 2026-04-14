@@ -13134,6 +13134,16 @@ class _PostmeetReceivedView(discord.ui.View):
 # EVENTS
 # =========================
 @bot.event
+async def on_disconnect():
+    print(f"[Gateway] ⚠️  Bot disconnected from Discord — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
+
+@bot.event
+async def on_resumed():
+    print(f"[Gateway] ✅  Bot session resumed — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
+
+@bot.event
 async def on_ready():
     global status_message_id
 
