@@ -10420,23 +10420,25 @@ class _RcMyRsvpBtn(discord.ui.Button):
 class _RcRollCallView(discord.ui.View):
     def __init__(self, meets_by_num: dict = None) -> None:
         super().__init__(timeout=None)
-        finalized = {}
-        if meets_by_num:
-            finalized = {n: bool(meets_by_num.get(n) and meets_by_num[n]["is_finalized"])
-                         for n in (1, 2, 3)}
+        from datetime import date as _date, datetime as _dt, timezone as _tz
+        today = _date.today()
         for meet_num, row_idx in ((1, 0), (2, 1), (3, 2)):
-            if finalized.get(meet_num):
-                self.add_item(discord.ui.Button(
-                    label=f"Meet {meet_num} — Finalized",
-                    style=discord.ButtonStyle.secondary,
-                    disabled=True,
-                    row=row_idx,
-                    custom_id=f"diff_rollcall:fin_{meet_num}",
-                    emoji="🏁",
-                ))
-            else:
-                for status in ("yes", "maybe", "no"):
-                    self.add_item(_RcBtn(meet_num, status, row_idx))
+            meet = (meets_by_num or {}).get(meet_num)
+            # Lock buttons on the event day itself
+            lock = False
+            if meet:
+                ts = _parse_meet_ts(
+                    meet.get("date_text", ""),
+                    meet.get("start_time", ""),
+                )
+                if ts:
+                    event_date = _dt.fromtimestamp(ts, tz=_tz.utc).date()
+                    lock = today >= event_date
+            for status in ("yes", "maybe", "no"):
+                btn = _RcBtn(meet_num, status, row_idx)
+                if lock:
+                    btn.disabled = True
+                self.add_item(btn)
         self.add_item(_RcMyRsvpBtn())
 
 
