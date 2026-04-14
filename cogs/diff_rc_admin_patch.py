@@ -78,48 +78,104 @@ def _get_live_counts() -> dict:
     return result
 
 
+def _get_meet_details() -> dict:
+    """Returns {meet_number: {class_name, start_time, host_id, date_text}} from DB."""
+    result = {}
+    try:
+        conn = sqlite3.connect(RC_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT meet_number, class_name, start_time, host_id, date_text "
+            "FROM rollcall_meets WHERE guild_id=? ORDER BY meet_number",
+            (GUILD_ID,)
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            result[row["meet_number"]] = dict(row)
+    except Exception:
+        pass
+    return result
+
+
+def _parse_ts(date_text: str, start_time: str) -> int | None:
+    """Parse a Unix timestamp from date_text + start_time strings."""
+    try:
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo("America/New_York")
+        # Normalise time string
+        t = start_time.upper().replace("EST", "").replace("EDT", "").strip()
+        # Try various date formats
+        for dfmt in ("%A, %B %d, %Y", "%B %d, %Y", "%A %B %d %Y",
+                     "%b %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
+            try:
+                d = _dt.strptime(date_text.strip(), dfmt)
+                break
+            except ValueError:
+                continue
+        else:
+            return None
+        for tfmt in ("%I:%M %p", "%I %p", "%H:%M"):
+            try:
+                parsed_t = _dt.strptime(t, tfmt)
+                break
+            except ValueError:
+                continue
+        else:
+            return None
+        combined = d.replace(hour=parsed_t.hour, minute=parsed_t.minute,
+                             second=0, microsecond=0, tzinfo=_tz)
+        return int(combined.timestamp())
+    except Exception:
+        return None
+
+
 def _build_embed() -> discord.Embed:
-    counts = _get_live_counts()
+    counts  = _get_live_counts()
+    details = _get_meet_details()
 
     total_yes   = sum(counts[n]["yes"]   for n in (1, 2, 3))
     total_maybe = sum(counts[n]["maybe"] for n in (1, 2, 3))
     total_no    = sum(counts[n]["no"]    for n in (1, 2, 3))
+    total_resp  = total_yes + total_maybe + total_no
 
     embed = discord.Embed(
         title="🛠️ DIFF Roll Call — Staff Tools",
         description=(
-            f"**This week's response summary**\n"
-            f"✅ `{total_yes}` attending  ·  ❓ `{total_maybe}` maybe  ·  ❌ `{total_no}` not attending\n"
-            "━━━━━━━━━━━━━━━━━━━━━━"
+            f"**{total_resp} total responses this week**\n"
+            f"✅ `{total_yes}` going  ·  ❓ `{total_maybe}` maybe  ·  ❌ `{total_no}` not going"
         ),
         color=discord.Color.dark_teal(),
         timestamp=datetime.now(timezone.utc),
     )
 
     for n in (1, 2, 3):
-        c = counts[n]
+        c    = counts[n]
+        info = details.get(n, {})
+        cls  = info.get("class_name", "TBD")
+        dt   = info.get("date_text", "")
+        st   = info.get("start_time", "TBD")
+        hid  = info.get("host_id")
+        ts   = _parse_ts(dt, st) if cls != "TBD" and st != "TBD" else None
+
+        # Schedule line
+        if ts:
+            sched = f"<t:{ts}:F>  ·  <t:{ts}:R>"
+        elif cls != "TBD":
+            sched = f"📅 {dt}  🕒 {st}"
+        else:
+            sched = "*Awaiting schedule*"
+
+        host_str = f"<@{hid}>" if hid else "*No host*"
+        rsvp_str = f"✅ `{c['yes']}` going  ·  ❓ `{c['maybe']}` maybe  ·  ❌ `{c['no']}` not going"
+
         embed.add_field(
-            name=f"Meet {n}",
-            value=f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`",
-            inline=True,
+            name=f"〔{n}〕 Meet {n}  ·  🎮 {cls}",
+            value=f"{sched}\n👤 {host_str}\n{rsvp_str}",
+            inline=False,
         )
 
-    embed.add_field(
-        name="📋 View Attendance",
-        value="See who voted for each meet.",
-        inline=True,
-    )
-    embed.add_field(
-        name="🗓️ Sync from Schedule",
-        value="Pull hosts, dates & classes from the schedule.",
-        inline=True,
-    )
-    embed.add_field(
-        name="🔄 Reset Roll Call",
-        value="Clear all responses and repost for a new week.",
-        inline=True,
-    )
-    embed.set_footer(text="DIFF Roll Call • Staff Tools")
+    embed.set_footer(text="DIFF Roll Call • Staff Tools  •  Use the dropdown below to take action")
     return embed
 
 
