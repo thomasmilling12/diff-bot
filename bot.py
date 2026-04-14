@@ -160,8 +160,9 @@ REAPPLY_COOLDOWN_DAYS = 14
 DATA_FOLDER = "diff_data"
 COOLDOWN_FILE = os.path.join(DATA_FOLDER, "diff_reapply_cooldowns.json")
 MEMBER_DB_FILE = os.path.join(DATA_FOLDER, "diff_member_database.json")
-STAFF_LOGS_CHANNEL_ID = 1485265848099799163
-MOD_HUB_CHANNEL_ID    = 1486598266211664003
+STAFF_LOGS_CHANNEL_ID        = 1485265848099799163
+TICKET_TRANSCRIPTS_CHANNEL_ID = 1493691927353364580
+MOD_HUB_CHANNEL_ID           = 1486598266211664003
 GTA_WEATHER_CHANNEL_ID = 1489823828652720248
 MEET_ATTENDANCE_CHANNEL_ID = 1089579004517953546
 LEADERBOARD_CHANNEL_ID = 1485282044392243290
@@ -19143,6 +19144,32 @@ async def _supp_export_transcript(channel: discord.TextChannel) -> discord.File:
     return await _build_html_transcript(channel, limit=None)
 
 
+async def _post_transcript_to_channel(
+    guild: discord.Guild,
+    transcript_file: discord.File,
+    channel_name: str,
+    ticket_type: str,
+    outcome: str = "",
+) -> None:
+    """Send a transcript HTML file to the dedicated transcripts channel."""
+    tc = guild.get_channel(TICKET_TRANSCRIPTS_CHANNEL_ID)
+    if not isinstance(tc, discord.TextChannel):
+        return
+    ref_embed = discord.Embed(
+        title=f"📄 {ticket_type} Transcript",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    ref_embed.add_field(name="📁 Channel", value=f"`{channel_name}`", inline=True)
+    if outcome:
+        ref_embed.add_field(name="📋 Outcome", value=outcome, inline=True)
+    ref_embed.set_footer(text="Different Meets • Transcripts")
+    try:
+        await tc.send(embed=ref_embed, file=transcript_file)
+    except discord.HTTPException:
+        pass
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Appeal denial cooldown helpers (30-day cooldown after a denial per type)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -19313,13 +19340,14 @@ class SupportCloseButton(discord.ui.View):
             close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
             _supp_brand_embed(close_embed)
             try:
-                # Attach transcript directly — CDN links expire, file attachments don't
-                if transcript_file:
-                    await logs_channel.send(embed=close_embed, file=transcript_file)
-                else:
-                    await logs_channel.send(embed=close_embed)
+                await logs_channel.send(embed=close_embed)
             except discord.HTTPException:
                 pass
+            if transcript_file and interaction.guild:
+                await _post_transcript_to_channel(
+                    interaction.guild, transcript_file,
+                    channel.name, "Support Ticket",
+                )
 
         if owner_id:
             try:
@@ -19446,9 +19474,14 @@ async def _supp_auto_close_ticket(
         close_embed.add_field(name="👤 Member", value=f"<@{owner_id}> (`{owner_id}`)", inline=True)
         close_embed.set_footer(text="Different Meets • Appeal System")
         try:
-            await logs_ch.send(embed=close_embed, file=transcript)
+            await logs_ch.send(embed=close_embed)
         except Exception:
             pass
+        if transcript and guild:
+            await _post_transcript_to_channel(
+                guild, transcript,
+                channel.name, "Appeal Ticket",
+            )
 
     # Inform the ticket channel before deletion
     try:
@@ -20150,9 +20183,15 @@ async def _ticket_inactivity_monitor() -> None:
                         idle_embed.add_field(name="⏰ Inactive For", value=f"{age_hours:.0f}h", inline=True)
                         idle_embed.set_footer(text="Different Meets • Ticket System")
                         try:
-                            await logs_ch.send(embed=idle_embed, file=transcript)
+                            await logs_ch.send(embed=idle_embed)
                         except Exception:
                             pass
+                        if transcript and channel.guild:
+                            await _post_transcript_to_channel(
+                                channel.guild, transcript,
+                                channel.name, "Support Ticket",
+                                outcome="Auto-closed (72h inactivity)",
+                            )
                     await channel.delete(reason="Ticket auto-closed: 72h inactivity")
                 except Exception:
                     pass
@@ -23756,12 +23795,15 @@ class JoinTicketView(discord.ui.View):
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
             try:
-                if transcript_file:
-                    await logs_channel.send(embed=close_embed, file=transcript_file)
-                else:
-                    await logs_channel.send(embed=close_embed)
+                await logs_channel.send(embed=close_embed)
             except discord.HTTPException:
                 pass
+        if transcript_file:
+            await _post_transcript_to_channel(
+                interaction.guild, transcript_file,
+                interaction.channel.name, "Join Application",
+                outcome=outcome_val,
+            )
 
         # ── DM the ticket owner ───────────────────────────────────────────────
         if uid_raw and uid_raw.isdigit():
