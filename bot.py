@@ -26846,6 +26846,7 @@ def _stale_join_msg_save(message_id: int | None):
 @tasks.loop(minutes=30)
 async def _stale_join_alert_task():
     """Alert staff when join tickets have been open > 24h. Edits existing alert instead of spamming."""
+    return  # disabled — alerts were too noisy
     await bot.wait_until_ready()
     guild = bot.get_guild(GUILD_ID)
     if not guild:
