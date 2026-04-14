@@ -22575,7 +22575,7 @@ class JoinPlatformSelect(discord.ui.Select):
                 )
                 embed.add_field(
                     name="How often are meets held?",
-                    value="Three meets per week. Check <#{UPCOMING_MEET_CHANNEL_ID}> for the current schedule.",
+                    value=f"Three meets per week. Check <#{UPCOMING_MEET_CHANNEL_ID}> for the current schedule.",
                     inline=False,
                 )
                 embed.add_field(
