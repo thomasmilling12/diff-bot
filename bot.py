@@ -3505,7 +3505,7 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
         max_length=60,
     )
     class_input = discord.ui.TextInput(
-        label="Starting Class / Theme (leave blank = Open Class)",
+        label="Class / Theme (blank = Open Class)",
         placeholder="e.g. JDM  |  Muscle  |  Euro  |  Open Class",
         required=False,
         max_length=100,
