@@ -24579,7 +24579,7 @@ async def _cmd_postsocialhub(ctx: commands.Context, channel: discord.TextChannel
 
 # ── Configuration ───────────────────────────────────────────────────────────────
 _PP_CHANNEL_ID          = 1485892421593337926   # public partnerships channel
-_PP_REVIEW_CHANNEL_ID   = 0                     # staff-only review channel — set with !setpartnerchannel
+_PP_REVIEW_CHANNEL_ID   = 1485250641294131280   # staff-only review channel
 _PP_FILE                = os.path.join(DATA_FOLDER, "diff_partner_panel.json")
 _PP_APPS_FILE           = os.path.join(DATA_FOLDER, "diff_partnerships.json")
 _PP_FOOTER              = "Different Meets • Official Partnership System"
