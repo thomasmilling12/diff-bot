@@ -24583,7 +24583,7 @@ _PP_REVIEW_CHANNEL_ID   = 1485250641294131280   # staff-only review channel
 _PP_FILE                = os.path.join(DATA_FOLDER, "diff_partner_panel.json")
 _PP_APPS_FILE           = os.path.join(DATA_FOLDER, "diff_partnerships.json")
 _PP_FOOTER              = "Different Meets • Official Partnership System"
-_PP_PARTNER_ROLE_ID       = 0                   # role assigned on acceptance (0 = skip)
+_PP_PARTNER_ROLE_ID       = 1493765142851096576  # role assigned on acceptance
 _PP_STAFF_PING_ROLE_ID    = 0                   # staff role pinged on new application (0 = skip)
 _PP_TICKET_CATEGORY_ID    = JOIN_TICKET_CATEGORY_ID  # category for partner onboarding tickets
 
