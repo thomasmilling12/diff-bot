@@ -24589,19 +24589,20 @@ _PP_TICKET_CATEGORY_ID    = JOIN_TICKET_CATEGORY_ID  # category for partner onbo
 
 # ── DIFF partner ad — posted in every new partner's onboarding ticket ────────────
 _PP_PARTNER_AD_TEXT = (
-    "## 🤝 Your Partner Ad\n\n"
-    "Please **copy and post** the text below into your server's partnership or advertisement channel. "
-    "This is our official DIFF server ad.\n\n"
-    "─────────────────────────────────\n\n"
-    "🚗 **Different Meets — Official PS5 GTA Car Meets**\n\n"
-    "The home of clean, organised PS5 GTA Online car meets.\n\n"
-    "🏆 Active community\n"
-    "🎮 Daily car meets\n"
-    "📸 Photo competitions\n"
-    "🎉 Events & giveaways\n"
-    "🤝 Trusted partnership network\n\n"
-    "👉 **Join us:** https://discord.gg/diffmeets\n\n"
-    "─────────────────────────────────"
+    "🚗💨 **DIFFERENT MEETS**\n\n"
+    "Clean cars. Organized meets. No chaos.\n\n"
+    "• GTA & GT7 Meets\n"
+    "• 3+ Meets Weekly\n"
+    "• Pop-Up Meets Daily\n"
+    "• Active PS5 Community\n"
+    "• Photo Competitions 📸\n\n"
+    "━━━━━━━━━━━━━━━━━━━━\n"
+    "⚠️ Clean Builds Only — No Exceptions\n"
+    "🎤 Voice Chat Required\n\n"
+    "━━━━━━━━━━━━━━━━━━━━\n"
+    "🔥 JOIN NOW OR MISS OUT\n\n"
+    "https://discord.gg/diffmeets\n"
+    "https://discord.gg/vPj8Nk4PdW"
 )
 
 _PP_COLOR         = discord.Color.from_rgb(88, 101, 242)
