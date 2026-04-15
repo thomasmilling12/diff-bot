@@ -18,7 +18,7 @@ from discord.ext import commands
 # =========================================================
 TARGET_CHANNEL_ID   = 1177449010949259355
 GUILD_ID            = 850386896509337710
-LOG_CHANNEL_ID      = 1485265848099799163   # staff-logs
+LOG_CHANNEL_ID      = 1493691927353364580   # ticket-transcripts
 
 COLOR_TEAM_ROLE_ID  = 1115495008670330902
 TICKET_CATEGORY_ID  = 1328457973583839282  # active tickets category
@@ -109,63 +109,154 @@ def _is_color_team(member: discord.Member) -> bool:
 # =========================================================
 # TRANSCRIPT BUILDER
 # =========================================================
+def _resolve_mentions(text: str, guild: discord.Guild | None) -> str:
+    """Replace <@ID>, <@!ID>, <@&ID>, <#ID> with readable highlighted spans."""
+    import re as _re
+    text = html_lib.escape(text)
+    if not guild:
+        return text
+
+    def replace_user(m):
+        uid = int(m.group(1))
+        member = guild.get_member(uid)
+        name = member.display_name if member else f"User({uid})"
+        return '<span class="mention">@' + html_lib.escape(name) + '</span>'
+
+    def replace_role(m):
+        rid = int(m.group(1))
+        role = guild.get_role(rid)
+        name = role.name if role else str(rid)
+        color = f"#{role.color.value:06x}" if role and role.color.value else "#8F7CFF"
+        return f'<span class="mention" style="color:{color};background:{color}22">@' + html_lib.escape(name) + '</span>'
+
+    def replace_channel(m):
+        cid = int(m.group(1))
+        ch = guild.get_channel(cid)
+        name = ch.name if ch else str(cid)
+        return '<span class="mention">#' + html_lib.escape(name) + '</span>'
+
+    text = _re.sub(r"&lt;@!?(\d+)&gt;", replace_user, text)
+    text = _re.sub(r"&lt;@&amp;(\d+)&gt;", replace_role, text)
+    text = _re.sub(r"&lt;#(\d+)&gt;", replace_channel, text)
+    return text
+
+
 async def _build_transcript(channel: discord.TextChannel) -> str:
+    guild    = channel.guild
     messages = [m async for m in channel.history(limit=None, oldest_first=True)]
+
+    def fmt(text: str) -> str:
+        return _resolve_mentions(text, guild).replace("\n", "<br>")
 
     rows = []
     for m in messages:
         created = m.created_at.astimezone(_EST_TZ).strftime("%b %d, %Y %-I:%M %p EST")
-        display = getattr(m.author, "display_name", None) or str(m.author)
-        author  = html_lib.escape(display)
-        content = html_lib.escape(m.content or "")
+        display = html_lib.escape(getattr(m.author, "display_name", None) or str(m.author))
+        avatar  = getattr(m.author, "display_avatar", None)
+        av_url  = str(avatar.url) if avatar else ""
+        av_html = ('<img class="avatar" src="' + av_url + '" alt="">') if av_url else '<div class="avatar-placeholder"></div>'
+
+        content_html = ('<div class="content">' + fmt(m.content) + '</div>') if m.content else ""
 
         embed_parts = []
         for emb in m.embeds:
-            title  = html_lib.escape(emb.title or "")
-            desc   = html_lib.escape(emb.description or "")
-            fields = "".join(
-                f"<div class='field'><b>{html_lib.escape(f.name)}:</b><br>{html_lib.escape(f.value)}</div>"
-                for f in emb.fields
-            )
+            color = f"#{emb.color.value:06x}" if emb.color and emb.color.value else "#8F7CFF"
+            title_h = ('<div class="embed-title">' + html_lib.escape(emb.title) + '</div>') if emb.title else ""
+            desc_h  = ('<div class="embed-desc">'  + fmt(emb.description)       + '</div>') if emb.description else ""
+            thumb_h = ('<img class="embed-thumb" src="' + html_lib.escape(emb.thumbnail.url) + '" alt="">') if emb.thumbnail else ""
+            img_h   = ('<img class="embed-img"   src="' + html_lib.escape(emb.image.url)     + '" alt="">') if emb.image else ""
+            foot_h  = ('<div class="embed-footer">' + html_lib.escape(emb.footer.text) + '</div>') if (emb.footer and emb.footer.text) else ""
+
+            inline_cells = []
+            block_rows   = []
+            for fi in emb.fields:
+                fn   = html_lib.escape(fi.name  or "")
+                fv   = fmt(fi.value or "")
+                cell = '<div class="ef-cell"><div class="ef-name">' + fn + '</div><div class="ef-val">' + fv + '</div></div>'
+                if fi.inline:
+                    inline_cells.append(cell)
+                else:
+                    block_rows.append('<div class="ef-row">' + cell + '</div>')
+
+            fields_h = ""
+            if inline_cells:
+                fields_h += '<div class="ef-row">' + "".join(inline_cells) + '</div>'
+            fields_h += "".join(block_rows)
+
             embed_parts.append(
-                f"<div class='embed'><div><b>{title}</b></div><div>{desc}</div>{fields}</div>"
+                '<div class="embed" style="border-left-color:' + color + '">'
+                '<div class="embed-body">' + title_h + desc_h + fields_h + img_h + foot_h + '</div>'
+                + thumb_h + '</div>'
             )
 
-        attachments = "".join(
-            f"<div class='attachment'><a href='{html_lib.escape(a.url)}'>{html_lib.escape(a.filename)}</a></div>"
+        attach_html = "".join(
+            '<div class="attachment"><a href="' + html_lib.escape(a.url) + '" target="_blank">📎 ' + html_lib.escape(a.filename) + '</a></div>'
             for a in m.attachments
         )
 
-        rows.append(f"""
-        <div class="message">
-            <div class="meta">
-                <span class="author">{author}</span>
-                <span class="time">{created}</span>
-            </div>
-            <div class="content">{content.replace(chr(10), "<br>")}</div>
-            {"".join(embed_parts)}{attachments}
-        </div>""")
+        rows.append(
+            '<div class="message">'
+            '<div class="msg-left">' + av_html + '</div>'
+            '<div class="msg-right">'
+            '<div class="meta"><span class="author">' + display + '</span>'
+            '<span class="time">' + created + '</span></div>'
+            + content_html + "".join(embed_parts) + attach_html +
+            '</div></div>'
+        )
 
-    title_esc = html_lib.escape(f"Transcript — #{channel.name}")
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>{title_esc}</title>
-<style>
-body{{background:#1e1f22;color:#e3e5e8;font-family:Arial,sans-serif;padding:20px}}
-h1{{color:#fff;border-bottom:1px solid #3f4147;padding-bottom:10px}}
-.message{{background:#2b2d31;border:1px solid #3f4147;border-radius:10px;padding:12px;margin-bottom:12px}}
-.meta{{margin-bottom:8px;font-size:13px}}
-.author{{font-weight:bold;color:#fff}}
-.time{{color:#b5bac1;margin-left:10px}}
-.content{{white-space:normal;line-height:1.5}}
-.embed{{background:#232428;border-left:4px solid #8F7CFF;padding:10px;margin-top:10px;border-radius:8px}}
-.field{{margin-top:8px}}
-.attachment{{margin-top:8px}}
-a{{color:#7ab8ff;text-decoration:none}}
-</style></head><body>
-<h1>{title_esc}</h1>
-<div>Generated: {_ts()}</div>
-<div style="margin-top:20px">{"".join(rows)}</div>
-</body></html>"""
+    title_esc  = html_lib.escape(f"#{channel.name}")
+    guild_name = html_lib.escape(guild.name if guild else "Unknown Server")
+    guild_icon = str(guild.icon.url) if guild and guild.icon else ""
+    icon_html  = ('<img src="' + guild_icon + '" class="guild-icon" alt="">') if guild_icon else ""
+    generated  = _ts()
+
+    CSS = """
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#313338;color:#dbdee1;font-family:"gg sans","Noto Sans",Arial,sans-serif;font-size:15px;line-height:1.375}
+    a{color:#00a8fc;text-decoration:none} a:hover{text-decoration:underline}
+    .header{background:#1e1f22;padding:20px 28px;border-bottom:1px solid #1a1b1e;display:flex;align-items:center;gap:14px}
+    .guild-icon{width:44px;height:44px;border-radius:50%;object-fit:cover}
+    .header-text h1{font-size:20px;font-weight:700;color:#f2f3f5}
+    .header-text p{font-size:13px;color:#949ba4;margin-top:3px}
+    .header-badge{margin-left:auto;background:#8F7CFF22;border:1px solid #8F7CFF55;color:#8F7CFF;font-size:12px;padding:4px 10px;border-radius:12px;white-space:nowrap}
+    .messages{padding:20px 28px;max-width:900px;margin:0 auto}
+    .message{display:flex;gap:14px;padding:4px 0;margin-bottom:2px}
+    .msg-left{flex-shrink:0;width:40px}
+    .avatar{width:40px;height:40px;border-radius:50%;object-fit:cover}
+    .avatar-placeholder{width:40px;height:40px;border-radius:50%;background:#5c5f66}
+    .msg-right{flex:1;min-width:0}
+    .meta{display:flex;align-items:baseline;gap:8px;margin-bottom:4px}
+    .author{font-weight:600;color:#f2f3f5;font-size:15px}
+    .time{font-size:11px;color:#949ba4}
+    .content{color:#dbdee1;white-space:pre-wrap;word-break:break-word}
+    .mention{background:#5865f222;color:#8ab4f8;border-radius:3px;padding:0 2px;font-weight:500}
+    .embed{background:#2b2d31;border-left:4px solid #8F7CFF;border-radius:4px;padding:12px 14px;margin-top:6px;display:flex;gap:14px;max-width:520px}
+    .embed-body{flex:1;min-width:0}
+    .embed-title{font-weight:700;color:#f2f3f5;font-size:14px;margin-bottom:6px}
+    .embed-desc{font-size:14px;color:#dbdee1;white-space:pre-wrap;word-break:break-word;margin-bottom:8px}
+    .embed-thumb{width:72px;height:72px;border-radius:4px;object-fit:cover;flex-shrink:0}
+    .embed-img{width:100%;border-radius:4px;margin-top:8px;max-height:300px;object-fit:contain}
+    .embed-footer{font-size:12px;color:#949ba4;margin-top:8px;padding-top:6px;border-top:1px solid #3f4147}
+    .ef-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+    .ef-cell{min-width:120px;flex:1}
+    .ef-name{font-size:12px;font-weight:700;color:#b5bac1;text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px}
+    .ef-val{font-size:14px;color:#dbdee1;white-space:pre-wrap;word-break:break-word}
+    .attachment{margin-top:6px;font-size:13px}
+    """
+
+    return (
+        "<!DOCTYPE html>\n<html lang='en'>\n<head>\n"
+        '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">\n'
+        "<title>Transcript \u2014 " + title_esc + "</title>\n"
+        "<style>" + CSS + "</style>\n</head>\n<body>\n"
+        '<div class="header">' + icon_html +
+        '<div class="header-text"><h1>' + title_esc + '</h1>'
+        "<p>" + guild_name + " &nbsp;&middot;&nbsp; Generated " + generated + "</p></div>"
+        '<div class="header-badge">\U0001f3a8 Color Lab Transcript</div>'
+        "</div>\n"
+        '<div class="messages">' + "\n".join(rows) + "</div>\n"
+        "</body></html>"
+    )
 
 
 # =========================================================
