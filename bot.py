@@ -500,8 +500,8 @@ def build_diff_member_name(name: str) -> str:
 
 def set_reapply_cooldown(user_id: int):
     data = _load_diff_json(COOLDOWN_FILE)
-    expires_at = (datetime.utcnow() + timedelta(days=REAPPLY_COOLDOWN_DAYS)).isoformat()
-    data[str(user_id)] = {"expires_at": expires_at, "set_at": datetime.utcnow().isoformat()}
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=REAPPLY_COOLDOWN_DAYS)).isoformat()
+    data[str(user_id)] = {"expires_at": expires_at, "set_at": datetime.now(timezone.utc).isoformat()}
     _save_diff_json(COOLDOWN_FILE, data)
 
 
@@ -520,7 +520,7 @@ def get_reapply_cooldown_text(user_id: int):
         expires_at = datetime.fromisoformat(entry["expires_at"])
     except Exception:
         return None
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if expires_at <= now:
         data.pop(str(user_id), None)
         _save_diff_json(COOLDOWN_FILE, data)
@@ -541,7 +541,7 @@ async def add_member_to_database(
         "username": str(member),
         "display_name": member.display_name,
         "nickname": nickname or member.nick,
-        "joined_diff_at": datetime.utcnow().isoformat(),
+        "joined_diff_at": datetime.now(timezone.utc).isoformat(),
         "accepted_by_id": accepted_by.id if accepted_by else None,
         "accepted_by_name": str(accepted_by) if accepted_by else None,
     }
@@ -666,7 +666,7 @@ def build_dashboard_embed() -> discord.Embed:
     members = _load_diff_json(MEMBER_DB_FILE)
     app_data = load_apps()
     apps = app_data.get("applications", {})
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     active_cds = 0
     for e in cooldowns.values():
         try:
@@ -801,7 +801,7 @@ async def maybe_post_promotion_suggestion(guild: discord.Guild, member: discord.
 async def record_meet_attendance(guild: discord.Guild, member: discord.Member, meet_name: str, host_member: discord.Member = None):
     stats = get_user_stats(member.id)
     stats["meets_attended"] += 1
-    stats["last_updated"] = datetime.utcnow().isoformat()
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
     stats["username"] = str(member)
     save_user_stats(member.id, stats)
     role_ids = {role.id for role in member.roles}
@@ -825,7 +825,7 @@ async def record_meet_attendance(guild: discord.Guild, member: discord.Member, m
 async def record_meet_host(guild: discord.Guild, host_member: discord.Member, meet_name: str):
     stats = get_user_stats(host_member.id)
     stats["meets_hosted"] += 1
-    stats["last_updated"] = datetime.utcnow().isoformat()
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
     stats["username"] = str(host_member)
     save_user_stats(host_member.id, stats)
     await maybe_post_promotion_suggestion(guild, host_member)
@@ -844,9 +844,9 @@ async def record_meet_host(guild: discord.Guild, host_member: discord.Member, me
 async def update_member_reputation(guild: discord.Guild, member: discord.Member, amount: int, note: str, given_by: discord.Member = None):
     rep = get_user_reputation(member.id)
     rep["reputation"] += amount
-    rep["last_updated"] = datetime.utcnow().isoformat()
+    rep["last_updated"] = datetime.now(timezone.utc).isoformat()
     rep["username"] = str(member)
-    note_entry = {"amount": amount, "note": note, "given_by": str(given_by) if given_by else None, "created_at": datetime.utcnow().isoformat()}
+    note_entry = {"amount": amount, "note": note, "given_by": str(given_by) if given_by else None, "created_at": datetime.now(timezone.utc).isoformat()}
     if amount >= 0:
         rep["positive_notes"].append(note_entry)
         rep["positive_notes"] = rep["positive_notes"][-25:]
@@ -1994,7 +1994,7 @@ class MeetAttendanceModal(discord.ui.Modal, title="DIFF Meet Attendance"):
         embed.set_footer(text=f"Submitted by {interaction.user}")
         await attendance_channel.send(embed=embed)
         data = _load_activity_json(MEETS_FILE)
-        record_id = f"{interaction.guild.id}-{int(datetime.utcnow().timestamp())}"
+        record_id = f"{interaction.guild.id}-{int(datetime.now(timezone.utc).timestamp())}"
         data[record_id] = {
             "host_name": str(self.host_name),
             "meet_name": str(self.meet_name),
@@ -2003,7 +2003,7 @@ class MeetAttendanceModal(discord.ui.Modal, title="DIFF Meet Attendance"):
             "diff_present": str(self.diff_members_present),
             "submitted_by_id": interaction.user.id,
             "submitted_by": str(interaction.user),
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         _save_activity_json(MEETS_FILE, data)
 
@@ -4139,7 +4139,7 @@ class _HostAutoDB:
             VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
         """, (guild_id, user_id, discord_tag, psn, reason, evidence, severity,
               submitted_by_id, submitted_by_tag, 1 if removed_host_role else 0,
-              datetime.utcnow().isoformat()))
+              datetime.now(timezone.utc).isoformat()))
         self.conn.commit()
         return int(cur.lastrowid)
 
@@ -4193,7 +4193,7 @@ class _HostAutoDB:
                 points=points+excluded.points,
                 penalties=penalties+excluded.penalties,
                 last_updated=excluded.last_updated
-        """, (guild_id, user_id, delta, penalty_delta, datetime.utcnow().isoformat()))
+        """, (guild_id, user_id, delta, penalty_delta, datetime.now(timezone.utc).isoformat()))
         self.conn.commit()
         cur.execute("SELECT points FROM host_points WHERE guild_id=? AND user_id=?",
                     (guild_id, user_id))
@@ -4242,7 +4242,7 @@ async def _hauto_update_leaderboard(guild: discord.Guild) -> None:
         title="🏆 DIFF Host Performance Leaderboard",
         description="\n".join(lines) if lines else "*No host performance data yet.*",
         color=discord.Color.gold(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.set_footer(text="Auto-updated host rankings • DIFF Host System")
     try:
@@ -4732,7 +4732,7 @@ async def _cmd_blacklistsearch(ctx: commands.Context, *, query: str = ""):
         title="🔎 Host Blacklist Search Results",
         description=f"Showing up to 10 active results for `{query}`",
         color=discord.Color.dark_grey(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     for row in rows:
         who = row["discord_tag"] or (f"User ID {row['user_id']}" if row["user_id"] else "Unknown")
@@ -4765,7 +4765,7 @@ async def _cmd_clearblacklist(ctx: commands.Context, entry_id: int = 0):
         title="✅ Host Blacklist Cleared",
         description=f"Blacklist entry #{entry_id} has been cleared.",
         color=discord.Color.green(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.set_footer(text=f"Cleared by {ctx.author}")
     log_ch = ctx.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
@@ -4822,7 +4822,7 @@ async def _cmd_hostreport(ctx: commands.Context, host: Optional[discord.Member] 
     embed = discord.Embed(
         title="📊 DIFF Host Report",
         color=discord.Color.green() if point_change >= 0 else discord.Color.orange(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Host", value=host.mention, inline=False)
     embed.add_field(name="Meet", value=meet_name, inline=True)
@@ -6167,7 +6167,7 @@ def add_warning(member_id: int, moderator_id: int, reason: str, proof: str = "",
             "reason": reason,
             "proof": proof,
             "moderator_id": moderator_id,
-            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         }
     )
     save_data(data)
@@ -6323,7 +6323,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
             embed.add_field(name=field_name, value=field_value, inline=False)
 
         embed.set_footer(text="Different Meets • Hierarchy Panel  |  Live status • Updates every 2 min")
-        embed.timestamp = datetime.utcnow()
+        embed.timestamp = datetime.now(timezone.utc)
         embeds.append(embed)
 
     return embeds
@@ -6466,7 +6466,7 @@ def build_live_attendance_embed(guild: discord.Guild) -> discord.Embed:
             "━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.green(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     for i, chunk in enumerate(online_chunks):
@@ -8617,14 +8617,14 @@ def _get_member_activity(data: dict, user_id: int) -> dict:
     uid = str(user_id)
     members = data.setdefault("members", {})
     if uid not in members:
-        members[uid] = {"attended": 0, "hosted": 0, "maybe": 0, "declined": 0, "no_shows": 0, "penalty_points": 0, "last_updated": datetime.utcnow().isoformat()}
+        members[uid] = {"attended": 0, "hosted": 0, "maybe": 0, "declined": 0, "no_shows": 0, "penalty_points": 0, "last_updated": datetime.now(timezone.utc).isoformat()}
     return members[uid]
 
 
 def _get_meet(data: dict, meet_id: str) -> dict:
     meets = data.setdefault("meets", {})
     if meet_id not in meets:
-        meets[meet_id] = {"title": meet_id, "host_id": None, "scheduled_time": None, "created_at": datetime.utcnow().isoformat(), "rsvps": {}, "checked_in": [], "closed": False}
+        meets[meet_id] = {"title": meet_id, "host_id": None, "scheduled_time": None, "created_at": datetime.now(timezone.utc).isoformat(), "rsvps": {}, "checked_in": [], "closed": False}
     return meets[meet_id]
 
 
@@ -8742,7 +8742,7 @@ async def meet_rsvp(interaction: discord.Interaction, meet_id: str, member: disc
         stats["maybe"] = stats.get("maybe", 0) + 1
     elif status.value == "not_going":
         stats["declined"] = stats.get("declined", 0) + 1
-    stats["last_updated"] = datetime.utcnow().isoformat()
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
     _save_activity_meets(data)
     rsvps = meet.get("rsvps", {})
     going = sum(1 for v in rsvps.values() if v == "going")
@@ -8763,7 +8763,7 @@ async def meet_checkin(interaction: discord.Interaction, meet_id: str, member: d
         checked_in.append(member.id)
     stats = _get_member_activity(data, member.id)
     stats["attended"] = stats.get("attended", 0) + 1
-    stats["last_updated"] = datetime.utcnow().isoformat()
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
     _save_activity_meets(data)
     suggestion = _activity_promotion_suggestion(member, stats)
     if suggestion and interaction.guild:
@@ -8787,7 +8787,7 @@ async def meet_hosted(interaction: discord.Interaction, member: discord.Member):
     data = _load_activity_meets()
     stats = _get_member_activity(data, member.id)
     stats["hosted"] = stats.get("hosted", 0) + 1
-    stats["last_updated"] = datetime.utcnow().isoformat()
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
     _save_activity_meets(data)
     if interaction.guild:
         await _refresh_activity_dashboard(interaction.guild, data)
@@ -8811,7 +8811,7 @@ async def meet_close(interaction: discord.Interaction, meet_id: str):
             stats = _get_member_activity(data, int(uid))
             stats["no_shows"] = stats.get("no_shows", 0) + 1
             stats["penalty_points"] = stats.get("penalty_points", 0) + 1
-            stats["last_updated"] = datetime.utcnow().isoformat()
+            stats["last_updated"] = datetime.now(timezone.utc).isoformat()
             no_show_ids.append(int(uid))
     meet["closed"] = True
     _save_activity_meets(data)
@@ -8923,7 +8923,7 @@ async def diff_reset_member(interaction: discord.Interaction, member: discord.Me
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
     data = _load_activity_meets()
-    data.setdefault("members", {})[str(member.id)] = {"attended": 0, "hosted": 0, "maybe": 0, "declined": 0, "no_shows": 0, "penalty_points": 0, "last_updated": datetime.utcnow().isoformat()}
+    data.setdefault("members", {})[str(member.id)] = {"attended": 0, "hosted": 0, "maybe": 0, "declined": 0, "no_shows": 0, "penalty_points": 0, "last_updated": datetime.now(timezone.utc).isoformat()}
     _save_activity_meets(data)
     if interaction.guild:
         await _refresh_activity_dashboard(interaction.guild, data)
@@ -9106,7 +9106,7 @@ class _HPStartModal(discord.ui.Modal, title="Start Host Session"):
         if not isinstance(parent, discord.TextChannel):
             return await interaction.response.send_message("Use this inside the host channel.", ephemeral=True)
 
-        session_id = f"{interaction.user.id}-{int(datetime.utcnow().timestamp())}"
+        session_id = f"{interaction.user.id}-{int(datetime.now(timezone.utc).timestamp())}"
         try:
             thread = await parent.create_thread(
                 name=f"host-session-{interaction.user.display_name[:20]}-{self.meet_name.value[:30]}",
@@ -9611,7 +9611,7 @@ def _unified_hosthub_embed() -> discord.Embed:
         inline=False,
     )
     embed.set_footer(text="Different Meets • Host Hub  |  Use the dropdowns below")
-    embed.timestamp = datetime.utcnow()
+    embed.timestamp = datetime.now(timezone.utc)
     return embed
 
 
@@ -11149,7 +11149,7 @@ async def _cmd_rollleaderboard(ctx: commands.Context):
     if not rows:
         await ctx.send("No attendance data yet.", delete_after=10)
         return
-    embed = discord.Embed(title="🏆 DIFF Attendance Leaderboard", color=discord.Color.gold(), timestamp=datetime.utcnow())
+    embed = discord.Embed(title="🏆 DIFF Attendance Leaderboard", color=discord.Color.gold(), timestamp=datetime.now(timezone.utc))
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     lines = []
     for idx, row in enumerate(rows, 1):
@@ -15422,7 +15422,7 @@ def _weekly_color_monday_embed() -> discord.Embed:
             title="🎨 Weekly Color Update",
             description="New color is live.\n\nColor Team — start preparing the next vote.",
             color=discord.Color.purple(),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         .add_field(
             name="What to do",
@@ -15439,7 +15439,7 @@ def _weekly_color_tuesday_embed() -> discord.Embed:
             title="🗳️ Voting Now Live",
             description="Voting has started.\n\nGuide members and keep things organized.",
             color=discord.Color.blue(),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         .add_field(
             name="Focus",
@@ -15506,7 +15506,7 @@ def _build_color_team_embed() -> discord.Embed:
             "Use the buttons below to quickly access the main channels for coordination and voting."
         ),
         color=discord.Color.purple(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(
         name="📌 Team Purpose",
@@ -16419,7 +16419,7 @@ def _tab_build_status_embed(member: discord.Member, app: dict) -> discord.Embed:
             "This ticket is now directly connected to application review and interview actions."
         ),
         color=discord.Color.blue(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Applicant", value=member.mention, inline=False)
     embed.add_field(name="Current Status", value=f"**{app.get('status', 'Unknown')}**", inline=True)
@@ -16443,7 +16443,7 @@ async def _tab_post_staff_log(title: str, description: str, color: discord.Color
     channel = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         return
-    embed = discord.Embed(title=title, description=description, color=color, timestamp=datetime.utcnow())
+    embed = discord.Embed(title=title, description=description, color=color, timestamp=datetime.now(timezone.utc))
     embed.set_footer(text="Different Meets • Staff Logs")
     await channel.send(embed=embed)
 
@@ -17154,7 +17154,7 @@ def _build_color_ops_stats_embed(state: dict) -> discord.Embed:
         title="📊 DIFF Color + Application Stats",
         description="Live tracking panel for color operations and application/interview flow.",
         color=discord.Color.gold(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(
         name="🧾 Applications",
@@ -17210,7 +17210,7 @@ def _build_color_ops_leaderboard_embed(state: dict) -> discord.Embed:
         title="🏆 DIFF Top Color Contributors",
         description="Leaderboard for the most active and successful color contributors.",
         color=discord.Color.purple(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="📈 Leaderboard", value="\n".join(lines), inline=False)
     embed.add_field(
@@ -17228,7 +17228,7 @@ def _build_color_ops_leaderboard_embed(state: dict) -> discord.Embed:
 def _build_color_ops_application_embed(
     member: discord.Member, app_data: dict, title: str, color: discord.Color
 ) -> discord.Embed:
-    embed = discord.Embed(title=title, color=color, timestamp=datetime.utcnow())
+    embed = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
     embed.add_field(name="Member", value=member.mention, inline=False)
     embed.add_field(name="Status", value=f"**{app_data.get('status', 'Unknown')}**", inline=True)
     embed.add_field(name="Submitted", value=app_data.get("submitted_at", "Not logged"), inline=True)
@@ -17254,7 +17254,7 @@ def _build_color_ops_winner_embed(color_name: str, contributor_text: str, image_
             "Use the buttons below for team coordination and the next vote flow."
         ),
         color=discord.Color.blue(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     if image_url:
         embed.set_image(url=image_url)
@@ -17444,7 +17444,7 @@ async def log_color_submission(interaction: discord.Interaction, contributor: di
             f"**Logged By:** {interaction.user.mention}"
         ),
         color=discord.Color.purple(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     if image_url:
         embed.set_image(url=image_url)
@@ -17493,7 +17493,7 @@ async def set_color_winner(interaction: discord.Interaction, color_name: str, co
             f"**Logged By:** {interaction.user.mention}"
         ),
         color=discord.Color.blue(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     if image_url:
         staff_embed.set_image(url=image_url)
@@ -19230,7 +19230,7 @@ def _appeal_denial_save(_d: dict) -> None:
 
 def _appeal_denial_set(user_id: int, appeal_type: str) -> None:
     _d = _appeal_denial_load()
-    _d.setdefault(str(user_id), {})[appeal_type] = datetime.utcnow().isoformat()
+    _d.setdefault(str(user_id), {})[appeal_type] = datetime.now(timezone.utc).isoformat()
     _appeal_denial_save(_d)
 
 def _appeal_denial_check(user_id: int, appeal_type: str):
@@ -19243,7 +19243,7 @@ def _appeal_denial_check(user_id: int, appeal_type: str):
         denied_at = datetime.fromisoformat(record)
     except ValueError:
         return None
-    remaining = timedelta(days=30) - (datetime.utcnow() - denied_at)
+    remaining = timedelta(days=30) - (datetime.now(timezone.utc) - denied_at)
     return remaining if remaining.total_seconds() > 0 else None
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -19264,7 +19264,7 @@ def _tperf_record_claim(staff_id: int, channel_name: str) -> None:
     _d = _tperf_load()
     _s = _d.setdefault(str(staff_id), {"claimed": 0, "closed": 0, "total_seconds": 0, "claim_times": {}})
     _s["claimed"] = _s.get("claimed", 0) + 1
-    _s.setdefault("claim_times", {})[channel_name] = datetime.utcnow().isoformat()
+    _s.setdefault("claim_times", {})[channel_name] = datetime.now(timezone.utc).isoformat()
     _tperf_save(_d)
 
 def _tperf_record_close(staff_id: int, channel_name: str) -> None:
@@ -19274,7 +19274,7 @@ def _tperf_record_close(staff_id: int, channel_name: str) -> None:
     _claim_str = _s.get("claim_times", {}).pop(channel_name, None)
     if _claim_str:
         try:
-            _elapsed = (datetime.utcnow() - datetime.fromisoformat(_claim_str)).total_seconds()
+            _elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(_claim_str)).total_seconds()
             _s["total_seconds"] = _s.get("total_seconds", 0) + max(0, _elapsed)
         except Exception:
             pass
@@ -21558,7 +21558,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                     title="⛔ Host Role Auto-Removed",
                     description="A blacklisted user was automatically prevented from holding the host role.",
                     color=discord.Color.red(),
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                 )
                 embed.add_field(name="User", value=after.mention, inline=False)
                 if entry:
