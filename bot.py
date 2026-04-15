@@ -25289,8 +25289,27 @@ class _PPPartnerTicketCloseView(discord.ui.View):
             )
             return
         await interaction.response.send_message(
-            "🔒 Closing this ticket in 5 seconds…", ephemeral=False
+            "🔒 Saving transcript and closing ticket…", ephemeral=False
         )
+        channel = interaction.channel
+        guild   = interaction.guild
+
+        # ── Generate + post transcript ────────────────────────────────────────
+        transcript_url: str | None = None
+        try:
+            transcript_file = await _supp_export_transcript(channel)
+            if transcript_file and guild:
+                transcript_url = await _post_transcript_to_channel(
+                    guild,
+                    transcript_file,
+                    channel_name=channel.name,
+                    ticket_type="Partner Ticket",
+                    outcome=f"Closed by {interaction.user}",
+                )
+        except Exception:
+            pass
+
+        # ── Closing embed (with optional transcript link) ─────────────────────
         closing = discord.Embed(
             title="🔒 Partner Ticket Closed",
             description=f"Closed by {interaction.user.mention}.",
@@ -25298,12 +25317,21 @@ class _PPPartnerTicketCloseView(discord.ui.View):
             timestamp=datetime.now(timezone.utc),
         )
         closing.set_footer(text=_PP_FOOTER)
-        await interaction.channel.send(embed=closing)
+        close_view: discord.ui.View | None = None
+        if transcript_url:
+            close_view = discord.ui.View(timeout=None)
+            close_view.add_item(discord.ui.Button(
+                label="View Transcript",
+                emoji="📋",
+                style=discord.ButtonStyle.link,
+                url=transcript_url,
+            ))
+        await channel.send(embed=closing, view=close_view)
         await asyncio.sleep(5)
         try:
-            await interaction.channel.delete(reason=f"Partner ticket closed by {interaction.user}")
+            await channel.delete(reason=f"Partner ticket closed by {interaction.user}")
         except discord.Forbidden:
-            await interaction.channel.send("❌ Missing permissions to delete this channel.")
+            await channel.send("❌ Missing permissions to delete this channel.")
         except Exception:
             pass
 
