@@ -22,7 +22,7 @@ LOG_CHANNEL_ID      = 1485265848099799163   # staff-logs
 
 COLOR_TEAM_ROLE_ID  = 1115495008670330902
 TICKET_CATEGORY_ID  = 1328457973583839282  # active tickets category
-ARCHIVE_CATEGORY_ID = 1493691927353364580  # archived tickets category
+ARCHIVE_CATEGORY_ID = 1047337689944432690  # archived tickets category
 
 DATA_DIR          = "diff_data"
 DATA_FILE         = os.path.join(DATA_DIR, "color_lab_panel.json")
