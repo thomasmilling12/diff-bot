@@ -413,6 +413,89 @@ class ColorTeamNoteModal(discord.ui.Modal, title="Add Color Team Note"):
 # =========================================================
 # TICKET CONTROLS  (inside each ticket channel)
 # =========================================================
+async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog") -> None:
+    """Shared logic for archiving a color ticket — called from both the
+    Archive & Close dropdown and the standalone Archive Ticket button."""
+    channel = interaction.channel
+    guild   = interaction.guild
+    if not isinstance(channel, discord.TextChannel) or guild is None:
+        return await interaction.response.send_message(
+            "This only works inside a ticket channel.", ephemeral=True
+        )
+
+    archive_cat = guild.get_channel(ARCHIVE_CATEGORY_ID)
+    if not isinstance(archive_cat, discord.CategoryChannel):
+        return await interaction.response.send_message(
+            "Archive category not configured. Contact staff.", ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    transcript_html = await _build_transcript(channel)
+    _ensure_dirs()
+    transcript_path = os.path.join(TRANSCRIPTS_DIR, f"{channel.name}_{_ts()}.html")
+    with open(transcript_path, "w", encoding="utf-8") as f:
+        f.write(transcript_html)
+
+    if channel.topic and "color_request_user_id:" in channel.topic:
+        try:
+            uid = channel.topic.split("color_request_user_id:")[1].split("|")[0].strip()
+            tickets = _load_tickets()
+            if str(tickets.get(str(uid))) == str(channel.id):
+                tickets.pop(str(uid), None)
+                _save_tickets(tickets)
+        except Exception:
+            pass
+
+    color_team_role = guild.get_role(COLOR_TEAM_ROLE_ID)
+    new_overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            manage_channels=True, manage_messages=True, read_message_history=True,
+        ),
+    }
+    if color_team_role:
+        new_overwrites[color_team_role] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=False,
+            read_message_history=True, manage_messages=True, manage_channels=True,
+        )
+
+    try:
+        await channel.edit(
+            name=f"archived-{channel.name}"[:100],
+            category=archive_cat,
+            topic=(channel.topic or "") + " | status:archived",
+            overwrites=new_overwrites,
+            reason=f"Archived by {interaction.user}",
+        )
+    except Exception as e:
+        return await interaction.followup.send(f"Failed to archive: {e}", ephemeral=True)
+
+    archive_embed = discord.Embed(
+        title="📦 Ticket Archived",
+        description=(
+            "This ticket has been **archived**.\n"
+            "A full transcript has been saved to staff logs for records."
+        ),
+        color=WARNING_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    archive_embed.set_thumbnail(url=DIFF_LOGO_URL)
+    archive_embed.set_footer(text=f"Archived by {interaction.user.display_name} • DIFF Color Lab")
+    await channel.send(embed=archive_embed)
+
+    transcript_file = discord.File(transcript_path, filename=os.path.basename(transcript_path))
+    await cog.log_action(
+        guild,
+        f"📦 Archived color ticket `#{channel.name}` by {interaction.user.mention}",
+        file=transcript_file,
+    )
+    await interaction.followup.send(
+        "Ticket archived and transcript saved to staff logs.", ephemeral=True
+    )
+
+
 class _TicketActionsSelect(discord.ui.Select):
     def __init__(self, cog: "ColorLabCog"):
         super().__init__(
@@ -513,84 +596,7 @@ class _TicketActionsSelect(discord.ui.Select):
                 return await interaction.response.send_message(
                     "Only the Color Team or staff can archive tickets.", ephemeral=True
                 )
-            channel = interaction.channel
-            guild   = interaction.guild
-            if not isinstance(channel, discord.TextChannel) or guild is None:
-                return await interaction.response.send_message(
-                    "This only works inside a ticket channel.", ephemeral=True
-                )
-
-            archive_cat = guild.get_channel(ARCHIVE_CATEGORY_ID)
-            if not isinstance(archive_cat, discord.CategoryChannel):
-                return await interaction.response.send_message(
-                    "Archive category not configured. Contact staff.", ephemeral=True
-                )
-
-            await interaction.response.defer(ephemeral=True)
-
-            transcript_html = await _build_transcript(channel)
-            _ensure_dirs()
-            transcript_path = os.path.join(TRANSCRIPTS_DIR, f"{channel.name}_{_ts()}.html")
-            with open(transcript_path, "w", encoding="utf-8") as f:
-                f.write(transcript_html)
-
-            if channel.topic and "color_request_user_id:" in channel.topic:
-                try:
-                    uid = channel.topic.split("color_request_user_id:")[1].split("|")[0].strip()
-                    tickets = _load_tickets()
-                    if str(tickets.get(str(uid))) == str(channel.id):
-                        tickets.pop(str(uid), None)
-                        _save_tickets(tickets)
-                except Exception:
-                    pass
-
-            color_team_role = guild.get_role(COLOR_TEAM_ROLE_ID)
-            new_overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                guild.me: discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True,
-                    manage_channels=True, manage_messages=True, read_message_history=True,
-                ),
-            }
-            if color_team_role:
-                new_overwrites[color_team_role] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=False,
-                    read_message_history=True, manage_messages=True, manage_channels=True,
-                )
-
-            try:
-                await channel.edit(
-                    name=f"archived-{channel.name}"[:100],
-                    category=archive_cat,
-                    topic=(channel.topic or "") + " | status:archived",
-                    overwrites=new_overwrites,
-                    reason=f"Archived by {interaction.user}",
-                )
-            except Exception as e:
-                return await interaction.followup.send(f"Failed to archive: {e}", ephemeral=True)
-
-            archive_embed = discord.Embed(
-                title="📦 Ticket Archived",
-                description=(
-                    "This ticket has been **archived**.\n"
-                    "A full transcript has been saved to staff logs for records."
-                ),
-                color=WARNING_COLOR,
-                timestamp=datetime.now(timezone.utc),
-            )
-            archive_embed.set_thumbnail(url=DIFF_LOGO_URL)
-            archive_embed.set_footer(text=f"Archived by {interaction.user.display_name} • DIFF Color Lab")
-            await channel.send(embed=archive_embed)
-
-            transcript_file = discord.File(transcript_path, filename=os.path.basename(transcript_path))
-            await self.cog.log_action(
-                guild,
-                f"📦 Archived color ticket `#{channel.name}` by {interaction.user.mention}",
-                file=transcript_file,
-            )
-            await interaction.followup.send(
-                "Ticket archived and transcript saved to staff logs.", ephemeral=True
-            )
+            await _run_archive_flow(interaction, self.cog)
 
 
 class ColorTicketControlsView(discord.ui.View):
@@ -623,11 +629,7 @@ class ColorTicketControlsView(discord.ui.View):
             return await interaction.response.send_message(
                 "Only the Color Team or staff can archive tickets.", ephemeral=True
             )
-        # Trigger the archive flow from the select
-        fake_select = _TicketActionsSelect(self.cog)
-        fake_select.values = ["archive"]
-        fake_select.view = self
-        await fake_select.callback(interaction)
+        await _run_archive_flow(interaction, self.cog)
 
 
 # =========================================================
