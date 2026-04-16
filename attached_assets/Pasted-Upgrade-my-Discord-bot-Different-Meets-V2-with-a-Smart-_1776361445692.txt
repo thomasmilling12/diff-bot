@@ -1,0 +1,186 @@
+Upgrade my Discord bot (Different Meets V2) with a Smart Auto Cleanup + Recovery System that works with my existing Member Health Score system.
+
+IMPORTANT:
+- Use prefix commands only
+- Use my existing discord.py commands.Bot setup
+- Do not use slash commands
+- Keep compatibility with my current bot structure
+- Do not break existing systems
+
+GOAL:
+Automatically detect inactive, ghost, and at-risk members, attempt to re-engage them, and help staff clean the server without doing everything manually.
+
+BUILD THESE SYSTEMS:
+
+1. AUTO RISK SCAN
+Create a background task that scans members every few hours and checks:
+- current health score
+- current health tier
+- days since last message
+- days since last VC activity
+- verification status
+- meet attendance
+- roll call activity
+- onboarding progress
+
+Flag members into categories:
+- Safe
+- At Risk
+- Ghost
+- Cleanup Review
+
+2. SMART RE-ENGAGEMENT FLOW
+When a member becomes At Risk or Ghost:
+- send an automatic DM reminder if enabled
+- keep the message short and DIFF styled
+- add cooldown logic so they are not spammed repeatedly
+- track how many reminders were sent
+- track whether they became active again afterward
+
+Example recovery DM:
+“DIFF CHECK-IN — You’ve been inactive for a bit. If you still want to be part of Different Meets, make sure you verify, check the meet channels, and pull up to the next meet.”
+
+3. GRACE PERIOD SYSTEM
+After a member is flagged:
+- give them a configurable grace period
+- example:
+  - At Risk = 3 days
+  - Ghost = 2 days
+- if they become active again during grace period, remove the flag and mark them as recovered
+- if not, escalate them to staff review
+
+4. CLEANUP REVIEW QUEUE
+Create a review queue for staff with members who failed the grace period.
+Track:
+- member name
+- user ID
+- health score
+- health tier
+- verification status
+- days inactive
+- reminders sent
+- likely reason for inactivity
+- recommendation
+
+Recommendations:
+- Keep
+- Monitor
+- Remove
+- Re-engage Again
+
+5. STAFF PREFIX COMMANDS
+Create staff-only prefix commands:
+- !cleanupscan
+  manually run the scan
+
+- !cleanupqueue
+  show all members waiting for staff review
+
+- !recoveries
+  show members who became active again after being flagged
+
+- !flagmember <member>
+  manually flag someone for review
+
+- !clearflag <member>
+  remove a member’s risk/cleanup flag
+
+- !cleanupstats
+  show totals:
+  - flagged
+  - recovered
+  - removed
+  - still inactive
+  - most common inactivity reasons
+
+6. AUTO ACTION OPTIONS
+Support config toggles for:
+- DM reminders enabled/disabled
+- auto role tagging enabled/disabled
+- auto kick enabled/disabled
+- require staff review before removal
+- grace period lengths
+- minimum join age before cleanup
+- exempt roles from cleanup
+
+Do NOT instantly remove everyone.
+Make this configurable and safe.
+
+7. EXEMPTIONS
+Allow certain users/roles to be ignored:
+- staff
+- hosts
+- verified leadership
+- protected roles
+- recently joined members within a safe onboarding window
+
+8. RECOVERY TRACKING
+Track whether a flagged member:
+- sent a message again
+- joined VC again
+- attended a meet
+- completed verification
+- improved health score
+
+Mark them as:
+- Recovered
+- Partially Recovered
+- Still Inactive
+
+9. CLEAN EMBED LOGGING
+Send DIFF styled embeds to a staff log channel for:
+- member flagged
+- reminder sent
+- member recovered
+- moved to cleanup review
+- removed from server
+- manual override by staff
+
+10. MANUAL STAFF DECISION SUPPORT
+Make it easy for staff to review inactive members by showing:
+- health summary
+- activity summary
+- server journey stage reached
+- likely drop-off reason
+- recommended action
+
+11. STORAGE
+Use SQLite if possible.
+Store:
+- flag status
+- flag timestamps
+- recovery timestamps
+- reminder counts
+- cleanup review state
+- action history
+- removal decisions
+
+12. RELIABILITY
+- wrap background tasks with proper try/except and traceback logging
+- avoid silent failures
+- make loops restart safely if they fail
+- keep the system modular and lightweight
+
+13. FILE STRUCTURE
+Organize cleanly:
+- cogs/cleanup.py
+- utils/cleanup_logic.py
+- utils/recovery_tracker.py
+- database/retention.db
+
+14. IMPORTANT LOGIC RULES
+- never remove members with exempt roles
+- never auto-remove brand new members too early
+- do not send repeated reminders too often
+- only escalate after grace period expires
+- make all thresholds configurable
+- keep code well commented
+
+15. PREFIX COMMAND STYLE
+Use prefix commands like:
+- !cleanupscan
+- !cleanupqueue
+- !cleanupstats
+- !recoveries
+
+Use commands.command decorators and existing prefix command style only.

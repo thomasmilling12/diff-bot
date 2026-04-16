@@ -579,6 +579,228 @@ def _migrate_activity_db() -> None:
 _migrate_activity_db()
 
 
+def _migrate_health_score_db() -> None:
+    """Add health-score columns and history table — safe to run on every boot."""
+    health_cols = [
+        ("last_health_score",  "INTEGER"),
+        ("prev_health_score",  "INTEGER"),
+        ("health_tier",        "TEXT"),
+        ("score_updated_at",   "REAL"),
+    ]
+    with _activity_db() as conn:
+        for col, typedef in health_cols:
+            try:
+                conn.execute(f"ALTER TABLE member_activity ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS health_score_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER,
+                score       INTEGER,
+                tier        TEXT,
+                recorded_at REAL
+            )
+        """)
+
+_migrate_health_score_db()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MEMBER HEALTH SCORE — Config, calculation, and storage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Configurable score weights (edit these to tune the system) ─────────────────
+_HEALTH_W = {
+    # Positive
+    "verified":           20,
+    "application":        15,
+    "first_meet":         20,
+    "extra_meets":         5,   # per additional meet, capped at 10 pts total
+    "recent_message_7d":  10,
+    "recent_vc_7d":       10,
+    "join_age_30d":        5,
+    # Negative
+    "p_inactive_7d":     -10,
+    "p_inactive_14d":    -20,
+    "p_inactive_30d":    -30,
+    "p_unverified_24h":   -5,
+    "p_unverified_72h":  -15,   # stacks with 24h penalty
+    "p_ghost":           -20,   # joined 48h+, never sent a message
+}
+
+_HEALTH_TIERS = [
+    (80, "Strong",  "💚", (30,  160, 60)),
+    (60, "Active",  "🔵", (30,  100, 200)),
+    (40, "At Risk", "🟡", (210, 150, 0)),
+    (0,  "Ghost",   "🔴", (200, 30,  30)),
+]
+
+
+def _calc_health_score(row, is_verified: bool, is_applied: bool = False) -> dict:
+    """Pure-Python health score calculation. Returns a full breakdown dict.
+
+    Args:
+        row          — sqlite3.Row from member_activity
+        is_verified  — whether the member currently holds VERIFIED_ROLE_ID
+        is_applied   — whether they hold any application/completion role
+    """
+    now   = time.time()
+    score = 0
+    pos: list[str] = []
+    neg: list[str] = []
+
+    join_ts     = row["join_ts"]    if row else None
+    last_msg    = row["last_message"] if row else None
+    last_vc_ts  = row["last_vc"]    if row else None
+    meet_count  = int(row["meet_attendance_count"] or 0) if row and row["meet_attendance_count"] is not None else 0
+
+    # ── Positive factors ────────────────────────────────────────────────────
+    if is_verified:
+        score += _HEALTH_W["verified"]
+        pos.append(f"+{_HEALTH_W['verified']} pts — Verified ✅")
+
+    if is_applied:
+        score += _HEALTH_W["application"]
+        pos.append(f"+{_HEALTH_W['application']} pts — Completed Application ✅")
+
+    if meet_count >= 1:
+        score += _HEALTH_W["first_meet"]
+        pos.append(f"+{_HEALTH_W['first_meet']} pts — Attended First Meet 🚗")
+
+    if meet_count > 1:
+        extra = min((meet_count - 1) * _HEALTH_W["extra_meets"], 10)
+        score += extra
+        pos.append(f"+{extra} pts — Extra Meet Attendance ({meet_count} total)")
+
+    if last_msg and (now - last_msg) <= 7 * 86400:
+        score += _HEALTH_W["recent_message_7d"]
+        pos.append(f"+{_HEALTH_W['recent_message_7d']} pts — Active in Chat (last 7d) 💬")
+
+    if last_vc_ts and (now - last_vc_ts) <= 7 * 86400:
+        score += _HEALTH_W["recent_vc_7d"]
+        pos.append(f"+{_HEALTH_W['recent_vc_7d']} pts — Active in VC (last 7d) 🎙️")
+
+    if join_ts and (now - join_ts) >= 30 * 86400:
+        score += _HEALTH_W["join_age_30d"]
+        pos.append(f"+{_HEALTH_W['join_age_30d']} pts — Long-term Member (30d+) ⏱️")
+
+    # ── Negative factors ────────────────────────────────────────────────────
+    last_activity = last_msg or last_vc_ts
+    if last_activity:
+        inactive_s = now - last_activity
+        if inactive_s > 30 * 86400:
+            score += _HEALTH_W["p_inactive_30d"]
+            neg.append(f"{_HEALTH_W['p_inactive_30d']} pts — Inactive 30+ Days ⚠️")
+        elif inactive_s > 14 * 86400:
+            score += _HEALTH_W["p_inactive_14d"]
+            neg.append(f"{_HEALTH_W['p_inactive_14d']} pts — Inactive 14+ Days")
+        elif inactive_s > 7 * 86400:
+            score += _HEALTH_W["p_inactive_7d"]
+            neg.append(f"{_HEALTH_W['p_inactive_7d']} pts — Inactive 7+ Days")
+
+    if not is_verified and join_ts:
+        join_age = now - join_ts
+        if join_age > 72 * 3600:
+            score += _HEALTH_W["p_unverified_24h"] + _HEALTH_W["p_unverified_72h"]
+            neg.append(f"{_HEALTH_W['p_unverified_24h'] + _HEALTH_W['p_unverified_72h']} pts — Unverified 72h+ ❌")
+        elif join_age > 24 * 3600:
+            score += _HEALTH_W["p_unverified_24h"]
+            neg.append(f"{_HEALTH_W['p_unverified_24h']} pts — Unverified 24h+")
+
+    if join_ts and not last_msg and (now - join_ts) > 48 * 3600:
+        score += _HEALTH_W["p_ghost"]
+        neg.append(f"{_HEALTH_W['p_ghost']} pts — Ghost (no messages since joining) 👻")
+
+    score = max(0, min(100, score))
+
+    # ── Tier ────────────────────────────────────────────────────────────────
+    tier_name, tier_icon, tier_rgb = "Ghost", "🔴", (200, 30, 30)
+    for threshold, name, icon, rgb in _HEALTH_TIERS:
+        if score >= threshold:
+            tier_name, tier_icon, tier_rgb = name, icon, rgb
+            break
+
+    # ── Trend ───────────────────────────────────────────────────────────────
+    prev = None
+    try:
+        prev = row["prev_health_score"] if row and row["prev_health_score"] is not None else None
+    except (IndexError, TypeError):
+        pass
+    if prev is None:
+        trend = "🆕 New"
+    elif score > prev + 5:
+        trend = "📈 Rising"
+    elif score < prev - 5:
+        trend = "📉 Falling"
+    else:
+        trend = "➡️ Stable"
+
+    # ── Recommendations ─────────────────────────────────────────────────────
+    recs: list[str] = []
+    if not is_verified:
+        recs.append("• Send verification reminder (`!leavedm` or manual nudge)")
+    elif meet_count == 0:
+        recs.append("• Encourage first meet attendance")
+    elif meet_count == 1:
+        recs.append("• Returning member potential — invite to next meet")
+    if last_activity and (now - last_activity) > 14 * 86400:
+        recs.append("• Consider re-engagement DM or flag for removal review")
+    if score >= 80:
+        recs.append("• Strong member — potential future host or community regular")
+    if not recs:
+        recs.append("• No immediate action needed — keep engaging!")
+
+    return {
+        "score":      score,
+        "tier":       tier_name,
+        "tier_icon":  tier_icon,
+        "tier_color": discord.Color.from_rgb(*tier_rgb),
+        "trend":      trend,
+        "pos":        pos,
+        "neg":        neg,
+        "rec":        "\n".join(recs),
+        "prev_score": prev,
+    }
+
+
+def _save_health_score(user_id: int, score: int, tier: str) -> None:
+    """Persist score to DB; rotate prev ← last before saving new."""
+    with _activity_db() as conn:
+        row = conn.execute(
+            "SELECT last_health_score FROM member_activity WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        prev = row["last_health_score"] if row else None
+        conn.execute(
+            "INSERT OR IGNORE INTO member_activity (user_id) VALUES (?)", (user_id,)
+        )
+        conn.execute(
+            """UPDATE member_activity
+               SET last_health_score = ?, prev_health_score = ?, health_tier = ?, score_updated_at = ?
+               WHERE user_id = ?""",
+            (score, prev, tier, time.time(), user_id),
+        )
+        conn.execute(
+            "INSERT INTO health_score_history (user_id, score, tier, recorded_at) VALUES (?,?,?,?)",
+            (user_id, score, tier, time.time()),
+        )
+
+
+async def _update_health_score_for(member: discord.Member) -> dict | None:
+    """Calculate and save health score for one member. Returns breakdown dict."""
+    try:
+        row = _activity_get(member.id)
+        is_verified = any(r.id == VERIFIED_ROLE_ID for r in member.roles)
+        _app_role_names = {"applied", "applicant", "interviewing", "pending", "ps5 member"}
+        is_applied  = any(r.name.lower() in _app_role_names for r in member.roles)
+        result = _calc_health_score(row, is_verified, is_applied)
+        _save_health_score(member.id, result["score"], result["tier"])
+        return result
+    except Exception as _e:
+        _bot_log.error("[HealthScore] update for %s: %s", member, _e, exc_info=True)
+        return None
+
+
 # ── Drop-off stage detection ───────────────────────────────────────────────────
 _STAGE_ORDER = [
     "Returning Member",
@@ -13947,6 +14169,8 @@ async def on_ready():
         _inactivity_daily_report_loop.start()
     if not _re_engagement_loop.is_running():
         _re_engagement_loop.start()
+    if not _health_score_update_loop.is_running():
+        _health_score_update_loop.start()
 
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
@@ -29237,6 +29461,50 @@ async def _inactivity_daily_report_loop_on_error(error: Exception) -> None:
     await _handle_loop_error("_inactivity_daily_report_loop", error, _inactivity_daily_report_loop)
 
 
+async def _health_score_batch_update_logic() -> None:
+    """Recalculate health scores for all tracked guild members. Runs every 4h."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    vr = guild.get_role(VERIFIED_ROLE_ID)
+    _app_role_names = {"applied", "applicant", "interviewing", "pending", "ps5 member"}
+    updated = 0
+    with _activity_db() as conn:
+        rows = conn.execute("SELECT user_id FROM member_activity").fetchall()
+    for row in rows:
+        member = guild.get_member(row["user_id"])
+        if not member or member.bot:
+            continue
+        try:
+            act_row     = _activity_get(member.id)
+            is_verified = vr in member.roles if vr else False
+            is_applied  = any(r.name.lower() in _app_role_names for r in member.roles)
+            result      = _calc_health_score(act_row, is_verified, is_applied)
+            _save_health_score(member.id, result["score"], result["tier"])
+            updated += 1
+        except Exception as _e:
+            _bot_log.error("[HealthBatch] %s: %s", member, _e)
+        await asyncio.sleep(0.05)   # keep rate-limit safe
+    _bot_log.info("[HealthBatch] Updated %d member scores.", updated)
+
+
+@tasks.loop(hours=4)
+async def _health_score_update_loop():
+    _loop_success("_health_score_update_loop")
+    try:
+        await run_with_timeout("_health_score_update_loop", _health_score_batch_update_logic(), timeout=300)
+    except Exception as _lte:
+        await _handle_loop_error("_health_score_update_loop", _lte, _health_score_update_loop)
+
+@_health_score_update_loop.before_loop
+async def _before_health_score_update_loop():
+    await bot.wait_until_ready()
+
+@_health_score_update_loop.error
+async def _health_score_update_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error("_health_score_update_loop", error, _health_score_update_loop)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: !diffhelp — command help panel
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -29704,6 +29972,216 @@ async def _cmd_at_risk_members(ctx: commands.Context):
             inline=False,
         )
     embed.set_footer(text="Different Meets • Retention System")
+    await ctx.send(embed=embed)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HEALTH SCORE COMMANDS (prefix only — !healthscore, !healthleaderboard, etc.)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="healthscore", aliases=["score", "hs"])
+@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+async def _cmd_health_score(ctx: commands.Context, target: discord.Member | None = None):
+    """Show full health score breakdown for a member. Usage: !healthscore @user"""
+    member = target or ctx.author
+    async with ctx.typing():
+        result = await _update_health_score_for(member)
+    if not result:
+        return await ctx.send("❌ Could not calculate health score.", delete_after=8)
+
+    bar_filled = round(result["score"] / 10)
+    bar = "█" * bar_filled + "░" * (10 - bar_filled)
+
+    embed = discord.Embed(
+        title=f"{result['tier_icon']} Health Score — {member.display_name}",
+        color=result["tier_color"],
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(
+        name="📊 Overview",
+        value=(
+            f"**Score:** `{bar}` **{result['score']}/100**\n"
+            f"**Tier:** {result['tier_icon']} {result['tier']}\n"
+            f"**Trend:** {result['trend']}"
+            + (f"  (was **{result['prev_score']}**)" if result["prev_score"] is not None else "")
+        ),
+        inline=False,
+    )
+    if result["pos"]:
+        embed.add_field(
+            name="✅ Positive Factors",
+            value="\n".join(result["pos"]),
+            inline=False,
+        )
+    if result["neg"]:
+        embed.add_field(
+            name="⚠️ Negative Factors",
+            value="\n".join(result["neg"]),
+            inline=False,
+        )
+    embed.add_field(
+        name="💡 Recommendations",
+        value=result["rec"],
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Health Score System  |  Scores update every 4h")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="healthleaderboard", aliases=["healthtop", "scoreboard"])
+@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+async def _cmd_health_leaderboard(ctx: commands.Context):
+    """Show the top 15 healthiest members by score. Staff only."""
+    guild = ctx.guild
+    if not guild:
+        return
+    async with ctx.typing():
+        with _activity_db() as conn:
+            rows = conn.execute(
+                """SELECT user_id, last_health_score, health_tier
+                   FROM member_activity
+                   WHERE last_health_score IS NOT NULL
+                   ORDER BY last_health_score DESC
+                   LIMIT 20"""
+            ).fetchall()
+
+    lines = []
+    rank  = 1
+    for row in rows:
+        member = guild.get_member(row["user_id"])
+        if not member:
+            continue
+        tier_icon = next(
+            (icon for _, name, icon, _ in _HEALTH_TIERS if name == row["health_tier"]),
+            "❓"
+        )
+        bar_filled = round((row["last_health_score"] or 0) / 10)
+        bar = "█" * bar_filled + "░" * (10 - bar_filled)
+        lines.append(
+            f"`#{rank:02}` {tier_icon} **{member.display_name}** "
+            f"— `{bar}` **{row['last_health_score']}**"
+        )
+        rank += 1
+        if rank > 15:
+            break
+
+    embed = discord.Embed(
+        title="🏆 Member Health Leaderboard",
+        description="\n".join(lines) or "No score data yet — wait for the 4h batch loop.",
+        color=discord.Color.from_rgb(30, 160, 60),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Different Meets • Top members by Health Score")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="healthstats", aliases=["tierstats", "scorestats"])
+@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+async def _cmd_health_stats(ctx: commands.Context):
+    """Show server-wide health tier breakdown. Staff only."""
+    async with ctx.typing():
+        with _activity_db() as conn:
+            total     = conn.execute("SELECT COUNT(*) FROM member_activity WHERE last_health_score IS NOT NULL").fetchone()[0]
+            strong    = conn.execute("SELECT COUNT(*) FROM member_activity WHERE health_tier = 'Strong'").fetchone()[0]
+            active    = conn.execute("SELECT COUNT(*) FROM member_activity WHERE health_tier = 'Active'").fetchone()[0]
+            at_risk   = conn.execute("SELECT COUNT(*) FROM member_activity WHERE health_tier = 'At Risk'").fetchone()[0]
+            ghost     = conn.execute("SELECT COUNT(*) FROM member_activity WHERE health_tier = 'Ghost'").fetchone()[0]
+            avg_score = conn.execute("SELECT ROUND(AVG(last_health_score),1) FROM member_activity WHERE last_health_score IS NOT NULL").fetchone()[0]
+            trending_up   = conn.execute("SELECT COUNT(*) FROM member_activity WHERE last_health_score > prev_health_score + 5").fetchone()[0]
+            trending_down = conn.execute("SELECT COUNT(*) FROM member_activity WHERE last_health_score < prev_health_score - 5").fetchone()[0]
+
+    def _pct(n):
+        return f"{round(n / total * 100)}%" if total else "0%"
+
+    embed = discord.Embed(
+        title="📊 Server Health Score Stats",
+        color=discord.Color.from_rgb(30, 100, 200),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.add_field(
+        name="🎯 Tier Breakdown",
+        value=(
+            f"💚 **Strong** (80–100): **{strong}** ({_pct(strong)})\n"
+            f"🔵 **Active** (60–79):  **{active}** ({_pct(active)})\n"
+            f"🟡 **At Risk** (40–59): **{at_risk}** ({_pct(at_risk)})\n"
+            f"🔴 **Ghost** (0–39):    **{ghost}** ({_pct(ghost)})\n"
+            f"\nTracked members: **{total}** | Avg score: **{avg_score or 'N/A'}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📈 Score Trends",
+        value=(
+            f"📈 Rising: **{trending_up}** members\n"
+            f"📉 Falling: **{trending_down}** members\n"
+            f"➡️ Stable: **{max(0, total - trending_up - trending_down)}** members"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Health Score System  |  Recalculates every 4h")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="ghostmembers", aliases=["ghosts", "deadweight"])
+@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+async def _cmd_ghost_members(ctx: commands.Context):
+    """Show Ghost-tier members (score 0–39) who are unlikely to engage. Staff only."""
+    guild = ctx.guild
+    if not guild:
+        return
+    async with ctx.typing():
+        with _activity_db() as conn:
+            rows = conn.execute(
+                """SELECT user_id, last_health_score, join_ts, last_message
+                   FROM member_activity
+                   WHERE health_tier = 'Ghost' OR last_health_score < 40
+                   ORDER BY last_health_score ASC
+                   LIMIT 25"""
+            ).fetchall()
+
+    now   = time.time()
+    lines = []
+    for row in rows:
+        member = guild.get_member(row["user_id"])
+        if not member or member.bot:
+            continue
+        score   = row["last_health_score"] or 0
+        join_d  = f"{int((now - row['join_ts']) / 86400)}d" if row["join_ts"] else "?"
+        last_m  = f"{int((now - row['last_message']) / 86400)}d" if row["last_message"] else "never"
+        lines.append(
+            f"🔴 **{member.display_name}** — score **{score}** "
+            f"| joined {join_d} ago | last msg {last_m} ago"
+        )
+        if len(lines) >= 15:
+            break
+
+    if not lines:
+        embed = discord.Embed(
+            title="✅ No Ghost Members",
+            description="No members in the Ghost tier right now.",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+    else:
+        embed = discord.Embed(
+            title=f"👻 Ghost Members ({len(lines)} shown)",
+            description="\n".join(lines),
+            color=discord.Color.from_rgb(200, 30, 30),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="Quick Actions",
+            value=(
+                "• `!healthscore @user` — full breakdown\n"
+                "• `!leavedm <id>` — send survey after they leave\n"
+                "• `!memberjourney @user` — see their journey"
+            ),
+            inline=False,
+        )
+    embed.set_footer(text="Different Meets • Health Score — Ghost Tier (0–39)")
     await ctx.send(embed=embed)
 
 
