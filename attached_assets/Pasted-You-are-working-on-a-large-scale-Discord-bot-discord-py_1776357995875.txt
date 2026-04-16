@@ -1,0 +1,136 @@
+You are working on a large-scale Discord bot (discord.py) called **DIFF V2**, running on a Raspberry Pi as a systemd service.
+
+Your task is to implement a **robust crash recovery and reliability system for all background task loops (`@tasks.loop`)**.
+
+━━━━━━━━━━━━━━━━━━━━━━
+🎯 GOAL
+━━━━━━━━━━━━━━━━━━━━━━
+Ensure that ALL background loops:
+
+* Never silently stop
+* Automatically recover from errors
+* Log useful debug information
+* Remain stable even during network/API failures
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚠️ CURRENT ISSUES
+━━━━━━━━━━━━━━━━━━━━━━
+
+* Some loops already have try/except, others don’t
+* Many exceptions are silently swallowed (`except: pass`)
+* If a loop crashes, it may stop forever without notice
+* Raspberry Pi environment = prone to reboots + instability
+
+━━━━━━━━━━━━━━━━━━━━━━
+✅ REQUIREMENTS
+━━━━━━━━━━━━━━━━━━━━━━
+
+1. CREATE A SHARED SAFE LOOP WRAPPER
+
+Create a reusable helper system for all loops:
+
+* Wrap loop logic in a function like:
+  `safe_loop(task_name, coro_function)`
+
+* It must:
+  • Catch ALL exceptions
+  • Log full traceback (not just print)
+  • Prevent loop from stopping
+  • Continue running after failure
+
+Example behavior:
+
+* Log: `[LoopError] <task_name>: <error>`
+* Print full traceback
+* Do NOT crash the loop
+
+---
+
+2. STANDARDIZE ALL @tasks.loop FUNCTIONS
+
+For EVERY loop in the bot:
+
+* Replace raw logic with the safe wrapper
+
+Example pattern:
+
+```python
+@tasks.loop(minutes=5)
+async def example_loop():
+    await run_safe_loop("example_loop", _example_loop_logic)
+
+async def _example_loop_logic():
+    # original logic here
+```
+
+---
+
+3. ADD GLOBAL ERROR LOGGER
+
+Create a logging system:
+
+* Use Python `logging` module
+* Log to:
+  • Console
+  • File (logs/bot.log)
+
+Include:
+
+* Timestamp
+* Loop name
+* Full traceback
+
+---
+
+4. ADD CRITICAL FAILURE ALERT (OPTIONAL BUT IDEAL)
+
+If a loop fails repeatedly (e.g. 5+ times in a row):
+
+* Send a message to a staff/log channel
+* Example:
+  "⚠️ Loop 'weather_refresh' has failed multiple times"
+
+---
+
+5. DO NOT BREAK EXISTING FEATURES
+
+* Do NOT remove existing logic
+* Do NOT change loop timing
+* Do NOT alter bot behavior
+* Only improve stability + logging
+
+---
+
+6. CLEAN UP SILENT FAILURES (SELECTIVE)
+
+* Replace important `except: pass` blocks with:
+  `except Exception as e: log_error(e)`
+
+* KEEP silent fails ONLY for:
+  • Discord DM failures
+  • Permission errors
+
+---
+
+━━━━━━━━━━━━━━━━━━━━━━
+📦 OUTPUT
+━━━━━━━━━━━━━━━━━━━━━━
+
+* Provide:
+
+  1. The new `safe_loop` helper system
+  2. Updated example loop(s)
+  3. Logging setup code
+  4. Instructions on how to apply to all loops
+
+━━━━━━━━━━━━━━━━━━━━━━
+🔥 CONTEXT
+━━━━━━━━━━━━━━━━━━━━━━
+
+This bot:
+
+* Runs 24/7 on a Raspberry Pi
+* Uses many background loops (10+ systems)
+* Must NEVER silently stop updating panels, embeds, or systems
+
+Focus on **maximum uptime and self-recovery**.
