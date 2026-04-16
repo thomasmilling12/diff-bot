@@ -504,7 +504,6 @@ def _loop_success(name: str) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-
 # =========================
 # DATA
 # =========================
@@ -2542,7 +2541,6 @@ def _season_build_embed(winners: list[tuple[int, int]], month_label: str) -> dis
     return embed
 
 
-
 async def _season_give_rewards(guild: discord.Guild, winners: list[tuple[int, int]]) -> None:
     top_role_ids = [TOP1_ROLE_ID, TOP2_ROLE_ID, TOP3_ROLE_ID]
     all_reward_roles = [guild.get_role(rid) for rid in top_role_ids if rid]
@@ -4182,12 +4180,11 @@ async def _do_host_weekly_reminder(force: bool = False) -> bool:
     return True
 
 
-@tasks.loop(minutes=30)
-
 async def __host_weekly_reminder_loop_logic():
     """Every 30 min: check if it's Sunday ≥12 PM ET and send the reminder if not yet sent today."""
     await _do_host_weekly_reminder(force=False)
 
+@tasks.loop(minutes=30)
 async def _host_weekly_reminder_loop():
     _loop_success('_host_weekly_reminder_loop')
     try:
@@ -6286,7 +6283,6 @@ def is_host_or_admin(interaction: discord.Interaction) -> bool:
     return any(role.id == host_role_id for role in interaction.user.roles)
 
 
-
 def get_warning_count(member_id: int) -> int:
     return len(data.get("warnings", {}).get(str(member_id), []))
 
@@ -6323,7 +6319,6 @@ def clear_warnings_for_member(member_id: int):
     warnings = data.setdefault("warnings", {})
     warnings[str(member_id)] = []
     save_data(data)
-
 
 
 def get_member_status_emoji(member: discord.Member) -> str:
@@ -6662,8 +6657,6 @@ async def post_or_refresh_live_attendance(guild: discord.Guild) -> None:
     _save_diff_json(DIFF_PANEL_STATE_FILE, state)
 
 
-@tasks.loop(minutes=2)
-
 async def _hierarchy_attendance_loop_logic():
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
@@ -6712,6 +6705,7 @@ async def _hierarchy_attendance_loop_logic():
     except Exception:
         pass
 
+@tasks.loop(minutes=2)
 async def hierarchy_attendance_loop():
     _loop_success('hierarchy_attendance_loop')
     try:
@@ -6723,11 +6717,9 @@ async def before_hierarchy_attendance_loop():
     await bot.wait_until_ready()
 
 
-
 @hierarchy_attendance_loop.error
 async def _hierarchy_attendance_loop_on_error(error: Exception) -> None:
     await _handle_loop_error('hierarchy_attendance_loop', error, hierarchy_attendance_loop)
-@tasks.loop(minutes=2)
 
 async def _host_board_auto_refresh_loop_logic():
     """Edit the Host Activity Board embed every 2 minutes — never posts new messages."""
@@ -6756,6 +6748,7 @@ async def _host_board_auto_refresh_loop_logic():
         except Exception as _e:
             print(f"[BoardLoop] edit failed: {_e}")
 
+@tasks.loop(minutes=2)
 async def host_board_auto_refresh_loop():
     _loop_success('host_board_auto_refresh_loop')
     try:
@@ -6765,7 +6758,6 @@ async def host_board_auto_refresh_loop():
 @host_board_auto_refresh_loop.before_loop
 async def before_host_board_auto_refresh_loop():
     await bot.wait_until_ready()
-
 
 
 @host_board_auto_refresh_loop.error
@@ -6998,8 +6990,6 @@ async def _gta_post_or_refresh(channel: discord.TextChannel) -> None:
         save_data(data)
 
 
-@tasks.loop(seconds=120)
-
 async def _gta_weather_refresh_loop_logic():
     """Edit the GTA weather embed every 2 minutes (= 1 in-game hour)."""
     ch = bot.get_channel(GTA_WEATHER_CHANNEL_ID)
@@ -7010,6 +7000,7 @@ async def _gta_weather_refresh_loop_logic():
     except Exception as _e:
         print(f"[GTAWeather] loop error: {_e}")
 
+@tasks.loop(seconds=120)
 async def gta_weather_refresh_loop():
     _loop_success('gta_weather_refresh_loop')
     try:
@@ -7019,7 +7010,6 @@ async def gta_weather_refresh_loop():
 @gta_weather_refresh_loop.before_loop
 async def before_gta_weather_refresh_loop():
     await bot.wait_until_ready()
-
 
 
 @gta_weather_refresh_loop.error
@@ -7538,8 +7528,6 @@ def get_rules_embed():
     return embed
 
 
-
-
 def get_discord_rules_embed():
     embed = discord.Embed(
         title="💬🛡️ DIFF DISCORD • SERVER RULES 🛡️💬",
@@ -7588,7 +7576,6 @@ def get_discord_rules_embed():
     return embed
 
 
-
 def get_bannable_offenses_embed():
     embed = discord.Embed(
         title="🚫⚠️ DIFF • BANNABLE OFFENSES ⚠️🚫",
@@ -7626,8 +7613,6 @@ def get_bannable_offenses_embed():
     embed.add_field(name="🚫 Offenses (2/2)", value=offenses_part2, inline=False)
     embed.set_footer(text="DIFF Meets • Serious violations can result in a permanent ban")
     return embed
-
-
 
 
 class RulesAcceptView(discord.ui.View):
@@ -11287,8 +11272,6 @@ async def _cmd_syncrc(ctx: commands.Context):
         )
 
 
-@tasks.loop(minutes=10)
-
 async def __rc_ensure_loop_logic():
     for guild in bot.guilds:
         try:
@@ -11296,6 +11279,7 @@ async def __rc_ensure_loop_logic():
         except Exception as e:
             print(f"[RollCall] ensure loop error: {e}")
 
+@tasks.loop(minutes=10)
 async def _rc_ensure_loop():
     _loop_success('_rc_ensure_loop')
     try:
@@ -13367,8 +13351,6 @@ def _status_next_meet_label() -> str | None:
     except Exception:
         return None
 
-@tasks.loop(seconds=45)
-
 async def __rotating_presence_loop_logic():
     global _presence_index
     guild        = bot.get_guild(GUILD_ID)
@@ -13400,6 +13382,7 @@ async def __rotating_presence_loop_logic():
     except Exception:
         pass
 
+@tasks.loop(seconds=45)
 async def _rotating_presence_loop():
     _loop_success('_rotating_presence_loop')
     try:
@@ -13412,7 +13395,6 @@ async def __rotating_presence_loop_on_error(error: Exception) -> None:
 # =========================
 # JOIN TICKET AUTO-BUMP (24h after photos complete, no decision yet)
 # =========================
-@tasks.loop(minutes=30)
 
 async def __join_auto_bump_loop_logic():
     """Ping staff if an application has had photos for 24h+ with no accept/deny."""
@@ -13477,6 +13459,7 @@ async def __join_auto_bump_loop_logic():
     except Exception as _e:
         print(f"[JoinAutoBump] Error: {_e}")
 
+@tasks.loop(minutes=30)
 async def _join_auto_bump_loop():
     _loop_success('_join_auto_bump_loop')
     try:
@@ -14352,8 +14335,6 @@ async def refreshcrewpanel(interaction: discord.Interaction):
         pass
 
 
-
-
 @bot.tree.command(name="sethostrole", description="Set the DIFF host role")
 async def sethostrole(interaction: discord.Interaction, role: discord.Role):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -14468,10 +14449,6 @@ async def meethistory_error(interaction: discord.Interaction, error: app_command
         await interaction.followup.send(msg, ephemeral=True)
     else:
         await interaction.response.send_message(msg, ephemeral=True)
-
-
-
-
 
 
 class _WarnProofBtn(discord.ui.Button):
@@ -14714,9 +14691,6 @@ async def moderation_command_error(interaction: discord.Interaction, error: app_
         await interaction.response.send_message(msg, ephemeral=True)
 
 
-
-
-
 @bot.tree.command(name="posthierarchy", description="Post or refresh the DIFF hierarchy panel")
 async def posthierarchy(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -14891,7 +14865,6 @@ async def mystats(interaction: discord.Interaction):
         return await interaction.response.send_message("Server only.", ephemeral=True)
     embed = build_member_stats_embed(interaction.user)
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 
 @bot.tree.command(name="postattendancepanel", description="Post the meet attendance panel (staff only)")
@@ -15275,8 +15248,6 @@ async def _cs_try_close_vote(guild: discord.Guild) -> bool:
     return True
 
 
-@tasks.loop(minutes=1)
-
 async def _color_schedule_loop_logic():
     now = datetime.now(COLOR_TZ)
     current_date = now.date().isoformat()
@@ -15343,6 +15314,7 @@ async def _color_schedule_loop_logic():
     if changed:
         _cs_save(data)
 
+@tasks.loop(minutes=1)
 async def color_schedule_loop():
     _loop_success('color_schedule_loop')
     try:
@@ -15352,7 +15324,6 @@ async def color_schedule_loop():
 @color_schedule_loop.before_loop
 async def before_color_schedule_loop():
     await bot.wait_until_ready()
-
 
 
 @color_schedule_loop.error
@@ -17245,8 +17216,6 @@ async def application_status(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@tasks.loop(minutes=2)
-
 async def _ticket_scan_loop_logic():
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
@@ -17289,6 +17258,7 @@ async def _ticket_scan_loop_logic():
         except Exception:
             continue
 
+@tasks.loop(minutes=2)
 async def ticket_scan_loop():
     _loop_success('ticket_scan_loop')
     try:
@@ -17298,7 +17268,6 @@ async def ticket_scan_loop():
 @ticket_scan_loop.before_loop
 async def before_ticket_scan_loop():
     await bot.wait_until_ready()
-
 
 
 @ticket_scan_loop.error
@@ -17529,14 +17498,13 @@ async def _color_ops_refresh_panels() -> None:
     _color_ops_save(state)
 
 
-@tasks.loop(minutes=5)
-
 async def _color_ops_refresh_loop_logic():
     try:
         await _color_ops_refresh_panels()
     except Exception as e:
         print(f"[COLOR OPS AUTO REFRESH ERROR] {e}")
 
+@tasks.loop(minutes=5)
 async def color_ops_refresh_loop():
     _loop_success('color_ops_refresh_loop')
     try:
@@ -17546,7 +17514,6 @@ async def color_ops_refresh_loop():
 @color_ops_refresh_loop.before_loop
 async def before_color_ops_refresh_loop():
     await bot.wait_until_ready()
-
 
 
 @color_ops_refresh_loop.error
@@ -20405,8 +20372,6 @@ class SupportDropdownView(discord.ui.View):
 _TICKET_WARN_HOURS  = 48   # warn after this many hours of silence
 _TICKET_CLOSE_HOURS = 72   # auto-close after this many hours of silence
 
-@tasks.loop(minutes=30)
-
 async def __ticket_inactivity_monitor_logic():
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -20508,6 +20473,7 @@ async def __ticket_inactivity_monitor_logic():
                 except Exception:
                     pass
 
+@tasks.loop(minutes=30)
 async def _ticket_inactivity_monitor() -> None:
     _loop_success('_ticket_inactivity_monitor')
     try:
@@ -26804,8 +26770,6 @@ async def pihealth(interaction: discord.Interaction):
 # ── Roll Call Finalize Reminder ────────────────────────────────────────────────
 _rc_reminded: set = set()  # (guild_id, meet_number) pairs already reminded this session
 
-@tasks.loop(minutes=30)
-
 async def __rc_finalize_reminder_loop_logic():
     try:
         guild = bot.get_guild(GUILD_ID)
@@ -26839,6 +26803,7 @@ async def __rc_finalize_reminder_loop_logic():
     except Exception as _e:
         print(f"[RcReminder] Error: {_e}")
 
+@tasks.loop(minutes=30)
 async def _rc_finalize_reminder_loop():
     _loop_success('_rc_finalize_reminder_loop')
     try:
@@ -27075,8 +27040,6 @@ async def _psn_refresh_board(guild: discord.Guild) -> None:
         print(f"[PSN] Board post failed: {_e}")
 
 
-@tasks.loop(minutes=5)
-
 async def __psn_board_refresh_loop_logic():
     guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
     if guild:
@@ -27085,6 +27048,7 @@ async def __psn_board_refresh_loop_logic():
         except Exception as _e:
             print(f"[PSN] Loop error: {_e}")
 
+@tasks.loop(minutes=5)
 async def _psn_board_refresh_loop():
     _loop_success('_psn_board_refresh_loop')
     try:
@@ -27477,8 +27441,6 @@ async def _mgmt_send_weekly_report(guild: discord.Guild) -> None:
     await ch.send(embed=embed)
 
 
-@tasks.loop(minutes=15)
-
 async def __mgmt_daily_briefing_loop_logic():
     try:
         from zoneinfo import ZoneInfo
@@ -27500,6 +27462,7 @@ async def __mgmt_daily_briefing_loop_logic():
         except Exception as _e:
             print(f"[MgmtBriefing] {_e}")
 
+@tasks.loop(minutes=15)
 async def _mgmt_daily_briefing_loop():
     _loop_success('_mgmt_daily_briefing_loop')
     try:
@@ -27509,7 +27472,6 @@ async def _mgmt_daily_briefing_loop():
 @_mgmt_daily_briefing_loop.error
 async def __mgmt_daily_briefing_loop_on_error(error: Exception) -> None:
     await _handle_loop_error('_mgmt_daily_briefing_loop', error, _mgmt_daily_briefing_loop)
-@tasks.loop(minutes=15)
 
 async def __mgmt_weekly_report_loop_logic():
     try:
@@ -27532,6 +27494,7 @@ async def __mgmt_weekly_report_loop_logic():
         except Exception as _e:
             print(f"[MgmtWeekly] {_e}")
 
+@tasks.loop(minutes=15)
 async def _mgmt_weekly_report_loop():
     _loop_success('_mgmt_weekly_report_loop')
     try:
@@ -27541,7 +27504,6 @@ async def _mgmt_weekly_report_loop():
 @_mgmt_weekly_report_loop.error
 async def __mgmt_weekly_report_loop_on_error(error: Exception) -> None:
     await _handle_loop_error('_mgmt_weekly_report_loop', error, _mgmt_weekly_report_loop)
-@tasks.loop(minutes=30)
 
 async def __mgmt_alert_loop_logic():
     guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
@@ -27645,6 +27607,7 @@ async def __mgmt_alert_loop_logic():
 
     _mgmt_alert_save(alerts)
 
+@tasks.loop(minutes=30)
 async def _mgmt_alert_loop():
     _loop_success('_mgmt_alert_loop')
     try:
@@ -28013,8 +27976,6 @@ def _stale_join_msg_save(message_id: int | None):
     except Exception:
         pass
 
-@tasks.loop(minutes=30)
-
 async def __stale_join_alert_task_logic():
     """Alert staff when join tickets have been open > 24h. Edits existing alert instead of spamming."""
     return  # disabled — alerts were too noisy
@@ -28091,6 +28052,7 @@ async def __stale_join_alert_task_logic():
     except Exception:
         pass
 
+@tasks.loop(minutes=30)
 async def _stale_join_alert_task():
     _loop_success('_stale_join_alert_task')
     try:
@@ -28361,8 +28323,6 @@ def _ann_save(d: dict) -> None:
         json.dump(d, f, indent=2)
 
 
-@tasks.loop(hours=24)
-
 async def __anniversary_check_task_logic():
     """Daily check for server anniversaries — DMs member + logs to staff."""
     await bot.wait_until_ready()
@@ -28412,6 +28372,7 @@ async def __anniversary_check_task_logic():
 
         await asyncio.sleep(5)
 
+@tasks.loop(hours=24)
 async def _anniversary_check_task():
     _loop_success('_anniversary_check_task')
     try:
@@ -28429,8 +28390,6 @@ async def _before_anniversary_check():
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: Weekly host availability DM summary
 # ═══════════════════════════════════════════════════════════════════════════════
-
-@tasks.loop(hours=24)
 
 async def __host_avail_weekly_dm_task_logic():
     """Every Monday, DM leaders/managers with a host RSVP availability summary."""
@@ -28489,6 +28448,7 @@ async def __host_avail_weekly_dm_task_logic():
             except Exception:
                 pass
 
+@tasks.loop(hours=24)
 async def _host_avail_weekly_dm_task():
     _loop_success('_host_avail_weekly_dm_task')
     try:
@@ -28882,8 +28842,6 @@ async def _cmd_diff_help(ctx: commands.Context):
     )
     embed.set_footer(text="DIFF Meets Bot • Use !diffhelp for this panel")
     await ctx.send(embed=embed)
-
-
 
 
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
