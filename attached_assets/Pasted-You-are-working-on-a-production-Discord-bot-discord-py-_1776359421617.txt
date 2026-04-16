@@ -1,0 +1,126 @@
+You are working on a production Discord bot (discord.py) that already has:
+
+* Loop crash recovery system
+* Timeout protection using asyncio.wait_for
+* Failure tracking per loop
+* Staff alerts after 5 failures
+* Auto-restart after 10 failures
+* Logging system (logs/bot.log)
+* _loop_success() and _handle_loop_error()
+
+Your task is to add a **GLOBAL SYSTEM FAILSAFE**.
+
+━━━━━━━━━━━━━━━━━━━━━━
+🎯 GOAL
+━━━━━━━━━━━━━━━━━━━━━━
+If the ENTIRE system becomes unstable (multiple loops failing at once), automatically restart the whole bot process.
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚠️ PROBLEM
+━━━━━━━━━━━━━━━━━━━━━━
+Right now:
+
+* Individual loops recover ✔️
+* BUT if MANY loops fail at once (network down, Discord outage, Pi issues):
+  → Bot becomes unstable
+  → Loops keep restarting forever
+  → No full recovery
+
+━━━━━━━━━━━━━━━━━━━━━━
+✅ REQUIRED IMPLEMENTATION
+━━━━━━━━━━━━━━━━━━━━━━
+
+1. TRACK GLOBAL FAILURE STATE
+
+Create:
+
+```python
+_system_failure_window = []
+_SYSTEM_FAILURE_THRESHOLD = 5   # number of loops failing
+_SYSTEM_TIME_WINDOW = 60        # seconds
+```
+
+---
+
+2. UPDATE _handle_loop_error
+
+Inside `_handle_loop_error`, after logging:
+
+```python
+import time
+
+now = time.time()
+_system_failure_window.append(now)
+
+# Remove old entries
+_system_failure_window[:] = [t for t in _system_failure_window if now - t <= _SYSTEM_TIME_WINDOW]
+
+if len(_system_failure_window) >= _SYSTEM_FAILURE_THRESHOLD:
+    await trigger_system_restart()
+```
+
+---
+
+3. CREATE SYSTEM RESTART FUNCTION
+
+```python
+async def trigger_system_restart():
+    _bot_log.critical("[SystemRestart] Multiple loop failures detected — restarting bot.")
+
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if ch:
+                await ch.send("🚨 Bot instability detected. Restarting system...")
+    except Exception:
+        pass
+
+    await asyncio.sleep(2)
+
+    # Hard restart (systemd will bring it back)
+    os._exit(1)
+```
+
+---
+
+4. SAFETY RULES
+
+* Only trigger restart if MANY failures happen in short time
+* Do NOT trigger on single loop failure
+* Do NOT remove existing loop recovery system
+
+---
+
+━━━━━━━━━━━━━━━━━━━━━━
+🧠 WHY THIS MATTERS
+━━━━━━━━━━━━━━━━━━━━━━
+
+This protects against:
+
+* Discord API outages
+* Network failure on Pi
+* Infinite loop crash cycles
+* System-wide instability
+
+━━━━━━━━━━━━━━━━━━━━━━
+🔥 CONTEXT
+━━━━━━━━━━━━━━━━━━━━━━
+
+Bot runs on Raspberry Pi using systemd:
+→ os._exit(1) will auto-restart the bot
+
+Goal:
+
+* Individual loop recovery ✔️
+* Global system recovery ✔️
+
+━━━━━━━━━━━━━━━━━━━━━━
+📦 OUTPUT
+━━━━━━━━━━━━━━━━━━━━━━
+
+Provide:
+
+1. Updated `_handle_loop_error` snippet
+2. `trigger_system_restart()` function
+3. Short explanation

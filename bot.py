@@ -397,6 +397,33 @@ _loop_last_run:   dict[str, float] = {}   # unix timestamp of last successful ti
 _LOOP_ALERT_THRESHOLD   = 5   # staff ping after this many consecutive failures
 _LOOP_RESTART_THRESHOLD = 10  # force restart after this many consecutive failures
 
+# Global system failsafe — tracks cross-loop failure timestamps in a sliding window
+_system_failure_window: list[float] = []
+_SYSTEM_FAILURE_THRESHOLD = 5   # distinct loop failures within the time window = full restart
+_SYSTEM_TIME_WINDOW       = 60  # seconds
+
+
+async def trigger_system_restart() -> None:
+    """Called when too many distinct loops fail within a short window.
+    Notifies the staff channel then exits the process. systemd restarts it."""
+    _bot_log.critical(
+        "[SystemRestart] %d loop failures in %ds — triggering full bot restart.",
+        _SYSTEM_FAILURE_THRESHOLD, _SYSTEM_TIME_WINDOW,
+    )
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                await ch.send(
+                    "🚨 **Bot instability detected** — multiple background systems failed "
+                    f"within {_SYSTEM_TIME_WINDOW}s. Restarting automatically via systemd..."
+                )
+    except Exception:
+        pass
+    await asyncio.sleep(2)
+    os._exit(1)
+
 
 async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
     """Shared error handler for all @tasks.loop functions.
@@ -434,6 +461,12 @@ async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
                 loop.start()
         except Exception as e:
             _bot_log.error("[LoopRestartError] %s failed to restart: %s", name, e, exc_info=True)
+    # Global failsafe — too many distinct loops failing in a short window = full restart
+    _now = time.time()
+    _system_failure_window.append(_now)
+    _system_failure_window[:] = [t for t in _system_failure_window if _now - t <= _SYSTEM_TIME_WINDOW]
+    if len(_system_failure_window) >= _SYSTEM_FAILURE_THRESHOLD:
+        await trigger_system_restart()
 
 
 async def run_with_timeout(name: str, coro, timeout: int = 60):
