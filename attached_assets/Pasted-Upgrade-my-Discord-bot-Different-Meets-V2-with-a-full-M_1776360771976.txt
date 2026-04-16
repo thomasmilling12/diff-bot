@@ -1,0 +1,123 @@
+Upgrade my Discord bot (Different Meets V2) with a full Member Retention + Exit Feedback System.
+
+GOAL:
+Reduce random member leaves, understand why people leave, and improve onboarding/engagement automatically.
+
+Build these systems:
+
+1. EXIT FEEDBACK SYSTEM
+- When a member leaves, log their:
+  - username
+  - user ID
+  - join date
+  - total days in server
+  - verification status
+  - roles
+  - last message timestamp
+  - last VC activity
+  - meet attendance count
+- Post this in a clean embed to the leave logs/staff logs channel
+- Try to determine likely leave reason tags such as:
+  - Never Verified
+  - Inactive After Joining
+  - No Meet Attendance
+  - Low Engagement
+  - Likely Ghost Member
+
+2. OPTIONAL LEAVE SURVEY
+- Create a system that lets staff manually send a “Why did you leave?” follow-up DM if the user still allows DMs
+- Include button choices like:
+  - Server inactive
+  - Didn’t understand how to join
+  - Didn’t like the rules
+  - No longer interested
+  - Joined by mistake
+  - Other
+- Store survey responses for analytics
+- If DMs fail, fail silently but log that the DM could not be delivered
+
+3. RETENTION TRACKING DATABASE
+Track and store per-member:
+- join timestamp
+- verification timestamp
+- application completion
+- meet attendance count
+- last message timestamp
+- last VC timestamp
+- reminder DM count
+- whether they ever became active
+Use SQLite if possible, otherwise structured JSON with safe save/load logic
+
+4. SMART ONBOARDING FLOW
+When a new member joins:
+- Send a welcome DM with a clear CTA:
+  - Verify
+  - Read rules
+  - Join meets
+- After 24 hours, if not verified, send reminder DM
+- After 72 hours, if still not verified, mark them as “at risk”
+- Log onboarding status updates to staff if needed
+
+5. RE-ENGAGEMENT SYSTEM
+For members who joined but stopped interacting:
+- Detect inactivity based on:
+  - no messages
+  - no VC activity
+  - no meet attendance
+- Send a re-engagement DM after a configurable time
+- Example:
+  “You still tryna be part of DIFF? We’ve got meets coming up — don’t miss out.”
+- Add cooldowns so users are not spammed
+
+6. RETENTION ANALYTICS COMMANDS
+Create staff-only commands:
+- /retentionstats
+- /memberjourney <user>
+- /atriskmembers
+Show:
+- joins vs leaves
+- verified vs unverified leaves
+- average days before leaving
+- how many members leave before verifying
+- how many leave without attending a meet
+- most common drop-off stage
+
+7. DROP-OFF STAGE DETECTION
+Classify members into stages:
+- Joined Only
+- Verified
+- Applied
+- Attended First Meet
+- Returning Member
+When they leave, identify the furthest stage they reached
+
+8. EMBED/UI STYLE
+- Use clean DIFF styled embeds
+- Consistent emojis and formatting
+- Make leave logs readable and useful for staff
+- Add colored risk indicators:
+  - red = high risk
+  - yellow = needs follow-up
+  - green = active
+
+9. FAILSAFE + RELIABILITY
+- Add try/except with proper logging around all background tasks
+- Never use empty `except: pass` unless absolutely necessary
+- Log task crashes with traceback
+- Auto-restart loops where appropriate
+- Keep the system lightweight and modular
+
+10. FILE STRUCTURE
+Organize into cogs/modules if possible:
+- cogs/retention.py
+- cogs/onboarding.py
+- utils/member_tracker.py
+- utils/leave_analysis.py
+- database/retention.db
+
+IMPORTANT:
+- Make the system production-ready for a Discord community server
+- Keep existing bot functionality intact
+- Add config variables for channel IDs, role IDs, DM toggles, time thresholds, and reminder intervals
+- Comment the code clearly
+- If something cannot be tracked historically, start tracking it from now forward

@@ -155,6 +155,8 @@ FINAL_TIER_FILE = os.path.join("diff_data", "diff_final_tier.json")
 PHOTO_HASHES_FILE = os.path.join("diff_data", "diff_photo_hashes.json")
 CREW_PINGED_FILE   = os.path.join("diff_data", "diff_crew_pinged.json")
 _LAST_ONLINE_FILE  = os.path.join("diff_data", "diff_last_online.json")
+_ACTIVITY_DB_FILE  = os.path.join("diff_data", "diff_activity.db")
+
 MEMBER_DATABASE_CHANNEL_ID = 1485274945473871903
 REAPPLY_COOLDOWN_DAYS = 14
 DATA_FOLDER = "diff_data"
@@ -503,6 +505,134 @@ def _loop_success(name: str) -> None:
     _bot_log.debug("[LoopTick] %s", name)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MEMBER RETENTION & ACTIVITY SYSTEM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _activity_db():
+    conn = sqlite3.connect(_ACTIVITY_DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def _init_activity_db() -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    with _activity_db() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS member_activity (
+                user_id             INTEGER PRIMARY KEY,
+                join_ts             REAL,
+                last_message        REAL,
+                last_vc             REAL,
+                last_meet           REAL,
+                unverified_dm_sent  INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS member_leaves (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER,
+                username        TEXT,
+                join_ts         REAL,
+                leave_ts        REAL,
+                days_in_server  REAL,
+                was_verified    INTEGER,
+                had_meet_role   INTEGER,
+                role_names      TEXT,
+                last_message    REAL
+            );
+        """)
+
+_init_activity_db()
+
+
+def _activity_upsert(user_id: int, **kwargs) -> None:
+    """Insert or update activity fields for a member."""
+    if not kwargs:
+        return
+    with _activity_db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO member_activity (user_id) VALUES (?)", (user_id,)
+        )
+        set_clause = ", ".join(f"{k} = ?" for k in kwargs)
+        conn.execute(
+            f"UPDATE member_activity SET {set_clause} WHERE user_id = ?",
+            (*kwargs.values(), user_id),
+        )
+
+def _activity_get(user_id: int):
+    with _activity_db() as conn:
+        return conn.execute(
+            "SELECT * FROM member_activity WHERE user_id = ?", (user_id,)
+        ).fetchone()
+
+def _activity_log_leave(
+    user_id: int,
+    username: str,
+    join_ts: float | None,
+    leave_ts: float,
+    was_verified: bool,
+    had_meet_role: bool,
+    role_names: str,
+    last_message: float | None,
+) -> None:
+    days = round((leave_ts - join_ts) / 86400, 1) if join_ts else None
+    with _activity_db() as conn:
+        conn.execute(
+            """INSERT INTO member_leaves
+               (user_id, username, join_ts, leave_ts, days_in_server,
+                was_verified, had_meet_role, role_names, last_message)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (user_id, username, join_ts, leave_ts, days,
+             int(was_verified), int(had_meet_role), role_names, last_message),
+        )
+
+def _memberstats_query() -> dict:
+    """Return aggregate stats for !memberstats."""
+    with _activity_db() as conn:
+        total_leaves = conn.execute("SELECT COUNT(*) FROM member_leaves").fetchone()[0]
+        avg_days     = conn.execute(
+            "SELECT AVG(days_in_server) FROM member_leaves WHERE days_in_server IS NOT NULL"
+        ).fetchone()[0]
+        verified_pct = conn.execute(
+            "SELECT ROUND(100.0 * SUM(was_verified) / NULLIF(COUNT(*), 0), 1) FROM member_leaves"
+        ).fetchone()[0]
+        meet_pct     = conn.execute(
+            "SELECT ROUND(100.0 * SUM(had_meet_role) / NULLIF(COUNT(*), 0), 1) FROM member_leaves"
+        ).fetchone()[0]
+        recent_7d    = conn.execute(
+            "SELECT COUNT(*) FROM member_leaves WHERE leave_ts > ?",
+            (time.time() - 7 * 86400,),
+        ).fetchone()[0]
+        total_tracked = conn.execute("SELECT COUNT(*) FROM member_activity").fetchone()[0]
+        now = time.time()
+        inactive_3d   = conn.execute(
+            """SELECT COUNT(*) FROM member_activity
+               WHERE (last_message IS NULL OR last_message < ?)
+                 AND join_ts IS NOT NULL AND join_ts < ?""",
+            (now - 3 * 86400, now - 3 * 86400),
+        ).fetchone()[0]
+        inactive_7d   = conn.execute(
+            """SELECT COUNT(*) FROM member_activity
+               WHERE (last_message IS NULL OR last_message < ?)
+                 AND join_ts IS NOT NULL AND join_ts < ?""",
+            (now - 7 * 86400, now - 7 * 86400),
+        ).fetchone()[0]
+        unverified_24h = conn.execute(
+            """SELECT COUNT(*) FROM member_activity
+               WHERE unverified_dm_sent = 0
+                 AND join_ts IS NOT NULL AND join_ts < ?""",
+            (now - 86400,),
+        ).fetchone()[0]
+    return {
+        "total_leaves":   total_leaves,
+        "avg_days":       round(avg_days, 1) if avg_days else 0,
+        "verified_pct":   verified_pct or 0,
+        "meet_pct":       meet_pct or 0,
+        "recent_7d":      recent_7d,
+        "total_tracked":  total_tracked,
+        "inactive_3d":    inactive_3d,
+        "inactive_7d":    inactive_7d,
+        "unverified_24h": unverified_24h,
+    }
 
 # =========================
 # DATA
@@ -13720,6 +13850,10 @@ async def on_ready():
         _anniversary_check_task.start()
     if not _host_avail_weekly_dm_task.is_running():
         _host_avail_weekly_dm_task.start()
+    if not _unverified_dm_reminder_loop.is_running():
+        _unverified_dm_reminder_loop.start()
+    if not _inactivity_daily_report_loop.is_running():
+        _inactivity_daily_report_loop.start()
 
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
@@ -20826,7 +20960,104 @@ async def on_member_join(member: discord.Member) -> None:
             except Exception:
                 pass
 
+    # Record join timestamp for activity tracking
+    try:
+        _activity_upsert(member.id, join_ts=time.time())
+    except Exception:
+        pass
+
     await _send_welcome_dm(member)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member) -> None:
+    """Log leave event to staff channel and activity DB."""
+    if member.bot:
+        return
+    try:
+        leave_ts   = time.time()
+        row        = _activity_get(member.id)
+        join_ts    = row["join_ts"] if row else (
+            member.joined_at.timestamp() if member.joined_at else None
+        )
+        last_msg   = row["last_message"] if row else None
+        days_in    = round((leave_ts - join_ts) / 86400, 1) if join_ts else None
+
+        was_verified  = any(r.id == VERIFIED_ROLE_ID    for r in member.roles)
+        had_meet_role = any(r.id == MEET_ATTENDER_ROLE_ID for r in member.roles)
+        skip_ids      = {member.guild.default_role.id, UNVERIFIED_ROLE_ID}
+        role_names    = ", ".join(
+            r.name for r in member.roles if r.id not in skip_ids
+        ) or "None"
+
+        # Log to DB
+        _activity_log_leave(
+            user_id=member.id,
+            username=str(member),
+            join_ts=join_ts,
+            leave_ts=leave_ts,
+            was_verified=was_verified,
+            had_meet_role=had_meet_role,
+            role_names=role_names,
+            last_message=last_msg,
+        )
+
+        # Build staff embed
+        status_parts = []
+        if was_verified:
+            status_parts.append("✅ Verified")
+        else:
+            status_parts.append("❌ Never Verified")
+        if had_meet_role:
+            status_parts.append("🚗 Attended Meets")
+
+        if days_in is not None:
+            if days_in < 1:
+                stay_str = "< 1 day"
+            elif days_in < 7:
+                stay_str = f"{days_in} days"
+            elif days_in < 30:
+                stay_str = f"{days_in / 7:.1f} weeks"
+            else:
+                stay_str = f"{days_in / 30:.1f} months"
+        else:
+            stay_str = "Unknown"
+
+        if last_msg:
+            lm_age_s = int(leave_ts - last_msg)
+            if lm_age_s < 3600:
+                last_msg_str = f"{lm_age_s // 60}m ago"
+            elif lm_age_s < 86400:
+                last_msg_str = f"{lm_age_s // 3600}h ago"
+            else:
+                last_msg_str = f"{lm_age_s // 86400}d ago"
+        else:
+            last_msg_str = "Not tracked"
+
+        embed = discord.Embed(
+            title="👋 Member Left",
+            color=discord.Color.from_rgb(180, 30, 30),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="User",          value=f"{member.mention}\n`{member}`\nID: `{member.id}`", inline=True)
+        embed.add_field(name="Time in Server", value=stay_str,       inline=True)
+        embed.add_field(name="Status",         value=" · ".join(status_parts), inline=True)
+        embed.add_field(name="Roles",          value=role_names[:512],          inline=False)
+        embed.add_field(name="Last Message",   value=last_msg_str,  inline=True)
+        if join_ts:
+            embed.add_field(
+                name="Joined",
+                value=f"<t:{int(join_ts)}:D>",
+                inline=True,
+            )
+        embed.set_footer(text="DIFF Leave Analytics")
+
+        ch = member.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
+            await ch.send(embed=embed)
+    except Exception as _e:
+        _bot_log.error("[LeaveAnalytics] %s: %s", member, _e, exc_info=True)
 
 
 async def _wipe_old_panels(channel: discord.TextChannel) -> None:
@@ -21834,6 +22065,12 @@ async def on_message(message: discord.Message) -> None:
     if not isinstance(message.channel, discord.TextChannel):
         return
 
+    # Track last message timestamp for inactivity system
+    try:
+        _activity_upsert(message.author.id, last_message=time.time())
+    except Exception:
+        pass
+
     # --- Everyone-chat meet Q&A auto-responder ---
     if message.channel.id == EVERYONE_CHAT_CHANNEL_ID:
         import time as _time_mod
@@ -22182,6 +22419,22 @@ async def on_interaction(interaction: discord.Interaction) -> None:
         except discord.HTTPException:
             pass
     await _auto_check_promotion(interaction.guild, interaction.user)
+
+
+@bot.event
+async def on_voice_state_update(
+    member: discord.Member,
+    before: discord.VoiceState,
+    after: discord.VoiceState,
+) -> None:
+    """Track last VC join for inactivity system."""
+    if member.bot:
+        return
+    if after.channel and not before.channel:
+        try:
+            _activity_upsert(member.id, last_vc=time.time())
+        except Exception:
+            pass
 
 
 @bot.tree.command(name="auto-staff-stats", description="View automatically tracked staff stats for a member (staff only)")
@@ -28528,6 +28781,179 @@ async def _cmd_send_weekly_host_dm(ctx: commands.Context):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# RETENTION LOOPS — Unverified reminder & Inactivity daily report
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _unverified_dm_reminder_logic() -> None:
+    """DM members who joined 24h+ ago and are still unverified (one reminder per member)."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    verified_role   = guild.get_role(VERIFIED_ROLE_ID)
+    unverified_role = guild.get_role(UNVERIFIED_ROLE_ID)
+    if not verified_role:
+        return
+    now = time.time()
+    cutoff_24h = now - 86400
+
+    with _activity_db() as conn:
+        rows = conn.execute(
+            """SELECT user_id FROM member_activity
+               WHERE join_ts IS NOT NULL
+                 AND join_ts < ?
+                 AND unverified_dm_sent = 0""",
+            (cutoff_24h,),
+        ).fetchall()
+
+    for row in rows:
+        uid = row["user_id"]
+        member = guild.get_member(uid)
+        if not member:
+            # Mark as sent so we don't keep looping on members who left
+            with _activity_db() as conn:
+                conn.execute("UPDATE member_activity SET unverified_dm_sent = 1 WHERE user_id = ?", (uid,))
+            continue
+        if verified_role in member.roles:
+            # Already verified — mark and skip
+            with _activity_db() as conn:
+                conn.execute("UPDATE member_activity SET unverified_dm_sent = 1 WHERE user_id = ?", (uid,))
+            continue
+        try:
+            embed = discord.Embed(
+                title="👋 Still need to verify?",
+                description=(
+                    "Hey! You joined **Different Meets** over 24 hours ago but haven't verified yet.\n\n"
+                    "Verification unlocks the full server — meets, crew apps, and more.\n\n"
+                    "Head to the verification channel and follow the steps. Takes less than a minute! 🚗"
+                ),
+                color=discord.Color.from_rgb(255, 165, 0),
+            )
+            embed.set_thumbnail(url=guild.icon.url if guild.icon else discord.Embed.Empty)
+            embed.set_footer(text="Different Meets • This is a one-time reminder")
+            await member.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        finally:
+            with _activity_db() as conn:
+                conn.execute("UPDATE member_activity SET unverified_dm_sent = 1 WHERE user_id = ?", (uid,))
+        await asyncio.sleep(1.5)
+
+
+async def _inactivity_daily_report_logic() -> None:
+    """Post a daily inactivity summary to staff logs (no mass DMs — staff decide action)."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return
+
+    stats = _memberstats_query()
+    now = time.time()
+
+    # Build lists of inactive members (name+id) up to 10 each for readability
+    inactive_3d_names, inactive_7d_names = [], []
+    with _activity_db() as conn:
+        for row in conn.execute(
+            """SELECT user_id FROM member_activity
+               WHERE (last_message IS NULL OR last_message < ?)
+                 AND join_ts IS NOT NULL AND join_ts < ?
+               LIMIT 15""",
+            (now - 3 * 86400, now - 3 * 86400),
+        ).fetchall():
+            m = guild.get_member(row["user_id"])
+            if m:
+                inactive_3d_names.append(f"{m.mention} (`{m.display_name}`)")
+        for row in conn.execute(
+            """SELECT user_id FROM member_activity
+               WHERE (last_message IS NULL OR last_message < ?)
+                 AND join_ts IS NOT NULL AND join_ts < ?
+               LIMIT 10""",
+            (now - 7 * 86400, now - 7 * 86400),
+        ).fetchall():
+            m = guild.get_member(row["user_id"])
+            if m:
+                inactive_7d_names.append(f"{m.mention} (`{m.display_name}`)")
+
+    embed = discord.Embed(
+        title="📊 Daily Retention Report",
+        color=discord.Color.from_rgb(30, 100, 180),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="📈 Leave Stats (All Time)",
+        value=(
+            f"Total leaves tracked: **{stats['total_leaves']}**\n"
+            f"Leaves (last 7d): **{stats['recent_7d']}**\n"
+            f"Avg time before leaving: **{stats['avg_days']}d**\n"
+            f"Left while unverified: **{100 - stats['verified_pct']:.1f}%**\n"
+            f"Left without attending a meet: **{100 - stats['meet_pct']:.1f}%**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🟡 Inactive 3+ Days",
+        value=", ".join(inactive_3d_names[:8]) or "None" if inactive_3d_names else "None",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔴 Inactive 7+ Days (flag for review)",
+        value=", ".join(inactive_7d_names[:8]) or "None" if inactive_7d_names else "None",
+        inline=False,
+    )
+    if stats["unverified_24h"]:
+        embed.add_field(
+            name="⚠️ Unverified 24h+ (reminder sent or pending)",
+            value=str(stats["unverified_24h"]),
+            inline=True,
+        )
+    embed.set_footer(text="Different Meets • Retention System — staff action only, no auto-kicks")
+    await ch.send(embed=embed)
+
+
+@tasks.loop(minutes=30)
+async def _unverified_dm_reminder_loop():
+    _loop_success("_unverified_dm_reminder_loop")
+    try:
+        await run_with_timeout(
+            "_unverified_dm_reminder_loop",
+            _unverified_dm_reminder_logic(),
+            timeout=120,
+        )
+    except Exception as _lte:
+        await _handle_loop_error("_unverified_dm_reminder_loop", _lte, _unverified_dm_reminder_loop)
+
+@_unverified_dm_reminder_loop.before_loop
+async def _before_unverified_dm_reminder_loop():
+    await bot.wait_until_ready()
+
+@_unverified_dm_reminder_loop.error
+async def _unverified_dm_reminder_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error("_unverified_dm_reminder_loop", error, _unverified_dm_reminder_loop)
+
+
+@tasks.loop(hours=24)
+async def _inactivity_daily_report_loop():
+    _loop_success("_inactivity_daily_report_loop")
+    try:
+        await run_with_timeout(
+            "_inactivity_daily_report_loop",
+            _inactivity_daily_report_logic(),
+            timeout=120,
+        )
+    except Exception as _lte:
+        await _handle_loop_error("_inactivity_daily_report_loop", _lte, _inactivity_daily_report_loop)
+
+@_inactivity_daily_report_loop.before_loop
+async def _before_inactivity_daily_report_loop():
+    await bot.wait_until_ready()
+
+@_inactivity_daily_report_loop.error
+async def _inactivity_daily_report_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error("_inactivity_daily_report_loop", error, _inactivity_daily_report_loop)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: !diffhelp — command help panel
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -28743,6 +29169,88 @@ async def _cmd_bot_health(ctx: commands.Context):
         )
 
     embed.set_footer(text=f"Uptime: {uptime_str}  |  ✅ Healthy  ⚠️ Unstable (1–4)  ❌ Failing (5+)  🔔 Staff alerted")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="memberstats", aliases=["retention", "leavestats"])
+@commands.has_any_role(
+    "Leader", "Co-Leader", "Manager", "Moderator", "Admin",
+)
+async def _cmd_member_stats(ctx: commands.Context):
+    """Staff insights panel — join/leave analytics, inactivity, funnel drop-off."""
+    async with ctx.typing():
+        try:
+            stats = _memberstats_query()
+        except Exception as _e:
+            _bot_log.error("[MemberStats] %s", _e, exc_info=True)
+            return await ctx.send("❌ Failed to query the activity database.", delete_after=10)
+
+    guild = ctx.guild
+
+    # Funnel: % who verified, % who attended
+    with _activity_db() as conn:
+        total_tracked = stats["total_tracked"]
+
+    verified_in_server = 0
+    meet_in_server     = 0
+    if guild:
+        vr = guild.get_role(VERIFIED_ROLE_ID)
+        mr = guild.get_role(MEET_ATTENDER_ROLE_ID)
+        if vr:
+            verified_in_server = len(vr.members)
+        if mr:
+            meet_in_server = len(mr.members)
+    total_members = guild.member_count if guild else 0
+
+    embed = discord.Embed(
+        title="📊 Member Retention & Insights",
+        color=discord.Color.from_rgb(30, 100, 200),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    embed.add_field(
+        name="🚪 Leave Analytics (All Time)",
+        value=(
+            f"Total tracked leaves: **{stats['total_leaves']}**\n"
+            f"Leaves this week: **{stats['recent_7d']}**\n"
+            f"Avg time before leaving: **{stats['avg_days']} days**\n"
+            f"Left while unverified: **{100 - float(stats['verified_pct']):.1f}%** of leavers\n"
+            f"Left without attending a meet: **{100 - float(stats['meet_pct']):.1f}%** of leavers"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🏁 Funnel (Current Members)",
+        value=(
+            f"Total members: **{total_members}**\n"
+            f"Step 1 — Verified: **{verified_in_server}** "
+            f"({round(verified_in_server / total_members * 100) if total_members else 0}%)\n"
+            f"Step 2 — Attended a meet: **{meet_in_server}** "
+            f"({round(meet_in_server / total_members * 100) if total_members else 0}%)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🟡 Inactivity (Tracked Members)",
+        value=(
+            f"Inactive 3+ days: **{stats['inactive_3d']}**\n"
+            f"Inactive 7+ days: **{stats['inactive_7d']}** ← flag for review\n"
+            f"Unverified 24h+ (pending/sent reminder): **{stats['unverified_24h']}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📋 Most Common Drop-Off Points",
+        value=(
+            "1. Left without verifying\n"
+            "2. Left after verifying but before attending a meet\n"
+            "3. Went inactive after first meet"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Retention System  |  Run !bothealth for loop health")
     await ctx.send(embed=embed)
 
 
