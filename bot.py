@@ -427,11 +427,13 @@ async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
     if count >= _LOOP_RESTART_THRESHOLD and loop is not None:
         try:
             _bot_log.warning("[LoopForceRestart] %s hit %d failures — force restarting.", name, count)
-            loop.cancel()
+            if loop.is_running():
+                loop.cancel()
             await asyncio.sleep(2)
-            loop.start()
-        except Exception:
-            pass
+            if not loop.is_running():
+                loop.start()
+        except Exception as e:
+            _bot_log.error("[LoopRestartError] %s failed to restart: %s", name, e, exc_info=True)
 
 
 def _loop_success(name: str) -> None:
