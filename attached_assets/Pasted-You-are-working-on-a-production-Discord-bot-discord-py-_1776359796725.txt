@@ -1,0 +1,126 @@
+You are working on a production Discord bot (discord.py) running on a Raspberry Pi with systemd.
+
+The bot already has:
+
+* Per-loop failure tracking
+* Staff alerts after repeated loop failures
+* Loop auto-restart
+* Timeout protection
+* Global system restart failsafe
+* Logging to `logs/bot.log`
+
+Your task is to do **2 things**:
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+1. FIX THE GLOBAL FAILSAFE LOGIC
+   ━━━━━━━━━━━━━━━━━━━━━━
+
+Current issue:
+The global restart window counts **all failures**, even repeated failures from the same loop.
+
+Problem:
+One single broken loop can spam failures and accidentally trigger a **full bot restart**, which is too aggressive.
+
+Required fix:
+Change the global failure tracker so it counts **unique loop names** inside the time window instead of raw failure count.
+
+Current concept:
+
+* If 5 failures happen in 60s → full restart
+
+New concept:
+
+* If 5 DIFFERENT loops fail in 60s → full restart
+* One bad loop should stay handled by its own restart logic, not force a full bot reboot by itself
+
+Implement like this:
+
+* Store `(loop_name, timestamp)` entries
+* Prune entries older than the window
+* Build a set of unique loop names
+* Only trigger `trigger_system_restart()` when the number of unique loop names reaches threshold
+
+Example target behavior:
+
+* `weather_loop` fails 8 times alone → only that loop restarts
+* `weather_loop`, `leaderboard_loop`, `host_loop`, `ticket_loop`, `stats_loop` all fail in 60s → full bot restart
+
+Do NOT remove:
+
+* Existing per-loop failure counting
+* Existing timeout system
+* Existing logging
+* Existing systemd restart behavior
+
+━━━━━━━━━━━━━━━━━━━━━━
+2. BUILD THE NEXT UPGRADE IDEA
+━━━━━━━━━━━━━━━━━━━━━━
+
+Create a **live bot health status command**.
+
+Command name:
+`!bothealth`
+
+Goal:
+Give a clean Discord embed showing the health of the bot’s loop systems.
+
+The embed should show:
+
+* Total number of tracked loops
+* Healthy loops count
+* Unstable loops count
+* Failing loops count
+* Whether staff has been alerted for any loop
+* Whether the global failsafe window currently has recent failures
+* Last successful tick time for each loop
+* Consecutive failure count for each loop
+
+Status rules:
+
+* ✅ Healthy = 0 failures
+* ⚠️ Unstable = 1–4 failures
+* ❌ Failing = 5+ failures
+
+Also include:
+
+* Footer showing bot uptime if available
+* Timestamp on the embed
+* Owner-only or admin-only permission check
+
+Style:
+
+* Clean, readable, production-style
+* No duplicate spam
+* Easy to scan quickly during outages
+
+━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANT RULES
+━━━━━━━━━━━━━━━━━━━━━━
+
+Do NOT:
+
+* Break existing recovery logic
+* Change loop timing
+* Remove logging
+* Remove timeout handling
+* Change thresholds unless necessary for the unique-loop fix
+
+Do:
+
+* Keep all current protections
+* Improve logic safely
+* Add clear comments
+* Return clean code sections for both the fix and the new command
+
+━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT
+━━━━━━━━━━━━━━━━━━━━━━
+
+Provide:
+
+1. Updated global failure window logic
+2. Any updated helper variables
+3. Full `!bothealth` command code
+4. Short explanation of how the fix works
+5. Short explanation of the upgrade

@@ -397,10 +397,15 @@ _loop_last_run:   dict[str, float] = {}   # unix timestamp of last successful ti
 _LOOP_ALERT_THRESHOLD   = 5   # staff ping after this many consecutive failures
 _LOOP_RESTART_THRESHOLD = 10  # force restart after this many consecutive failures
 
-# Global system failsafe — tracks cross-loop failure timestamps in a sliding window
-_system_failure_window: list[float] = []
-_SYSTEM_FAILURE_THRESHOLD = 5   # distinct loop failures within the time window = full restart
-_SYSTEM_TIME_WINDOW       = 60  # seconds
+# Global system failsafe — tracks (loop_name, timestamp) for unique-loop counting
+# One misbehaving loop spamming fails will NOT trigger a full restart;
+# only _SYSTEM_FAILURE_THRESHOLD *different* loop names failing in the window will.
+_system_failure_window: list[tuple[str, float]] = []
+_SYSTEM_FAILURE_THRESHOLD = 5   # distinct loop names that must fail = full restart
+_SYSTEM_TIME_WINDOW       = 60  # rolling window in seconds
+
+# Bot process start time (set in on_ready)
+_bot_start_time: float = time.time()
 
 
 async def trigger_system_restart() -> None:
@@ -461,11 +466,16 @@ async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
                 loop.start()
         except Exception as e:
             _bot_log.error("[LoopRestartError] %s failed to restart: %s", name, e, exc_info=True)
-    # Global failsafe — too many distinct loops failing in a short window = full restart
+    # Global failsafe — count DISTINCT loop names failing in the rolling window.
+    # A single broken loop can spam failures without triggering a full restart;
+    # only _SYSTEM_FAILURE_THRESHOLD different loop names failing qualifies.
     _now = time.time()
-    _system_failure_window.append(_now)
-    _system_failure_window[:] = [t for t in _system_failure_window if _now - t <= _SYSTEM_TIME_WINDOW]
-    if len(_system_failure_window) >= _SYSTEM_FAILURE_THRESHOLD:
+    _system_failure_window.append((name, _now))
+    _system_failure_window[:] = [
+        (n, t) for (n, t) in _system_failure_window if _now - t <= _SYSTEM_TIME_WINDOW
+    ]
+    _unique_failing = {n for (n, _t) in _system_failure_window}
+    if len(_unique_failing) >= _SYSTEM_FAILURE_THRESHOLD:
         await trigger_system_restart()
 
 
@@ -13529,7 +13539,8 @@ async def on_resumed():
 
 @bot.event
 async def on_ready():
-    global status_message_id
+    global status_message_id, _bot_start_time
+    _bot_start_time = time.time()
 
     print(f"Logged in as {bot.user}")
     try:
@@ -28629,6 +28640,149 @@ async def _cmd_loop_status(ctx: commands.Context):
         timestamp=datetime.now(timezone.utc),
     )
     embed.set_footer(text=f"✅ Healthy  ⚠️ Unstable (1–4 fails)  ❌ Failing (5+ fails)  🔔 Staff alerted")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="bothealth")
+@commands.is_owner()
+async def _cmd_bot_health(ctx: commands.Context):
+    """Full bot health dashboard — loop status, global failsafe, and uptime. Owner only."""
+    LOOP_NAMES = [
+        "_host_weekly_reminder_loop",
+        "hierarchy_attendance_loop",
+        "host_board_auto_refresh_loop",
+        "gta_weather_refresh_loop",
+        "_rc_ensure_loop",
+        "_rotating_presence_loop",
+        "_join_auto_bump_loop",
+        "color_schedule_loop",
+        "ticket_scan_loop",
+        "color_ops_refresh_loop",
+        "_ticket_inactivity_monitor",
+        "_rc_finalize_reminder_loop",
+        "_psn_board_refresh_loop",
+        "_mgmt_daily_briefing_loop",
+        "_mgmt_weekly_report_loop",
+        "_mgmt_alert_loop",
+        "_stale_join_alert_task",
+        "_anniversary_check_task",
+        "_host_avail_weekly_dm_task",
+    ]
+
+    now = time.time()
+
+    # ── Per-loop stats ──────────────────────────────────────────────
+    healthy = unstable = failing = alerted_count = 0
+    loop_lines = []
+
+    for name in LOOP_NAMES:
+        fails   = _loop_fail_counts.get(name, 0)
+        last_ts = _loop_last_run.get(name)
+        alerted = _loop_alerted.get(name, False)
+
+        if fails == 0:
+            icon = "✅"
+            healthy += 1
+        elif fails < _LOOP_ALERT_THRESHOLD:
+            icon = "⚠️"
+            unstable += 1
+        else:
+            icon = "❌"
+            failing += 1
+
+        if alerted:
+            alerted_count += 1
+
+        if last_ts:
+            age = int(now - last_ts)
+            if age < 120:
+                last_str = f"{age}s ago"
+            elif age < 3600:
+                last_str = f"{age // 60}m ago"
+            else:
+                last_str = f"{age // 3600}h {(age % 3600) // 60}m ago"
+        else:
+            last_str = "never"
+
+        badge = " 🔔" if alerted else ""
+        fail_str = f" · {fails} fail{'s' if fails != 1 else ''}" if fails else ""
+        loop_lines.append(f"{icon} `{name}`{fail_str}{badge}\n↳ last tick: {last_str}")
+
+    # ── Global failsafe window ──────────────────────────────────────
+    recent = [(n, t) for (n, t) in _system_failure_window if now - t <= _SYSTEM_TIME_WINDOW]
+    unique_recent = {n for (n, _t) in recent}
+    failsafe_pct  = len(unique_recent) / _SYSTEM_FAILURE_THRESHOLD
+    if len(unique_recent) == 0:
+        failsafe_icon = "✅"
+        failsafe_str  = "No recent cross-loop failures"
+    elif failsafe_pct < 0.6:
+        failsafe_icon = "⚠️"
+        failsafe_str  = (
+            f"{len(unique_recent)}/{_SYSTEM_FAILURE_THRESHOLD} unique loops failed "
+            f"in last {_SYSTEM_TIME_WINDOW}s"
+        )
+    else:
+        failsafe_icon = "🔴"
+        failsafe_str  = (
+            f"**{len(unique_recent)}/{_SYSTEM_FAILURE_THRESHOLD}** unique loops failed "
+            f"in last {_SYSTEM_TIME_WINDOW}s — near restart threshold!"
+        )
+
+    # ── Uptime ─────────────────────────────────────────────────────
+    uptime_s = int(now - _bot_start_time)
+    h, rem   = divmod(uptime_s, 3600)
+    m, s     = divmod(rem, 60)
+    uptime_str = f"{h}h {m}m {s}s"
+
+    # ── Build embed ─────────────────────────────────────────────────
+    total = len(LOOP_NAMES)
+    if failing:
+        colour = discord.Color.red()
+        overall = "❌ Degraded"
+    elif unstable or len(unique_recent) > 0:
+        colour = discord.Color.orange()
+        overall = "⚠️ Unstable"
+    else:
+        colour = discord.Color.green()
+        overall = "✅ All Systems Healthy"
+
+    embed = discord.Embed(
+        title=f"🩺 Bot Health Dashboard — {overall}",
+        color=colour,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="📊 Loop Summary",
+        value=(
+            f"**Total:** {total}  |  ✅ {healthy}  ⚠️ {unstable}  ❌ {failing}\n"
+            f"**Staff alerted on:** {alerted_count} loop(s)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name=f"{failsafe_icon} Global Failsafe Window ({_SYSTEM_TIME_WINDOW}s)",
+        value=failsafe_str,
+        inline=False,
+    )
+
+    # Split per-loop lines across fields (Discord 1024-char field limit)
+    chunk, chunks = [], []
+    for line in loop_lines:
+        chunk.append(line)
+        if len("\n".join(chunk)) > 900:
+            chunks.append("\n".join(chunk[:-1]))
+            chunk = [line]
+    if chunk:
+        chunks.append("\n".join(chunk))
+
+    for i, block in enumerate(chunks):
+        embed.add_field(
+            name=f"🔁 Loop Detail {'(cont.)' if i else ''}",
+            value=block,
+            inline=False,
+        )
+
+    embed.set_footer(text=f"Uptime: {uptime_str}  |  ✅ Healthy  ⚠️ Unstable (1–4)  ❌ Failing (5+)  🔔 Staff alerted")
     await ctx.send(embed=embed)
 
 
