@@ -1,0 +1,133 @@
+You are working on an advanced Discord bot (discord.py) with an existing loop crash recovery system already implemented.
+
+The bot already includes:
+
+* Logging to `logs/bot.log`
+* Per-loop failure counters
+* Staff alerts after 5 consecutive failures
+* Auto-recovery behavior (loops continue running)
+* `_loop_success(name)` helper to reset failure counters
+
+Your task is to **improve and finalize the reliability system**, not rebuild it.
+
+━━━━━━━━━━━━━━━━━━━━━━
+🎯 GOAL
+━━━━━━━━━━━━━━━━━━━━━━
+Make the loop system more intelligent, visible, and stable without changing core behavior.
+
+━━━━━━━━━━━━━━━━━━━━━━
+🔧 IMPROVEMENTS TO IMPLEMENT
+━━━━━━━━━━━━━━━━━━━━━━
+
+1. ENSURE ALL LOOPS USE SUCCESS TRACKING
+
+* At the VERY TOP of every loop body, call:
+  `_loop_success("loop_name")`
+
+* This ensures failure counters reset correctly when the loop recovers
+
+---
+
+2. ADD LOOP START LOGGING
+
+* When each loop runs, log:
+  `[LoopStart] loop_name`
+
+* Helps track if loops silently stop running
+
+---
+
+3. ADD LOOP HEALTH COMMAND
+
+Create a command:
+`!loopstatus`
+
+Output:
+
+* All loop names
+* Current failure count
+* Status:
+  • ✅ Healthy (0 fails)
+  • ⚠️ Unstable (1–4 fails)
+  • ❌ Failing (5+ fails)
+
+Send as a clean embed in Discord
+
+---
+
+4. ADD LAST RUN TIMESTAMP TRACKING
+
+Track last successful run for each loop:
+
+* Store:
+  `_loop_last_run[name] = timestamp`
+
+* Update when `_loop_success()` is called
+
+Include this in `!loopstatus`
+
+---
+
+5. IMPROVE STAFF ALERT
+
+Current:
+
+* Alerts every time count >= 5
+
+Fix:
+
+* Only alert ONCE per failure streak
+* Reset alert when loop recovers
+
+---
+
+6. OPTIONAL: AUTO-RESTART LOOP (ADVANCED)
+
+If a loop fails 10+ times:
+
+* Cancel and restart it automatically
+
+Example:
+
+* `loop.restart()`
+
+---
+
+7. KEEP EXISTING SYSTEM INTACT
+
+DO NOT:
+
+* Remove logging
+* Remove failure tracking
+* Change loop timing
+* Change bot features
+
+ONLY enhance visibility + reliability
+
+---
+
+━━━━━━━━━━━━━━━━━━━━━━
+📦 OUTPUT
+━━━━━━━━━━━━━━━━━━━━━━
+
+Provide:
+
+1. Updated `_loop_success` function (with timestamp tracking)
+2. Updated `_handle_loop_error` (with alert fix)
+3. New `!loopstatus` command
+4. Example of updated loop structure
+
+---
+
+━━━━━━━━━━━━━━━━━━━━━━
+🔥 CONTEXT
+━━━━━━━━━━━━━━━━━━━━━━
+
+This bot runs 24/7 on a Raspberry Pi and powers a large Discord server.
+
+Focus on:
+
+* Stability
+* Visibility
+* Self-recovery
+* Debugging ease

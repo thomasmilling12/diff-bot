@@ -390,23 +390,27 @@ _ch.setLevel(logging.INFO)
 _ch.setFormatter(_log_formatter)
 _bot_log.addHandler(_ch)
 
-# Per-loop consecutive failure counters
+# Per-loop state tracking
 _loop_fail_counts: dict[str, int] = {}
-_LOOP_ALERT_THRESHOLD = 5  # staff ping after this many consecutive failures
+_loop_alerted:    dict[str, bool]  = {}   # True once staff has been pinged this streak
+_loop_last_run:   dict[str, float] = {}   # unix timestamp of last successful tick
+_LOOP_ALERT_THRESHOLD   = 5   # staff ping after this many consecutive failures
+_LOOP_RESTART_THRESHOLD = 10  # force restart after this many consecutive failures
 
 
-async def _handle_loop_error(name: str, error: Exception) -> None:
+async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
     """Shared error handler for all @tasks.loop functions.
-    Logs full traceback, increments failure counter, and alerts staff
-    channel once the loop has failed _LOOP_ALERT_THRESHOLD times in a row."""
+    Logs full traceback, increments failure counter, alerts staff ONCE per
+    failure streak, and force-restarts the loop at _LOOP_RESTART_THRESHOLD."""
     _loop_fail_counts[name] = _loop_fail_counts.get(name, 0) + 1
     count = _loop_fail_counts[name]
     _bot_log.error(
         "[LoopCrash] %s (consecutive failure #%d): %s",
         name, count, error, exc_info=True,
     )
-    # Alert staff channel on repeated failures
-    if count >= _LOOP_ALERT_THRESHOLD:
+    # Alert staff channel ONCE per failure streak
+    if count >= _LOOP_ALERT_THRESHOLD and not _loop_alerted.get(name, False):
+        _loop_alerted[name] = True
         try:
             guild = bot.get_guild(GUILD_ID)
             if guild:
@@ -414,18 +418,31 @@ async def _handle_loop_error(name: str, error: Exception) -> None:
                 if isinstance(ch, discord.TextChannel):
                     await ch.send(
                         f"⚠️ Background loop `{name}` has failed "
-                        f"**{count} consecutive times**. Check `logs/bot.log` for details."
+                        f"**{count} consecutive times** and will keep retrying.\n"
+                        f"Check `logs/bot.log` on the Pi for details."
                     )
+        except Exception:
+            pass
+    # Force-restart if runaway failure streak
+    if count >= _LOOP_RESTART_THRESHOLD and loop is not None:
+        try:
+            _bot_log.warning("[LoopForceRestart] %s hit %d failures — restarting.", name, count)
+            if not loop.is_running():
+                loop.restart()
         except Exception:
             pass
 
 
 def _loop_success(name: str) -> None:
-    """Call at the start of a loop body to reset its failure counter."""
-    if _loop_fail_counts.get(name, 0) > 0:
-        _bot_log.info("[LoopRecovered] %s is healthy again after %d failure(s).",
-                      name, _loop_fail_counts[name])
+    """Call at the very top of every loop body.
+    Resets failure counter, clears alert flag, records last-run timestamp."""
+    prev = _loop_fail_counts.get(name, 0)
+    if prev > 0:
+        _bot_log.info("[LoopRecovered] %s healthy again after %d failure(s).", name, prev)
     _loop_fail_counts[name] = 0
+    _loop_alerted[name]     = False
+    _loop_last_run[name]    = time.time()
+    _bot_log.debug("[LoopTick] %s", name)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -4110,13 +4127,14 @@ async def _do_host_weekly_reminder(force: bool = False) -> bool:
 @tasks.loop(minutes=30)
 async def _host_weekly_reminder_loop():
     """Every 30 min: check if it's Sunday ≥12 PM ET and send the reminder if not yet sent today."""
+    _loop_success('_host_weekly_reminder_loop')
     await _do_host_weekly_reminder(force=False)
 
 
 
 @_host_weekly_reminder_loop.error
 async def __host_weekly_reminder_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('_host_weekly_reminder_loop', error)
+    await _handle_loop_error('_host_weekly_reminder_loop', error, _host_weekly_reminder_loop)
 @_host_weekly_reminder_loop.before_loop
 async def _before_host_weekly_reminder():
     await bot.wait_until_ready()
@@ -6584,6 +6602,7 @@ async def post_or_refresh_live_attendance(guild: discord.Guild) -> None:
 
 @tasks.loop(minutes=2)
 async def hierarchy_attendance_loop():
+    _loop_success('hierarchy_attendance_loop')
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
         return
@@ -6640,10 +6659,11 @@ async def before_hierarchy_attendance_loop():
 
 @hierarchy_attendance_loop.error
 async def _hierarchy_attendance_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('hierarchy_attendance_loop', error)
+    await _handle_loop_error('hierarchy_attendance_loop', error, hierarchy_attendance_loop)
 @tasks.loop(minutes=2)
 async def host_board_auto_refresh_loop():
     """Edit the Host Activity Board embed every 2 minutes — never posts new messages."""
+    _loop_success('host_board_auto_refresh_loop')
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
         return
@@ -6678,7 +6698,7 @@ async def before_host_board_auto_refresh_loop():
 
 @host_board_auto_refresh_loop.error
 async def _host_board_auto_refresh_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('host_board_auto_refresh_loop', error)
+    await _handle_loop_error('host_board_auto_refresh_loop', error, host_board_auto_refresh_loop)
 # ════════════════════════════════════════════════════════════════════
 #  GTA ONLINE WEATHER  —  live-refreshing embed (edit-only, no spam)
 #  Algorithm ported directly from gtalens.com module 48733
@@ -6909,6 +6929,7 @@ async def _gta_post_or_refresh(channel: discord.TextChannel) -> None:
 @tasks.loop(seconds=120)
 async def gta_weather_refresh_loop():
     """Edit the GTA weather embed every 2 minutes (= 1 in-game hour)."""
+    _loop_success('gta_weather_refresh_loop')
     ch = bot.get_channel(GTA_WEATHER_CHANNEL_ID)
     if not isinstance(ch, discord.TextChannel):
         return
@@ -6926,7 +6947,7 @@ async def before_gta_weather_refresh_loop():
 
 @gta_weather_refresh_loop.error
 async def _gta_weather_refresh_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('gta_weather_refresh_loop', error)
+    await _handle_loop_error('gta_weather_refresh_loop', error, gta_weather_refresh_loop)
 async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
     channel = guild.get_channel(HIERARCHY_CHANNEL_ID)
     if channel is None:
@@ -11191,6 +11212,7 @@ async def _cmd_syncrc(ctx: commands.Context):
 
 @tasks.loop(minutes=10)
 async def _rc_ensure_loop():
+    _loop_success('_rc_ensure_loop')
     for guild in bot.guilds:
         try:
             await _rc_ensure_panel(guild)
@@ -11201,7 +11223,7 @@ async def _rc_ensure_loop():
 
 @_rc_ensure_loop.error
 async def __rc_ensure_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('_rc_ensure_loop', error)
+    await _handle_loop_error('_rc_ensure_loop', error, _rc_ensure_loop)
 @bot.command(name="postrollcall")
 async def _cmd_postrollcall(ctx: commands.Context):
     if not _rc_is_admin(ctx.author):
@@ -13266,6 +13288,7 @@ def _status_next_meet_label() -> str | None:
 
 @tasks.loop(seconds=45)
 async def _rotating_presence_loop():
+    _loop_success('_rotating_presence_loop')
     global _presence_index
     guild        = bot.get_guild(GUILD_ID)
     member_count = guild.member_count if guild else 0
@@ -13299,13 +13322,14 @@ async def _rotating_presence_loop():
 
 @_rotating_presence_loop.error
 async def __rotating_presence_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('_rotating_presence_loop', error)
+    await _handle_loop_error('_rotating_presence_loop', error, _rotating_presence_loop)
 # =========================
 # JOIN TICKET AUTO-BUMP (24h after photos complete, no decision yet)
 # =========================
 @tasks.loop(minutes=30)
 async def _join_auto_bump_loop():
     """Ping staff if an application has had photos for 24h+ with no accept/deny."""
+    _loop_success('_join_auto_bump_loop')
     try:
         guild = bot.get_guild(GUILD_ID)
         if not guild:
@@ -13371,7 +13395,7 @@ async def _join_auto_bump_loop():
 
 @_join_auto_bump_loop.error
 async def __join_auto_bump_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('_join_auto_bump_loop', error)
+    await _handle_loop_error('_join_auto_bump_loop', error, _join_auto_bump_loop)
 # =========================
 # HOST POSTERS — received button
 # =========================
@@ -15162,6 +15186,7 @@ async def _cs_try_close_vote(guild: discord.Guild) -> bool:
 
 @tasks.loop(minutes=1)
 async def color_schedule_loop():
+    _loop_success('color_schedule_loop')
     now = datetime.now(COLOR_TZ)
     current_date = now.date().isoformat()
     data = _cs_load()
@@ -15236,7 +15261,7 @@ async def before_color_schedule_loop():
 
 @color_schedule_loop.error
 async def _color_schedule_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('color_schedule_loop', error)
+    await _handle_loop_error('color_schedule_loop', error, color_schedule_loop)
 class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
     color_name = discord.ui.TextInput(label="Color Name", placeholder="Example: Tangerine Tango", max_length=100, required=True)
     hex_code = discord.ui.TextInput(label="HEX Code", placeholder="Example: #FF9742", max_length=7, min_length=4, required=True)
@@ -17126,6 +17151,7 @@ async def application_status(interaction: discord.Interaction):
 
 @tasks.loop(minutes=2)
 async def ticket_scan_loop():
+    _loop_success('ticket_scan_loop')
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
         return
@@ -17176,7 +17202,7 @@ async def before_ticket_scan_loop():
 
 @ticket_scan_loop.error
 async def _ticket_scan_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('ticket_scan_loop', error)
+    await _handle_loop_error('ticket_scan_loop', error, ticket_scan_loop)
 # =========================
 # COLOR OPS SYSTEM
 # =========================
@@ -17404,6 +17430,7 @@ async def _color_ops_refresh_panels() -> None:
 
 @tasks.loop(minutes=5)
 async def color_ops_refresh_loop():
+    _loop_success('color_ops_refresh_loop')
     try:
         await _color_ops_refresh_panels()
     except Exception as e:
@@ -17418,7 +17445,7 @@ async def before_color_ops_refresh_loop():
 
 @color_ops_refresh_loop.error
 async def _color_ops_refresh_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('color_ops_refresh_loop', error)
+    await _handle_loop_error('color_ops_refresh_loop', error, color_ops_refresh_loop)
 # Application / Interview commands
 
 @bot.tree.command(name="log-application", description="Log a member application into the system (staff only)")
@@ -20274,6 +20301,7 @@ _TICKET_CLOSE_HOURS = 72   # auto-close after this many hours of silence
 
 @tasks.loop(minutes=30)
 async def _ticket_inactivity_monitor() -> None:
+    _loop_success('_ticket_inactivity_monitor')
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
@@ -20378,7 +20406,7 @@ async def _ticket_inactivity_monitor() -> None:
 
 @_ticket_inactivity_monitor.error
 async def __ticket_inactivity_monitor_on_error(error: Exception) -> None:
-    await _handle_loop_error('_ticket_inactivity_monitor', error)
+    await _handle_loop_error('_ticket_inactivity_monitor', error, _ticket_inactivity_monitor)
 @_ticket_inactivity_monitor.before_loop
 async def _before_ticket_monitor():
     await bot.wait_until_ready()
@@ -26668,6 +26696,7 @@ _rc_reminded: set = set()  # (guild_id, meet_number) pairs already reminded this
 
 @tasks.loop(minutes=30)
 async def _rc_finalize_reminder_loop():
+    _loop_success('_rc_finalize_reminder_loop')
     try:
         guild = bot.get_guild(GUILD_ID)
         if not guild:
@@ -26703,7 +26732,7 @@ async def _rc_finalize_reminder_loop():
 
 @_rc_finalize_reminder_loop.error
 async def __rc_finalize_reminder_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('_rc_finalize_reminder_loop', error)
+    await _handle_loop_error('_rc_finalize_reminder_loop', error, _rc_finalize_reminder_loop)
 @_rc_finalize_reminder_loop.before_loop
 async def _before_rc_reminder():
     await bot.wait_until_ready()
@@ -26933,6 +26962,7 @@ async def _psn_refresh_board(guild: discord.Guild) -> None:
 
 @tasks.loop(minutes=5)
 async def _psn_board_refresh_loop():
+    _loop_success('_psn_board_refresh_loop')
     guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
     if guild:
         try:
@@ -26943,7 +26973,7 @@ async def _psn_board_refresh_loop():
 
 @_psn_board_refresh_loop.error
 async def __psn_board_refresh_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('_psn_board_refresh_loop', error)
+    await _handle_loop_error('_psn_board_refresh_loop', error, _psn_board_refresh_loop)
 @_psn_board_refresh_loop.before_loop
 async def _before_psn_board():
     await bot.wait_until_ready()
@@ -27329,6 +27359,7 @@ async def _mgmt_send_weekly_report(guild: discord.Guild) -> None:
 
 @tasks.loop(minutes=15)
 async def _mgmt_daily_briefing_loop():
+    _loop_success('_mgmt_daily_briefing_loop')
     try:
         from zoneinfo import ZoneInfo
         now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -27353,9 +27384,10 @@ async def _mgmt_daily_briefing_loop():
 
 @_mgmt_daily_briefing_loop.error
 async def __mgmt_daily_briefing_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('_mgmt_daily_briefing_loop', error)
+    await _handle_loop_error('_mgmt_daily_briefing_loop', error, _mgmt_daily_briefing_loop)
 @tasks.loop(minutes=15)
 async def _mgmt_weekly_report_loop():
+    _loop_success('_mgmt_weekly_report_loop')
     try:
         from zoneinfo import ZoneInfo
         now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -27380,9 +27412,10 @@ async def _mgmt_weekly_report_loop():
 
 @_mgmt_weekly_report_loop.error
 async def __mgmt_weekly_report_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('_mgmt_weekly_report_loop', error)
+    await _handle_loop_error('_mgmt_weekly_report_loop', error, _mgmt_weekly_report_loop)
 @tasks.loop(minutes=30)
 async def _mgmt_alert_loop():
+    _loop_success('_mgmt_alert_loop')
     guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
     if not guild:
         return
@@ -27488,7 +27521,7 @@ async def _mgmt_alert_loop():
 
 @_mgmt_alert_loop.error
 async def __mgmt_alert_loop_on_error(error: Exception) -> None:
-    await _handle_loop_error('_mgmt_alert_loop', error)
+    await _handle_loop_error('_mgmt_alert_loop', error, _mgmt_alert_loop)
 @_mgmt_daily_briefing_loop.before_loop
 async def _before_mgmt_daily():
     await bot.wait_until_ready()
@@ -27851,6 +27884,7 @@ def _stale_join_msg_save(message_id: int | None):
 @tasks.loop(minutes=30)
 async def _stale_join_alert_task():
     """Alert staff when join tickets have been open > 24h. Edits existing alert instead of spamming."""
+    _loop_success('_stale_join_alert_task')
     return  # disabled — alerts were too noisy
     await bot.wait_until_ready()
     guild = bot.get_guild(GUILD_ID)
@@ -27929,7 +27963,7 @@ async def _stale_join_alert_task():
 
 @_stale_join_alert_task.error
 async def __stale_join_alert_task_on_error(error: Exception) -> None:
-    await _handle_loop_error('_stale_join_alert_task', error)
+    await _handle_loop_error('_stale_join_alert_task', error, _stale_join_alert_task)
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: !bulkwarn / !bulkmute
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -28194,6 +28228,7 @@ def _ann_save(d: dict) -> None:
 @tasks.loop(hours=24)
 async def _anniversary_check_task():
     """Daily check for server anniversaries — DMs member + logs to staff."""
+    _loop_success('_anniversary_check_task')
     await bot.wait_until_ready()
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -28245,7 +28280,7 @@ async def _anniversary_check_task():
 
 @_anniversary_check_task.error
 async def __anniversary_check_task_on_error(error: Exception) -> None:
-    await _handle_loop_error('_anniversary_check_task', error)
+    await _handle_loop_error('_anniversary_check_task', error, _anniversary_check_task)
 @_anniversary_check_task.before_loop
 async def _before_anniversary_check():
     await bot.wait_until_ready()
@@ -28258,6 +28293,7 @@ async def _before_anniversary_check():
 @tasks.loop(hours=24)
 async def _host_avail_weekly_dm_task():
     """Every Monday, DM leaders/managers with a host RSVP availability summary."""
+    _loop_success('_host_avail_weekly_dm_task')
     await bot.wait_until_ready()
     now = datetime.now(timezone.utc)
     if now.weekday() != 0:
@@ -28317,7 +28353,7 @@ async def _host_avail_weekly_dm_task():
 
 @_host_avail_weekly_dm_task.error
 async def __host_avail_weekly_dm_task_on_error(error: Exception) -> None:
-    await _handle_loop_error('_host_avail_weekly_dm_task', error)
+    await _handle_loop_error('_host_avail_weekly_dm_task', error, _host_avail_weekly_dm_task)
 @_host_avail_weekly_dm_task.before_loop
 async def _before_host_avail_weekly_dm():
     await bot.wait_until_ready()
@@ -28390,6 +28426,78 @@ async def _cmd_send_weekly_host_dm(ctx: commands.Context):
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: !diffhelp — command help panel
 # ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="loopstatus", aliases=["loops", "loophealth"])
+@commands.is_owner()
+async def _cmd_loop_status(ctx: commands.Context):
+    """Show health status of all background loops. Owner only."""
+    import time as _t
+
+    LOOP_NAMES = [
+        "_host_weekly_reminder_loop",
+        "hierarchy_attendance_loop",
+        "host_board_auto_refresh_loop",
+        "gta_weather_refresh_loop",
+        "_rc_ensure_loop",
+        "_rotating_presence_loop",
+        "_join_auto_bump_loop",
+        "color_schedule_loop",
+        "ticket_scan_loop",
+        "color_ops_refresh_loop",
+        "_ticket_inactivity_monitor",
+        "_rc_finalize_reminder_loop",
+        "_psn_board_refresh_loop",
+        "_mgmt_daily_briefing_loop",
+        "_mgmt_weekly_report_loop",
+        "_mgmt_alert_loop",
+        "_stale_join_alert_task",
+        "_anniversary_check_task",
+        "_host_avail_weekly_dm_task",
+    ]
+
+    now = _t.time()
+    lines = []
+    overall_ok = True
+
+    for name in LOOP_NAMES:
+        fails      = _loop_fail_counts.get(name, 0)
+        last_ts    = _loop_last_run.get(name)
+        alerted    = _loop_alerted.get(name, False)
+
+        if fails == 0:
+            status = "✅"
+        elif fails < _LOOP_ALERT_THRESHOLD:
+            status = "⚠️"
+            overall_ok = False
+        else:
+            status = "❌"
+            overall_ok = False
+
+        if last_ts:
+            age_s = int(now - last_ts)
+            if age_s < 120:
+                last_str = f"{age_s}s ago"
+            elif age_s < 3600:
+                last_str = f"{age_s // 60}m ago"
+            else:
+                last_str = f"{age_s // 3600}h ago"
+        else:
+            last_str = "never"
+
+        alert_tag = " 🔔" if alerted else ""
+        fail_tag  = f" ({fails} fail{'s' if fails != 1 else ''})" if fails else ""
+        lines.append(f"{status} `{name}`{fail_tag}{alert_tag} — last tick: {last_str}")
+
+    colour = discord.Color.green() if overall_ok else discord.Color.red()
+    embed = discord.Embed(
+        title="🔁 Background Loop Health",
+        description="\n".join(lines),
+        color=colour,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"✅ Healthy  ⚠️ Unstable (1–4 fails)  ❌ Failing (5+ fails)  🔔 Staff alerted")
+    await ctx.send(embed=embed)
+
 
 @bot.command(name="diffhelp", aliases=["commands", "bothelp"])
 @commands.cooldown(1, 30, commands.BucketType.user)
