@@ -1,0 +1,231 @@
+Upgrade my Discord bot (Different Meets V2) with a full Onboarding Funnel Tracker system.
+
+IMPORTANT:
+- Use prefix commands only
+- Use my existing commands.Bot setup
+- Do not use slash commands
+- Keep compatibility with my current discord.py bot
+- Do not break existing systems
+- Make this work alongside my existing health score and cleanup systems
+
+GOAL:
+Track the full member journey from join to active community member, identify exact drop-off points, and give staff clear analytics on where members are failing to convert.
+
+TRACK THESE FUNNEL STAGES:
+
+1. Joined
+- member joined server
+- store join timestamp
+
+2. Verified
+- member received verified role
+- store verification timestamp
+
+3. Applied
+- member started or completed join-meets/application process
+- store application timestamp
+- if possible track both:
+  - application started
+  - application completed
+
+4. Approved
+- member was accepted into meets / got the proper role
+- store approval timestamp
+
+5. First Meet Attended
+- member attended first meet
+- store first attendance timestamp
+
+6. Returning Member
+- member attended multiple meets or stayed active after first meet
+- store returning activity milestone timestamp
+
+BUILD THESE SYSTEMS:
+
+1. FUNNEL TRACKING DATABASE
+Track per-member:
+- user ID
+- username
+- join timestamp
+- verification timestamp
+- application started timestamp
+- application completed timestamp
+- approval timestamp
+- first meet attendance timestamp
+- returning member timestamp
+- current funnel stage
+- furthest funnel stage reached
+- days between stages
+- whether the member left
+- leave timestamp
+- drop-off stage
+- likely drop-off reason
+
+Use SQLite if possible. If not, use structured JSON with safe save/load logic.
+
+2. STAGE DETECTION LOGIC
+Automatically update funnel stage when:
+- member joins
+- member gets verified role
+- member starts application
+- member completes application
+- member gets accepted/approved role
+- member attends first meet
+- member attends more meets or becomes consistently active
+
+If some historical events are not available, start tracking from now forward.
+
+3. DROP-OFF DETECTION
+When a member becomes inactive or leaves, identify the stage they dropped off at:
+- Joined Only
+- Verified Only
+- Applied But Not Approved
+- Approved But Never Attended
+- Attended Once Only
+- Returning Member Lost
+
+Add likely reason tags such as:
+- Never Verified
+- Stopped After Verification
+- Application Never Finished
+- Approved But Never Showed Up
+- One-Time Attender
+- Lost Interest
+- Inactive After Joining
+
+4. FUNNEL ANALYTICS COMMANDS
+Create staff-only prefix commands:
+
+!funnelstats
+Show:
+- total joins
+- how many verified
+- how many applied
+- how many approved
+- how many attended first meet
+- how many became returning members
+- conversion percentages between every stage
+
+!memberjourney <member>
+Show full timeline for one member:
+- join date
+- stages completed
+- current stage
+- furthest stage
+- days between each stage
+- whether they are stalled or active
+
+!dropoffstats
+Show:
+- most common drop-off stage
+- how many left before verifying
+- how many verified but never applied
+- how many approved but never attended
+- how many attended once and disappeared
+
+!stalledmembers
+Show members stuck in one stage too long
+
+!funnelleaderboard
+Show best converting categories if applicable, such as:
+- members who became returning members fastest
+- successful onboarding totals
+- strongest retention group
+
+5. STALLED MEMBER DETECTION
+Detect when members are stuck too long in a stage.
+
+Examples:
+- Joined but not verified after 24–72 hours
+- Verified but no application after X days
+- Approved but no first meet attendance after X days
+- Attended once but no return activity after X days
+
+Mark them as:
+- Healthy Progress
+- Delayed
+- Stalled
+- High Drop-Off Risk
+
+6. RECOMMENDATION ENGINE
+For each stalled member or stage, generate simple staff recommendations:
+- Send verify reminder
+- Encourage application completion
+- Invite to next meet
+- Follow up manually
+- Monitor
+- Remove if inactive too long
+
+7. FUNNEL LOGGING
+Send DIFF styled staff embeds when:
+- member advances to a major stage
+- member stalls too long
+- member drops off
+- member leaves before completing onboarding
+- member becomes a returning member
+
+8. STAGE TIMING ANALYTICS
+Measure:
+- average time from Joined → Verified
+- average time from Verified → Applied
+- average time from Approved → First Meet
+- average time from First Meet → Returning Member
+
+Use this to help staff identify slow or broken stages.
+
+9. FUNNEL HEALTH SUMMARY
+Add a system that summarizes:
+- strongest stage conversion
+- weakest stage conversion
+- biggest drop-off point
+- current number of stalled members
+- current number of high-risk onboarding members
+
+10. CONFIGURATION
+Add configurable values for:
+- verified role ID
+- approved role ID / meet attender role ID
+- stage timeout thresholds
+- reminder thresholds
+- channels for logs
+- roles exempt from funnel warnings
+- what counts as returning member
+- what counts as first meet attendance
+
+11. EMBED/UI STYLE
+Use clean DIFF styled embeds.
+Keep formatting readable and staff-friendly.
+Use sections like:
+- Overview
+- Funnel Progress
+- Drop-Off Risk
+- Recommendations
+
+12. RELIABILITY
+- Wrap background tasks with proper error handling
+- Avoid silent failures
+- Log exceptions with traceback
+- Keep modular and production-ready
+- Do not break current bot systems
+
+13. FILE STRUCTURE
+Organize cleanly:
+- cogs/funnel.py
+- utils/funnel_tracker.py
+- utils/stage_logic.py
+- database/retention.db
+
+14. PREFIX COMMAND STYLE
+Use commands.command decorators only.
+Commands should be:
+- !funnelstats
+- !memberjourney
+- !dropoffstats
+- !stalledmembers
+- !funnelleaderboard
+
+IMPORTANT:
+- Start tracking from now forward if older data is missing
+- Keep it lightweight
+- Comment the code clearly
+- Make it useful for a real Discord car meet community

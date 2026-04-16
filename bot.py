@@ -310,6 +310,7 @@ async def _setup_hook():
         "cogs.diff_extras",
         "cogs.diff_host_posters",
         "cogs.diff_postmeet",
+        "cogs.cleanup",
     ]
     for _cog in _cogs:
         try:

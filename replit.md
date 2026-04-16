@@ -88,6 +88,55 @@ New table: `health_score_history (id, user_id, score, tier, recorded_at)`
 ### Loop
 `_health_score_update_loop` — every 4h, calculates all tracked members; wired in `on_ready`
 
+## Smart Auto Cleanup + Recovery System
+
+### File layout
+| File | Purpose |
+|---|---|
+| `cogs/cleanup.py` | Cog — background loop (6h), listeners, 6 prefix commands |
+| `utils/cleanup_logic.py` | Config, DB helpers, flag CRUD, exemption checks |
+| `utils/recovery_tracker.py` | Recovery event logging + status computation |
+| `database/retention.db` | SQLite — auto-created on boot |
+
+### Database tables (retention.db)
+- `cleanup_flags` — one row per flagged member (flag_type, grace, reminders, review_state, recovered, reason, score snapshot)
+- `recovery_events` — timestamped events per user (message, vc_join, meet_attend, verified, score_up)
+- `action_history` — full audit log of staff and automatic actions
+
+### Config (`CLEANUP_CONFIG` in `utils/cleanup_logic.py`)
+All thresholds are editable at the top of the file:
+- `dm_reminders_enabled`, `auto_kick_enabled`, `require_staff_review`
+- `grace_period_at_risk` (3d) / `grace_period_ghost` (2d)
+- `max_reminders` (2), `reminder_cooldown_days` (3)
+- `min_join_age_days` (7), `inactivity_days_at_risk` (7), `inactivity_days_ghost` (14)
+- `scan_score_at_risk_max` (59), `scan_score_ghost_max` (39)
+
+### Flag types & lifecycle
+`Safe` → flagged as `At Risk` or `Ghost` → grace period → `Cleanup Review` → staff decision  
+Recovery at any stage (message / VC join) resets to `Safe` + logs to staff channel.
+
+### Exempt roles (never flagged)
+Leader, Co-Leader, Manager, Moderator, Admin, Host, Senior Host, Head Host, Junior Host, Staff, Bot + any members who joined within `min_join_age_days`.
+
+### Commands (staff prefix only — all in `cogs/cleanup.py`)
+| Command | Aliases | Description |
+|---|---|---|
+| `!cleanupscan` | `!runscan`, `!forcescan` | Manually trigger a full scan |
+| `!cleanupqueue` | `!reviewqueue`, `!cqueue` | Show members in Cleanup Review |
+| `!recoveries` | `!recovered`, `!recoveredmembers` | Show recently recovered members |
+| `!flagmember @user` | `!manuallyflag`, `!addflag` | Manually flag for review |
+| `!clearflag @user` | `!removeflag`, `!unflag` | Remove a member's flag |
+| `!cleanupstats` | `!cstats`, `!flagstats` | Stats + current config overview |
+
+### Deploy note
+New files to copy on deploy:
+```
+scp -r utils/ thomas@192.168.1.211:/home/thomas/diff-bot/
+scp cogs/cleanup.py thomas@192.168.1.211:/home/thomas/diff-bot/cogs/cleanup.py
+scp bot.py thomas@192.168.1.211:/home/thomas/diff-bot/bot.py
+sudo systemctl restart different-meets-v2
+```
+
 ## Loop Health
 All 19 loops (plus new health score loop = 20) use:
 - `_loop_fail_counts` / `_loop_alerted` / `_loop_last_run` tracking
