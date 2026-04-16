@@ -426,9 +426,10 @@ async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
     # Force-restart if runaway failure streak
     if count >= _LOOP_RESTART_THRESHOLD and loop is not None:
         try:
-            _bot_log.warning("[LoopForceRestart] %s hit %d failures — restarting.", name, count)
-            if not loop.is_running():
-                loop.restart()
+            _bot_log.warning("[LoopForceRestart] %s hit %d failures — force restarting.", name, count)
+            loop.cancel()
+            await asyncio.sleep(2)
+            loop.start()
         except Exception:
             pass
 
@@ -436,6 +437,9 @@ async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
 def _loop_success(name: str) -> None:
     """Call at the very top of every loop body.
     Resets failure counter, clears alert flag, records last-run timestamp."""
+    # First-ever tick for this loop since startup
+    if name not in _loop_last_run:
+        _bot_log.info("[LoopStart] %s started successfully.", name)
     prev = _loop_fail_counts.get(name, 0)
     if prev > 0:
         _bot_log.info("[LoopRecovered] %s healthy again after %d failure(s).", name, prev)

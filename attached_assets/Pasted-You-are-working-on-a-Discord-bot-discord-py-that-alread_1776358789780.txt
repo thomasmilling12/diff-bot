@@ -1,0 +1,105 @@
+You are working on a Discord bot (discord.py) that already has a loop crash recovery system implemented.
+
+The system currently includes:
+
+* `_handle_loop_error(name, error, loop)`
+* `_loop_success(name)`
+* Failure tracking, alerting, and logging
+* Auto-restart at 10 failures
+
+Your task is to **FIX and FINALIZE the loop restart system** without breaking anything.
+
+━━━━━━━━━━━━━━━━━━━━━━
+🎯 GOAL
+━━━━━━━━━━━━━━━━━━━━━━
+Ensure loops can **forcefully restart when broken**, even if they are still “running”.
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚠️ CURRENT PROBLEM
+━━━━━━━━━━━━━━━━━━━━━━
+The code currently uses:
+
+```python
+if not loop.is_running():
+    loop.restart()
+```
+
+This is incorrect because:
+
+* A failing loop is usually STILL running
+* So restart never triggers
+* Result: loop stays broken forever
+
+━━━━━━━━━━━━━━━━━━━━━━
+✅ REQUIRED FIX
+━━━━━━━━━━━━━━━━━━━━━━
+
+Replace the restart logic with a **force restart system**:
+
+```python
+if loop is not None:
+    try:
+        _bot_log.warning("[LoopForceRestart] %s hit %d failures — restarting.", name, count)
+        loop.cancel()
+        loop.start()
+    except Exception:
+        pass
+```
+
+━━━━━━━━━━━━━━━━━━━━━━
+🔧 ADDITIONAL IMPROVEMENT
+━━━━━━━━━━━━━━━━━━━━━━
+
+Inside `_loop_success(name)`:
+
+Add detection for first-time start:
+
+```python
+if name not in _loop_last_run:
+    _bot_log.info("[LoopStart] %s started.", name)
+```
+
+Keep existing logic:
+
+* Reset failure count
+* Clear alert flag
+* Update timestamp
+* Log `[LoopTick]`
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚠️ IMPORTANT RULES
+━━━━━━━━━━━━━━━━━━━━━━
+
+DO NOT:
+
+* Remove existing logging
+* Remove failure tracking
+* Change thresholds (5 alert / 10 restart)
+* Modify loop timing
+* Break any existing systems
+
+ONLY:
+
+* Fix restart logic
+* Add loop start visibility
+
+━━━━━━━━━━━━━━━━━━━━━━
+📦 OUTPUT
+━━━━━━━━━━━━━━━━━━━━━━
+
+Provide:
+
+1. Updated `_handle_loop_error` function
+2. Updated `_loop_success` function
+3. Short explanation of why the fix works
+
+━━━━━━━━━━━━━━━━━━━━━━
+🔥 CONTEXT
+━━━━━━━━━━━━━━━━━━━━━━
+
+This bot runs 24/7 on a Raspberry Pi.
+
+Stability is critical:
+
+* Loops must NEVER stay broken
+* System must self-recover without manual restart
