@@ -13508,8 +13508,8 @@ async def on_ready():
 
     status_message_id = data.get("panel_message_id")
 
-    # ── Startup welcome DM catch-up (DM members who joined while offline) ──
-    asyncio.create_task(_startup_catchup_welcome_dms())
+    # ── Startup welcome DM catch-up DISABLED — violated Discord Developer Policy ──
+    # asyncio.create_task(_startup_catchup_welcome_dms())
 
     # ── Roll call finalize reminder (starts after first 30min loop tick) ──
     if not _rc_finalize_reminder_loop.is_running():
@@ -20576,68 +20576,9 @@ async def _send_welcome_dm(member: discord.Member) -> None:
 
 
 async def _startup_catchup_welcome_dms() -> None:
-    """On restart, DM any members who joined while the bot was offline."""
-    await asyncio.sleep(10)  # let the gateway fully settle first
-    try:
-        # Load the timestamp from last successful on_ready
-        last_online_ts: float = 0.0
-        try:
-            with open(_LAST_ONLINE_FILE, "r") as _f:
-                last_online_ts = float(json.load(_f).get("ts", 0))
-        except (FileNotFoundError, Exception):
-            pass
-
-        if last_online_ts == 0.0:
-            return  # First ever run — nothing to catch up on
-
-        offline_since = datetime.fromtimestamp(last_online_ts, tz=timezone.utc)
-        now_utc       = datetime.now(timezone.utc)
-
-        guild = bot.get_guild(GUILD_ID)
-        if not guild:
-            return
-
-        missed: list[discord.Member] = [
-            m for m in guild.members
-            if not m.bot
-            and m.joined_at is not None
-            and offline_since < m.joined_at <= now_utc
-        ]
-
-        if not missed:
-            return
-
-        print(f"[CatchUp] Bot was offline since {offline_since.isoformat()}. "
-              f"Sending welcome DMs to {len(missed)} member(s) who joined while down.")
-
-        sent = 0
-        for m in missed:
-            await _send_welcome_dm(m)
-            sent += 1
-            await asyncio.sleep(1.5)  # rate-limit friendly
-
-        # Log summary to staff logs
-        log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-        if isinstance(log_ch, discord.TextChannel):
-            names = ", ".join(m.mention for m in missed[:20])
-            if len(missed) > 20:
-                names += f" …and {len(missed) - 20} more"
-            summary = discord.Embed(
-                title="📬 Startup Welcome DM Catch-Up",
-                description=(
-                    f"Bot was offline from <t:{int(last_online_ts)}:f> to <t:{int(now_utc.timestamp())}:f>.\n"
-                    f"Sent welcome DMs to **{sent}** member(s) who joined during that window:\n{names}"
-                ),
-                color=0x57F287,
-                timestamp=now_utc,
-            )
-            summary.set_footer(text="DIFF Catch-Up System")
-            try:
-                await log_ch.send(embed=summary)
-            except Exception:
-                pass
-    except Exception as _e:
-        print(f"[CatchUp] Error during startup DM catch-up: {_e}")
+    """DISABLED — bulk DM catch-up violated Discord Developer Policy.
+    Welcome DMs are still sent individually via on_member_join."""
+    return
 
 
 # ── Welcome DM on member join ─────────────────────────────────────────────────
