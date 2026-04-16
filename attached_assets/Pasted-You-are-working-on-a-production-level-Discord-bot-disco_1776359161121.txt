@@ -1,0 +1,136 @@
+You are working on a production-level Discord bot (discord.py) that already has:
+
+* Loop crash recovery system
+* Failure tracking per loop
+* Staff alerts after 5 failures
+* Auto-restart at 10 failures
+* Logging to logs/bot.log
+* Safe restart logic using loop.cancel() and loop.start()
+
+Your task is to **add TIMEOUT PROTECTION to all background loops** to prevent them from freezing or hanging indefinitely.
+
+━━━━━━━━━━━━━━━━━━━━━━
+🎯 GOAL
+━━━━━━━━━━━━━━━━━━━━━━
+Ensure that if a loop hangs (API stall, network freeze, Discord issue), it is automatically detected and recovered.
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚠️ PROBLEM
+━━━━━━━━━━━━━━━━━━━━━━
+Right now:
+
+* If a loop gets stuck (never finishes), it will NOT throw an error
+* This means:
+  • No failure count increase
+  • No restart
+  • Loop silently stops working forever
+
+━━━━━━━━━━━━━━━━━━━━━━
+✅ REQUIRED IMPLEMENTATION
+━━━━━━━━━━━━━━━━━━━━━━
+
+1. CREATE TIMEOUT WRAPPER
+
+Create a helper function:
+
+```python
+async def run_with_timeout(name: str, coro, timeout: int = 30):
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"{name} timed out after {timeout}s")
+```
+
+---
+
+2. APPLY TO ALL LOOPS
+
+For EVERY @tasks.loop:
+
+Change this:
+
+```python
+@tasks.loop(minutes=5)
+async def example_loop():
+    _loop_success("example_loop")
+    await do_something()
+```
+
+To this:
+
+```python
+@tasks.loop(minutes=5)
+async def example_loop():
+    try:
+        _loop_success("example_loop")
+        await run_with_timeout(
+            "example_loop",
+            _example_loop_logic(),
+            timeout=30
+        )
+    except Exception as e:
+        await _handle_loop_error("example_loop", e, example_loop)
+```
+
+---
+
+3. MOVE LOOP LOGIC INTO FUNCTION
+
+```python
+async def _example_loop_logic():
+    # original loop code here
+```
+
+---
+
+4. DO NOT BREAK EXISTING SYSTEM
+
+KEEP:
+
+* _loop_success()
+* _handle_loop_error()
+* restart logic
+* logging
+* failure thresholds
+
+ONLY add timeout protection
+
+---
+
+5. LOG TIMEOUTS CLEARLY
+
+Timeout errors must appear in logs like:
+
+[LoopCrash] example_loop (consecutive failure #X): example_loop timed out after 30s
+
+---
+
+━━━━━━━━━━━━━━━━━━━━━━
+🔥 CONTEXT
+━━━━━━━━━━━━━━━━━━━━━━
+
+This bot runs 24/7 on a Raspberry Pi.
+
+Common issues:
+
+* Network lag
+* Discord API delays
+* Tasks hanging forever
+
+Timeout protection ensures:
+
+* Frozen loops become failures
+* Failures trigger restart system
+* System becomes fully self-healing
+
+---
+
+━━━━━━━━━━━━━━━━━━━━━━
+📦 OUTPUT
+━━━━━━━━━━━━━━━━━━━━━━
+
+Provide:
+
+1. run_with_timeout function
+2. Example updated loop
+3. Explanation of how it prevents freezes
