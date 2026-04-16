@@ -1,0 +1,188 @@
+Upgrade my Discord bot (Different Meets V2) with a full Member Health Score System for retention tracking, inactivity detection, and staff insights.
+
+IMPORTANT:
+- Use prefix commands only, not slash commands
+- My bot uses message commands with prefixes like !healthscore
+- Keep compatibility with my existing prefix command setup
+- Do not convert anything into app_commands unless absolutely optional
+
+GOAL:
+Create a smart scoring system that measures how healthy/active each member is in the server, so staff can quickly identify:
+- strong members
+- inactive members
+- ghost members
+- members likely to leave soon
+
+Build these systems:
+
+1. MEMBER HEALTH SCORE CORE
+Create a score from 0 to 100 for each member based on weighted activity factors.
+
+Suggested weighted factors:
+- Verified status
+- Join age
+- Messages sent recently
+- VC activity recently
+- Meet attendance count
+- Roll call participation
+- Application completed
+- Reaction/button interaction
+- Days since last activity
+
+Example idea:
+- Verified: +20
+- Completed application: +15
+- First meet attended: +20
+- Returning meet attendance: +10
+- Active in chat recently: +10
+- Active in VC recently: +10
+- Roll call participation: +10
+- Long inactivity penalty: -10 to -30
+- Never verified after X days: major penalty
+
+Make the weights configurable in a config section.
+
+2. HEALTH TIERS
+Classify members into health tiers:
+- 80–100 = Strong
+- 60–79 = Active
+- 40–59 = At Risk
+- 0–39 = Ghost / Likely to Leave
+
+Display a color/status label for each tier:
+- Strong = green
+- Active = blue
+- At Risk = yellow
+- Ghost = red
+
+3. MEMBER HEALTH TRACKING
+Track and store per-member:
+- join timestamp
+- verification timestamp
+- application completion
+- total meet attendance
+- recent meet attendance
+- last message timestamp
+- recent message count
+- last VC timestamp
+- recent VC sessions
+- roll call responses
+- reminder count
+- last health score
+- current health tier
+
+Use SQLite if possible. If not, use structured JSON with safe read/write logic.
+
+4. AUTO SCORE UPDATES
+Update member health scores automatically when:
+- they join
+- they verify
+- they send messages
+- they join/leave VC
+- they respond to roll calls
+- they attend meets
+- they become inactive
+- they leave the server
+
+Also include a scheduled background task that recalculates scores every few hours.
+
+5. STAFF PREFIX COMMANDS
+Create staff-only prefix commands:
+- !healthscore <member>
+  Show full score breakdown and reasons
+
+- !healthleaderboard
+  Show healthiest members in the server
+
+- !atriskmembers
+  Show lowest scoring members who may leave soon
+
+- !ghostmembers
+  Show members with very low score and no engagement
+
+- !healthstats
+  Show total counts by health tier
+
+6. SCORE BREAKDOWN VIEW
+For each member, show:
+- current score
+- tier
+- positive factors
+- negative factors
+- risk reason
+- likely next action recommendation
+
+Example recommendations:
+- Send verify reminder
+- Encourage meet attendance
+- Remove if inactive too long
+- Good candidate for community role
+- Potential future host/regular
+
+7. RISK DETECTION LOGIC
+Add automated flags such as:
+- Joined 3+ days ago and never verified
+- Verified but never attended a meet
+- No messages in 14+ days
+- No VC activity in 14+ days
+- No roll call participation
+- Dropping score trend over time
+
+8. HEALTH TREND TRACKING
+Store previous scores so staff can see if a member is:
+- improving
+- stable
+- declining
+
+Add simple trend labels:
+- Rising
+- Stable
+- Falling
+
+9. LEAVE PREDICTION TAGS
+When a member leaves, log:
+- final health score
+- final tier
+- likely reason they left based on score breakdown
+- furthest stage reached in server journey
+
+10. EMBED/UI STYLE
+Use clean DIFF-styled embeds with readable formatting.
+Make the score display modern and staff-friendly.
+Use sections like:
+- Overview
+- Activity
+- Risk Factors
+- Recommendations
+
+11. CONFIGURATION
+Add config values for:
+- score weights
+- inactivity thresholds
+- risk thresholds
+- tracked channel IDs
+- tracked role IDs
+- meet attendance source
+- roll call source
+- log channel IDs
+
+12. RELIABILITY
+- Wrap all background tasks with proper error handling and logging
+- Avoid silent failures
+- Keep system modular and production-ready
+- Do not break existing bot features
+
+13. FILE STRUCTURE
+Organize cleanly:
+- cogs/health.py
+- utils/health_score.py
+- utils/activity_tracker.py
+- database/retention.db
+
+IMPORTANT:
+- Keep the system lightweight
+- Make all score logic easy to adjust later
+- Comment the code clearly
+- If historical data is unavailable, begin tracking from now forward
+- Make sure commands are useful for real Discord staff moderation and retention decisions
+- Use prefix commands only

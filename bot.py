@@ -544,6 +544,92 @@ def _init_activity_db() -> None:
 _init_activity_db()
 
 
+def _migrate_activity_db() -> None:
+    """Add new columns + tables to the activity DB without destroying existing data."""
+    new_cols = [
+        ("verification_ts",        "REAL"),
+        ("meet_attendance_count",  "INTEGER DEFAULT 0"),
+        ("re_engagement_dm_sent",  "INTEGER DEFAULT 0"),
+        ("reminder_dm_count",      "INTEGER DEFAULT 0"),
+        ("ever_active",            "INTEGER DEFAULT 0"),
+        ("drop_off_stage",         "TEXT"),
+    ]
+    with _activity_db() as conn:
+        for col, typedef in new_cols:
+            try:
+                conn.execute(f"ALTER TABLE member_activity ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+        # Add leave reason tags + drop-off stage to member_leaves
+        for col, typedef in [("reason_tags", "TEXT"), ("drop_off_stage", "TEXT"), ("last_vc", "REAL")]:
+            try:
+                conn.execute(f"ALTER TABLE member_leaves ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS leave_surveys (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER,
+                username     TEXT,
+                response     TEXT,
+                responded_at REAL
+            )
+        """)
+
+_migrate_activity_db()
+
+
+# ── Drop-off stage detection ───────────────────────────────────────────────────
+_STAGE_ORDER = [
+    "Returning Member",
+    "Attended First Meet",
+    "Applied",
+    "Verified",
+    "Joined Only",
+]
+
+def _detect_drop_off_stage(
+    was_verified: bool,
+    had_meet_role: bool,
+    meet_count: int = 0,
+    had_application: bool = False,
+) -> str:
+    if meet_count > 1:
+        return "Returning Member"
+    if had_meet_role or meet_count > 0:
+        return "Attended First Meet"
+    if had_application:
+        return "Applied"
+    if was_verified:
+        return "Verified"
+    return "Joined Only"
+
+
+def _detect_leave_reasons(
+    was_verified: bool,
+    had_meet_role: bool,
+    last_message: float | None,
+    days_in: float | None,
+    leave_ts: float,
+) -> list[str]:
+    """Return a list of human-readable reason tags based on activity signals."""
+    tags = []
+    if not was_verified:
+        tags.append("Never Verified")
+    if not had_meet_role:
+        tags.append("No Meet Attendance")
+    msg_age = (leave_ts - last_message) if last_message else None
+    if last_message is None:
+        tags.append("Likely Ghost Member")
+    elif msg_age and msg_age > 7 * 86400:
+        tags.append("Inactive After Joining")
+    if days_in is not None and days_in < 1:
+        tags.append("Left Immediately")
+    if was_verified and not had_meet_role and (msg_age is None or (msg_age and msg_age > 3 * 86400)):
+        tags.append("Low Engagement")
+    return tags or ["Unknown"]
+
+
 def _activity_upsert(user_id: int, **kwargs) -> None:
     """Insert or update activity fields for a member."""
     if not kwargs:
@@ -573,16 +659,21 @@ def _activity_log_leave(
     had_meet_role: bool,
     role_names: str,
     last_message: float | None,
+    last_vc: float | None = None,
+    reason_tags: str = "",
+    drop_off_stage: str = "",
 ) -> None:
     days = round((leave_ts - join_ts) / 86400, 1) if join_ts else None
     with _activity_db() as conn:
         conn.execute(
             """INSERT INTO member_leaves
                (user_id, username, join_ts, leave_ts, days_in_server,
-                was_verified, had_meet_role, role_names, last_message)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                was_verified, had_meet_role, role_names, last_message,
+                last_vc, reason_tags, drop_off_stage)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (user_id, username, join_ts, leave_ts, days,
-             int(was_verified), int(had_meet_role), role_names, last_message),
+             int(was_verified), int(had_meet_role), role_names, last_message,
+             last_vc, reason_tags, drop_off_stage),
         )
 
 def _memberstats_query() -> dict:
@@ -13854,6 +13945,8 @@ async def on_ready():
         _unverified_dm_reminder_loop.start()
     if not _inactivity_daily_report_loop.is_running():
         _inactivity_daily_report_loop.start()
+    if not _re_engagement_loop.is_running():
+        _re_engagement_loop.start()
 
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
@@ -20971,26 +21064,34 @@ async def on_member_join(member: discord.Member) -> None:
 
 @bot.event
 async def on_member_remove(member: discord.Member) -> None:
-    """Log leave event to staff channel and activity DB."""
+    """Log leave event with reason tags, drop-off stage, and risk colour to staff logs."""
     if member.bot:
         return
     try:
-        leave_ts   = time.time()
-        row        = _activity_get(member.id)
-        join_ts    = row["join_ts"] if row else (
+        leave_ts      = time.time()
+        row           = _activity_get(member.id)
+        join_ts       = row["join_ts"] if row else (
             member.joined_at.timestamp() if member.joined_at else None
         )
-        last_msg   = row["last_message"] if row else None
-        days_in    = round((leave_ts - join_ts) / 86400, 1) if join_ts else None
+        last_msg      = row["last_message"] if row else None
+        last_vc_ts    = row["last_vc"]       if row else None
+        meet_count    = int(row["meet_attendance_count"] or 0) if row else 0
+        days_in       = round((leave_ts - join_ts) / 86400, 1) if join_ts else None
 
-        was_verified  = any(r.id == VERIFIED_ROLE_ID    for r in member.roles)
+        was_verified  = any(r.id == VERIFIED_ROLE_ID      for r in member.roles)
         had_meet_role = any(r.id == MEET_ATTENDER_ROLE_ID for r in member.roles)
-        skip_ids      = {member.guild.default_role.id, UNVERIFIED_ROLE_ID}
-        role_names    = ", ".join(
-            r.name for r in member.roles if r.id not in skip_ids
-        ) or "None"
+        # Detect if they held any application-related role as proxy for "Applied"
+        _app_role_names = {"applied", "applicant", "interviewing", "pending"}
+        had_application = any(r.name.lower() in _app_role_names for r in member.roles)
 
-        # Log to DB
+        skip_ids   = {member.guild.default_role.id, UNVERIFIED_ROLE_ID}
+        role_names = ", ".join(r.name for r in member.roles if r.id not in skip_ids) or "None"
+
+        # Compute analytics helpers
+        reason_tags   = _detect_leave_reasons(was_verified, had_meet_role, last_msg, days_in, leave_ts)
+        drop_off      = _detect_drop_off_stage(was_verified, had_meet_role, meet_count, had_application)
+
+        # Persist to DB
         _activity_log_leave(
             user_id=member.id,
             username=str(member),
@@ -21000,17 +21101,24 @@ async def on_member_remove(member: discord.Member) -> None:
             had_meet_role=had_meet_role,
             role_names=role_names,
             last_message=last_msg,
+            last_vc=last_vc_ts,
+            reason_tags=", ".join(reason_tags),
+            drop_off_stage=drop_off,
         )
 
-        # Build staff embed
-        status_parts = []
-        if was_verified:
-            status_parts.append("✅ Verified")
+        # ── Risk colour ──────────────────────────────────────────────────────
+        # Red = high risk (never engaged), Yellow = medium, Green = was active
+        if not was_verified or "Likely Ghost Member" in reason_tags:
+            embed_colour = discord.Color.from_rgb(200, 30, 30)    # red
+            risk_label   = "🔴 High Risk"
+        elif not had_meet_role or "Inactive After Joining" in reason_tags:
+            embed_colour = discord.Color.from_rgb(210, 150, 0)    # yellow
+            risk_label   = "🟡 Needs Follow-up"
         else:
-            status_parts.append("❌ Never Verified")
-        if had_meet_role:
-            status_parts.append("🚗 Attended Meets")
+            embed_colour = discord.Color.from_rgb(30, 160, 60)    # green
+            risk_label   = "🟢 Was Active"
 
+        # ── Format helpers ───────────────────────────────────────────────────
         if days_in is not None:
             if days_in < 1:
                 stay_str = "< 1 day"
@@ -21023,35 +21131,51 @@ async def on_member_remove(member: discord.Member) -> None:
         else:
             stay_str = "Unknown"
 
-        if last_msg:
-            lm_age_s = int(leave_ts - last_msg)
-            if lm_age_s < 3600:
-                last_msg_str = f"{lm_age_s // 60}m ago"
-            elif lm_age_s < 86400:
-                last_msg_str = f"{lm_age_s // 3600}h ago"
-            else:
-                last_msg_str = f"{lm_age_s // 86400}d ago"
-        else:
-            last_msg_str = "Not tracked"
+        def _age_str(ts: float | None) -> str:
+            if not ts:
+                return "Not tracked"
+            age = int(leave_ts - ts)
+            if age < 3600:   return f"{age // 60}m ago"
+            if age < 86400:  return f"{age // 3600}h ago"
+            return f"{age // 86400}d ago"
 
+        # ── Build embed ──────────────────────────────────────────────────────
         embed = discord.Embed(
             title="👋 Member Left",
-            color=discord.Color.from_rgb(180, 30, 30),
+            color=embed_colour,
             timestamp=datetime.now(timezone.utc),
         )
         embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="User",          value=f"{member.mention}\n`{member}`\nID: `{member.id}`", inline=True)
-        embed.add_field(name="Time in Server", value=stay_str,       inline=True)
-        embed.add_field(name="Status",         value=" · ".join(status_parts), inline=True)
-        embed.add_field(name="Roles",          value=role_names[:512],          inline=False)
-        embed.add_field(name="Last Message",   value=last_msg_str,  inline=True)
+        embed.add_field(
+            name="User",
+            value=f"`{member}` — ID `{member.id}`",
+            inline=False,
+        )
+        embed.add_field(name="Time in Server", value=stay_str,          inline=True)
+        embed.add_field(name="Risk Level",     value=risk_label,        inline=True)
+        embed.add_field(name="Drop-off Stage", value=f"📍 {drop_off}",  inline=True)
+        embed.add_field(
+            name="Status",
+            value=(
+                f"{'✅' if was_verified  else '❌'} Verified\n"
+                f"{'✅' if had_meet_role else '❌'} Attended a Meet"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Activity",
+            value=f"Last msg: {_age_str(last_msg)}\nLast VC: {_age_str(last_vc_ts)}",
+            inline=True,
+        )
+        embed.add_field(name="Roles", value=role_names[:512], inline=False)
+        embed.add_field(
+            name="🏷️ Leave Reason Tags",
+            value=" · ".join(f"`{t}`" for t in reason_tags),
+            inline=False,
+        )
         if join_ts:
-            embed.add_field(
-                name="Joined",
-                value=f"<t:{int(join_ts)}:D>",
-                inline=True,
-            )
-        embed.set_footer(text="DIFF Leave Analytics")
+            embed.add_field(name="Joined", value=f"<t:{int(join_ts)}:D>", inline=True)
+        embed.set_footer(text="DIFF Leave Analytics  |  !leavedm <user_id> to send survey")
 
         ch = member.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(ch, discord.TextChannel):
@@ -28781,6 +28905,90 @@ async def _cmd_send_weekly_host_dm(ctx: commands.Context):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# LEAVE SURVEY — Staff-triggered follow-up DM to former members
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SURVEY_OPTIONS = [
+    ("Server felt inactive",          "survey_inactive"),
+    ("Didn't understand how to join", "survey_confused"),
+    ("Didn't like the rules",         "survey_rules"),
+    ("No longer interested in meets", "survey_not_interested"),
+    ("Joined by mistake",             "survey_mistake"),
+    ("Other reason",                  "survey_other"),
+]
+
+
+class LeaveSurveyView(discord.ui.View):
+    """Button view sent to former members asking why they left."""
+    def __init__(self, user_id: int, username: str):
+        super().__init__(timeout=None)
+        self.user_id  = user_id
+        self.username = username
+        for label, cid in _SURVEY_OPTIONS:
+            btn = discord.ui.Button(
+                label=label,
+                custom_id=f"{cid}:{user_id}",
+                style=discord.ButtonStyle.secondary,
+            )
+            btn.callback = self._make_callback(label)
+            self.add_item(btn)
+
+    def _make_callback(self, label: str):
+        async def _cb(interaction: discord.Interaction):
+            try:
+                with _activity_db() as conn:
+                    conn.execute(
+                        "INSERT INTO leave_surveys (user_id, username, response, responded_at) VALUES (?,?,?,?)",
+                        (self.user_id, self.username, label, time.time()),
+                    )
+                await interaction.response.edit_message(
+                    content="✅ Thanks for the feedback — we appreciate it.",
+                    view=None,
+                )
+            except Exception as _e:
+                _bot_log.error("[LeaveSurvey] %s", _e, exc_info=True)
+                try:
+                    await interaction.response.send_message("Something went wrong. Thank you anyway.", ephemeral=True)
+                except Exception:
+                    pass
+        return _cb
+
+
+@bot.command(name="leavedm", aliases=["surveydm"])
+@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+async def _cmd_leave_dm(ctx: commands.Context, user_id: str):
+    """Send a leave survey DM to a former member by user ID. Staff only."""
+    try:
+        uid = int(user_id)
+    except ValueError:
+        return await ctx.send("❌ Provide a valid user ID.", delete_after=8)
+    try:
+        user = await bot.fetch_user(uid)
+    except discord.NotFound:
+        return await ctx.send("❌ User not found.", delete_after=8)
+
+    embed = discord.Embed(
+        title="Hey — quick question 👋",
+        description=(
+            "You recently left **Different Meets**.\n\n"
+            "We're always trying to improve — mind telling us why you left? "
+            "It takes one click and helps the community a lot. 🙏"
+        ),
+        color=discord.Color.from_rgb(30, 100, 200),
+    )
+    embed.set_footer(text="Different Meets • Exit Feedback")
+    view = LeaveSurveyView(user_id=uid, username=str(user))
+    try:
+        await user.send(embed=embed, view=view)
+        await ctx.send(f"✅ Leave survey DM sent to **{user}**.", delete_after=10)
+    except discord.Forbidden:
+        _bot_log.info("[LeaveSurvey] Could not DM %s — DMs closed.", user)
+        await ctx.send(f"⚠️ Could not DM **{user}** — their DMs are closed.", delete_after=10)
+    except discord.HTTPException as _e:
+        await ctx.send(f"❌ DM failed: {_e}", delete_after=10)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # RETENTION LOOPS — Unverified reminder & Inactivity daily report
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -28930,6 +29138,82 @@ async def _before_unverified_dm_reminder_loop():
 @_unverified_dm_reminder_loop.error
 async def _unverified_dm_reminder_loop_on_error(error: Exception) -> None:
     await _handle_loop_error("_unverified_dm_reminder_loop", error, _unverified_dm_reminder_loop)
+
+
+async def _re_engagement_logic() -> None:
+    """DM members inactive 7+ days with a re-engagement nudge.
+    Cooldown: once per 30 days per member. Max 10 DMs per run."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    now       = time.time()
+    cutoff_7d = now - 7 * 86400
+    cooldown  = 30 * 86400   # 30 days between re-engagement DMs
+    sent      = 0
+
+    with _activity_db() as conn:
+        rows = conn.execute(
+            """SELECT user_id FROM member_activity
+               WHERE join_ts IS NOT NULL AND join_ts < ?
+                 AND (last_message IS NULL OR last_message < ?)
+                 AND (re_engagement_dm_sent = 0
+                      OR re_engagement_dm_sent < ?)
+               LIMIT 10""",
+            (cutoff_7d, cutoff_7d, now - cooldown),
+        ).fetchall()
+
+    for row in rows:
+        uid    = row["user_id"]
+        member = guild.get_member(uid)
+        if not member or member.bot:
+            continue
+        try:
+            embed = discord.Embed(
+                title="You still tryna roll with DIFF? 🚗",
+                description=(
+                    "We noticed you've been quiet lately.\n\n"
+                    "**Different Meets** has got meets coming up — don't miss out on the next one.\n\n"
+                    "Hop back in, check the schedule, and pull up. The crew's waiting. 🔥"
+                ),
+                color=discord.Color.from_rgb(30, 100, 200),
+            )
+            embed.set_footer(text="Different Meets • You can ignore this if you're still around!")
+            if guild.icon:
+                embed.set_thumbnail(url=guild.icon.url)
+            await member.send(embed=embed)
+            with _activity_db() as conn:
+                conn.execute(
+                    "UPDATE member_activity SET re_engagement_dm_sent = ? WHERE user_id = ?",
+                    (now, uid),
+                )
+            sent += 1
+        except (discord.Forbidden, discord.HTTPException):
+            with _activity_db() as conn:
+                conn.execute(
+                    "UPDATE member_activity SET re_engagement_dm_sent = ? WHERE user_id = ?",
+                    (now, uid),
+                )
+        await asyncio.sleep(2)
+
+    if sent:
+        _bot_log.info("[ReEngagement] Sent %d re-engagement DM(s).", sent)
+
+
+@tasks.loop(hours=12)
+async def _re_engagement_loop():
+    _loop_success("_re_engagement_loop")
+    try:
+        await run_with_timeout("_re_engagement_loop", _re_engagement_logic(), timeout=180)
+    except Exception as _lte:
+        await _handle_loop_error("_re_engagement_loop", _lte, _re_engagement_loop)
+
+@_re_engagement_loop.before_loop
+async def _before_re_engagement_loop():
+    await bot.wait_until_ready()
+
+@_re_engagement_loop.error
+async def _re_engagement_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error("_re_engagement_loop", error, _re_engagement_loop)
 
 
 @tasks.loop(hours=24)
@@ -29169,6 +29453,257 @@ async def _cmd_bot_health(ctx: commands.Context):
         )
 
     embed.set_footer(text=f"Uptime: {uptime_str}  |  ✅ Healthy  ⚠️ Unstable (1–4)  ❌ Failing (5+)  🔔 Staff alerted")
+    await ctx.send(embed=embed)
+
+
+# ─── !retentionstats ──────────────────────────────────────────────────────────
+@bot.command(name="retentionstats", aliases=["retstats"])
+@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+async def _cmd_retention_stats(ctx: commands.Context):
+    """Detailed retention analytics — drop-off stages, reason tags, survey results. Staff only."""
+    async with ctx.typing():
+        with _activity_db() as conn:
+            # Drop-off stage breakdown
+            stages = conn.execute(
+                """SELECT drop_off_stage, COUNT(*) as cnt
+                   FROM member_leaves
+                   WHERE drop_off_stage IS NOT NULL AND drop_off_stage != ''
+                   GROUP BY drop_off_stage ORDER BY cnt DESC"""
+            ).fetchall()
+            # Top reason tags
+            all_tags = conn.execute(
+                "SELECT reason_tags FROM member_leaves WHERE reason_tags IS NOT NULL AND reason_tags != ''"
+            ).fetchall()
+            tag_counts: dict[str, int] = {}
+            for row in all_tags:
+                for tag in row["reason_tags"].split(", "):
+                    tag = tag.strip()
+                    if tag:
+                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
+            top_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:6]
+            # Survey responses
+            survey_rows = conn.execute(
+                """SELECT response, COUNT(*) as cnt
+                   FROM leave_surveys
+                   GROUP BY response ORDER BY cnt DESC"""
+            ).fetchall()
+            total_surveys = conn.execute("SELECT COUNT(*) FROM leave_surveys").fetchone()[0]
+            # Risk level breakdown
+            high_risk    = conn.execute("SELECT COUNT(*) FROM member_leaves WHERE was_verified = 0").fetchone()[0]
+            medium_risk  = conn.execute("SELECT COUNT(*) FROM member_leaves WHERE was_verified = 1 AND had_meet_role = 0").fetchone()[0]
+            low_risk     = conn.execute("SELECT COUNT(*) FROM member_leaves WHERE was_verified = 1 AND had_meet_role = 1").fetchone()[0]
+
+    embed = discord.Embed(
+        title="📊 Retention Analytics — Detailed",
+        color=discord.Color.from_rgb(30, 100, 200),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    # Drop-off stages
+    stage_lines = "\n".join(f"📍 **{r['drop_off_stage']}** — {r['cnt']}" for r in stages) or "No data yet"
+    embed.add_field(name="📍 Drop-Off Stages (Leavers)", value=stage_lines, inline=False)
+
+    # Risk breakdown
+    embed.add_field(
+        name="🎯 Risk Breakdown (All Leavers)",
+        value=(
+            f"🔴 High Risk (never verified): **{high_risk}**\n"
+            f"🟡 Medium (verified, no meet): **{medium_risk}**\n"
+            f"🟢 Low (verified + attended): **{low_risk}**"
+        ),
+        inline=False,
+    )
+
+    # Top reason tags
+    tag_lines = "\n".join(f"`{tag}` — {cnt}" for tag, cnt in top_tags) or "No data yet"
+    embed.add_field(name="🏷️ Top Leave Reason Tags", value=tag_lines, inline=False)
+
+    # Survey responses
+    if survey_rows:
+        sv_lines = "\n".join(f"`{r['response']}` — {r['cnt']}" for r in survey_rows)
+        embed.add_field(name=f"📝 Survey Responses ({total_surveys} total)", value=sv_lines, inline=False)
+    else:
+        embed.add_field(name="📝 Survey Responses", value="No surveys completed yet.\nUse `!leavedm <user_id>` to send one.", inline=False)
+
+    embed.set_footer(text="Different Meets • Retention System  |  Use !memberjourney <user> for individual data")
+    await ctx.send(embed=embed)
+
+
+# ─── !memberjourney ───────────────────────────────────────────────────────────
+@bot.command(name="memberjourney", aliases=["journey"])
+@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+async def _cmd_member_journey(ctx: commands.Context, target: discord.Member | None = None):
+    """Show the full tracked journey for a member. Staff only. Usage: !memberjourney @user"""
+    if not target:
+        return await ctx.send("❌ Provide a member. Usage: `!memberjourney @user`", delete_after=8)
+
+    row = _activity_get(target.id)
+    now = time.time()
+
+    def _fmt_ts(ts) -> str:
+        if not ts:
+            return "Not tracked"
+        return f"<t:{int(ts)}:F>"
+
+    def _age(ts) -> str:
+        if not ts:
+            return ""
+        age = int(now - ts)
+        if age < 3600:   return f"({age // 60}m ago)"
+        if age < 86400:  return f"({age // 3600}h ago)"
+        return f"({age // 86400}d ago)"
+
+    # Current funnel stage
+    vr = ctx.guild.get_role(VERIFIED_ROLE_ID)      if ctx.guild else None
+    mr = ctx.guild.get_role(MEET_ATTENDER_ROLE_ID) if ctx.guild else None
+    is_verified = vr in target.roles if vr else False
+    has_meet    = mr in target.roles if mr else False
+    meet_count  = int(row["meet_attendance_count"] or 0) if row else 0
+    stage       = _detect_drop_off_stage(is_verified, has_meet, meet_count)
+
+    # At-risk check
+    last_msg_ts = row["last_message"] if row else None
+    is_inactive = last_msg_ts and (now - last_msg_ts) > 7 * 86400
+    is_unverified_long = (row["join_ts"] and (now - row["join_ts"]) > 86400 and not is_verified) if row else False
+
+    embed = discord.Embed(
+        title=f"🗺️ Member Journey — {target.display_name}",
+        color=discord.Color.from_rgb(30, 100, 200),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+
+    embed.add_field(
+        name="📍 Current Stage",
+        value=f"**{stage}**" + (" ⚠️ At Risk" if is_inactive or is_unverified_long else ""),
+        inline=False,
+    )
+
+    if row:
+        embed.add_field(
+            name="📅 Timestamps",
+            value=(
+                f"Joined: {_fmt_ts(row['join_ts'])} {_age(row['join_ts'])}\n"
+                f"Verified: {_fmt_ts(row['verification_ts'])}\n"
+                f"Last Message: {_fmt_ts(row['last_message'])} {_age(row['last_message'])}\n"
+                f"Last VC: {_fmt_ts(row['last_vc'])} {_age(row['last_vc'])}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📊 Stats",
+            value=(
+                f"Meet attendance: **{meet_count}**\n"
+                f"Reminder DMs sent: **{row['reminder_dm_count'] or 0}**\n"
+                f"Re-engagement DM: {'✅ Sent' if row['re_engagement_dm_sent'] else '❌ Not yet'}\n"
+                f"Unverified DM: {'✅ Sent' if row['unverified_dm_sent'] else '❌ Not yet'}"
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="⚠️ Note", value="No activity data tracked yet for this member.", inline=False)
+
+    # Check leave history (in case they rejoined)
+    with _activity_db() as conn:
+        leave_rows = conn.execute(
+            "SELECT * FROM member_leaves WHERE user_id = ? ORDER BY leave_ts DESC LIMIT 3",
+            (target.id,),
+        ).fetchall()
+    if leave_rows:
+        leave_lines = []
+        for lr in leave_rows:
+            leave_lines.append(
+                f"Left <t:{int(lr['leave_ts'])}:D> after **{lr['days_in_server'] or '?'}d** "
+                f"— {lr['drop_off_stage'] or 'Unknown'} — `{lr['reason_tags'] or 'Unknown'}`"
+            )
+        embed.add_field(name="🚪 Leave History", value="\n".join(leave_lines), inline=False)
+
+    embed.set_footer(text="Different Meets • Member Journey Tracker")
+    await ctx.send(embed=embed)
+
+
+# ─── !atriskmembers ───────────────────────────────────────────────────────────
+@bot.command(name="atriskmembers", aliases=["atrisk", "riskcheck"])
+@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+async def _cmd_at_risk_members(ctx: commands.Context):
+    """Show members currently flagged as at-risk of leaving. Staff only."""
+    guild = ctx.guild
+    if not guild:
+        return
+    now = time.time()
+    vr  = guild.get_role(VERIFIED_ROLE_ID)
+
+    at_risk_lines: list[str] = []
+    async with ctx.typing():
+        with _activity_db() as conn:
+            rows = conn.execute(
+                """SELECT user_id, join_ts, last_message, last_vc, unverified_dm_sent
+                   FROM member_activity
+                   WHERE join_ts IS NOT NULL
+                   ORDER BY join_ts DESC
+                   LIMIT 500"""
+            ).fetchall()
+
+        for row in rows:
+            uid    = row["user_id"]
+            member = guild.get_member(uid)
+            if not member or member.bot:
+                continue
+
+            is_verified   = vr in member.roles if vr else False
+            join_age      = now - row["join_ts"]
+            last_msg_age  = (now - row["last_message"]) if row["last_message"] else None
+            risks = []
+
+            # Unverified 24h+
+            if not is_verified and join_age > 86400:
+                risks.append("❌ Not Verified")
+            # Unverified 72h+ → "At Risk" tag
+            if not is_verified and join_age > 3 * 86400:
+                risks.append("🔴 At Risk (72h unverified)")
+            # Inactive 3-7 days
+            if last_msg_age and 3 * 86400 < last_msg_age <= 7 * 86400:
+                risks.append("🟡 Inactive 3d+")
+            # Inactive 7d+
+            if last_msg_age and last_msg_age > 7 * 86400:
+                risks.append("🔴 Inactive 7d+")
+            # Never sent a message
+            if not row["last_message"] and join_age > 86400:
+                risks.append("👻 Ghost Member")
+
+            if risks:
+                at_risk_lines.append(
+                    f"{member.mention} — " + " · ".join(risks)
+                )
+            if len(at_risk_lines) >= 20:
+                break
+
+    if not at_risk_lines:
+        embed = discord.Embed(
+            title="✅ No At-Risk Members",
+            description="All tracked members appear active or recently joined.",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+    else:
+        embed = discord.Embed(
+            title=f"⚠️ At-Risk Members ({len(at_risk_lines)} shown)",
+            description="\n".join(at_risk_lines[:20]),
+            color=discord.Color.from_rgb(210, 100, 0),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="Actions",
+            value=(
+                "• `!leavedm <user_id>` — send a survey DM after they leave\n"
+                "• `!memberjourney @user` — see their full tracked history\n"
+                "• Re-engagement DM auto-fires after 7d inactivity (12h loop)"
+            ),
+            inline=False,
+        )
+    embed.set_footer(text="Different Meets • Retention System")
     await ctx.send(embed=embed)
 
 
