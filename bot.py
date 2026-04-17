@@ -19823,20 +19823,17 @@ async def _post_transcript_to_channel(
     if not isinstance(tc, discord.TextChannel):
         return None
 
-    # ── Step 1: upload raw file → grab CDN URL → delete immediately ──────────
+    # ── Step 1: upload raw file — keep the message so the CDN URL never expires ─
     file_url: str | None = None
     try:
         upload_msg = await tc.send(file=transcript_file)
         if upload_msg.attachments:
             file_url = upload_msg.attachments[0].url
-        try:
-            await upload_msg.delete()
-        except discord.HTTPException:
-            pass
+        # Do NOT delete — deleting a message kills its CDN attachment URL
     except discord.HTTPException:
         pass
 
-    # ── Step 2: post clean embed + button (no file attached) ─────────────────
+    # ── Step 2: post clean embed + button directly below the file ────────────
     ref_embed = discord.Embed(
         title=f"📄 {ticket_type} Transcript",
         color=discord.Color.blurple(),
