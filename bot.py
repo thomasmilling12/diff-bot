@@ -23197,9 +23197,7 @@ def _join_build_ticket_embed(
         title="🎮 PlayStation Join Application",
         description=(
             f"**Welcome {member.mention}!**\n"
-            "Your application has been received — you're one step closer to joining DIFF! "
-            f"Upload your **{MIN_GARAGE_PHOTOS} car photos** below and a staff member will review you shortly.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━"
+            f"Send your **{MIN_GARAGE_PHOTOS} car photos** below and a staff member will review you shortly."
         ),
         color=0x3B6FE8,
         timestamp=now,
@@ -23218,45 +23216,14 @@ def _join_build_ticket_embed(
         embed.add_field(name="🎮 PSN",          value=f"`{psn_name}`",  inline=True)
     if nickname_status:
         embed.add_field(name="✏️ Nickname",     value=nickname_status,  inline=True)
-    if car_type or heard_from:
-        embed.add_field(name="\u200b",          value="\u200b",         inline=True)
     if car_type:
         embed.add_field(name="🚗 Car Style",    value=car_type,         inline=True)
     if heard_from:
         embed.add_field(name="📣 How Found Us", value=heard_from,       inline=True)
-    if car_type and not heard_from or heard_from and not car_type:
-        embed.add_field(name="\u200b",          value="\u200b",         inline=True)
-
-    # ── Steps ───────────────────────────────────────────────────
-    steps = (
-        f"✅ PSN submitted\n"
-        f"📸 **Send {MIN_GARAGE_PHOTOS} car photos** — upload your best builds right here\n"
-        f"⏳ Staff review & decision"
-    )
-    embed.add_field(
-        name="━━━━━━━━━━━━━━━━━━━━\n📋 Steps to Complete",
-        value=steps,
-        inline=False,
-    )
-
-    # ── Info row ────────────────────────────────────────────────
-    embed.add_field(
-        name="⏱️ Response Time",
-        value="24–48 hours",
-        inline=True,
-    )
     embed.add_field(
         name="📅 Applied",
         value=now.strftime("%-I:%M %p EST"),
         inline=True,
-    )
-    embed.add_field(name="\u200b", value="\u200b", inline=True)
-
-    # ── Staff note ───────────────────────────────────────────────
-    embed.add_field(
-        name="👮 Staff Actions",
-        value="Use the buttons below to **Accept**, **Deny**, request more info, or close this ticket.",
-        inline=False,
     )
 
     footer_kwargs: dict = {"text": "Different Meets • PlayStation GTA Car Meets"}
@@ -24243,7 +24210,6 @@ class _JoinClaimButton(discord.ui.Button):
 class JoinTicketView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
-        self.add_item(_JoinHoldButton())
         self.add_item(_JoinClaimButton())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
@@ -24469,23 +24435,6 @@ class JoinTicketView(discord.ui.View):
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
         await interaction.response.send_modal(JoinRequestInfoModal())
-
-    @discord.ui.button(label="Transcript", emoji="📄", style=discord.ButtonStyle.secondary, custom_id="diff_join_transcript")
-    async def transcript(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not self._staff_check(interaction):
-            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
-        if not isinstance(interaction.channel, discord.TextChannel):
-            return await interaction.response.send_message("Channel error.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            transcript_file = await _join_build_transcript(interaction.channel)
-            await interaction.followup.send(
-                "📄 Here's the current transcript for this ticket:",
-                file=transcript_file,
-                ephemeral=True,
-            )
-        except Exception as e:
-            await interaction.followup.send(f"Failed to generate transcript: {e}", ephemeral=True)
 
     @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="diff_join_close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
