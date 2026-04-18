@@ -26412,7 +26412,8 @@ async def _cmd_editpartner(ctx: commands.Context, *, name: str):
         await ctx.send("Admins only.", delete_after=6)
         return
     partners = _pp_get_partners()
-    match = next((p["name"] for p in partners if p["name"].lower() == name.strip().lower()), None)
+    clean = _normalize_quotes(name.strip()).lower()
+    match = next((p["name"] for p in partners if _normalize_quotes(p["name"]).lower() == clean), None)
     if not match:
         await ctx.send(
             f"❌ Partner **{name}** not found. Use `!partnerslist` to see exact names.",
@@ -26431,6 +26432,9 @@ async def _cmd_editpartner(ctx: commands.Context, *, name: str):
         pass
 
 
+def _normalize_quotes(s: str) -> str:
+    return s.replace("\u2018", "'").replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
+
 @bot.command(name="removepartner")
 async def _cmd_removepartner(ctx: commands.Context, *, name: str):
     if not ctx.author.guild_permissions.administrator:
@@ -26438,7 +26442,8 @@ async def _cmd_removepartner(ctx: commands.Context, *, name: str):
         return
     data   = _pp_load()
     before = len(data["partners"])
-    data["partners"] = [p for p in data["partners"] if p["name"].lower() != name.strip().lower()]
+    clean  = _normalize_quotes(name.strip()).lower()
+    data["partners"] = [p for p in data["partners"] if _normalize_quotes(p["name"]).lower() != clean]
     if len(data["partners"]) == before:
         await ctx.send(f"❌ Partner **{name}** not found.", delete_after=8)
         return
@@ -26458,7 +26463,7 @@ async def _cmd_partnerfeature(ctx: commands.Context, *, name: str):
         return
     data = _pp_load()
     idx  = next(
-        (i for i, p in enumerate(data["partners"]) if p["name"].lower() == name.strip().lower()), None
+        (i for i, p in enumerate(data["partners"]) if _normalize_quotes(p["name"]).lower() == _normalize_quotes(name.strip()).lower()), None
     )
     if idx is None:
         await ctx.send(f"❌ Partner **{name}** not found.", delete_after=8)
