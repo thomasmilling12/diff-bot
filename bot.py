@@ -101,11 +101,22 @@ UNVERIFIED_ROLE_ID = 1486011550916411512
 
 HIERARCHY_CHANNEL_ID = 1195941548240687266
 
-LEADER_ROLE_ID = 850391095845584937
-CO_LEADER_ROLE_ID = 850391378559238235
-MANAGER_ROLE_ID = 990011447193006101
-HOST_ROLE_ID = 1055823929358430248
+LEADER_ROLE_ID         = 850391095845584937
+CO_LEADER_ROLE_ID      = 850391378559238235
+MANAGER_ROLE_ID        = 990011447193006101
+HOST_ROLE_ID           = 1055823929358430248
 TICKET_SUPPORT_ROLE_ID = 1495649501522694225
+SENIOR_ADMIN_ROLE_ID   = 1034280192241307718
+ADMINISTRATOR_ROLE_ID  = 1328458892690063443
+LEAD_MOD_ROLE_ID       = 1034282163513872424
+MODERATOR_ROLE_ID      = 1328458459339030571
+JUNIOR_MOD_ROLE_ID     = 1328458204262305792
+
+# All moderation-tier roles (used for permission checks throughout the bot)
+_ALL_MOD_ROLE_IDS = {
+    SENIOR_ADMIN_ROLE_ID, ADMINISTRATOR_ROLE_ID,
+    LEAD_MOD_ROLE_ID, MODERATOR_ROLE_ID, JUNIOR_MOD_ROLE_ID,
+}
 DESIGNER_TEAM_ROLE_ID = 1128901233160245278
 CONTENT_TEAM_ROLE_ID = 1110037666147336293
 COLOR_TEAM_ROLE_ID = 1115495008670330902
@@ -23371,7 +23382,12 @@ _JOIN_MMI_INVITE       = "https://discord.gg/mmi"
 _JOIN_MMI_CHANNEL      = "https://discord.com/channels/726914118736543836/1247511301937430641"
 _JOIN_CREW_APP_CHANNEL = 1103847009653358612
 _JOIN_MMI_LOGO         = "https://images-ext-1.discordapp.net/external/uCyJGU9CHX-Qf0afXUtZPw6fsqXtkG4wLtiokIskeF0/https/cdn-longterm.mee6.xyz/plugins/embeds/images/726914118736543836/012073cc6643a7a2ed45f7217dcf453cd438c42d747b5dd91554a43eccf0f8b6.png?format=webp&quality=lossless&width=1872&height=501"
-_JOIN_STAFF_ROLE_IDS = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID}
+_JOIN_STAFF_ROLE_IDS = {
+    LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID,
+    HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID,
+    SENIOR_ADMIN_ROLE_ID, ADMINISTRATOR_ROLE_ID,
+    LEAD_MOD_ROLE_ID, MODERATOR_ROLE_ID, JUNIOR_MOD_ROLE_ID,
+}
 
 
 def _join_is_staff(member: discord.Member) -> bool:
@@ -29520,7 +29536,7 @@ class LeaveSurveyView(discord.ui.View):
 
 
 @bot.command(name="leavedm", aliases=["surveydm"])
-@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
 async def _cmd_leave_dm(ctx: commands.Context, user_id: str):
     """Send a leave survey DM to a former member by user ID. Staff only."""
     try:
@@ -30088,7 +30104,7 @@ async def _cmd_bot_health(ctx: commands.Context):
 
 # ─── !retentionstats ──────────────────────────────────────────────────────────
 @bot.command(name="retentionstats", aliases=["retstats"])
-@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
 async def _cmd_retention_stats(ctx: commands.Context):
     """Detailed retention analytics — drop-off stages, reason tags, survey results. Staff only."""
     async with ctx.typing():
@@ -30163,7 +30179,7 @@ async def _cmd_retention_stats(ctx: commands.Context):
 
 # ─── !memberjourney ───────────────────────────────────────────────────────────
 @bot.command(name="memberjourney", aliases=["journey"])
-@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
 async def _cmd_member_journey(ctx: commands.Context, target: discord.Member | None = None):
     """Show the full tracked journey for a member. Staff only. Usage: !memberjourney @user"""
     if not target:
@@ -30256,7 +30272,7 @@ async def _cmd_member_journey(ctx: commands.Context, target: discord.Member | No
 
 # ─── !atriskmembers ───────────────────────────────────────────────────────────
 @bot.command(name="atriskmembers", aliases=["atrisk", "riskcheck"])
-@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
 async def _cmd_at_risk_members(ctx: commands.Context):
     """Show members currently flagged as at-risk of leaving. Staff only."""
     guild = ctx.guild
@@ -30342,7 +30358,7 @@ async def _cmd_at_risk_members(ctx: commands.Context):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @bot.command(name="healthscore", aliases=["score", "hs"])
-@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
 async def _cmd_health_score(ctx: commands.Context, target: discord.Member | None = None):
     """Show full health score breakdown for a member. Usage: !healthscore @user"""
     member = target or ctx.author
@@ -30392,7 +30408,7 @@ async def _cmd_health_score(ctx: commands.Context, target: discord.Member | None
 
 
 @bot.command(name="healthleaderboard", aliases=["healthtop", "scoreboard"])
-@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
 async def _cmd_health_leaderboard(ctx: commands.Context):
     """Show the top 15 healthiest members by score. Staff only."""
     guild = ctx.guild
@@ -30439,7 +30455,7 @@ async def _cmd_health_leaderboard(ctx: commands.Context):
 
 
 @bot.command(name="healthstats", aliases=["tierstats", "scorestats"])
-@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
 async def _cmd_health_stats(ctx: commands.Context):
     """Show server-wide health tier breakdown. Staff only."""
     async with ctx.typing():
@@ -30488,7 +30504,7 @@ async def _cmd_health_stats(ctx: commands.Context):
 
 
 @bot.command(name="ghostmembers", aliases=["ghosts", "deadweight"])
-@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
 async def _cmd_ghost_members(ctx: commands.Context):
     """Show Ghost-tier members (score 0–39) who are unlikely to engage. Staff only."""
     guild = ctx.guild
@@ -30549,7 +30565,7 @@ async def _cmd_ghost_members(ctx: commands.Context):
 
 @bot.command(name="memberstats", aliases=["retention", "leavestats"])
 @commands.has_any_role(
-    "Founder", "Executive", "Server Operations", "Moderator", "Admin",
+    "Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator",
 )
 async def _cmd_member_stats(ctx: commands.Context):
     """Staff insights panel — join/leave analytics, inactivity, funnel drop-off."""
