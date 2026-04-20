@@ -23,7 +23,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-try:
+try: 
     import aiohttp
 except Exception:
     aiohttp = None
@@ -23240,6 +23240,45 @@ async def lockslot_cmd(
            else f"Rebuild Schedule can now reassign this slot.")
     )
     await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bot.command(name="unlockslot")
+async def _cmd_unlockslot(ctx: commands.Context, *, slot: str):
+    """Unlock a schedule slot — usage: !unlockslot Meet 3"""
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+        return await ctx.send("Leadership only.", delete_after=6)
+    valid = {"Meet 1", "Meet 2", "Meet 3"}
+    slot = slot.strip().title()
+    if slot not in valid:
+        return await ctx.send(f"❌ Invalid slot. Use: `Meet 1`, `Meet 2`, or `Meet 3`", delete_after=8)
+    schedule = _asched_load()
+    schedule["days"].setdefault(slot, {})["locked"] = False
+    _asched_save(schedule)
+    await _asched_update_panel(ctx.bot)
+    await ctx.send(f"🔓 **{slot}** is now unlocked — Rebuild Schedule can reassign it.", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+@bot.command(name="lockslot")
+async def _cmd_lockslot(ctx: commands.Context, *, slot: str):
+    """Lock a schedule slot — usage: !lockslot Meet 3"""
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+        return await ctx.send("Leadership only.", delete_after=6)
+    valid = {"Meet 1", "Meet 2", "Meet 3"}
+    slot = slot.strip().title()
+    if slot not in valid:
+        return await ctx.send(f"❌ Invalid slot. Use: `Meet 1`, `Meet 2`, or `Meet 3`", delete_after=8)
+    schedule = _asched_load()
+    schedule["days"].setdefault(slot, {})["locked"] = True
+    _asched_save(schedule)
+    await _asched_update_panel(ctx.bot)
+    await ctx.send(f"🔒 **{slot}** is now locked — Rebuild Schedule will skip it.", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
 
 
 @bot.tree.command(
