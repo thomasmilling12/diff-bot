@@ -1324,11 +1324,11 @@ def save_user_reputation(user_id: int, rep: dict):
 def current_rank_name(member: discord.Member) -> str:
     role_ids = {role.id for role in member.roles}
     if LEADER_ROLE_ID in role_ids:
-        return "Leader"
+        return "Founder"
     if CO_LEADER_ROLE_ID in role_ids:
-        return "Co Leader"
+        return "Executive"
     if MANAGER_ROLE_ID in role_ids:
-        return "Manager"
+        return "Server Operations"
     if HOST_ROLE_ID in role_ids:
         return "Host"
     if CREW_MEMBER_ROLE_ID in role_ids:
@@ -1342,8 +1342,8 @@ def check_promotion_eligibility(member: discord.Member):
     current = current_rank_name(member)
     thresholds = {
         "Crew Member": (HOST_PROMOTION_ATTENDED, HOST_PROMOTION_HOSTED, HOST_PROMOTION_REPUTATION, "Host"),
-        "Host": (MANAGER_PROMOTION_ATTENDED, MANAGER_PROMOTION_HOSTED, MANAGER_PROMOTION_REPUTATION, "Manager"),
-        "Manager": (LEADER_PROMOTION_ATTENDED, LEADER_PROMOTION_HOSTED, LEADER_PROMOTION_REPUTATION, "Leader"),
+        "Host": (MANAGER_PROMOTION_ATTENDED, MANAGER_PROMOTION_HOSTED, MANAGER_PROMOTION_REPUTATION, "Server Operations"),
+        "Server Operations": (LEADER_PROMOTION_ATTENDED, LEADER_PROMOTION_HOSTED, LEADER_PROMOTION_REPUTATION, "Founder"),
     }
     if current not in thresholds:
         return None
@@ -1993,7 +1993,7 @@ class ReviewView(discord.ui.View):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
         if not is_staff_reviewer(interaction.user):
-            return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can approve applications.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader, Executive, or Manager can approve applications.", ephemeral=True)
         record = get_app(self.app_id)
         if not record:
             return await interaction.response.send_message("Application record not found.", ephemeral=True)
@@ -2043,7 +2043,7 @@ class ReviewView(discord.ui.View):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
         if not is_staff_reviewer(interaction.user):
-            return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can deny applications.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader, Executive, or Manager can deny applications.", ephemeral=True)
         record = get_app(self.app_id)
         if not record:
             return await interaction.response.send_message("Application record not found.", ephemeral=True)
@@ -2056,7 +2056,7 @@ class ReviewView(discord.ui.View):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
         if not is_staff_reviewer(interaction.user):
-            return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can request more info.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader, Executive, or Manager can request more info.", ephemeral=True)
         record = get_app(self.app_id)
         if not record:
             return await interaction.response.send_message("Application record not found.", ephemeral=True)
@@ -5858,7 +5858,7 @@ def _hostflow_end_embed(guild: discord.Guild) -> tuple:
     )
     embed.add_field(
         name="🚗 Interested in Joining DIFF?",
-        value="Complete the **Crew Application** and message a DIFF Crew Manager for more information.",
+        value="Complete the **Crew Application** and message a DIFF Server Operations for more information.",
         inline=False,
     )
     embed.add_field(
@@ -5889,7 +5889,7 @@ def _hostflow_voice_script(host_mention: str) -> str:
         "Alright everyone, tonight's meet is now over.\n\n"
         "Thank you all for coming out and being part of DIFF tonight.\n\n"
         "If you enjoyed the meet, please leave us feedback in the Discord and check out our socials at @diff_meets.\n\n"
-        "If you're interested in joining DIFF, fill out the crew application and message a DIFF Crew Manager.\n\n"
+        "If you're interested in joining DIFF, fill out the crew application and message a DIFF Server Operations.\n\n"
         "The lobby is now a chill lobby — no killing. Have a great night, everyone."
     )
 
@@ -6854,7 +6854,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
             "Server leadership & management team.",
             [
                 (LEADER_ROLE_ID,     "👑 Leader"),
-                (CO_LEADER_ROLE_ID,  "🛡️ Co-Leader"),
+                (CO_LEADER_ROLE_ID,  "🛡️ Executive"),
                 (MANAGER_ROLE_ID,    "🔴 Manager"),
             ],
         ),
@@ -7709,7 +7709,7 @@ def build_meet_info_embed() -> discord.Embed:
         value=(
             f"▢ Warnings are issued for breaking rules listed in {meet_rules_mention}.\n"
             "▢ **Two warnings = ban** from the server and all meets.\n"
-            "▢ You'll receive a DM from a Crew Manager explaining the reason.\n"
+            "▢ You'll receive a DM from a Server Operations explaining the reason.\n"
             "▢ **Ban Appeals:** you may appeal after **30 days**. Hosts & Management vote on every appeal."
         ),
         inline=False,
@@ -8533,7 +8533,7 @@ def _build_crew_topic_embed(topic: str) -> discord.Embed:
             title="📌 Crew Positions",
             description=(
                 "Once you're a member, you can try out for these positions. "
-                "Contact the **Leader or Co-Leader** to express interest.\n\n"
+                "Contact the **Leader or Executive** to express interest.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=discord.Color.purple(),
@@ -8561,7 +8561,7 @@ def _build_crew_topic_embed(topic: str) -> discord.Embed:
         )
         embed.add_field(name="\u200b", value="\u200b", inline=True)
         embed.add_field(
-            name="📋 Crew Managers",
+            name="📋 Server Operations",
             value="Help run server operations and support management.",
             inline=True,
         )
@@ -8923,7 +8923,7 @@ class UnifiedCrewHubView(discord.ui.View):
                 title="📋 DIFF Roles & Responsibility",
                 description=(
                     "**Leader** — Oversees the full crew, staff direction, and major decisions.\n\n"
-                    "**Co-Leader / Manager** — Helps run operations, reviews activity, and supports hosts and staff.\n\n"
+                    "**Executive / Manager** — Helps run operations, reviews activity, and supports hosts and staff.\n\n"
                     "**Host** — Runs meets, organizes the lobby, helps with attendance, and keeps events smooth.\n\n"
                     "**Crew Member** — Represents DIFF properly, does roll calls, follows rules, votes on colors, and stays active.\n\n"
                     "**What DIFF expects from everyone:**\n"
@@ -9244,9 +9244,9 @@ def _activity_promotion_suggestion(member: discord.Member, stats: dict) -> Optio
     if CREW_MEMBER_ROLE_ID in role_ids and attended >= 5:
         return "Host"
     if HOST_ROLE_ID in role_ids and attended >= 10 and hosted >= 3:
-        return "Manager"
+        return "Server Operations"
     if MANAGER_ROLE_ID in role_ids and attended >= 18 and hosted >= 6:
-        return "Co-Leader"
+        return "Executive"
     return None
 
 
@@ -15413,7 +15413,7 @@ async def refresh_live_attendance_cmd(interaction: discord.Interaction):
 @app_commands.describe(application_id="Application ID, e.g. 0001")
 async def application_lookup(interaction: discord.Interaction, application_id: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this command.", ephemeral=True)
     record = get_app(application_id)
     if not record:
         return await interaction.response.send_message(f"No application found with ID #{application_id}.", ephemeral=True)
@@ -15432,7 +15432,7 @@ async def application_lookup(interaction: discord.Interaction, application_id: s
 @bot.tree.command(name="application_stats", description="View DIFF application totals (staff only)")
 async def application_stats(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this command.", ephemeral=True)
     app_data = load_apps()
     apps = list(app_data.get("applications", {}).values())
     pending = sum(1 for a in apps if a.get("status") == "Pending")
@@ -15449,7 +15449,7 @@ async def application_stats(interaction: discord.Interaction):
 @bot.tree.command(name="staffreplypanel", description="Post a staff response panel in the current channel (staff only)")
 async def staffreplypanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this command.", ephemeral=True)
     embed = discord.Embed(
         title="📩 DIFF Staff Response System",
         description=(
@@ -15466,7 +15466,7 @@ async def staffreplypanel(interaction: discord.Interaction):
 @discord.app_commands.describe(member="The member who attended", meet_name="Name of the meet")
 async def recordattendance(interaction: discord.Interaction, member: discord.Member, meet_name: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     await record_meet_attendance(interaction.guild, member, meet_name, host_member=interaction.user)
     await interaction.followup.send(f"✅ Recorded attendance for {member.mention} at **{meet_name}**.", ephemeral=True)
@@ -15476,7 +15476,7 @@ async def recordattendance(interaction: discord.Interaction, member: discord.Mem
 @discord.app_commands.describe(member="The member who hosted", meet_name="Name of the meet")
 async def recordhost(interaction: discord.Interaction, member: discord.Member, meet_name: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     await record_meet_host(interaction.guild, member, meet_name)
     await interaction.followup.send(f"✅ Recorded {member.mention} as host for **{meet_name}**.", ephemeral=True)
@@ -15486,7 +15486,7 @@ async def recordhost(interaction: discord.Interaction, member: discord.Member, m
 @discord.app_commands.describe(member="Target member", amount="Positive to add, negative to remove", reason="Reason for the change")
 async def giverep(interaction: discord.Interaction, member: discord.Member, amount: int, reason: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     await update_member_reputation(interaction.guild, member, amount, reason, given_by=interaction.user)
     direction = "Added" if amount >= 0 else "Removed"
@@ -15497,7 +15497,7 @@ async def giverep(interaction: discord.Interaction, member: discord.Member, amou
 @discord.app_commands.describe(member="The member to look up")
 async def memberstats(interaction: discord.Interaction, member: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     embed = build_member_stats_embed(member)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -15513,7 +15513,7 @@ async def mystats(interaction: discord.Interaction):
 @bot.tree.command(name="postattendancepanel", description="Post the meet attendance panel (staff only)")
 async def postattendancepanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     embed = discord.Embed(
         title="DIFF Meet Attendance System",
         description=(
@@ -15556,14 +15556,14 @@ async def rankinfo(interaction: discord.Interaction):
 @bot.tree.command(name="weeklyrollcall", description="Post the weekly DIFF roll call with RSVP buttons (staff only)")
 async def weeklyrollcall(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     await interaction.response.send_modal(WeeklyRollCallModal())
 
 
 @bot.tree.command(name="staffdashboard", description="Post the DIFF staff recruitment dashboard (staff only)")
 async def staffdashboard(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this command.", ephemeral=True)
     await interaction.channel.send(embed=build_dashboard_embed(), view=DIFFDashboardView())
     await interaction.response.send_message("✅ Dashboard posted.", ephemeral=True)
 
@@ -16061,7 +16061,7 @@ class SubmissionActionView(discord.ui.View):
     @discord.ui.button(label="Approve Color", style=discord.ButtonStyle.success, emoji="🏆", custom_id="diff_approve_color_button_v3")
     async def approve_color_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
-            return await interaction.response.send_message("Only Leaders, Co-Leaders, or Managers can approve colors.", ephemeral=True)
+            return await interaction.response.send_message("Only Leaders, Executives, or Managers can approve colors.", ephemeral=True)
         data = _cs_load()
         submission = data["submissions"].get(str(interaction.message.id))
         if not submission:
@@ -16078,7 +16078,7 @@ class SubmissionActionView(discord.ui.View):
     @discord.ui.button(label="Lock Submission", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="diff_lock_submission_button_v3")
     async def lock_submission_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
-            return await interaction.response.send_message("Only Leaders, Co-Leaders, or Managers can lock submissions.", ephemeral=True)
+            return await interaction.response.send_message("Only Leaders, Executives, or Managers can lock submissions.", ephemeral=True)
         data = _cs_load()
         submission = data["submissions"].get(str(interaction.message.id))
         if not submission:
@@ -16200,7 +16200,7 @@ async def color_stats(interaction: discord.Interaction):
 @bot.tree.command(name="force-color-vote", description="Manually post the weekly color vote (leadership only)")
 async def force_color_vote(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
-        return await interaction.response.send_message("Leaders, Co-Leaders, and Managers only.", ephemeral=True)
+        return await interaction.response.send_message("Leaders, Executives, and Managers only.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     success = await _cs_try_post_weekly_vote(interaction.guild)
     if success:
@@ -16215,7 +16215,7 @@ async def force_color_vote(interaction: discord.Interaction):
 @bot.tree.command(name="force-color-winner", description="Manually close the vote and post the winner (leadership only)")
 async def force_color_winner(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
-        return await interaction.response.send_message("Leaders, Co-Leaders, and Managers only.", ephemeral=True)
+        return await interaction.response.send_message("Leaders, Executives, and Managers only.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     success = await _cs_try_close_vote(interaction.guild)
     if success:
@@ -16655,7 +16655,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
         embed = discord.Embed(
             title="📌 Crew Positions",
             description=(
-                "If the applicant is interested in a role, direct them to contact the **Leader or Co-Leader**.\n\n"
+                "If the applicant is interested in a role, direct them to contact the **Leader or Executive**.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=discord.Color.purple(),
@@ -16663,7 +16663,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
         embed.add_field(
             name="Available Positions",
             value=(
-                "📋 **Crew Managers** — help run operations and the server\n"
+                "📋 **Server Operations** — help run operations and the server\n"
                 "🏁 **Crew Meet Hosts** — plan and run crew meets\n"
                 "🎥 **Crew Content Creators** — capture and share crew content\n"
                 "🎨 **Crew Designer Team** — handle graphics and branding\n"
@@ -16699,7 +16699,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
             if not guild.get_role(LEADER_ROLE_ID):
                 leader_text = "**Leader** *(role not set)*"
             if not guild.get_role(CO_LEADER_ROLE_ID):
-                co_leader_text = "**Co-Leader** *(role not set)*"
+                co_leader_text = "**Executive** *(role not set)*"
             if not guild.get_role(MANAGER_ROLE_ID):
                 manager_text = "**Managers** *(role not set)*"
         embed = discord.Embed(
@@ -16712,7 +16712,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
             color=discord.Color.gold(),
         )
         embed.add_field(name="👑 Leader",      value=leader_text,    inline=False)
-        embed.add_field(name="🛡️ Co-Leader",   value=co_leader_text, inline=False)
+        embed.add_field(name="🛡️ Executive",   value=co_leader_text, inline=False)
         embed.add_field(name="📋 Managers",    value=manager_text,   inline=False)
         embed.add_field(
             name="📅 Founded",
@@ -17123,7 +17123,7 @@ class InterviewOutcomeView(discord.ui.View):
             return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
         if not _interview_outcome_can_manage(interaction.user):
             return await interaction.response.send_message(
-                "Only Leader, Co-Leader, or Manager can use this outcome panel.", ephemeral=True
+                "Only Leader, Executive, or Manager can use this outcome panel.", ephemeral=True
             )
         await interaction.response.send_modal(ApplicantLookupModal("accept"))
 
@@ -17139,7 +17139,7 @@ class InterviewOutcomeView(discord.ui.View):
             return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
         if not _interview_outcome_can_manage(interaction.user):
             return await interaction.response.send_message(
-                "Only Leader, Co-Leader, or Manager can use this outcome panel.", ephemeral=True
+                "Only Leader, Executive, or Manager can use this outcome panel.", ephemeral=True
             )
         await interaction.response.send_modal(ApplicantLookupModal("deny"))
 
@@ -17188,12 +17188,12 @@ async def _post_or_refresh_interview_outcome_panel(channel: discord.TextChannel)
     _interview_outcome_save({"channel_id": channel.id, "message_id": msg.id})
 
 
-@bot.tree.command(name="post-interview-results-panel", description="Post the accept/deny interview results panel in this channel (Leader/Co-Leader/Manager only)")
+@bot.tree.command(name="post-interview-results-panel", description="Post the accept/deny interview results panel in this channel (Leader/Executive/Manager only)")
 async def post_interview_results_panel(interaction: discord.Interaction):
     if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
         return await interaction.response.send_message("Run this command in the ticket channel where you want the panel.", ephemeral=True)
     if not isinstance(interaction.user, discord.Member) or not _interview_outcome_can_manage(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can post this panel.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can post this panel.", ephemeral=True)
     try:
         await interaction.response.defer(ephemeral=True)
     except discord.NotFound:
@@ -18398,15 +18398,15 @@ ATT_CONTROL_HUB_FILE = os.path.join(DATA_FOLDER, "diff_control_hub_panel.json")
 
 ATT_PROMO_PATH = {
     "Crew Member": "Host",
-    "Host": "Manager",
-    "Manager": "Co-Leader",
-    "Co-Leader": "Leader",
+    "Host": "Server Operations",
+    "Server Operations": "Executive",
+    "Executive": "Founder",
 }
 ATT_PROMO_THRESHOLDS = {
     "Crew Member": 5,
     "Host": 10,
-    "Manager": 18,
-    "Co-Leader": 30,
+    "Server Operations": 18,
+    "Executive": 30,
 }
 ATT_PROMO_RATE_MIN = 60.0
 
@@ -18493,7 +18493,7 @@ def _rsvp_build_embed(meet: RsvpMeet) -> discord.Embed:
 
 
 def _rsvp_top_role(member: discord.Member) -> str:
-    priority = ["Leader", "Co-Leader", "Manager", "Host", "Crew Member"]
+    priority = ["Founder", "Executive", "Server Operations", "Host", "Crew Member"]
     names = {r.name for r in member.roles}
     for name in priority:
         if name in names:
@@ -19176,7 +19176,7 @@ async def my_stats(interaction: discord.Interaction, member: Optional[discord.Me
 async def clear_history(interaction: discord.Interaction, amount: int = 100):
     _leadership_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID}
     if not isinstance(interaction.user, discord.Member) or not any(r.id in _leadership_ids for r in interaction.user.roles):
-        return await interaction.response.send_message("Only Leader or Co-Leader can use this command.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader or Executive can use this command.", ephemeral=True)
     if not isinstance(interaction.channel, discord.TextChannel):
         return await interaction.response.send_message("This command can only be used in a text channel.", ephemeral=True)
     if amount < 0 or amount > 1000:
@@ -24579,7 +24579,7 @@ class JoinTicketView(discord.ui.View):
     @discord.ui.button(label="Accept", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_join_accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._staff_check(interaction):
-            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader / Executive / Manager can use this button.", ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
         uid_raw = _join_parse_user_id(interaction.channel.topic)
@@ -24703,7 +24703,7 @@ class JoinTicketView(discord.ui.View):
             )
             onboard_embed.add_field(
                 name="❓ Questions?",
-                value="Open a support ticket in the server or DM a Leader/Co-Leader directly.",
+                value="Open a support ticket in the server or DM a Leader/Executive directly.",
                 inline=False,
             )
             onboard_embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
@@ -24768,7 +24768,7 @@ class JoinTicketView(discord.ui.View):
     @discord.ui.button(label="Deny", emoji="❌", style=discord.ButtonStyle.danger, custom_id="diff_join_deny")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._staff_check(interaction):
-            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader / Executive / Manager can use this button.", ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
         await interaction.response.send_message(
@@ -24780,7 +24780,7 @@ class JoinTicketView(discord.ui.View):
     @discord.ui.button(label="Request Info", emoji="📋", style=discord.ButtonStyle.primary, custom_id="diff_join_request_info")
     async def request_info(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._staff_check(interaction):
-            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader / Executive / Manager can use this button.", ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
         await interaction.response.send_modal(JoinRequestInfoModal())
@@ -24788,7 +24788,7 @@ class JoinTicketView(discord.ui.View):
     @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="diff_join_close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._staff_check(interaction):
-            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can close this ticket.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader / Executive / Manager can close this ticket.", ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
 
@@ -29519,7 +29519,7 @@ class LeaveSurveyView(discord.ui.View):
 
 
 @bot.command(name="leavedm", aliases=["surveydm"])
-@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
 async def _cmd_leave_dm(ctx: commands.Context, user_id: str):
     """Send a leave survey DM to a former member by user ID. Staff only."""
     try:
@@ -30066,7 +30066,7 @@ async def _cmd_bot_health(ctx: commands.Context):
 
 # ─── !retentionstats ──────────────────────────────────────────────────────────
 @bot.command(name="retentionstats", aliases=["retstats"])
-@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
 async def _cmd_retention_stats(ctx: commands.Context):
     """Detailed retention analytics — drop-off stages, reason tags, survey results. Staff only."""
     async with ctx.typing():
@@ -30141,7 +30141,7 @@ async def _cmd_retention_stats(ctx: commands.Context):
 
 # ─── !memberjourney ───────────────────────────────────────────────────────────
 @bot.command(name="memberjourney", aliases=["journey"])
-@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
 async def _cmd_member_journey(ctx: commands.Context, target: discord.Member | None = None):
     """Show the full tracked journey for a member. Staff only. Usage: !memberjourney @user"""
     if not target:
@@ -30234,7 +30234,7 @@ async def _cmd_member_journey(ctx: commands.Context, target: discord.Member | No
 
 # ─── !atriskmembers ───────────────────────────────────────────────────────────
 @bot.command(name="atriskmembers", aliases=["atrisk", "riskcheck"])
-@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
 async def _cmd_at_risk_members(ctx: commands.Context):
     """Show members currently flagged as at-risk of leaving. Staff only."""
     guild = ctx.guild
@@ -30320,7 +30320,7 @@ async def _cmd_at_risk_members(ctx: commands.Context):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @bot.command(name="healthscore", aliases=["score", "hs"])
-@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
 async def _cmd_health_score(ctx: commands.Context, target: discord.Member | None = None):
     """Show full health score breakdown for a member. Usage: !healthscore @user"""
     member = target or ctx.author
@@ -30370,7 +30370,7 @@ async def _cmd_health_score(ctx: commands.Context, target: discord.Member | None
 
 
 @bot.command(name="healthleaderboard", aliases=["healthtop", "scoreboard"])
-@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
 async def _cmd_health_leaderboard(ctx: commands.Context):
     """Show the top 15 healthiest members by score. Staff only."""
     guild = ctx.guild
@@ -30417,7 +30417,7 @@ async def _cmd_health_leaderboard(ctx: commands.Context):
 
 
 @bot.command(name="healthstats", aliases=["tierstats", "scorestats"])
-@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
 async def _cmd_health_stats(ctx: commands.Context):
     """Show server-wide health tier breakdown. Staff only."""
     async with ctx.typing():
@@ -30466,7 +30466,7 @@ async def _cmd_health_stats(ctx: commands.Context):
 
 
 @bot.command(name="ghostmembers", aliases=["ghosts", "deadweight"])
-@commands.has_any_role("Leader", "Co-Leader", "Manager", "Moderator", "Admin")
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Moderator", "Admin")
 async def _cmd_ghost_members(ctx: commands.Context):
     """Show Ghost-tier members (score 0–39) who are unlikely to engage. Staff only."""
     guild = ctx.guild
@@ -30527,7 +30527,7 @@ async def _cmd_ghost_members(ctx: commands.Context):
 
 @bot.command(name="memberstats", aliases=["retention", "leavestats"])
 @commands.has_any_role(
-    "Leader", "Co-Leader", "Manager", "Moderator", "Admin",
+    "Founder", "Executive", "Server Operations", "Moderator", "Admin",
 )
 async def _cmd_member_stats(ctx: commands.Context):
     """Staff insights panel — join/leave analytics, inactivity, funnel drop-off."""
