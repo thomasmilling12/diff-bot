@@ -12506,6 +12506,177 @@ async def _om_restore_on_ready() -> None:
                     pass
 
 
+# ── Theme Guide ─────────────────────────────────────────────────────────────
+# Keys are lowercase keywords; values are the "Accepted Cars" description shown
+# in meet announcements. Add/edit entries here to update all announcements.
+_THEME_GUIDE: dict[str, tuple[str, str]] = {
+    # keyword(s) → (display name, accepted cars text)
+    "dealership": (
+        "Dealership / Showroom",
+        "• Stock or near-stock vehicles — showroom-ready builds only\n"
+        "• No heavy visual mods (no wings, cages, widebody kits unless factory-style)\n"
+        "• Clean colours — solid, metallic, or pearl only\n"
+        "• Think: a car you'd see on a real dealership floor",
+    ),
+    "jdm": (
+        "JDM",
+        "• Japanese-branded vehicles only (Annis, Karin, Dinka, etc.)\n"
+        "• Clean builds — sport, stance, or stock fitment\n"
+        "• Examples: Elegy Retro/RH8, Sultan RS/Classic, Futo GTX, Jester Classic, "
+        "Calico GTF, ZR350, Savestra, Previon\n"
+        "• No heavily armoured or weaponised variants",
+    ),
+    "euro": (
+        "Euro / European",
+        "• European-branded vehicles only (Pegassi, Grotti, Benefactor, Übermacht, "
+        "Dewbauchee, Lampadati, Pfister, etc.)\n"
+        "• Examples: Zentorno, Turismo R, Carbonizzare, Schafter, Sentinel, Feltzer, "
+        "Massacro, Felon, Furore\n"
+        "• Builds should feel refined — clean or tastefully modified",
+    ),
+    "muscle": (
+        "American Muscle",
+        "• American-branded vehicles only (Vapid, Bravado, Albany, Declasse, etc.)\n"
+        "• Classic or modern muscle body styles\n"
+        "• Examples: Dominator, Gauntlet, Vigero, Sabre Turbo, Ellie, Greenwood, "
+        "Clique, Mamba, Banshee\n"
+        "• Builds should have that raw, powerful American look",
+    ),
+    "classic": (
+        "Classic / Vintage",
+        "• Vehicles with a vintage or retro body style (pre-1980s aesthetic)\n"
+        "• Examples: Peyote, Buccaneer, Manana, Roosevelt, Tornado, Coquette Classic, "
+        "Bel-Air style cars, Stirling GT\n"
+        "• Keep the old-school vibe — no modern body kits",
+    ),
+    "lowrider": (
+        "Lowrider",
+        "• Lowrider or Benny's Originals-style builds\n"
+        "• Must have a lowered, slammed, or hydraulic look\n"
+        "• Examples: Buccaneer Custom, Moonbeam Custom, Slamvan Custom, Faction "
+        "Custom, Voodoo, Tornado Custom\n"
+        "• Chrome, candy, two-tone, and wire wheels encouraged",
+    ),
+    "stance": (
+        "Stance",
+        "• Any platform — the build must be visually stanced\n"
+        "• Aggressively lowered, stretched tyres, negative camber aesthetic\n"
+        "• Clean wide-body or flush fitment builds welcomed\n"
+        "• No lifted or stock-height vehicles",
+    ),
+    "drift": (
+        "Drift",
+        "• Rear-wheel-drive vehicles with a drift build aesthetic\n"
+        "• Examples: Karin Futo GTX, Annis ZR350, Elegy Retro Custom, Willard "
+        "Faction, Warrener HKR\n"
+        "• Roll cages, bucket seats, and drift liveries encouraged\n"
+        "• No all-wheel-drive supercars",
+    ),
+    "exotic": (
+        "Exotic / Supercar",
+        "• Supercar or hypercar class vehicles\n"
+        "• Examples: Zentorno, Vacca, Osiris, Turismo R, X80 Proto, Tempesta, "
+        "Itali RSX, T20, Reaper, Overflod Entity\n"
+        "• Builds should look exotic — no plain/unmodified stock supers",
+    ),
+    "supercar": (
+        "Exotic / Supercar",
+        "• Supercar or hypercar class vehicles\n"
+        "• Examples: Zentorno, Vacca, Osiris, Turismo R, X80 Proto, Tempesta, "
+        "Itali RSX, T20, Reaper, Overflod Entity\n"
+        "• Builds should look exotic — no plain/unmodified stock supers",
+    ),
+    "truck": (
+        "Truck / SUV",
+        "• Trucks, pickups, and SUV-class vehicles\n"
+        "• Examples: Sandking, Bison, Contender, FQ2, Granger, Baller, "
+        "Landstalker, Dubsta, Rebla GTS\n"
+        "• Lifted, stock, or lowered all welcome — keep it clean",
+    ),
+    "suv": (
+        "Truck / SUV",
+        "• Trucks, pickups, and SUV-class vehicles\n"
+        "• Examples: Sandking, Bison, Contender, FQ2, Granger, Baller, "
+        "Landstalker, Dubsta, Rebla GTS\n"
+        "• Lifted, stock, or lowered all welcome — keep it clean",
+    ),
+    "luxury": (
+        "Luxury",
+        "• High-end sedans, grand tourers, and luxury SUVs\n"
+        "• Examples: Enus Stafford, Paragon R, Windsor, Cognoscenti, Benefactor "
+        "Schafter V12, Übermacht Oracle, Rolls-style builds\n"
+        "• Refined colours and tasteful mods only — no race liveries",
+    ),
+    "tuner": (
+        "Import / Tuner",
+        "• Modified sport compacts and tuner-class vehicles\n"
+        "• Tuner update cars strongly recommended: Calico GTF, Annis Euros, "
+        "Dinka RT3000, Pfister Growler, Karin Previon, Fathom FR36\n"
+        "• Aftermarket-style builds — body kits, splitters, and liveries welcome",
+    ),
+    "import": (
+        "Import / Tuner",
+        "• Modified sport compacts and tuner-class vehicles\n"
+        "• Tuner update cars strongly recommended: Calico GTF, Annis Euros, "
+        "Dinka RT3000, Pfister Growler, Karin Previon, Fathom FR36\n"
+        "• Aftermarket-style builds — body kits, splitters, and liveries welcome",
+    ),
+    "open": (
+        "Open Class",
+        "• Any vehicle is welcome — no brand or class restrictions\n"
+        "• Must still follow standard DIFF meet rules and standards\n"
+        "• Keep your build clean and appropriate for the meet",
+    ),
+    "show": (
+        "Show Meet",
+        "• Any vehicle — but presentation is everything\n"
+        "• This is a display meet: clean, detailed, well-thought-out builds only\n"
+        "• Matching crew colour, livery, or coordinated colour schemes encouraged",
+    ),
+    "sport": (
+        "Sport / Sport Compact",
+        "• Sport or sport compact class vehicles\n"
+        "• Clean, modified, or stock sport builds\n"
+        "• Examples: Comet, Elegy, Jester, Banshee, Lynx, Jugular, Issi Sport\n"
+        "• No heavyweight muscle or SUVs",
+    ),
+    "offroad": (
+        "Off-Road",
+        "• Off-road or rally-built vehicles\n"
+        "• Examples: Sandking, Kamacho, Caracara, Dubsta 6x6, Brawler, Riata\n"
+        "• Lifted suspension, off-road tyres, and muddy liveries welcome",
+    ),
+    "van": (
+        "Vans / Wagons",
+        "• Van or wagon-bodied vehicles\n"
+        "• Examples: Moonbeam, Youga, Speedo, Minivan, Pony, Journey\n"
+        "• Custom builds, slammed vans, or stock — all welcome",
+    ),
+    "motorcycle": (
+        "Motorcycles / Bikes",
+        "• Motorcycles and bikes only — no cars or trucks\n"
+        "• Examples: Bati 801, Shotaro, Innovation, Hakuchou, Lectro, Hexer\n"
+        "• Sport, cruiser, chopper, or café racer styles all welcome",
+    ),
+    "bike": (
+        "Motorcycles / Bikes",
+        "• Motorcycles and bikes only — no cars or trucks\n"
+        "• Examples: Bati 801, Shotaro, Innovation, Hakuchou, Lectro, Hexer\n"
+        "• Sport, cruiser, chopper, or café racer styles all welcome",
+    ),
+}
+
+def _get_theme_guide(theme: str) -> tuple[str, str] | None:
+    """Return (display_name, accepted_cars_text) if the theme matches a guide entry, else None."""
+    if not theme:
+        return None
+    lower = theme.lower()
+    for keyword, entry in _THEME_GUIDE.items():
+        if keyword in lower:
+            return entry
+    return None
+
+
 def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str = "") -> discord.Embed:
     embed = discord.Embed(
         title="🏁 DIFF Official Meet",
@@ -12535,11 +12706,20 @@ def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str
         ),
         inline=False,
     )
-    embed.add_field(
-        name="🚗 Style Direction",
-        value="Choose vehicles that match tonight's theme and represent DIFF properly.",
-        inline=False,
-    )
+    guide = _get_theme_guide(theme)
+    if guide:
+        _display_name, _accepted = guide
+        embed.add_field(
+            name=f"✅ Accepted Cars — {_display_name}",
+            value=_accepted,
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="🚗 Style Direction",
+            value="Choose vehicles that match tonight's theme and represent DIFF properly.",
+            inline=False,
+        )
     if notes:
         embed.add_field(name="📝 Staff Notes", value=notes, inline=False)
     embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -13422,6 +13602,16 @@ def _popup_build_meet_embed(
     )
     if notes:
         embed.add_field(name="📝 Notes", value=notes, inline=False)
+
+    if not is_ended:
+        guide = _get_theme_guide(theme or "")
+        if guide:
+            _display_name, _accepted = guide
+            embed.add_field(
+                name=f"✅ Accepted Cars — {_display_name}",
+                value=_accepted,
+                inline=False,
+            )
 
     footer = f"DIFF Pop-Up Meet #{meet_id}"
     if is_ended:
