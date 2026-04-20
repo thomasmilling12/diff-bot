@@ -29143,6 +29143,22 @@ async def _before_anniversary_check():
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: Weekly host availability DM summary
 # ═══════════════════════════════════════════════════════════════════════════════
+_HOST_DIGEST_SENT_FILE = os.path.join(DATA_FOLDER, "diff_host_digest_sent.json")
+
+def _host_digest_already_sent_today() -> bool:
+    """Return True if the digest was already sent today (prevents double-send on restart)."""
+    try:
+        if os.path.exists(_HOST_DIGEST_SENT_FILE):
+            with open(_HOST_DIGEST_SENT_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("last_sent") == datetime.now(timezone.utc).date().isoformat()
+    except Exception:
+        pass
+    return False
+
+def _host_digest_mark_sent() -> None:
+    with open(_HOST_DIGEST_SENT_FILE, "w", encoding="utf-8") as f:
+        json.dump({"last_sent": datetime.now(timezone.utc).date().isoformat()}, f)
 
 async def __host_avail_weekly_dm_task_logic():
     """Every Monday, DM leaders/managers with a host RSVP availability summary."""
@@ -29151,17 +29167,23 @@ async def __host_avail_weekly_dm_task_logic():
     if now.weekday() != 0:
         return
 
+    # Prevent double-send when bot restarts on the same Monday
+    if _host_digest_already_sent_today():
+        return
+
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
 
     rsvp_data = _hrsvp_load()
     lines = []
+    total_responses = 0
     for day in _HRSVP_DAYS:
         slot   = rsvp_data.get(day, {})
         yes    = slot.get("yes", [])
         no     = slot.get("no", [])
         maybe  = slot.get("maybe", [])
+        total_responses += len(yes) + len(no) + len(maybe)
 
         yes_names = []
         for entry in yes:
@@ -29181,6 +29203,11 @@ async def __host_avail_weekly_dm_task_logic():
             f"  ❌ Unavailable ({len(no)}): {', '.join(no_names) or '—'}"
         )
 
+    # Skip the DM entirely if no hosts have responded yet
+    if total_responses == 0:
+        _host_digest_mark_sent()
+        return
+
     dm_embed = discord.Embed(
         title="📅 Weekly Host Availability Summary",
         description="\n\n".join(lines) or "No availability data.",
@@ -29188,6 +29215,8 @@ async def __host_avail_weekly_dm_task_logic():
         timestamp=datetime.now(timezone.utc),
     )
     dm_embed.set_footer(text="DIFF Meets • Weekly Host Digest")
+
+    _host_digest_mark_sent()
 
     for role_id in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID):
         role = guild.get_role(role_id)
