@@ -23569,13 +23569,7 @@ def _join_build_ticket_embed(
 
     # ── Application Details ──────────────────────────────────────
     if psn_name:
-        embed.add_field(name="🎮 PSN",          value=f"`{psn_name}`",  inline=True)
-    if nickname_status:
-        embed.add_field(name="✏️ Nickname",     value=nickname_status,  inline=True)
-    if car_type:
-        embed.add_field(name="🚗 Car Style",    value=car_type,         inline=True)
-    if heard_from:
-        embed.add_field(name="📣 How Found Us", value=heard_from,       inline=True)
+        embed.add_field(name="🎮 PSN", value=f"`{psn_name}`", inline=True)
     embed.add_field(
         name="📅 Applied",
         value=now.strftime("%-I:%M %p EST"),
