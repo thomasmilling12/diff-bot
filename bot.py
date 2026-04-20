@@ -105,6 +105,7 @@ LEADER_ROLE_ID = 850391095845584937
 CO_LEADER_ROLE_ID = 850391378559238235
 MANAGER_ROLE_ID = 990011447193006101
 HOST_ROLE_ID = 1055823929358430248
+TICKET_SUPPORT_ROLE_ID = 1495649501522694225
 DESIGNER_TEAM_ROLE_ID = 1128901233160245278
 CONTENT_TEAM_ROLE_ID = 1110037666147336293
 COLOR_TEAM_ROLE_ID = 1115495008670330902
@@ -19301,7 +19302,7 @@ _TICKET_TYPES: dict[str, _TicketType] = {
             "• What happened and when\n"
             "• Screenshots or video evidence"
         ),
-        ping_role_id=MANAGER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "support": _TicketType(
         key="support",
@@ -19318,7 +19319,7 @@ _TICKET_TYPES: dict[str, _TicketType] = {
             "• Channel / role access issues\n"
             "• Anything that doesn't fit another category"
         ),
-        ping_role_id=HOST_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "apply": _TicketType(
         key="apply",
@@ -19331,7 +19332,7 @@ _TICKET_TYPES: dict[str, _TicketType] = {
             "mature, and ready to contribute to the community.\n\n"
             "**Leadership will review your answers and respond here.**"
         ),
-        ping_role_id=CO_LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     # ── Appeal sub-types (handled via AppealDropdown) ──────────────────────────
     "warning": _TicketType(
@@ -19339,42 +19340,42 @@ _TICKET_TYPES: dict[str, _TicketType] = {
         description="Appeal a warning or write-up you received.",
         title="Warning Appeal Ticket",
         long_description="Appeal a warning issued by staff.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "timeout": _TicketType(
         key="timeout", label="⏰ Timeout Appeal", emoji="⏰",
         description="Appeal a timeout or mute applied to your account.",
         title="Timeout Appeal Ticket",
         long_description="Appeal a timeout or mute.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "ban": _TicketType(
         key="ban", label="🔨 Ban Appeal", emoji="🔨",
         description="Appeal a ban and request reinstatement.",
         title="Ban Appeal Ticket",
         long_description="Appeal a ban from the server.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "kick": _TicketType(
         key="kick", label="👢 Kick Review", emoji="👢",
         description="Request a review of a kick from the server.",
         title="Kick Review Ticket",
         long_description="Request review of a kick.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "build": _TicketType(
         key="build", label="🚗 Build Denial Appeal", emoji="🚙",
         description="Appeal a build denial at a DIFF meet.",
         title="Build Denial Appeal Ticket",
         long_description="Appeal a build denial.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "exclusion": _TicketType(
         key="exclusion", label="🏁 Meet Exclusion Appeal", emoji="🏁",
         description="Appeal being excluded from a meet or event.",
         title="Meet Exclusion Appeal Ticket",
         long_description="Appeal a meet exclusion.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
 }
 
@@ -23939,10 +23940,9 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
             )
 
         ping_parts = [interaction.user.mention]
-        for rid in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID):
-            r = interaction.guild.get_role(rid)
-            if r:
-                ping_parts.append(r.mention)
+        _ts_role = interaction.guild.get_role(TICKET_SUPPORT_ROLE_ID)
+        if _ts_role:
+            ping_parts.append(_ts_role.mention)
         await channel.send(
             content=" ".join(ping_parts),
             embed=_join_build_ticket_embed(
