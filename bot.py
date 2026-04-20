@@ -19400,6 +19400,19 @@ _TICKET_TYPES: dict[str, _TicketType] = {
         ),
         ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
+    "mod_apply": _TicketType(
+        key="mod_apply",
+        label="🛡️ Moderator Application",
+        emoji="🛡️",
+        description="Apply to join the DIFF moderation team.",
+        title="Moderator Application",
+        long_description=(
+            "Apply to become a DIFF moderator.\n\n"
+            "All new mods start as **Junior Moderator** and work up through the ranks. "
+            "You'll be asked 5 short questions. Leadership will review and respond here."
+        ),
+        ping_role_id=LEADER_ROLE_ID,
+    ),
 }
 
 
@@ -20261,6 +20274,97 @@ class _TicketSupportAppModal(discord.ui.Modal, title="Ticket Support Application
         )
 
 
+class _ModAppModal(discord.ui.Modal, title="Moderator Application"):
+    time_in_diff = discord.ui.TextInput(
+        label="How long have you been in DIFF?",
+        placeholder="e.g. 6 months, 1 year...",
+        max_length=100,
+        style=discord.TextStyle.short,
+    )
+    activity = discord.ui.TextInput(
+        label="How active are you per week?",
+        placeholder="e.g. Daily, 4–5 days a week...",
+        max_length=100,
+        style=discord.TextStyle.short,
+    )
+    why_mod = discord.ui.TextInput(
+        label="Why do you want to be a moderator?",
+        placeholder="Tell us what motivates you...",
+        max_length=500,
+        style=discord.TextStyle.paragraph,
+    )
+    warnings_bans = discord.ui.TextInput(
+        label="Any warnings or bans? If yes, explain.",
+        placeholder="None / Yes — explain here...",
+        max_length=300,
+        style=discord.TextStyle.short,
+    )
+    experience = discord.ui.TextInput(
+        label="Previous moderation experience?",
+        placeholder="e.g. Mod at X server, admin experience...",
+        max_length=400,
+        style=discord.TextStyle.paragraph,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        ticket = _TICKET_TYPES["mod_apply"]
+
+        existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, support_only=True)
+        if existing:
+            ex_type_key = _supp_parse_topic(existing.topic, "ticket_type") or "ticket"
+            ex_ticket   = _TICKET_TYPES.get(ex_type_key)
+            ex_label    = ex_ticket.label if ex_ticket else "ticket"
+            return await interaction.followup.send(
+                f"You already have an open {ex_label}: {existing.mention}\n"
+                "Please close it before opening another ticket.",
+                ephemeral=True,
+            )
+
+        channel = await _supp_create_ticket_channel(interaction, ticket)
+        if not channel:
+            return
+
+        ping = " ".join(filter(None, [interaction.user.mention, _supp_role_mention(ticket.ping_role_id)]))
+        await channel.send(
+            content=ping or None,
+            embed=_supp_build_ticket_embed(ticket, interaction.user),
+        )
+
+        app_embed = discord.Embed(
+            title="🛡️ Moderator Application",
+            color=discord.Color.from_rgb(88, 101, 242),
+            timestamp=datetime.now(timezone.utc),
+        )
+        app_embed.set_author(
+            name=interaction.user.display_name,
+            icon_url=interaction.user.display_avatar.url,
+        )
+        app_embed.add_field(name="⏱️ Time in DIFF",       value=self.time_in_diff.value,  inline=False)
+        app_embed.add_field(name="📅 Weekly Activity",     value=self.activity.value,       inline=False)
+        app_embed.add_field(name="💬 Why Moderator?",      value=self.why_mod.value,        inline=False)
+        app_embed.add_field(name="⚠️ Warnings / Bans",    value=self.warnings_bans.value,  inline=False)
+        app_embed.add_field(name="🛡️ Prior Experience",   value=self.experience.value,     inline=False)
+        app_embed.set_footer(text="DIFF Meets • Moderator Application — All new mods start as Junior Moderator")
+        await channel.send(embed=app_embed, view=SupportCloseButton())
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            try:
+                await logs_channel.send(embed=_supp_build_log_embed("Opened", interaction.user, ticket, channel))
+            except discord.HTTPException:
+                pass
+
+        await interaction.followup.send(
+            f"✅ Your moderator application has been submitted: {channel.mention}",
+            ephemeral=True,
+        )
+
+
 class SupportCloseButton(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -20848,7 +20952,7 @@ def _supp_build_appeal_review_embed(ticket: "_TicketType", user: discord.Member)
 # ── Main support dropdown (Report / General Support / Staff Application) ───────
 
 class SupportDropdown(discord.ui.Select):
-    _SUPPORT_KEYS = {"report", "support", "apply", "ts_apply"}
+    _SUPPORT_KEYS = {"report", "support", "apply", "ts_apply", "mod_apply"}
 
     def __init__(self) -> None:
         options = [
@@ -20878,9 +20982,11 @@ class SupportDropdown(discord.ui.Select):
         if ticket_key not in self._SUPPORT_KEYS or ticket_key not in _TICKET_TYPES:
             return await interaction.response.send_message("Invalid selection.", ephemeral=True)
 
-        # Ticket Support Application uses a modal to collect answers upfront
+        # Modal-based applications — collect answers upfront before creating ticket
         if ticket_key == "ts_apply":
             return await interaction.response.send_modal(_TicketSupportAppModal())
+        if ticket_key == "mod_apply":
+            return await interaction.response.send_modal(_ModAppModal())
 
         ticket = _TICKET_TYPES[ticket_key]
 
@@ -26752,6 +26858,77 @@ async def _cmd_postpartnerpanel(ctx: commands.Context):
     except Exception:
         pass
     await _pp_post_or_refresh(ctx.guild)
+
+
+@bot.command(name="postmodrecruitment", aliases=["modrecruit", "modapps"])
+async def _cmd_postmodrecruitment(ctx: commands.Context):
+    """Post the moderator recruitment embed in the current channel. Leadership only."""
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID,
+                        SENIOR_ADMIN_ROLE_ID, ADMINISTRATOR_ROLE_ID} for r in ctx.author.roles):
+        return await ctx.send("Leadership only.", delete_after=6)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    embed = discord.Embed(
+        title="📢 DIFF Meets — Moderator Applications Open",
+        description=(
+            "We're expanding our moderation team and looking for dedicated members "
+            "to help keep the DIFF community running at its best.\n\n"
+            "All new moderators start as **Junior Moderator** and move up through the "
+            "ranks based on activity, performance, and trust."
+        ),
+        color=discord.Color.from_rgb(88, 101, 242),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    embed.add_field(
+        name="✅ What We're Looking For",
+        value=(
+            "• Active in the server and familiar with how DIFF operates\n"
+            "• Mature, level-headed, and fair under pressure\n"
+            "• Consistent — not here one day and gone the next\n"
+            "• Able to handle situations calmly and without bias"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🛠️ What You'd Be Doing",
+        value=(
+            "• Keeping channels clean and on-topic\n"
+            "• Enforcing server rules and handling reports\n"
+            "• Supporting members and staff when needed\n"
+            "• Helping maintain the standard DIFF is known for"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📈 Mod Progression",
+        value=(
+            "**Junior Moderator** → **Moderator** → **Lead Moderator** → **Administrator** → **Senior Admin**\n"
+            "You earn your way up through dedication and consistency — not just time."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📋 How to Apply",
+        value=(
+            "Open a ticket in the server and select **Moderator Application**.\n"
+            "Answer honestly — we read every submission carefully.\n\n"
+            "*Members with an active warning history or low server activity will not be considered.*"
+        ),
+        inline=False,
+    )
+
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text="Different Meets • Moderation Team")
+
+    await ctx.send(embed=embed)
 
 
 @bot.command(name="addpartner")
