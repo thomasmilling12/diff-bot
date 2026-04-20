@@ -29067,7 +29067,7 @@ def _ann_save(d: dict) -> None:
 
 
 async def __anniversary_check_task_logic():
-    """Daily check for server anniversaries — DMs member + logs to staff."""
+    """Daily check for server anniversaries — logs to staff, spaced out to avoid Pi load spikes."""
     await bot.wait_until_ready()
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -29078,7 +29078,12 @@ async def __anniversary_check_task_logic():
     ann    = _ann_load()
     log_ch = guild.get_channel(_ANNIVERSARY_CHANNEL_ID)
 
-    for member in guild.members:
+    # Collect anniversaries first without sending anything
+    pending: list[tuple[discord.Member, int]] = []
+    for i, member in enumerate(guild.members):
+        # Yield to the event loop every 50 members so gateway events aren't blocked
+        if i % 50 == 0:
+            await asyncio.sleep(0)
         if member.bot or member.joined_at is None:
             continue
         joined = member.joined_at.date()
@@ -29087,17 +29092,21 @@ async def __anniversary_check_task_logic():
         years = today.year - joined.year
         if years <= 0:
             continue
-
         last_key = str(member.id)
         if ann.get(last_key) == today.year:
             continue
+        pending.append((member, years))
 
+    # Process each anniversary with a generous gap between sends
+    for member, years in pending:
+        last_key = str(member.id)
         ann[last_key] = today.year
         _ann_save(ann)
 
-        ordinal_year = _ordinal(years)
-
         await update_member_reputation(guild, member, 1, f"Server anniversary — {years} year(s)", given_by=None)
+
+        # Wait after the rep update before sending the log embed
+        await asyncio.sleep(3)
 
         if isinstance(log_ch, discord.TextChannel):
             log_e = discord.Embed(
@@ -29113,13 +29122,14 @@ async def __anniversary_check_task_logic():
             except Exception:
                 pass
 
-        await asyncio.sleep(5)
+        # Longer gap between each anniversary member to avoid burst load
+        await asyncio.sleep(15)
 
 @tasks.loop(hours=24)
 async def _anniversary_check_task():
     _loop_success('_anniversary_check_task')
     try:
-        await run_with_timeout('_anniversary_check_task', __anniversary_check_task_logic(), timeout=180)
+        await run_with_timeout('_anniversary_check_task', __anniversary_check_task_logic(), timeout=900)
     except Exception as _lte:
         await _handle_loop_error('_anniversary_check_task', _lte, _anniversary_check_task)
 @_anniversary_check_task.error
