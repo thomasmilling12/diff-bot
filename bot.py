@@ -20406,7 +20406,7 @@ async def _supp_create_ticket_channel(
         )
         return None
 
-    staff_role_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+    staff_role_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID}
     overwrites: dict = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         interaction.user: discord.PermissionOverwrite(
@@ -23206,7 +23206,7 @@ _JOIN_MMI_INVITE       = "https://discord.gg/mmi"
 _JOIN_MMI_CHANNEL      = "https://discord.com/channels/726914118736543836/1247511301937430641"
 _JOIN_CREW_APP_CHANNEL = 1103847009653358612
 _JOIN_MMI_LOGO         = "https://images-ext-1.discordapp.net/external/uCyJGU9CHX-Qf0afXUtZPw6fsqXtkG4wLtiokIskeF0/https/cdn-longterm.mee6.xyz/plugins/embeds/images/726914118736543836/012073cc6643a7a2ed45f7217dcf453cd438c42d747b5dd91554a43eccf0f8b6.png?format=webp&quality=lossless&width=1872&height=501"
-_JOIN_STAFF_ROLE_IDS = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+_JOIN_STAFF_ROLE_IDS = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID}
 
 
 def _join_is_staff(member: discord.Member) -> bool:
