@@ -81,7 +81,7 @@ def _save_photo_submissions(d: dict) -> None:
 
 
 def _load_crew_lb_state() -> str:
-    """Return the iso_week string of the last posted crew leaderboard, or ''."""
+    """Return the date string of the last posted crew leaderboard Monday, or ''."""
     try:
         with open(_CREW_LB_STATE_FILE, "r") as f:
             return json.load(f).get("last_posted_week", "")
@@ -90,9 +90,12 @@ def _load_crew_lb_state() -> str:
 
 
 def _save_crew_lb_state(iso_week: str) -> None:
-    os.makedirs(os.path.dirname(_CREW_LB_STATE_FILE), exist_ok=True)
-    with open(_CREW_LB_STATE_FILE, "w") as f:
-        json.dump({"last_posted_week": iso_week}, f)
+    try:
+        os.makedirs(os.path.dirname(_CREW_LB_STATE_FILE), exist_ok=True)
+        with open(_CREW_LB_STATE_FILE, "w") as f:
+            json.dump({"last_posted_week": iso_week}, f)
+    except Exception as _e:
+        print(f"[CrewLB] Failed to save state: {_e}")
 
 
 class DiffServerImprovements(commands.Cog):
@@ -407,15 +410,17 @@ class DiffServerImprovements(commands.Cog):
 
     @tasks.loop(hours=24)
     async def _crew_leaderboard_weekly(self) -> None:
-        now      = _est_now()
-        iso_week = now.strftime("%Y-W%U")
+        now       = _est_now()
+        today_key = now.strftime("%Y-%m-%d")   # e.g. "2026-04-20"
 
-        # Only Mondays at 10 AM ET
-        if self._crew_lb_done == iso_week or now.weekday() != 0 or now.hour < 10:
+        # Only Mondays at 10 AM ET — one post per Monday regardless of restarts
+        if now.weekday() != 0 or now.hour < 10:
+            return
+        if self._crew_lb_done == today_key:
             return
 
-        self._crew_lb_done = iso_week
-        _save_crew_lb_state(iso_week)
+        self._crew_lb_done = today_key
+        _save_crew_lb_state(today_key)
         guild = self.bot.get_guild(GUILD_ID())
         if not guild:
             return

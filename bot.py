@@ -29302,7 +29302,8 @@ async def _before_anniversary_check():
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: Weekly host availability DM summary
 # ═══════════════════════════════════════════════════════════════════════════════
-_HOST_DIGEST_SENT_FILE = os.path.join(DATA_FOLDER, "diff_host_digest_sent.json")
+_HOST_DIGEST_SENT_FILE       = os.path.join(DATA_FOLDER, "diff_host_digest_sent.json")
+_RETENTION_REPORT_SENT_FILE  = os.path.join(DATA_FOLDER, "diff_retention_report_sent.json")
 
 def _host_digest_already_sent_today() -> bool:
     """Return True if the digest was already sent today (prevents double-send on restart)."""
@@ -29611,8 +29612,28 @@ async def _unverified_dm_reminder_logic() -> None:
         await asyncio.sleep(1.5)
 
 
+def _retention_report_already_sent_today() -> bool:
+    try:
+        if os.path.exists(_RETENTION_REPORT_SENT_FILE):
+            with open(_RETENTION_REPORT_SENT_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("last_sent") == datetime.now(timezone.utc).date().isoformat()
+    except Exception:
+        pass
+    return False
+
+def _retention_report_mark_sent() -> None:
+    try:
+        os.makedirs(DATA_FOLDER, exist_ok=True)
+        with open(_RETENTION_REPORT_SENT_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_sent": datetime.now(timezone.utc).date().isoformat()}, f)
+    except Exception as _e:
+        print(f"[Retention] Failed to save sent marker: {_e}")
+
 async def _inactivity_daily_report_logic() -> None:
     """Post a daily inactivity summary to staff logs (no mass DMs — staff decide action)."""
+    if _retention_report_already_sent_today():
+        return
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
@@ -29680,6 +29701,7 @@ async def _inactivity_daily_report_logic() -> None:
             inline=True,
         )
     embed.set_footer(text="Different Meets • Retention System — staff action only, no auto-kicks")
+    _retention_report_mark_sent()
     await ch.send(embed=embed)
 
 
