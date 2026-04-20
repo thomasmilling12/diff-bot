@@ -19377,6 +19377,18 @@ _TICKET_TYPES: dict[str, _TicketType] = {
         long_description="Appeal a meet exclusion.",
         ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
+    "ts_apply": _TicketType(
+        key="ts_apply",
+        label="🎫 Ticket Support Application",
+        emoji="🎫",
+        description="Apply to join the DIFF Ticket Support team.",
+        title="Ticket Support Application",
+        long_description=(
+            "Apply to become a DIFF Ticket Support member.\n\n"
+            "You'll be asked 5 short questions. Leadership will review your answers and respond here."
+        ),
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
+    ),
 }
 
 
@@ -20147,6 +20159,97 @@ def _faq_lookup(text: str) -> "list[tuple[str,str]]":
     return _matches
 
 
+class _TicketSupportAppModal(discord.ui.Modal, title="Ticket Support Application"):
+    time_in_diff = discord.ui.TextInput(
+        label="How long have you been in DIFF?",
+        placeholder="e.g. 6 months, 1 year...",
+        max_length=100,
+        style=discord.TextStyle.short,
+    )
+    activity = discord.ui.TextInput(
+        label="How active are you per week?",
+        placeholder="e.g. Daily, 4–5 days a week...",
+        max_length=100,
+        style=discord.TextStyle.short,
+    )
+    why_ts = discord.ui.TextInput(
+        label="Why do you want to join Ticket Support?",
+        placeholder="Tell us why you'd be a good fit...",
+        max_length=500,
+        style=discord.TextStyle.paragraph,
+    )
+    warnings_bans = discord.ui.TextInput(
+        label="Any warnings or bans? If yes, explain.",
+        placeholder="None / Yes — explain here...",
+        max_length=300,
+        style=discord.TextStyle.short,
+    )
+    experience = discord.ui.TextInput(
+        label="Previous moderation or support experience?",
+        placeholder="e.g. Mod at X server, ticket support elsewhere...",
+        max_length=400,
+        style=discord.TextStyle.paragraph,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        ticket = _TICKET_TYPES["ts_apply"]
+
+        existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, support_only=True)
+        if existing:
+            ex_type_key = _supp_parse_topic(existing.topic, "ticket_type") or "ticket"
+            ex_ticket = _TICKET_TYPES.get(ex_type_key)
+            ex_label = ex_ticket.label if ex_ticket else "ticket"
+            return await interaction.followup.send(
+                f"You already have an open {ex_label}: {existing.mention}\n"
+                "Please close it before opening another ticket.",
+                ephemeral=True,
+            )
+
+        channel = await _supp_create_ticket_channel(interaction, ticket)
+        if not channel:
+            return
+
+        ping = " ".join(filter(None, [interaction.user.mention, _supp_role_mention(ticket.ping_role_id)]))
+        await channel.send(
+            content=ping or None,
+            embed=_supp_build_ticket_embed(ticket, interaction.user),
+        )
+
+        app_embed = discord.Embed(
+            title="🎫 Ticket Support Application",
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        app_embed.set_author(
+            name=interaction.user.display_name,
+            icon_url=interaction.user.display_avatar.url,
+        )
+        app_embed.add_field(name="⏱️ Time in DIFF",         value=self.time_in_diff.value, inline=False)
+        app_embed.add_field(name="📅 Weekly Activity",       value=self.activity.value,     inline=False)
+        app_embed.add_field(name="💬 Why Ticket Support?",   value=self.why_ts.value,       inline=False)
+        app_embed.add_field(name="⚠️ Warnings / Bans",      value=self.warnings_bans.value,inline=False)
+        app_embed.add_field(name="🛡️ Prior Experience",     value=self.experience.value,   inline=False)
+        app_embed.set_footer(text="DIFF Meets • Ticket Support Application")
+        await channel.send(embed=app_embed, view=SupportCloseButton())
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            try:
+                await logs_channel.send(embed=_supp_build_log_embed("Opened", interaction.user, ticket, channel))
+            except discord.HTTPException:
+                pass
+
+        await interaction.followup.send(
+            f"✅ Your Ticket Support application has been submitted: {channel.mention}",
+            ephemeral=True,
+        )
+
+
 class SupportCloseButton(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -20734,7 +20837,7 @@ def _supp_build_appeal_review_embed(ticket: "_TicketType", user: discord.Member)
 # ── Main support dropdown (Report / General Support / Staff Application) ───────
 
 class SupportDropdown(discord.ui.Select):
-    _SUPPORT_KEYS = {"report", "support", "apply"}
+    _SUPPORT_KEYS = {"report", "support", "apply", "ts_apply"}
 
     def __init__(self) -> None:
         options = [
@@ -20763,6 +20866,10 @@ class SupportDropdown(discord.ui.Select):
         ticket_key = self.values[0]
         if ticket_key not in self._SUPPORT_KEYS or ticket_key not in _TICKET_TYPES:
             return await interaction.response.send_message("Invalid selection.", ephemeral=True)
+
+        # Ticket Support Application uses a modal to collect answers upfront
+        if ticket_key == "ts_apply":
+            return await interaction.response.send_modal(_TicketSupportAppModal())
 
         ticket = _TICKET_TYPES[ticket_key]
 
