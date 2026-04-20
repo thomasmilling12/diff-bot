@@ -23280,6 +23280,25 @@ async def _cmd_lockslot(ctx: commands.Context, *, slot: str):
     except Exception:
         pass
 
+@bot.command(name="clearslot")
+async def _cmd_clearslot(ctx: commands.Context, *, slot: str):
+    """Clear all data from a schedule slot and reset it to Open — usage: !clearslot Meet 3"""
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+        return await ctx.send("Leadership only.", delete_after=6)
+    valid = {"Meet 1", "Meet 2", "Meet 3"}
+    slot = slot.strip().title()
+    if slot not in valid:
+        return await ctx.send(f"❌ Invalid slot. Use: `Meet 1`, `Meet 2`, or `Meet 3`", delete_after=8)
+    schedule = _asched_load()
+    schedule["days"][slot] = {"locked": False}
+    _asched_save(schedule)
+    await _asched_update_panel(ctx.bot)
+    await ctx.send(f"🗑️ **{slot}** has been cleared and reset to Open Slot.", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
 
 @bot.tree.command(
     name="hoststats",
