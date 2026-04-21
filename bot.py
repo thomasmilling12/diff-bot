@@ -389,7 +389,7 @@ import os as _os
 _os.makedirs("logs", exist_ok=True)
 
 _bot_log = logging.getLogger("diff_bot")
-_bot_log.setLevel(logging.DEBUG)
+_bot_log.setLevel(logging.WARNING)
 _log_formatter = logging.Formatter(
     "%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -5306,7 +5306,7 @@ async def _hosthub_cmd(ctx: commands.Context):
         for r in ctx.author.roles
     )
     if not is_staff:
-        return await ctx.reply("Manager+ only.", mention_author=False)
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
     try:
         await ctx.message.delete()
     except Exception:
@@ -10188,7 +10188,7 @@ async def _hp_post_or_refresh() -> None:
 @bot.command(name="hostperformance")
 async def cmd_hostperformance(ctx: commands.Context):
     if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
-        return await ctx.reply("Manager+ only.", mention_author=False)
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
     await _hp_post_or_refresh()
     await ctx.reply("Host Performance Hub posted/updated.", mention_author=False)
 
@@ -15569,7 +15569,7 @@ async def rankinfo(interaction: discord.Interaction):
         inline=False,
     )
     embed.add_field(
-        name="Manager → Leader",
+        name="Server Operations → Founder",
         value=f"• Meets Attended: {LEADER_PROMOTION_ATTENDED}\n• Meets Hosted: {LEADER_PROMOTION_HOSTED}\n• Reputation: {LEADER_PROMOTION_REPUTATION}",
         inline=False,
     )
@@ -16224,7 +16224,7 @@ async def color_stats(interaction: discord.Interaction):
 @bot.tree.command(name="force-color-vote", description="Manually post the weekly color vote (leadership only)")
 async def force_color_vote(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
-        return await interaction.response.send_message("Leaders, Executives, and Managers only.", ephemeral=True)
+        return await interaction.response.send_message("Founders, Executives, and Server Operations only.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     success = await _cs_try_post_weekly_vote(interaction.guild)
     if success:
@@ -16239,7 +16239,7 @@ async def force_color_vote(interaction: discord.Interaction):
 @bot.tree.command(name="force-color-winner", description="Manually close the vote and post the winner (leadership only)")
 async def force_color_winner(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
-        return await interaction.response.send_message("Leaders, Executives, and Managers only.", ephemeral=True)
+        return await interaction.response.send_message("Founders, Executives, and Server Operations only.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     success = await _cs_try_close_vote(interaction.guild)
     if success:
@@ -30991,7 +30991,7 @@ _log_handler = _RotatingFileHandler(
 )
 _log_handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
 _discord_logger = logging.getLogger('discord')
-_discord_logger.setLevel(logging.DEBUG)
+_discord_logger.setLevel(logging.WARNING)
 _discord_logger.addHandler(_log_handler)
 with open('discord.log', 'a', encoding='utf-8') as _lf:
     _lf.write(f"\n{'='*60}\n[BOT STARTED] {datetime.now(_EST_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}\n{'='*60}\n")
