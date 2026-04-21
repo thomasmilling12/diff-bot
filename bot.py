@@ -20184,16 +20184,16 @@ def _faq_lookup(text: str) -> "list[tuple[str,str]]":
 
 
 class _TicketSupportAppModal(discord.ui.Modal, title="Ticket Support Application"):
-    time_in_diff = discord.ui.TextInput(
-        label="How long have you been in DIFF?",
-        placeholder="e.g. 6 months, 1 year...",
-        max_length=100,
+    age = discord.ui.TextInput(
+        label="How old are you? (Must be 18+)",
+        placeholder="e.g. 21",
+        max_length=3,
         style=discord.TextStyle.short,
     )
-    activity = discord.ui.TextInput(
-        label="How active are you per week?",
-        placeholder="e.g. Daily, 4–5 days a week...",
-        max_length=100,
+    time_and_activity = discord.ui.TextInput(
+        label="Time in DIFF & Weekly Activity",
+        placeholder="e.g. 8 months — active daily / 4–5 days a week",
+        max_length=150,
         style=discord.TextStyle.short,
     )
     why_ts = discord.ui.TextInput(
@@ -20218,6 +20218,19 @@ class _TicketSupportAppModal(discord.ui.Modal, title="Ticket Support Application
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
+
+        # Age gate — must be 18+
+        age_str = self.age.value.strip()
+        try:
+            age_val = int(age_str)
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Please enter a valid age (numbers only).", ephemeral=True
+            )
+        if age_val < 18:
+            return await interaction.response.send_message(
+                "❌ You must be **18 or older** to apply for Ticket Support.", ephemeral=True
+            )
 
         await interaction.response.defer(ephemeral=True)
 
@@ -20253,12 +20266,12 @@ class _TicketSupportAppModal(discord.ui.Modal, title="Ticket Support Application
             name=interaction.user.display_name,
             icon_url=interaction.user.display_avatar.url,
         )
-        app_embed.add_field(name="⏱️ Time in DIFF",         value=self.time_in_diff.value, inline=False)
-        app_embed.add_field(name="📅 Weekly Activity",       value=self.activity.value,     inline=False)
-        app_embed.add_field(name="💬 Why Ticket Support?",   value=self.why_ts.value,       inline=False)
-        app_embed.add_field(name="⚠️ Warnings / Bans",      value=self.warnings_bans.value,inline=False)
-        app_embed.add_field(name="🛡️ Prior Experience",     value=self.experience.value,   inline=False)
-        app_embed.set_footer(text="DIFF Meets • Ticket Support Application")
+        app_embed.add_field(name="🔞 Age",                   value=age_str,                         inline=True)
+        app_embed.add_field(name="⏱️ Time in DIFF & Activity", value=self.time_and_activity.value, inline=False)
+        app_embed.add_field(name="💬 Why Ticket Support?",   value=self.why_ts.value,               inline=False)
+        app_embed.add_field(name="⚠️ Warnings / Bans",      value=self.warnings_bans.value,        inline=False)
+        app_embed.add_field(name="🛡️ Prior Experience",     value=self.experience.value,           inline=False)
+        app_embed.set_footer(text="DIFF Meets • Ticket Support Application — Must be 18+")
         await channel.send(embed=app_embed, view=SupportCloseButton())
 
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
@@ -20275,16 +20288,16 @@ class _TicketSupportAppModal(discord.ui.Modal, title="Ticket Support Application
 
 
 class _ModAppModal(discord.ui.Modal, title="Moderator Application"):
-    time_in_diff = discord.ui.TextInput(
-        label="How long have you been in DIFF?",
-        placeholder="e.g. 6 months, 1 year...",
-        max_length=100,
+    age = discord.ui.TextInput(
+        label="How old are you? (Must be 18+)",
+        placeholder="e.g. 21",
+        max_length=3,
         style=discord.TextStyle.short,
     )
-    activity = discord.ui.TextInput(
-        label="How active are you per week?",
-        placeholder="e.g. Daily, 4–5 days a week...",
-        max_length=100,
+    time_and_activity = discord.ui.TextInput(
+        label="Time in DIFF & Weekly Activity",
+        placeholder="e.g. 8 months — active daily / 4–5 days a week",
+        max_length=150,
         style=discord.TextStyle.short,
     )
     why_mod = discord.ui.TextInput(
@@ -20309,6 +20322,19 @@ class _ModAppModal(discord.ui.Modal, title="Moderator Application"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
+
+        # Age gate — must be 18+
+        age_str = self.age.value.strip()
+        try:
+            age_val = int(age_str)
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Please enter a valid age (numbers only).", ephemeral=True
+            )
+        if age_val < 18:
+            return await interaction.response.send_message(
+                "❌ You must be **18 or older** to apply for a moderator role.", ephemeral=True
+            )
 
         await interaction.response.defer(ephemeral=True)
 
@@ -20344,12 +20370,12 @@ class _ModAppModal(discord.ui.Modal, title="Moderator Application"):
             name=interaction.user.display_name,
             icon_url=interaction.user.display_avatar.url,
         )
-        app_embed.add_field(name="⏱️ Time in DIFF",       value=self.time_in_diff.value,  inline=False)
-        app_embed.add_field(name="📅 Weekly Activity",     value=self.activity.value,       inline=False)
-        app_embed.add_field(name="💬 Why Moderator?",      value=self.why_mod.value,        inline=False)
-        app_embed.add_field(name="⚠️ Warnings / Bans",    value=self.warnings_bans.value,  inline=False)
-        app_embed.add_field(name="🛡️ Prior Experience",   value=self.experience.value,     inline=False)
-        app_embed.set_footer(text="DIFF Meets • Moderator Application — All new mods start as Junior Moderator")
+        app_embed.add_field(name="🔞 Age",                     value=age_str,                         inline=True)
+        app_embed.add_field(name="⏱️ Time in DIFF & Activity", value=self.time_and_activity.value,   inline=False)
+        app_embed.add_field(name="💬 Why Moderator?",          value=self.why_mod.value,              inline=False)
+        app_embed.add_field(name="⚠️ Warnings / Bans",        value=self.warnings_bans.value,        inline=False)
+        app_embed.add_field(name="🛡️ Prior Experience",       value=self.experience.value,           inline=False)
+        app_embed.set_footer(text="DIFF Meets • Moderator Application — All new mods start as Junior Moderator | Must be 18+")
         await channel.send(embed=app_embed, view=SupportCloseButton())
 
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
@@ -26877,7 +26903,8 @@ async def _cmd_postmodrecruitment(ctx: commands.Context):
             "We're expanding our moderation team and looking for dedicated members "
             "to help keep the DIFF community running at its best.\n\n"
             "All new moderators start as **Junior Moderator** and move up through the "
-            "ranks based on activity, performance, and trust."
+            "ranks based on activity, performance, and trust.\n\n"
+            "🔞 **You must be 18 or older to apply.**"
         ),
         color=discord.Color.from_rgb(88, 101, 242),
         timestamp=datetime.now(timezone.utc),
