@@ -111,12 +111,18 @@ ADMINISTRATOR_ROLE_ID  = 1328458892690063443
 LEAD_MOD_ROLE_ID       = 1034282163513872424
 MODERATOR_ROLE_ID      = 1328458459339030571
 JUNIOR_MOD_ROLE_ID     = 1328458204262305792
+DEVELOPER_ROLE_ID      = 1123234905057402890
 
 # All moderation-tier roles (used for permission checks throughout the bot)
 _ALL_MOD_ROLE_IDS = {
     SENIOR_ADMIN_ROLE_ID, ADMINISTRATOR_ROLE_ID,
     LEAD_MOD_ROLE_ID, MODERATOR_ROLE_ID, JUNIOR_MOD_ROLE_ID,
+    DEVELOPER_ROLE_ID,
 }
+
+# Leadership-tier permission sets (Developer included so they have full staff access)
+_LEADERSHIP_ROLE_IDS      = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, DEVELOPER_ROLE_ID}
+_LEADERSHIP_HOST_ROLE_IDS = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID, DEVELOPER_ROLE_ID}
 DESIGNER_TEAM_ROLE_ID = 1128901233160245278
 CONTENT_TEAM_ROLE_ID = 1110037666147336293
 COLOR_TEAM_ROLE_ID = 1115495008670330902
@@ -213,7 +219,7 @@ INTERVIEW_OUTCOME_FILE = os.path.join(DATA_FOLDER, "diff_interview_outcome_panel
 TICKET_APP_BRIDGE_FILE = os.path.join(DATA_FOLDER, "diff_ticket_app_bridge.json")
 COLOR_OPS_STATE_FILE = os.path.join(DATA_FOLDER, "diff_color_ops_state.json")
 INTERVIEW_OUTCOME_LOG_CHANNEL_ID = STAFF_LOGS_CHANNEL_ID
-INTERVIEW_OUTCOME_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+INTERVIEW_OUTCOME_ALLOWED_ROLES = _LEADERSHIP_ROLE_IDS
 INTERVIEW_OUTCOME_ONBOARDING_CHANNEL_ID = INTERVIEW_PANEL_CHANNEL_ID
 INTERVIEW_OUTCOME_AUTO_CLOSE = True
 INTERVIEW_OUTCOME_CLOSE_DELAY = 10
@@ -1599,7 +1605,7 @@ def count_message_attachments(messages) -> int:
 
 
 def is_staff_reviewer(member: discord.Member) -> bool:
-    allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    allowed = _LEADERSHIP_ROLE_IDS
     return any(role.id in allowed for role in member.roles)
 
 
@@ -3333,7 +3339,7 @@ class _HrsvpResetBtn(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+            r.id in _LEADERSHIP_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         )
         if not getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False) and not is_staff:
@@ -3866,7 +3872,7 @@ class _ASchedAnnounceView(discord.ui.View):
     @discord.ui.button(label="Notify", emoji="🔔", style=discord.ButtonStyle.danger, custom_id="diff_asched_announce:notify")
     async def notify_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+            r.id in _LEADERSHIP_HOST_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         )
         if not is_staff:
@@ -3995,7 +4001,7 @@ class _ASchedReminderBtn(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+            r.id in _LEADERSHIP_HOST_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         )
         if not is_staff:
@@ -4045,7 +4051,7 @@ class _ASchedSubmitBtn(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+            r.id in _LEADERSHIP_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
         if not is_staff:
@@ -4260,7 +4266,7 @@ class _ASchedOverrideBtn(discord.ui.Button):
                 and interaction.guild.owner_id == getattr(user, "id", None)
             )
             is_staff = is_admin or is_owner or any(
-                r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+                r.id in _LEADERSHIP_HOST_ROLE_IDS
                 for r in roles
             )
             if not is_staff:
@@ -4292,7 +4298,7 @@ class _ASchedPingNonRespondersBtn(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+            r.id in _LEADERSHIP_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         )
         if not is_staff:
@@ -4372,7 +4378,7 @@ class AutoScheduleView(discord.ui.View):
     @discord.ui.button(label="Rebuild Schedule", emoji="🧠", style=discord.ButtonStyle.primary, custom_id=_ASCHED_REBUILD_ID)
     async def rebuild_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+            r.id in _LEADERSHIP_HOST_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         )
         if not is_staff:
@@ -4662,7 +4668,7 @@ async def _cmd_send_host_reminder(ctx: commands.Context):
         isinstance(ctx.author, discord.Member)
         and (
             ctx.author.guild_permissions.administrator
-            or any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+            or any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
         )
     )
     if not is_staff:
@@ -5240,7 +5246,7 @@ class HostHubView(discord.ui.View):
     # ── Row 1: blacklist actions ──
     @discord.ui.button(label="Submit Blacklist", emoji="🔴", style=discord.ButtonStyle.danger, custom_id="diff_host_hub:submit_blacklist", row=1)
     async def submit_blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in getattr(interaction.user, "roles", []))
+        is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in getattr(interaction.user, "roles", []))
         if not is_staff:
             await interaction.response.send_message("Only staff can submit blacklist entries.", ephemeral=True)
             return
@@ -5302,7 +5308,7 @@ async def _hosthub_post_or_refresh() -> None:
 @bot.command(name="hosthub")
 async def _hosthub_cmd(ctx: commands.Context):
     is_staff = any(
-        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+        r.id in _LEADERSHIP_ROLE_IDS
         for r in ctx.author.roles
     )
     if not is_staff:
@@ -5317,7 +5323,7 @@ async def _hosthub_cmd(ctx: commands.Context):
 
 @bot.command(name="blacklistsearch")
 async def _cmd_blacklistsearch(ctx: commands.Context, *, query: str = ""):
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     if not query:
@@ -5350,7 +5356,7 @@ async def _cmd_blacklistsearch(ctx: commands.Context, *, query: str = ""):
 
 @bot.command(name="clearblacklist")
 async def _cmd_clearblacklist(ctx: commands.Context, entry_id: int = 0):
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     if not entry_id:
@@ -5378,7 +5384,7 @@ async def _cmd_clearblacklist(ctx: commands.Context, entry_id: int = 0):
 
 @bot.command(name="hostreport")
 async def _cmd_hostreport(ctx: commands.Context, host: Optional[discord.Member] = None, *, args: str = ""):
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     if not host:
@@ -5446,7 +5452,7 @@ async def _cmd_hostreport(ctx: commands.Context, host: Optional[discord.Member] 
 
 @bot.command(name="hostpoints")
 async def _cmd_hostpoints(ctx: commands.Context, user: Optional[discord.Member] = None, points: int = 0):
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     if not user:
@@ -5767,7 +5773,7 @@ _MEET_QA_TRIGGERS = [
 
 _HOSTFLOW_COOLDOWNS: dict[int, float] = {}
 _HOSTFLOW_COOLDOWN_SECS = 5
-_HOSTFLOW_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+_HOSTFLOW_ALLOWED_ROLES = _LEADERSHIP_HOST_ROLE_IDS
 _HOSTFLOW_PING_ON_START = True
 _HOSTFLOW_PING_ON_END = False
 _HOSTFLOW_SMART_PING_COOLDOWN = 3600  # seconds (60 min)
@@ -6268,7 +6274,7 @@ class _MobileRefreshView(discord.ui.View):
 
 @bot.command(name="postmobilejoin")
 async def _pmobile_join(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -6280,7 +6286,7 @@ async def _pmobile_join(ctx: commands.Context):
 
 @bot.command(name="postmobilehost")
 async def _pmobile_host(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -6292,7 +6298,7 @@ async def _pmobile_host(ctx: commands.Context):
 
 @bot.command(name="postmobilehub")
 async def _pmobile_hub(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -6304,7 +6310,7 @@ async def _pmobile_hub(ctx: commands.Context):
 
 @bot.command(name="postmobileleaderboard")
 async def _pmobile_lb(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -6316,7 +6322,7 @@ async def _pmobile_lb(ctx: commands.Context):
 
 @bot.command(name="postmobilesupport")
 async def _pmobile_support(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -6867,6 +6873,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
                 (LEADER_ROLE_ID,     "👑 Founder"),
                 (CO_LEADER_ROLE_ID,  "🛡️ Executive"),
                 (MANAGER_ROLE_ID,    "🔴 Server Operations"),
+                (DEVELOPER_ROLE_ID,  "🛠️ Developer"),
             ],
         ),
         (
@@ -9150,7 +9157,7 @@ async def setup_jackets(ctx):
     """Upload jacket images to Discord and cache their CDN URLs. Manager+ only."""
     if not isinstance(ctx.author, discord.Member):
         return
-    manager_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    manager_ids = _LEADERSHIP_ROLE_IDS
     if not any(r.id in manager_ids for r in ctx.author.roles):
         return await ctx.send("❌ Manager+ only.", delete_after=5)
 
@@ -9188,7 +9195,7 @@ async def set_logo(ctx, url: str = ""):
     """Update the DIFF logo URL stored in config. Manager+ only."""
     if not isinstance(ctx.author, discord.Member):
         return
-    manager_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    manager_ids = _LEADERSHIP_ROLE_IDS
     if not any(r.id in manager_ids for r in ctx.author.roles):
         return await ctx.send("❌ Manager+ only.", delete_after=5)
     if not url.startswith("http"):
@@ -9211,7 +9218,7 @@ async def set_banner(ctx, url: str = ""):
     """Update the DIFF banner URL stored in config separately. Manager+ only."""
     if not isinstance(ctx.author, discord.Member):
         return
-    manager_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    manager_ids = _LEADERSHIP_ROLE_IDS
     if not any(r.id in manager_ids for r in ctx.author.roles):
         return await ctx.send("❌ Manager+ only.", delete_after=5)
     if not url.startswith("http"):
@@ -10187,7 +10194,7 @@ async def _hp_post_or_refresh() -> None:
 
 @bot.command(name="hostperformance")
 async def cmd_hostperformance(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return await ctx.reply("Server Operations+ only.", mention_author=False)
     await _hp_post_or_refresh()
     await ctx.reply("Host Performance Hub posted/updated.", mention_author=False)
@@ -10551,7 +10558,7 @@ class _HostHubBlacklistSelect(discord.ui.Select):
             await interaction.response.send_message(embed=_hosthub_blacklist_embed(), view=bl_view, ephemeral=True)
         elif val == "bl_submit":
             is_staff = any(
-                r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+                r.id in _LEADERSHIP_HOST_ROLE_IDS
                 for r in getattr(interaction.user, "roles", [])
             )
             if not is_staff:
@@ -10681,7 +10688,7 @@ async def _unified_hosthub_post_or_refresh() -> None:
 # AUTO ROLL CALL SYSTEM
 # =========================
 _RC_DB_PATH = os.path.join("diff_data", "diff_rollcall.db")
-_RC_ADMIN_ROLE_IDS = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+_RC_ADMIN_ROLE_IDS = _LEADERSHIP_ROLE_IDS
 
 
 class _RollCallDB:
@@ -13576,7 +13583,7 @@ def _popup_parse_time(raw: str) -> str:
         return raw
 
 
-_POPUP_STAFF_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+_POPUP_STAFF_ROLES = _LEADERSHIP_ROLE_IDS
 
 
 def _popup_build_meet_embed(
@@ -15131,7 +15138,7 @@ class _WarnProofBtn(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         if not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
-        allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+        allowed = _LEADERSHIP_HOST_ROLE_IDS
         if not interaction.user.guild_permissions.administrator and not any(
             r.id in allowed for r in interaction.user.roles
         ):
@@ -20436,7 +20443,7 @@ class SupportCloseButton(discord.ui.View):
     async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not isinstance(interaction.user, discord.Member):
             return
-        is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in interaction.user.roles)
+        is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles)
         if not is_staff:
             return await interaction.response.send_message("Only staff can claim tickets.", ephemeral=True)
         channel = interaction.channel
@@ -20467,7 +20474,7 @@ class SupportCloseButton(discord.ui.View):
         member = interaction.user
         owner_id = _supp_parse_topic(channel.topic, "ticket_owner")
         is_owner = owner_id == str(member.id)
-        is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in member.roles)
+        is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in member.roles)
         if not (is_owner or is_staff or member.guild_permissions.manage_channels):
             return await interaction.response.send_message("You do not have permission to close this ticket.", ephemeral=True)
 
@@ -20554,7 +20561,7 @@ class SupportApplicationReviewView(discord.ui.View):
     async def _check(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return False
-        return any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+        return any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
                or interaction.user.guild_permissions.manage_guild
 
     @discord.ui.button(label="Accept", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_app_accept")
@@ -20821,7 +20828,7 @@ class _AppealActionView(discord.ui.View):
             child.disabled = disabled  # type: ignore[union-attr]
 
     def _is_staff(self, member: discord.Member) -> bool:
-        return any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in member.roles)
+        return any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in member.roles)
 
     @discord.ui.button(label="Accept Appeal", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_appeal_action_accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -21422,7 +21429,7 @@ async def _ticket_stats_cmd(ctx: commands.Context) -> None:
     """Show a count of all currently open tickets by type."""
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     try:
@@ -21490,7 +21497,7 @@ async def _ticket_note_cmd(ctx: commands.Context, *, text: str) -> None:
     """Post a visible staff note inside the current ticket channel."""
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return await ctx.send("Only staff can post ticket notes.", delete_after=8)
     try:
@@ -21516,7 +21523,7 @@ async def _staffperformance_cmd(ctx: commands.Context) -> None:
     """Show per-staff ticket stats (claimed, closed, avg response time)."""
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     try:
@@ -21557,7 +21564,7 @@ async def _faq_group(ctx: commands.Context) -> None:
 async def _faq_add(ctx: commands.Context, *, args: str) -> None:
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return await ctx.send("Only staff can manage FAQs.", delete_after=8)
     if "|" not in args:
@@ -21578,7 +21585,7 @@ async def _faq_add(ctx: commands.Context, *, args: str) -> None:
 async def _faq_remove(ctx: commands.Context, *, trigger: str) -> None:
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return await ctx.send("Only staff can manage FAQs.", delete_after=8)
     _fq = _faq_load()
@@ -21597,7 +21604,7 @@ async def _faq_remove(ctx: commands.Context, *, trigger: str) -> None:
 async def _faq_list(ctx: commands.Context) -> None:
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     _fq = _faq_load()
@@ -21949,7 +21956,7 @@ async def post_support_panel(interaction: discord.Interaction) -> None:
 
 @bot.command(name="refreshsupportpanel")
 async def _refresh_support_panel_cmd(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -22164,7 +22171,7 @@ class StaffReviewView(discord.ui.View):
     async def _handle(self, interaction: discord.Interaction, approved: bool) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
-        if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+        if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
                 and not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("Only DIFF leadership can use this panel.", ephemeral=True)
 
@@ -22268,7 +22275,7 @@ async def staff_stats(interaction: discord.Interaction, member: discord.Member) 
 async def staff_add_ticket(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.add_stat(member.id, "tickets_handled", amount)
@@ -22281,7 +22288,7 @@ async def staff_add_ticket(interaction: discord.Interaction, member: discord.Mem
 async def staff_add_application(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.add_stat(member.id, "applications_reviewed", amount)
@@ -22294,7 +22301,7 @@ async def staff_add_application(interaction: discord.Interaction, member: discor
 async def staff_add_report(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.add_stat(member.id, "reports_resolved", amount)
@@ -22307,7 +22314,7 @@ async def staff_add_report(interaction: discord.Interaction, member: discord.Mem
 async def staff_add_appeal(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.add_stat(member.id, "appeals_reviewed", amount)
@@ -22319,7 +22326,7 @@ async def staff_add_appeal(interaction: discord.Interaction, member: discord.Mem
 async def staff_post_leaderboard(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     lb_channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
@@ -22361,7 +22368,7 @@ async def staff_post_leaderboard(interaction: discord.Interaction) -> None:
 async def staff_reset_stats(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.reset_all()
@@ -22372,7 +22379,7 @@ async def staff_reset_stats(interaction: discord.Interaction) -> None:
 async def post_staff_review_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     if not isinstance(interaction.channel, discord.TextChannel):
@@ -23207,7 +23214,7 @@ async def on_interaction(interaction: discord.Interaction) -> None:
         return
     if not _auto_is_ticket_channel(interaction.channel):
         return
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return
     lowered = custom_id.lower()
@@ -23295,7 +23302,7 @@ async def auto_staff_stats(interaction: discord.Interaction, member: discord.Mem
 async def force_weekly_staff_report(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     report_channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
@@ -23313,7 +23320,7 @@ async def force_weekly_staff_report(interaction: discord.Interaction) -> None:
 @bot.command(name="clearweeklyreport")
 async def clearweeklyreport(ctx: commands.Context):
     """Delete the most recent Weekly DIFF Staff Report from the leaderboard channel (leadership only)."""
-    is_leader = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in getattr(ctx.author, "roles", [])) \
+    is_leader = any(r.id in _LEADERSHIP_ROLE_IDS for r in getattr(ctx.author, "roles", [])) \
         or getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.manage_guild
     if not is_leader:
         return await ctx.send("Leadership only.", delete_after=5)
@@ -23346,7 +23353,7 @@ async def clearweeklyreport(ctx: commands.Context):
 async def auto_add_meet_host(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 20] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _auto_stats.add_stat(member.id, "meets_hosted", amount)
@@ -23358,7 +23365,7 @@ async def auto_add_meet_host(interaction: discord.Interaction, member: discord.M
 async def post_auto_staff_leaderboard(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     lb_channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
@@ -23400,7 +23407,7 @@ async def lockslot_cmd(
     action: str,
 ) -> None:
     if not isinstance(interaction.user, discord.Member) or not any(
-        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles
+        r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles
     ):
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
 
@@ -23425,7 +23432,7 @@ async def lockslot_cmd(
 @bot.command(name="unlockslot")
 async def _cmd_unlockslot(ctx: commands.Context, *, slot: str):
     """Unlock a schedule slot — usage: !unlockslot Meet 3"""
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return await ctx.send("Leadership only.", delete_after=6)
     valid = {"Meet 1", "Meet 2", "Meet 3"}
     slot = slot.strip().title()
@@ -23444,7 +23451,7 @@ async def _cmd_unlockslot(ctx: commands.Context, *, slot: str):
 @bot.command(name="lockslot")
 async def _cmd_lockslot(ctx: commands.Context, *, slot: str):
     """Lock a schedule slot — usage: !lockslot Meet 3"""
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return await ctx.send("Leadership only.", delete_after=6)
     valid = {"Meet 1", "Meet 2", "Meet 3"}
     slot = slot.strip().title()
@@ -23463,7 +23470,7 @@ async def _cmd_lockslot(ctx: commands.Context, *, slot: str):
 @bot.command(name="clearslot")
 async def _cmd_clearslot(ctx: commands.Context, *, slot: str):
     """Clear all data from a schedule slot and reset it to Open — usage: !clearslot Meet 3"""
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return await ctx.send("Leadership only.", delete_after=6)
     valid = {"Meet 1", "Meet 2", "Meet 3"}
     slot = slot.strip().title()
@@ -23491,7 +23498,7 @@ async def hoststats_cmd(
     member: discord.Member,
 ) -> None:
     is_staff = any(
-        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+        r.id in _LEADERSHIP_ROLE_IDS
         for r in getattr(interaction.user, "roles", [])
     ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
     if not is_staff and interaction.user.id != member.id:
@@ -23553,7 +23560,7 @@ _JOIN_CREW_APP_CHANNEL = 1103847009653358612
 _JOIN_MMI_LOGO         = "https://images-ext-1.discordapp.net/external/uCyJGU9CHX-Qf0afXUtZPw6fsqXtkG4wLtiokIskeF0/https/cdn-longterm.mee6.xyz/plugins/embeds/images/726914118736543836/012073cc6643a7a2ed45f7217dcf453cd438c42d747b5dd91554a43eccf0f8b6.png?format=webp&quality=lossless&width=1872&height=501"
 _JOIN_STAFF_ROLE_IDS = {
     LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID,
-    HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID,
+    HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID, DEVELOPER_ROLE_ID,
     SENIOR_ADMIN_ROLE_ID, ADMINISTRATOR_ROLE_ID,
     LEAD_MOD_ROLE_ID, MODERATOR_ROLE_ID, JUNIOR_MOD_ROLE_ID,
 }
@@ -25122,7 +25129,7 @@ class JoinTicketView(discord.ui.View):
 async def post_join_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Staff only.", ephemeral=True)
     channel = interaction.guild.get_channel(JOIN_PANEL_CHANNEL_ID)
@@ -25149,7 +25156,7 @@ async def post_join_panel(interaction: discord.Interaction) -> None:
 async def refresh_join_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Staff only.", ephemeral=True)
     channel = interaction.guild.get_channel(JOIN_PANEL_CHANNEL_ID)
@@ -28229,7 +28236,7 @@ async def _cmd_setpsn(ctx: commands.Context, *args):
     """!setpsn <PSN>  or  !setpsn @user <PSN>  — register a PSN username for the board."""
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     is_host  = any(r.id == HOST_ROLE_ID for r in ctx.author.roles)
 
     # Staff can set for another member: !setpsn @user PSN
@@ -28268,7 +28275,7 @@ async def _cmd_removepsn(ctx: commands.Context, member: discord.Member = None):
     """!removepsn — remove your own PSN mapping (staff can pass @user)."""
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
 
     if member and not is_staff:
         return await ctx.send("Staff only for removing others.", delete_after=8)
@@ -28294,7 +28301,7 @@ async def _cmd_psnboard(ctx: commands.Context):
     """!psnboard — post a fresh PSN board (staff only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         return await ctx.send("Staff only.", delete_after=6)
@@ -28317,7 +28324,7 @@ async def _cmd_refresh_psn_board(ctx: commands.Context):
     """!refreshpsnboard — force-refresh the existing PSN board embed."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         return await ctx.send("Staff only.", delete_after=6)
@@ -28340,7 +28347,7 @@ async def _cmd_psn_list(ctx: commands.Context):
     """!psnlist — show all registered host PSN accounts (staff/host only)."""
     is_ok = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_ok:
         return await ctx.send("Staff/host only.", delete_after=6)
@@ -28794,7 +28801,7 @@ async def _cmd_management_report(ctx: commands.Context):
     """Post a current management snapshot (leaders/managers only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -28812,7 +28819,7 @@ async def _cmd_weekly_report(ctx: commands.Context):
     """Post the weekly server report (leaders/managers only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -28830,7 +28837,7 @@ async def _cmd_pending_joins(ctx: commands.Context):
     """List all open join tickets with age indicators (staff only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -28874,7 +28881,7 @@ async def _cmd_host_status(ctx: commands.Context):
     """Show all hosts, availability status, and meet count (leaders/managers only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -28937,7 +28944,7 @@ async def _cmd_join_stats(ctx: commands.Context):
     """Show join application statistics (staff only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -29025,7 +29032,7 @@ async def _cmd_app_leaderboard(ctx: commands.Context):
     """Show who has reviewed the most join applications (staff only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -29074,7 +29081,7 @@ async def _cmd_cooldown_list(ctx: commands.Context):
     """Show all users currently on a reapply cooldown (staff only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -29226,7 +29233,7 @@ async def __stale_join_alert_task_on_error(error: Exception) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _is_staff_member(member: discord.Member) -> bool:
-    return any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in member.roles)
+    return any(r.id in _LEADERSHIP_ROLE_IDS for r in member.roles)
 
 
 @bot.command(name="bulkwarn")
