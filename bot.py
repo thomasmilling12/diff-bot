@@ -23136,11 +23136,8 @@ async def on_message(message: discord.Message) -> None:
                 )
 
                 if not already_notified and prev_total < MIN_GARAGE_PHOTOS <= total_images:
-                    leader_role = message.guild.get_role(LEADER_ROLE_ID)
-                    co_role = message.guild.get_role(CO_LEADER_ROLE_ID)
-                    mgr_role = message.guild.get_role(MANAGER_ROLE_ID)
                     ticket_support_role = message.guild.get_role(TICKET_SUPPORT_ROLE_ID)
-                    mentions = " ".join(r.mention for r in [leader_role, co_role, mgr_role, ticket_support_role] if r)
+                    mentions = ticket_support_role.mention if ticket_support_role else None
 
                     review_embed = discord.Embed(
                         title       = "✅ Application Ready for Review",
