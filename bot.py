@@ -6864,9 +6864,20 @@ def build_hierarchy_embeds(guild: discord.Guild):
             "👑 DIFF Leadership",
             "Server leadership & management team.",
             [
-                (LEADER_ROLE_ID,     "👑 Leader"),
+                (LEADER_ROLE_ID,     "👑 Founder"),
                 (CO_LEADER_ROLE_ID,  "🛡️ Executive"),
-                (MANAGER_ROLE_ID,    "🔴 Manager"),
+                (MANAGER_ROLE_ID,    "🔴 Server Operations"),
+            ],
+        ),
+        (
+            "🔨 Moderation Team",
+            "Staff who keep the server safe and running.",
+            [
+                (SENIOR_ADMIN_ROLE_ID,   "⭐ Senior Admin"),
+                (ADMINISTRATOR_ROLE_ID,  "🔰 Administrator"),
+                (LEAD_MOD_ROLE_ID,       "🔷 Lead Moderator"),
+                (MODERATOR_ROLE_ID,      "🔹 Moderator"),
+                (JUNIOR_MOD_ROLE_ID,     "🔸 Junior Moderator"),
             ],
         ),
         (
@@ -6928,7 +6939,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
 
 _HIERARCHY_OLD_TITLE = "🏆 DIFF SERVER HIERARCHY"
 _HIERARCHY_FOOTER    = "Different Meets • Hierarchy Panel  |  Live status • Updates every 2 min"
-_HIERARCHY_NEW_TITLES = {"👑 DIFF Leadership", "🏁 Meet Operations", "🎨 Creative Teams"}
+_HIERARCHY_NEW_TITLES = {"👑 DIFF Leadership", "🔨 Moderation Team", "🏁 Meet Operations", "🎨 Creative Teams"}
 
 
 def _is_hierarchy_msg(msg: discord.Message, bot_user) -> bool:
