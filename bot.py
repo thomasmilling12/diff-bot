@@ -14362,8 +14362,9 @@ async def on_ready():
         _mgmt_alert_loop.start()
     if not _stale_join_alert_task.is_running():
         _stale_join_alert_task.start()
-    if not _anniversary_check_task.is_running():
-        _anniversary_check_task.start()
+    # Anniversary loop disabled — was flooding staff-logs on Pi
+    # if not _anniversary_check_task.is_running():
+    #     _anniversary_check_task.start()
     if not _host_avail_weekly_dm_task.is_running():
         _host_avail_weekly_dm_task.start()
     if not _unverified_dm_reminder_loop.is_running():
