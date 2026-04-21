@@ -6878,6 +6878,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
                 (LEAD_MOD_ROLE_ID,       "🔷 Lead Moderator"),
                 (MODERATOR_ROLE_ID,      "🔹 Moderator"),
                 (JUNIOR_MOD_ROLE_ID,     "🔸 Junior Moderator"),
+                (TICKET_SUPPORT_ROLE_ID, "🎫 Ticket Support"),
             ],
         ),
         (
