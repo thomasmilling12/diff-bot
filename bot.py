@@ -20275,6 +20275,18 @@ class _TicketSupportAppModal(discord.ui.Modal, title="Ticket Support Application
         app_embed.set_footer(text="DIFF Meets • Ticket Support Application — Must be 18+")
         await channel.send(embed=app_embed, view=SupportCloseButton())
 
+        review_channel = interaction.guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
+        if isinstance(review_channel, discord.TextChannel):
+            try:
+                review_note = discord.Embed(
+                    description=f"📬 New **Ticket Support** application from {interaction.user.mention} — {channel.mention}",
+                    color=0x5865F2,
+                )
+                await review_channel.send(embed=review_note)
+                await review_channel.send(embed=app_embed)
+            except discord.HTTPException:
+                pass
+
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
             try:
@@ -20378,6 +20390,18 @@ class _ModAppModal(discord.ui.Modal, title="Moderator Application"):
         app_embed.add_field(name="🛡️ Prior Experience",       value=self.experience.value,           inline=False)
         app_embed.set_footer(text="DIFF Meets • Moderator Application — All new mods start as Junior Moderator | Must be 18+")
         await channel.send(embed=app_embed, view=SupportCloseButton())
+
+        review_channel = interaction.guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
+        if isinstance(review_channel, discord.TextChannel):
+            try:
+                review_note = discord.Embed(
+                    description=f"📬 New **Moderator** application from {interaction.user.mention} — {channel.mention}",
+                    color=discord.Color.from_rgb(88, 101, 242),
+                )
+                await review_channel.send(embed=review_note)
+                await review_channel.send(embed=app_embed)
+            except discord.HTTPException:
+                pass
 
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
