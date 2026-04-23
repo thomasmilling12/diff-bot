@@ -7113,11 +7113,21 @@ async def post_or_refresh_live_attendance(guild: discord.Guild) -> None:
         except (discord.NotFound, discord.HTTPException):
             message = None
 
+    old_panels = []
     if message is None:
-        async for msg in channel.history(limit=30):
+        async for msg in channel.history(limit=100):
             if msg.author.id == bot.user.id and msg.embeds and msg.embeds[0].title == LIVE_ATTENDANCE_PANEL_TITLE:
-                message = msg
-                break
+                old_panels.append(msg)
+
+        if old_panels:
+            # Use the most recent one, delete any extras
+            old_panels.sort(key=lambda m: m.created_at, reverse=True)
+            message = old_panels[0]
+            for dupe in old_panels[1:]:
+                try:
+                    await dupe.delete()
+                except Exception:
+                    pass
 
     if message:
         try:
@@ -7126,6 +7136,12 @@ async def post_or_refresh_live_attendance(guild: discord.Guild) -> None:
             message = None
 
     if message is None:
+        # Last resort new post — delete any stale panels first
+        for dupe in old_panels:
+            try:
+                await dupe.delete()
+            except Exception:
+                pass
         message = await channel.send(embed=embed)
 
     state["live_attendance_message_id"] = message.id
