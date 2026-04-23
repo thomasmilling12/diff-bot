@@ -14359,6 +14359,97 @@ async def _join_auto_bump_loop():
 @_join_auto_bump_loop.error
 async def __join_auto_bump_loop_on_error(error: Exception) -> None:
     await _handle_loop_error('_join_auto_bump_loop', error, _join_auto_bump_loop)
+
+# =========================
+# JOIN TICKET MICRO-BUMP (every 10 min after photos complete, until claimed)
+# =========================
+
+_JOIN_MICRO_BUMP_MAX = 12  # max pings before handing off to escalating system (~2h)
+
+async def __join_micro_bump_logic():
+    """Ping @Ticket Support every 10 min in-ticket after photos are complete, until someone claims the review."""
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+        category = guild.get_channel(JOIN_TICKET_CATEGORY_ID)
+        if not isinstance(category, discord.CategoryChannel):
+            return
+        ts_role = guild.get_role(TICKET_SUPPORT_ROLE_ID)
+        extra = _join_extra_load()
+        changed = False
+        now_utc = datetime.now(timezone.utc)
+        for ch in category.text_channels:
+            topic = ch.topic or ""
+            if "JOIN_USER:" not in topic:
+                continue
+            # Stop if already claimed or auto-closed
+            if "join_claimed_by=" in topic:
+                continue
+            ch_key = str(ch.id)
+            entry = extra.get(ch_key, {})
+            if entry.get("bump_level", 0) >= 4:
+                continue
+            # Only fire after photos are complete
+            if not entry.get("photos_complete_at"):
+                continue
+            # Stop after max pings — escalating system takes over
+            micro_count = entry.get("micro_bump_count", 0)
+            if micro_count >= _JOIN_MICRO_BUMP_MAX:
+                continue
+            # Rate-limit: at least 9 minutes since last micro ping (buffer for loop jitter)
+            last_micro = entry.get("micro_last_ping")
+            if last_micro:
+                try:
+                    last_dt = datetime.fromisoformat(last_micro)
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    if (now_utc - last_dt).total_seconds() < 540:
+                        continue
+                except Exception:
+                    pass
+            ts_mention = ts_role.mention if ts_role else ""
+            emb = discord.Embed(
+                title="🔔 Review Reminder",
+                description=(
+                    "All required photos have been submitted and this application is "
+                    "**waiting for a decision**.\n\nClick **Claim Review** to take this ticket, then Accept or Deny."
+                ),
+                color=discord.Color.blurple(),
+                timestamp=now_utc,
+            )
+            emb.set_footer(text=f"Different Meets • Reminder {micro_count + 1}/{_JOIN_MICRO_BUMP_MAX}")
+            try:
+                await ch.send(
+                    content=ts_mention or None,
+                    embed=emb,
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+                entry["micro_bump_count"] = micro_count + 1
+                entry["micro_last_ping"] = now_utc.isoformat()
+                extra[ch_key] = entry
+                changed = True
+            except Exception:
+                pass
+        if changed:
+            _join_extra_save(extra)
+    except Exception as _e:
+        print(f"[JoinMicroBump] Error: {_e}")
+
+@tasks.loop(minutes=10)
+async def _join_micro_bump_loop():
+    _loop_success("_join_micro_bump_loop")
+    try:
+        await run_with_timeout("_join_micro_bump_loop", __join_micro_bump_logic(), timeout=60)
+    except Exception as _lte:
+        await _handle_loop_error("_join_micro_bump_loop", _lte, _join_micro_bump_loop)
+@_join_micro_bump_loop.error
+async def __join_micro_bump_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error("_join_micro_bump_loop", error, _join_micro_bump_loop)
+@_join_micro_bump_loop.before_loop
+async def _before_join_micro_bump():
+    await bot.wait_until_ready()
+
 # =========================
 # HOST POSTERS — received button
 # =========================
@@ -14575,6 +14666,8 @@ async def on_ready():
         _rotating_presence_loop.start()
     if not _join_auto_bump_loop.is_running():
         _join_auto_bump_loop.start()
+        if not _join_micro_bump_loop.is_running():
+            _join_micro_bump_loop.start()
     _om_restore_rsvp_counts()
 
     if not hierarchy_attendance_loop.is_running():
