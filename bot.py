@@ -1635,6 +1635,7 @@ def build_review_embed(app_id: str, applicant, answers: dict, ticket_channel_id=
     embed.add_field(name="Age", value=answers.get("age", "N/A"), inline=True)
     embed.add_field(name="Timezone", value=answers.get("timezone", "N/A"), inline=True)
     embed.add_field(name="GTA Rank", value=answers.get("gta_rank", "N/A"), inline=True)
+    embed.add_field(name="Prior Warnings / Bans", value=answers.get("prior_history", "N/A"), inline=False)
     embed.add_field(name="How They Heard", value=answers.get("how_heard", "N/A"), inline=True)
     embed.add_field(name="Days Available", value=answers.get("days_available", "N/A"), inline=True)
     embed.add_field(name="Personal Skills", value=answers.get("personal_skills", "N/A"), inline=False)
@@ -8276,20 +8277,37 @@ _application_data = {}  # user_id -> {"step1": {...}, "step2": {...}}
 
 
 class CrewAppStep1Modal(discord.ui.Modal, title="DIFF Crew Application — Part 1 of 3"):
-    age = discord.ui.TextInput(label="How old are you?", required=True, max_length=3)
+    age = discord.ui.TextInput(label="How old are you? (Must be 18+)", required=True, max_length=3)
     timezone = discord.ui.TextInput(label="What timezone do you live in?", placeholder="e.g. Eastern, Central, Pacific, GMT", required=True, max_length=100)
     gamertag = discord.ui.TextInput(label="PlayStation or PC Gamertag", required=True, max_length=100)
-    discord_name = discord.ui.TextInput(label="Discord Name", required=True, max_length=100)
     gta_rank = discord.ui.TextInput(label="What is your GTA Rank?", required=True, max_length=50)
+    prior_history = discord.ui.TextInput(
+        label="Any warnings or bans in DIFF? Explain.",
+        placeholder="None / Yes — explain here...",
+        required=True,
+        max_length=300,
+        style=discord.TextStyle.short,
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
+        age_str = self.age.value.strip()
+        try:
+            age_val = int(age_str)
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Please enter a valid age (numbers only).", ephemeral=True
+            )
+        if age_val < 18:
+            return await interaction.response.send_message(
+                "❌ You must be **18 or older** to apply to DIFF.", ephemeral=True
+            )
         _application_data[interaction.user.id] = {
             "step1": {
-                "age": self.age.value,
+                "age": age_str,
                 "timezone": self.timezone.value,
                 "gamertag": self.gamertag.value,
-                "discord_name": self.discord_name.value,
                 "gta_rank": self.gta_rank.value,
+                "prior_history": self.prior_history.value,
             }
         }
         await interaction.response.send_message(
@@ -8393,8 +8411,8 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
             "age": s1["age"],
             "timezone": s1["timezone"],
             "gamertag": s1["gamertag"],
-            "discord_name": s1["discord_name"],
             "gta_rank": s1["gta_rank"],
+            "prior_history": s1["prior_history"],
             "how_heard": s2["how_heard"],
             "days_available": s2["days_available"],
             "personal_skills": s2["personal_skills"],
@@ -8579,7 +8597,7 @@ def _build_crew_topic_embed(topic: str) -> discord.Embed:
             title="📌 Crew Positions",
             description=(
                 "Once you're a member, you can try out for these positions. "
-                "Contact the **Leader or Executive** to express interest.\n\n"
+                "Contact the **Founder or Executive** to express interest.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=discord.Color.purple(),
@@ -8615,7 +8633,7 @@ def _build_crew_topic_embed(topic: str) -> discord.Embed:
 
     elif topic == "offers":
         embed = discord.Embed(
-            title="🌟 What DIFF Offers",
+            title="🌟 DIFF Perks & Benefits",
             description=(
                 "DIFF isn't just a crew — it's a full community.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
@@ -8652,7 +8670,53 @@ def _build_crew_topic_embed(topic: str) -> discord.Embed:
             value="A structured environment where active members are recognized and promoted.",
             inline=False,
         )
-        embed.set_footer(text="Different Meets • What DIFF Offers")
+        embed.set_footer(text="Different Meets • Perks & Benefits")
+
+    elif topic == "rules":
+        embed = discord.Embed(
+            title="📜 DIFF Rules & Expectations",
+            description=(
+                "All DIFF members are held to these standards at all times.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.red(),
+        )
+        embed.add_field(
+            name="🎧 Headset & Communication",
+            value="A working headset is **mandatory** for all meets and events. You must be audible and responsive.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🏷️ Crew Tag & Jacket",
+            value="Set **DIFF as your active crew** and wear the crew jacket to all meets. Failure to do so results in a strike.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🕐 Punctuality",
+            value="Join the lobby **30 minutes before meet start**. Repeat tardiness or no-shows will be tracked.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🚗 Build Standards",
+            value="All cars must be **clean and realistic** at all times. No modded, riced, or unrealistic builds at DIFF events.",
+            inline=False,
+        )
+        embed.add_field(
+            name="📋 Roll Call",
+            value="Respond to the weekly roll call. Failing to respond or no-showing without notice counts against your standing.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🤝 Conduct",
+            value="Respect all members, staff, and guests. Toxicity, drama, or behaviour that damages DIFF's reputation will result in removal.",
+            inline=False,
+        )
+        embed.add_field(
+            name="⚠️ Strikes & Removal",
+            value="Repeated violations result in strikes. Three strikes and you are removed from the crew.",
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Rules & Expectations")
 
     elif topic == "faq":
         embed = discord.Embed(
@@ -8729,10 +8793,16 @@ class CrewInfoSelect(discord.ui.Select):
                     description="Roles you can work toward once you're a member.",
                 ),
                 discord.SelectOption(
-                    label="What DIFF Offers",
+                    label="Perks & Benefits",
                     value="offers",
                     emoji="🌟",
                     description="Meets, events, colors, and community perks.",
+                ),
+                discord.SelectOption(
+                    label="Rules & Expectations",
+                    value="rules",
+                    emoji="📜",
+                    description="What's expected of every DIFF member.",
                 ),
                 discord.SelectOption(
                     label="FAQ",
@@ -8772,6 +8842,14 @@ class CrewPanelView(discord.ui.View):
         row=1,
     )
     async def crew_application(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cooldown_text = get_reapply_cooldown_text(interaction.user.id)
+        if cooldown_text:
+            return await interaction.response.send_message(
+                f"❌ You cannot apply to DIFF yet.\n"
+                f"Your reapply cooldown is still active: **{cooldown_text}**.\n"
+                "Please wait until the cooldown expires before submitting a new application.",
+                ephemeral=True,
+            )
         await interaction.response.send_modal(CrewAppStep1Modal())
 
 
@@ -8821,7 +8899,8 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
             "• Crew requirements\n"
             "• Application process\n"
             "• Crew positions\n"
-            "• What DIFF offers\n"
+            "• Perks & benefits\n"
+            "• Rules & expectations\n"
             "• FAQ"
         ),
         inline=False,
