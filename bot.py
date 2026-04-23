@@ -14185,11 +14185,11 @@ async def _rotating_presence_loop():
 async def __rotating_presence_loop_on_error(error: Exception) -> None:
     await _handle_loop_error('_rotating_presence_loop', error, _rotating_presence_loop)
 # =========================
-# JOIN TICKET AUTO-BUMP (24h after photos complete, no decision yet)
+# JOIN TICKET AUTO-BUMP (escalating: 2h → 6h → 24h → 72h auto-close)
 # =========================
 
 async def __join_auto_bump_loop_logic():
-    """Ping staff if an application has had photos for 24h+ with no accept/deny."""
+    """Escalating staff pings after photos submitted with no decision: 2h / 6h / 24h / 72h auto-close."""
     try:
         guild = bot.get_guild(GUILD_ID)
         if not guild:
@@ -14200,16 +14200,26 @@ async def __join_auto_bump_loop_logic():
         extra = _join_extra_load()
         changed = False
         now_utc = datetime.now(timezone.utc)
+        ts_role  = guild.get_role(TICKET_SUPPORT_ROLE_ID)
+        mgr_role = guild.get_role(MANAGER_ROLE_ID)
+        lead     = guild.get_role(LEADER_ROLE_ID)
+        co       = guild.get_role(CO_LEADER_ROLE_ID)
         for ch in category.text_channels:
             topic = ch.topic or ""
             if "JOIN_USER:" not in topic:
                 continue
             ch_key = str(ch.id)
             entry = extra.get(ch_key, {})
-            if entry.get("bump_sent"):
+            # Backward-compat: old bump_sent=True means already reached level 3
+            if entry.get("bump_sent") and "bump_level" not in entry:
+                entry["bump_level"] = 3
+            bump_level = entry.get("bump_level", 0)
+            if bump_level >= 4:
+                extra[ch_key] = entry
                 continue
             photos_ts = entry.get("photos_complete_at")
             if not photos_ts:
+                extra[ch_key] = entry
                 continue
             try:
                 complete_at = datetime.fromisoformat(photos_ts)
@@ -14217,35 +14227,123 @@ async def __join_auto_bump_loop_logic():
                     complete_at = complete_at.replace(tzinfo=timezone.utc)
             except Exception:
                 continue
-            if (now_utc - complete_at).total_seconds() < 86400:   # 24 hours
-                continue
-            # 24h elapsed — ping staff
-            lead   = guild.get_role(LEADER_ROLE_ID)
-            co     = guild.get_role(CO_LEADER_ROLE_ID)
-            mgr    = guild.get_role(MANAGER_ROLE_ID)
-            mentions = " ".join(r.mention for r in [lead, co, mgr] if r)
-            bump_embed = discord.Embed(
-                title="⏰ Application Awaiting Decision — 24h Reminder",
-                description=(
-                    "This join application has had all required photos for **over 24 hours** "
-                    "with no accept or deny decision.\n\n"
-                    "Please review and close this ticket."
-                ),
-                color=discord.Color.yellow(),
-                timestamp=now_utc,
-            )
-            bump_embed.set_footer(text="Different Meets • Join Hub Auto-Bump")
-            try:
-                await ch.send(
-                    content=mentions if mentions else None,
-                    embed=bump_embed,
-                    allowed_mentions=discord.AllowedMentions(roles=True),
+            hours = (now_utc - complete_at).total_seconds() / 3600
+
+            if bump_level < 1 and hours >= 2:
+                # Level 1 — 2h: ping Ticket Support in ticket
+                ts_mention = ts_role.mention if ts_role else ""
+                emb = discord.Embed(
+                    title="⏰ Review Needed — 2h",
+                    description=(
+                        "All required photos have been submitted for **over 2 hours** "
+                        "with no decision yet.\n\nPlease review this application."
+                    ),
+                    color=discord.Color.yellow(),
+                    timestamp=now_utc,
                 )
+                emb.set_footer(text="Different Meets • Join Hub Auto-Bump")
+                try:
+                    await ch.send(
+                        content=ts_mention or None,
+                        embed=emb,
+                        allowed_mentions=discord.AllowedMentions(roles=True),
+                    )
+                    entry["bump_level"] = 1
+                    changed = True
+                except Exception:
+                    pass
+
+            elif bump_level < 2 and hours >= 6:
+                # Level 2 — 6h: ping Ticket Support + Server Operations
+                mentions = " ".join(r.mention for r in [ts_role, mgr_role] if r)
+                emb = discord.Embed(
+                    title="⏰ Review Needed — 6h",
+                    description=(
+                        "This application has been waiting for a decision for **over 6 hours**.\n\n"
+                        "Ticket Support and Server Operations — please review and action this ticket."
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=now_utc,
+                )
+                emb.set_footer(text="Different Meets • Join Hub Auto-Bump")
+                try:
+                    await ch.send(
+                        content=mentions or None,
+                        embed=emb,
+                        allowed_mentions=discord.AllowedMentions(roles=True),
+                    )
+                    entry["bump_level"] = 2
+                    changed = True
+                except Exception:
+                    pass
+
+            elif bump_level < 3 and hours >= 24:
+                # Level 3 — 24h: ping Founder + Executive + Server Operations
+                mentions = " ".join(r.mention for r in [lead, co, mgr_role] if r)
+                emb = discord.Embed(
+                    title="🚨 Application Still Unresolved — 24h",
+                    description=(
+                        "This join application has had all required photos for **over 24 hours** "
+                        "with no accept or deny decision.\n\n"
+                        "This needs to be resolved immediately."
+                    ),
+                    color=discord.Color.red(),
+                    timestamp=now_utc,
+                )
+                emb.set_footer(text="Different Meets • Join Hub Auto-Bump")
+                try:
+                    await ch.send(
+                        content=mentions or None,
+                        embed=emb,
+                        allowed_mentions=discord.AllowedMentions(roles=True),
+                    )
+                    entry["bump_level"] = 3
+                    entry["bump_sent"] = True  # backward-compat flag
+                    changed = True
+                except Exception:
+                    pass
+
+            elif bump_level < 4 and hours >= 72:
+                # Level 4 — 72h: auto-close ticket, DM applicant
+                uid_raw = _join_parse_user_id(topic)
+                applicant = guild.get_member(int(uid_raw)) if uid_raw and uid_raw.isdigit() else None
+                if applicant:
+                    try:
+                        await safe_dm(
+                            applicant,
+                            "**DIFF Join Application Update**\n\n"
+                            "Your join application ticket was automatically closed after **72 hours** "
+                            "because our review team was unable to action it in time.\n\n"
+                            "This is **not a rejection** — you are welcome to reapply when our team "
+                            "is available. We apologise for the delay.",
+                        )
+                    except Exception:
+                        pass
+                try:
+                    await ch.send(embed=discord.Embed(
+                        title="🔒 Auto-Closed — 72h No Decision",
+                        description=(
+                            "This ticket has been automatically closed after **72 hours** "
+                            "of staff inactivity. The applicant has been notified and may reapply."
+                        ),
+                        color=discord.Color.dark_grey(),
+                        timestamp=now_utc,
+                    ))
+                except Exception:
+                    pass
+                try:
+                    new_name = f"closed-{ch.name}"[:90]
+                    await ch.edit(name=new_name)
+                    await ch.set_permissions(guild.default_role, view_channel=False)
+                    if applicant:
+                        await ch.set_permissions(applicant, view_channel=False)
+                except Exception:
+                    pass
+                entry["bump_level"] = 4
                 entry["bump_sent"] = True
-                extra[ch_key] = entry
                 changed = True
-            except Exception:
-                pass
+
+            extra[ch_key] = entry
         if changed:
             _join_extra_save(extra)
     except Exception as _e:
@@ -29528,7 +29626,7 @@ async def _cmd_cooldown_list(ctx: commands.Context):
 
 
 # ── Stale Join Ticket Alert Task ───────────────────────────────────────────────
-_STALE_JOIN_HOURS = 24
+_STALE_JOIN_HOURS = 8
 _STALE_JOIN_MSG_FILE = os.path.join("diff_data", "diff_stale_join_msg.json")
 
 def _stale_join_msg_load() -> int | None:
@@ -29547,7 +29645,7 @@ def _stale_join_msg_save(message_id: int | None):
 
 async def __stale_join_alert_task_logic():
     """Alert staff when join tickets have been open > 24h. Edits existing alert instead of spamming."""
-    return  # disabled — alerts were too noisy
+    # stale alert re-enabled — edits in place, not spammy
     await bot.wait_until_ready()
     guild = bot.get_guild(GUILD_ID)
     if not guild:
