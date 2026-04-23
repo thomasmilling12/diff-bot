@@ -16649,8 +16649,26 @@ def _build_interview_panel_embed() -> discord.Embed:
     )
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
+        name="📜 Rules & Strike System",
+        value="Walk the applicant through expectations and consequences",
+        inline=True,
+    )
+    embed.add_field(
+        name="🎨 Crew Colors & Color Lab",
+        value="Explain the weekly color vote and Color Lab system",
+        inline=True,
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
+        name="⚠️ Red Flags",
+        value="Staff-only reference — warning signs and when to escalate",
+        inline=True,
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
         name="📘 Reminder",
-        value="Keep interviews smooth, respectful, and professional so every applicant gets the same clear DIFF experience.",
+        value="Keep every interview smooth, respectful, and consistent — applicants should always leave with a clear picture of DIFF.",
         inline=False,
     )
     embed.set_footer(text="Different Meets • Staff Interview Panel")
@@ -16737,7 +16755,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
             value=(
                 "*Our meet time is 8pm EST. You must join 30 minutes early. "
                 "You're required to attend at least one meet per week. "
-                "If you can't make it, you must let Management know in advance.*"
+                "If you can't make it, you must let a host or Server Operations know in advance.*"
             ),
             inline=False,
         )
@@ -16781,7 +16799,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
         embed = discord.Embed(
             title="📌 Crew Positions",
             description=(
-                "If the applicant is interested in a role, direct them to contact the **Leader or Executive**.\n\n"
+                "If the applicant is interested in a role, direct them to contact the **Founder or Executive**.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=discord.Color.purple(),
@@ -16837,15 +16855,171 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
             ),
             color=discord.Color.gold(),
         )
-        embed.add_field(name="👑 Leader",      value=leader_text,    inline=False)
-        embed.add_field(name="🛡️ Executive",   value=co_leader_text, inline=False)
-        embed.add_field(name="📋 Managers",    value=manager_text,   inline=False)
+        embed.add_field(name="👑 Founder",             value=leader_text,    inline=False)
+        embed.add_field(name="🛡️ Executive",          value=co_leader_text, inline=False)
+        embed.add_field(name="📋 Server Operations",  value=manager_text,   inline=False)
         embed.add_field(
             name="📅 Founded",
             value="DIFF has been running since **August 20, 2020**.",
             inline=False,
         )
         embed.set_footer(text="Different Meets • Interview Panel — Leadership")
+
+    elif topic == "rules":
+        embed = discord.Embed(
+            title="📜 Rules & Strike System",
+            description=(
+                "Walk the applicant through what's expected of every DIFF member "
+                "and what happens when those expectations aren't met.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.red(),
+        )
+        embed.add_field(
+            name="🎧 Headset",
+            value="A working headset is **mandatory** at all meets and crew events. You must be audible.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🏷️ Crew Tag",
+            value="Set DIFF as your **active crew** at every meet. Crew jacket must also be worn.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🕐 Punctuality",
+            value="Join the lobby **30 minutes before** meet start. Habitual tardiness is tracked.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🚗 Clean Builds",
+            value="Cars must be **clean and realistic** at all DIFF events. No riced or modded builds.",
+            inline=False,
+        )
+        embed.add_field(
+            name="📋 Roll Call",
+            value="Respond to the weekly roll call. Unexplained no-shows count against your standing.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🤝 Conduct",
+            value="Treat all members and guests with respect. Drama or toxicity will not be tolerated.",
+            inline=False,
+        )
+        embed.add_field(
+            name="⚠️ Strike System",
+            value=(
+                "Violations result in **strikes**.\n"
+                "• **1 strike** — verbal warning\n"
+                "• **2 strikes** — formal warning, documented\n"
+                "• **3 strikes** — removal from DIFF"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Rules & Strikes")
+
+    elif topic == "colors":
+        embed = discord.Embed(
+            title="🎨 Crew Colors & Color Lab",
+            description=(
+                "Explain how the weekly crew color system works — this often comes up during interviews.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="🌈 Weekly Crew Color",
+            value=(
+                "Every week, DIFF runs a **community vote** for the next crew color. "
+                "The winning color is announced and **all members must paint their car** "
+                "to that color for the week's meet."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎨 Color Lab",
+            value=(
+                "Members can submit a color code via the **Color Lab** system. "
+                "Submissions go into the weekly vote pool — the community picks the winner."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📌 Why It Matters",
+            value=(
+                "Wearing the correct crew color shows **crew unity** at meets. "
+                "Failing to match the color may result in a strike if repeated."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🛎️ How They'll Know",
+            value=(
+                "The weekly color is posted in the announcements channel on Discord. "
+                "Remind the applicant to check Discord regularly."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Crew Colors")
+
+    elif topic == "redflags":
+        embed = discord.Embed(
+            title="⚠️ Red Flags — Staff Reference",
+            description=(
+                "**Staff eyes only.** Things to watch for during the interview "
+                "that may need escalating or further review.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.dark_red(),
+        )
+        embed.add_field(
+            name="🚫 Prior Bans or Warnings",
+            value=(
+                "If the applicant mentions being previously banned or warned in DIFF, "
+                "**do not accept on the spot.** Flag to a Founder or Executive for review."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="❌ No Headset",
+            value=(
+                "If they cannot speak during the voice interview, that is an immediate concern. "
+                "A headset is non-negotiable — politely decline or reschedule."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🚗 No Car Knowledge",
+            value=(
+                "Can't name any car brands? Doesn't know what a ricer is? "
+                "These are warning signs they won't fit the clean car culture."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📵 Low Discord Activity",
+            value=(
+                "If they rarely check Discord or don't respond to notifications, "
+                "they will miss roll calls and color announcements — flag this."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="😤 Attitude or Deflection",
+            value=(
+                "Defensive answers, dismissing questions, or rushing through the interview "
+                "are signs the applicant may not take DIFF seriously."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="⏫ Escalation",
+            value=(
+                "If anything feels off, **do not make the call alone.** "
+                "End the interview politely and consult a Founder or Executive before deciding."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Red Flags (Staff Only)")
 
     else:
         embed = discord.Embed(title="Unknown topic", color=discord.Color.red())
@@ -16897,6 +17071,24 @@ class InterviewTopicSelect(discord.ui.Select):
                     value="leadership",
                     emoji="👑",
                     description="Who applicants can contact after the interview.",
+                ),
+                discord.SelectOption(
+                    label="Rules & Strike System",
+                    value="rules",
+                    emoji="📜",
+                    description="Walk the applicant through expectations and consequences.",
+                ),
+                discord.SelectOption(
+                    label="Crew Colors & Color Lab",
+                    value="colors",
+                    emoji="🎨",
+                    description="How the weekly crew color vote and Color Lab work.",
+                ),
+                discord.SelectOption(
+                    label="Red Flags (Staff Only)",
+                    value="redflags",
+                    emoji="⚠️",
+                    description="Signs to watch for and when to escalate.",
                 ),
             ],
             row=0,
