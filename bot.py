@@ -16692,11 +16692,15 @@ def _build_interview_panel_embed() -> discord.Embed:
     )
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
+        name="✅ Green Flags",
+        value="Staff-only reference — signs of a strong candidate",
+        inline=True,
+    )
+    embed.add_field(
         name="⚠️ Red Flags",
         value="Staff-only reference — warning signs and when to escalate",
         inline=True,
     )
-    embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
         name="📘 Reminder",
@@ -16993,6 +16997,82 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
         )
         embed.set_footer(text="Different Meets • Interview Panel — Crew Colors")
 
+    elif topic == "greenflags":
+        embed = discord.Embed(
+            title="✅ Green Flags — Staff Reference",
+            description=(
+                "**Staff eyes only.** Positive signs that indicate a strong candidate "
+                "who is likely to be a good fit for DIFF.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.green(),
+        )
+        embed.add_field(
+            name="🎧 Headset Ready",
+            value=(
+                "They join the VC with a clear, working headset immediately. "
+                "No delay, no excuses — they came prepared."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🚗 Strong Car Knowledge",
+            value=(
+                "Can confidently name car brands, explain what clean/realistic means, "
+                "and describes their dream car with genuine enthusiasm."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📱 Active on Discord",
+            value=(
+                "Checks Discord daily, responds to roll calls, and already knows the "
+                "announcements channel — shows they're invested before even joining."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🏁 Crew Tag & Jacket Awareness",
+            value=(
+                "Already knows about the crew tag and jacket requirement without being told, "
+                "or asks about it proactively — shows they did their research."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📅 Meet Availability",
+            value=(
+                "Available most weekends, already knows the 8pm EST meet time, "
+                "and is willing to join 30 minutes early without hesitation."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🤝 Respectful Tone",
+            value=(
+                "Calm, friendly, and professional throughout. Listens well, "
+                "answers questions without being evasive, and asks thoughtful questions."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎯 Clear Motivation",
+            value=(
+                "Has a genuine reason for wanting to join DIFF — not just 'I want a crew tag'. "
+                "References community, meets, or crew culture specifically."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="⏫ Recommendation",
+            value=(
+                "A candidate with multiple green flags should be fast-tracked. "
+                "Move to the garage photo step and flag to a Founder or Executive if exceptional."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Green Flags (Staff Only)")
+
     elif topic == "redflags":
         embed = discord.Embed(
             title="⚠️ Red Flags — Staff Reference",
@@ -17115,6 +17195,12 @@ class InterviewTopicSelect(discord.ui.Select):
                     value="colors",
                     emoji="🎨",
                     description="How the weekly crew color vote and Color Lab work.",
+                ),
+                discord.SelectOption(
+                    label="Green Flags (Staff Only)",
+                    value="greenflags",
+                    emoji="✅",
+                    description="Positive signs of a strong candidate.",
                 ),
                 discord.SelectOption(
                     label="Red Flags (Staff Only)",
