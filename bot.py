@@ -1652,18 +1652,53 @@ def build_review_embed(app_id: str, applicant, answers: dict, ticket_channel_id=
 
 
 def build_tracker_embed(app_id: str, applicant, answers: dict, status: str, reviewer_text: str = "Not reviewed yet"):
-    color_map = {"Approved": discord.Color.green(), "Denied": discord.Color.red(), "Closed": discord.Color.dark_grey()}
+    color_map = {
+        "Approved": discord.Color.green(),
+        "Denied": discord.Color.red(),
+        "Closed": discord.Color.dark_grey(),
+        "More Info Requested": discord.Color.yellow(),
+        "Timed Out": discord.Color.dark_orange(),
+    }
+    # Handle applicant who has left the server (applicant is None)
+    if applicant is not None:
+        user_display = applicant.mention
+        user_id = applicant.id
+    else:
+        stored_id = answers.get("user_id", answers.get("applicant_id", "Unknown"))
+        stored_name = answers.get("username", "Unknown User")
+        user_display = f"{stored_name}\n`{stored_id}`"
+        user_id = stored_id
+
     embed = discord.Embed(
         title=f"Application Tracker #{app_id}",
-        description="DIFF application progress",
+        description="DIFF Crew Application",
         color=color_map.get(status, discord.Color.orange()),
         timestamp=utc_now(),
     )
-    embed.add_field(name="User", value=applicant.mention, inline=True)
-    embed.add_field(name="Gamertag", value=answers.get("gamertag", "N/A"), inline=True)
-    embed.add_field(name="Status", value=make_status_emoji(status), inline=True)
-    embed.add_field(name="Reviewed By", value=reviewer_text, inline=False)
-    embed.set_footer(text=f"Applicant ID: {applicant.id}")
+    embed.add_field(name="👤 Applicant", value=user_display, inline=True)
+    embed.add_field(name="🎮 Gamertag", value=answers.get("gamertag", "N/A"), inline=True)
+    embed.add_field(name="📊 Status", value=make_status_emoji(status), inline=True)
+    embed.add_field(name="🏆 GTA Rank", value=answers.get("gta_rank", "N/A"), inline=True)
+    embed.add_field(name="🎂 Age", value=answers.get("age", "N/A"), inline=True)
+    prior = answers.get("prior_history", "N/A")
+    embed.add_field(name="⚠️ Prior Warnings / Bans", value=prior if prior else "None", inline=True)
+    submitted_at = answers.get("submitted_at", "")
+    if submitted_at:
+        try:
+            from datetime import datetime as _dt
+            parsed = _dt.fromisoformat(submitted_at.replace("Z", "+00:00"))
+            submitted_display = f"<t:{int(parsed.timestamp())}:F>"
+        except Exception:
+            submitted_display = submitted_at[:19]
+    else:
+        submitted_display = "N/A"
+    embed.add_field(name="📅 Submitted", value=submitted_display, inline=True)
+    embed.add_field(name="🔍 Reviewed By", value=reviewer_text, inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    deny_reason = answers.get("deny_reason", "")
+    if deny_reason:
+        embed.add_field(name="📝 Decision Notes", value=deny_reason[:1024], inline=False)
+    embed.set_footer(text=f"Applicant ID: {user_id}")
     return embed
 
 
@@ -2117,9 +2152,8 @@ class ReviewView(discord.ui.View):
                         applicant = guild.get_member(record["user_id"]) or await guild.fetch_member(record["user_id"])
                     except Exception:
                         applicant = None
-                    if applicant:
-                        tracker_embed = build_tracker_embed(self.app_id, applicant, record, new_status, reviewer.mention)
-                        await tracker_msg.edit(embed=tracker_embed)
+                    tracker_embed = build_tracker_embed(self.app_id, applicant, record, new_status, reviewer.mention)
+                    await tracker_msg.edit(embed=tracker_embed)
                 except Exception:
                     pass
             if close_ticket and record.get("ticket_channel_id"):
@@ -2332,8 +2366,7 @@ class TicketAcceptModal(discord.ui.Modal, title="Accept Applicant"):
             tracker_ch = guild.get_channel(record.get("tracker_channel_id"))
             if isinstance(tracker_ch, discord.TextChannel) and record.get("tracker_message_id"):
                 tracker_msg = await tracker_ch.fetch_message(record["tracker_message_id"])
-                answers = {k: record.get(k, "N/A") for k in ("gamertag", "days_available", "why_join")}
-                t_emb = build_tracker_embed(app_id, applicant, answers, "Approved", interaction.user.mention)
+                t_emb = build_tracker_embed(app_id, applicant, record, "Approved", interaction.user.mention)
                 await tracker_msg.edit(embed=t_emb)
         except Exception:
             pass
@@ -2412,8 +2445,7 @@ class TicketDenyModal(discord.ui.Modal, title="Deny Applicant"):
             tracker_ch = guild.get_channel(record.get("tracker_channel_id"))
             if isinstance(tracker_ch, discord.TextChannel) and record.get("tracker_message_id"):
                 tracker_msg = await tracker_ch.fetch_message(record["tracker_message_id"])
-                answers = {k: record.get(k, "N/A") for k in ("gamertag", "days_available", "why_join")}
-                t_emb = build_tracker_embed(app_id, applicant, answers, "Denied", interaction.user.mention)
+                t_emb = build_tracker_embed(app_id, applicant, record, "Denied", interaction.user.mention)
                 await tracker_msg.edit(embed=t_emb)
         except Exception:
             pass
