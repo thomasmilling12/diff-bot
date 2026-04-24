@@ -277,7 +277,7 @@ intents.message_content = True
 intents.members = True
 intents.presences = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, heartbeat_timeout=150)
 
 
 async def _setup_hook():
@@ -28462,16 +28462,28 @@ if not TOKEN:
 
 keep_alive()
 
+
+def _crash_log(reason: str) -> None:
+    """Append crash reason to discord.log so it survives the restart."""
+    try:
+        with open("discord.log", "a", encoding="utf-8") as _f:
+            _f.write(f"[CRASH @ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}] {reason}\n")
+    except Exception:
+        pass
+
 async def run_bot():
     try:
-        await bot.start(TOKEN)
+        await bot.start(TOKEN, reconnect=True)
     except discord.errors.HTTPException as e:
-        if e.status == 429:
-            print(f"[Rate limited by Discord] Retrying in 10s...")
-        else:
-            print(f"[HTTP error] {e} — retrying in 10s")
+        msg = f"[Rate limited] Retrying..." if e.status == 429 else f"[HTTP error] {e}"
+        print(msg)
+        _crash_log(msg)
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
-        print(f"[Connection error] {e} — retrying in 10s")
+        msg = f"[Crash] {type(e).__name__}: {e}"
+        print(msg)
+        _crash_log(msg)
     finally:
         try:
             if not bot.is_closed():
@@ -31599,7 +31611,7 @@ with open('discord.log', 'a', encoding='utf-8') as _lf:
 
 asyncio.run(run_bot())
 
-print(f"[Restarting process in 10s...]")
+print(f"[Restarting process in 3s...]")
 import time
-time.sleep(10)
+time.sleep(3)
 os.execv(sys.executable, [sys.executable] + sys.argv)
