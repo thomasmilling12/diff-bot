@@ -20666,13 +20666,15 @@ async def _post_transcript_to_channel(
     if not isinstance(tc, discord.TextChannel):
         return None
 
-    # ── Step 1: upload raw file — keep the message so the CDN URL never expires ─
-    file_url: str | None = None
+    # ── Step 1: upload raw file ───────────────────────────────────────────────
+    # Discord CDN attachment URLs now expire (~24 h) regardless of whether the
+    # message is kept. We return a permanent Discord jump link instead, which
+    # navigates directly to the message so Discord generates a fresh download
+    # URL on demand.
+    jump_url: str | None = None
     try:
         upload_msg = await tc.send(file=transcript_file)
-        if upload_msg.attachments:
-            file_url = upload_msg.attachments[0].url
-        # Do NOT delete — deleting a message kills its CDN attachment URL
+        jump_url = f"https://discord.com/channels/{guild.id}/{tc.id}/{upload_msg.id}"
     except discord.HTTPException:
         pass
 
@@ -20688,13 +20690,13 @@ async def _post_transcript_to_channel(
     ref_embed.set_footer(text="Different Meets • Transcripts")
 
     view: discord.ui.View | None = None
-    if file_url:
+    if jump_url:
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(
             label="View Transcript",
             emoji="📋",
             style=discord.ButtonStyle.link,
-            url=file_url,
+            url=jump_url,
         ))
 
     try:
@@ -20705,7 +20707,7 @@ async def _post_transcript_to_channel(
     except discord.HTTPException:
         pass
 
-    return file_url
+    return jump_url
 
 
 # ─────────────────────────────────────────────────────────────────────────────
