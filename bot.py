@@ -277,7 +277,7 @@ intents.message_content = True
 intents.members = True
 intents.presences = True
 
-bot = commands.Bot(command_prefix="!", intents=intents, heartbeat_timeout=150)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 async def _setup_hook():

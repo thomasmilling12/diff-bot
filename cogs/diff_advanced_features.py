@@ -1263,11 +1263,17 @@ class DiffAdvancedFeatures(commands.Cog):
     @_stats_update.before_loop
     async def _before_stats(self) -> None:
         await self.bot.wait_until_ready()
-        await self._do_stats_refresh()
+        try:
+            await self._do_stats_refresh()
+        except Exception as e:
+            print(f"[ServerStats] before_loop refresh error: {e}")
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        await self._do_stats_refresh()
+        try:
+            await self._do_stats_refresh()
+        except Exception as e:
+            print(f"[ServerStats] on_ready refresh error: {e}")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Config helpers
