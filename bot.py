@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict, field
@@ -31613,6 +31614,5 @@ with open('discord.log', 'a', encoding='utf-8') as _lf:
 asyncio.run(run_bot())
 
 print(f"[Restarting process in 3s...]")
-import time
 time.sleep(3)
 os.execv(sys.executable, [sys.executable] + sys.argv)
