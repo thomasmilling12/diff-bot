@@ -1219,34 +1219,55 @@ class DiffAdvancedFeatures(commands.Cog):
         _save(_ADV_CONFIG_FILE, cfg)
         await ctx.send(f"✅ Stats embed posted in {ch.mention} — updates every hour.", delete_after=10)
 
+    async def _do_stats_refresh(self) -> None:
+        """Core logic — fetch or re-post the stats embed. Logs errors instead of swallowing them."""
+        cfg   = _cfg()
+        ch_id = cfg.get("stats_channel_id")
+        msg_id = cfg.get("stats_message_id")
+        if not ch_id:
+            return
+        guild = self.bot.get_guild(_GUILD_ID())
+        if not guild:
+            print("[ServerStats] guild not found — skipping refresh")
+            return
+        channel = guild.get_channel(int(ch_id))
+        if not isinstance(channel, discord.TextChannel):
+            print(f"[ServerStats] stats channel {ch_id} not found — skipping")
+            return
+        embed = await self._rebuild_stats_embed(guild)
+        if msg_id:
+            try:
+                msg = await channel.fetch_message(int(msg_id))
+                await msg.edit(embed=embed)
+                return
+            except discord.NotFound:
+                print("[ServerStats] saved message not found — re-posting")
+            except discord.Forbidden:
+                print("[ServerStats] missing permissions to edit stats message")
+                return
+            except Exception as e:
+                print(f"[ServerStats] edit failed: {type(e).__name__}: {e}")
+                return
+        try:
+            new_msg = await channel.send(embed=embed)
+            cfg["stats_message_id"] = new_msg.id
+            _save(_ADV_CONFIG_FILE, cfg)
+            print("[ServerStats] stats embed re-posted")
+        except Exception as e:
+            print(f"[ServerStats] re-post failed: {type(e).__name__}: {e}")
+
     @tasks.loop(hours=1)
     async def _stats_update(self) -> None:
-        cfg = _cfg()
-        ch_id  = cfg.get("stats_channel_id")
-        msg_id = cfg.get("stats_message_id")
-        if not ch_id or not msg_id:
-            return
-        guild   = self.bot.get_guild(_GUILD_ID())
-        channel = guild.get_channel(int(ch_id)) if guild else None
-        if not isinstance(channel, discord.TextChannel):
-            return
-        try:
-            msg   = await channel.fetch_message(int(msg_id))
-            embed = await self._rebuild_stats_embed(guild)
-            await msg.edit(embed=embed)
-        except discord.NotFound:
-            guild = self.bot.get_guild(_GUILD_ID())
-            if guild:
-                embed = await self._rebuild_stats_embed(guild)
-                new_msg = await channel.send(embed=embed)
-                cfg["stats_message_id"] = new_msg.id
-                _save(_ADV_CONFIG_FILE, cfg)
-        except Exception:
-            pass
+        await self._do_stats_refresh()
 
     @_stats_update.before_loop
     async def _before_stats(self) -> None:
         await self.bot.wait_until_ready()
+        await self._do_stats_refresh()
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        await self._do_stats_refresh()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Config helpers
