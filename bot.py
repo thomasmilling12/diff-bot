@@ -7272,7 +7272,7 @@ async def _host_board_auto_refresh_loop_logic():
         except Exception as _e:
             print(f"[BoardLoop] edit failed: {_e}")
 
-@tasks.loop(minutes=2)
+@tasks.loop(minutes=15)
 async def host_board_auto_refresh_loop():
     _loop_success('host_board_auto_refresh_loop')
     try:
