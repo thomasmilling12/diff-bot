@@ -7222,6 +7222,7 @@ async def _hierarchy_attendance_loop_logic():
                         )
                     except Exception:
                         pass
+                    await asyncio.sleep(2)
     except Exception:
         pass
     try:
@@ -7229,7 +7230,7 @@ async def _hierarchy_attendance_loop_logic():
     except Exception:
         pass
 
-@tasks.loop(minutes=2)
+@tasks.loop(minutes=10)
 async def hierarchy_attendance_loop():
     _loop_success('hierarchy_attendance_loop')
     try:

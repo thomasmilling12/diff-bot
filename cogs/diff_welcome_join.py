@@ -653,7 +653,7 @@ class DiffWelcomeJoinSystem(commands.Cog):
                     title="📨 Reminder DM Sent",
                     member=member,
                 )
-            except discord.Forbidden:
+            except (discord.Forbidden, discord.HTTPException):
                 self.db.mark_reminder_sent(member.id)
 
     @commands.command(name="previewwelcome")
