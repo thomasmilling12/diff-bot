@@ -105,6 +105,7 @@ LEADER_ROLE_ID         = 850391095845584937
 CO_LEADER_ROLE_ID      = 850391378559238235
 MANAGER_ROLE_ID        = 990011447193006101
 HOST_ROLE_ID           = 1055823929358430248
+SESSION_VC_CATEGORY_ID = 1156059930483228732
 TICKET_SUPPORT_ROLE_ID = 1495649501522694225
 SENIOR_ADMIN_ROLE_ID   = 1034280192241307718
 ADMINISTRATOR_ROLE_ID  = 1328458892690063443
@@ -9904,13 +9905,31 @@ class _HPStartModal(discord.ui.Modal, title="Start Host Session"):
             "ended": False,
             "score": 0,
             "warning_count": 0,
+            "voice_channel_id": None,
+            "vc_locked": False,
+            "vc_empty_since": None,
         }
+
+        # Auto-create a voice channel for this session
+        try:
+            category = interaction.guild.get_channel(SESSION_VC_CATEGORY_ID)
+            if isinstance(category, discord.CategoryChannel):
+                vc = await interaction.guild.create_voice_channel(
+                    name=f"| {interaction.user.display_name} Session",
+                    category=category,
+                    reason=f"Host session started by {interaction.user.display_name}",
+                )
+                session["voice_channel_id"] = vc.id
+        except Exception as _vc_err:
+            print(f"[HostSession] Could not create voice channel: {_vc_err}")
+
         data["active_sessions"][session_id] = session
         _hp_save(data)
 
+        vc_mention = f"\n🎙️ Voice channel: <#{session['voice_channel_id']}>" if session.get("voice_channel_id") else ""
         await thread.send(embed=_hp_session_embed(session), view=HostSessionView())
         await interaction.response.send_message(
-            f"Host session started: {thread.mention}", ephemeral=True
+            f"Host session started: {thread.mention}{vc_mention}", ephemeral=True
         )
 
 
@@ -10099,6 +10118,36 @@ class HostSessionView(discord.ui.View):
         session, _ = result
         await interaction.response.send_modal(_HPAttendanceModal(session["session_id"]))
 
+    @discord.ui.button(label="Lock VC", emoji="🔒", style=discord.ButtonStyle.secondary,
+                       custom_id="diff_host_session:lock_vc", row=2)
+    async def lock_vc(self, interaction: discord.Interaction, button: discord.ui.Button):
+        result = await self._get_session(interaction)
+        if not result:
+            return
+        session, data = result
+        is_host = interaction.user.id == session["host_id"]
+        is_staff = isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
+        if not is_host and not is_staff:
+            return await interaction.response.send_message("Only the session host or staff can do this.", ephemeral=True)
+        vc_id = session.get("voice_channel_id")
+        if not vc_id:
+            return await interaction.response.send_message("No voice channel is linked to this session.", ephemeral=True)
+        vc = interaction.guild.get_channel(vc_id) if interaction.guild else None
+        if not isinstance(vc, discord.VoiceChannel):
+            return await interaction.response.send_message("Session voice channel not found.", ephemeral=True)
+        everyone = interaction.guild.default_role
+        is_locked = session.get("vc_locked", False)
+        if is_locked:
+            await vc.set_permissions(everyone, connect=None)
+            session["vc_locked"] = False
+            _hp_save(data)
+            await interaction.response.send_message("✅ Voice channel unlocked — members can join again.", ephemeral=True)
+        else:
+            await vc.set_permissions(everyone, connect=False)
+            session["vc_locked"] = True
+            _hp_save(data)
+            await interaction.response.send_message("🔒 Voice channel locked — no new members can join.", ephemeral=True)
+
     @discord.ui.button(label="End Meet Session", emoji="🏁", style=discord.ButtonStyle.danger,
                        custom_id="diff_host_session:end_session", row=2)
     async def end_session(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -10241,6 +10290,16 @@ class HostSessionView(discord.ui.View):
 
         async def _delete_thread():
             await asyncio.sleep(10)
+            # Delete the session voice channel
+            vc_id = session.get("voice_channel_id")
+            if vc_id:
+                try:
+                    vc = bot.get_channel(vc_id)
+                    if isinstance(vc, discord.VoiceChannel):
+                        await vc.delete(reason=f"Host session ended — {session.get('meet_name', '')}")
+                except Exception as _vc_del_err:
+                    print(f"[HostSession] Could not delete session VC: {_vc_del_err}")
+            # Delete the session thread
             try:
                 if isinstance(interaction.channel, discord.Thread):
                     await interaction.channel.delete()
@@ -10318,6 +10377,82 @@ async def _hp_post_or_refresh() -> None:
         _hp_save(data)
     except Exception as e:
         print(f"[HP] post error: {e}")
+
+
+@tasks.loop(minutes=5)
+async def _session_vc_idle_check():
+    """Alert and auto-clean session VCs that have been empty for 15+ minutes."""
+    await bot.wait_until_ready()
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return
+    data = _hp_load()
+    changed = False
+    now_ts = datetime.now(timezone.utc).timestamp()
+    for session in list(data.get("active_sessions", {}).values()):
+        if session.get("ended"):
+            continue
+        vc_id = session.get("voice_channel_id")
+        if not vc_id:
+            continue
+        vc = guild.get_channel(vc_id)
+        if not isinstance(vc, discord.VoiceChannel):
+            continue
+        member_count = len([m for m in vc.members if not m.bot])
+        if member_count == 0:
+            empty_since = session.get("vc_empty_since")
+            if empty_since is None:
+                session["vc_empty_since"] = now_ts
+                changed = True
+            elif now_ts - empty_since >= 15 * 60:
+                # Post alert in session thread
+                thread_id = session.get("thread_id")
+                thread = guild.get_channel(thread_id) if thread_id else None
+                if isinstance(thread, discord.Thread):
+                    try:
+                        alert = discord.Embed(
+                            title="⚠️ Session VC Empty",
+                            description=(
+                                f"<@{session['host_id']}> — your session voice channel has been empty for **15 minutes**.\n\n"
+                                "If your meet has ended, please press **End Meet Session** to close this session.\n"
+                                "The voice channel will be automatically deleted in **10 minutes** if it remains empty."
+                            ),
+                            color=discord.Color.orange(),
+                            timestamp=datetime.now(_EST_TZ),
+                        )
+                        alert.set_footer(text="DIFF Host Session • Idle Detection")
+                        await thread.send(content=f"<@{session['host_id']}>", embed=alert)
+                    except Exception:
+                        pass
+                # Schedule auto-delete of VC after 10 more minutes
+                async def _auto_close_idle_vc(s=session, g=guild):
+                    await asyncio.sleep(10 * 60)
+                    s_data = _hp_load()
+                    s_live = s_data.get("active_sessions", {}).get(s["session_id"])
+                    if s_live and not s_live.get("ended"):
+                        v = g.get_channel(s_live.get("voice_channel_id"))
+                        if isinstance(v, discord.VoiceChannel):
+                            members_now = [m for m in v.members if not m.bot]
+                            if len(members_now) == 0:
+                                try:
+                                    await v.delete(reason="Session VC auto-closed after 25 min idle")
+                                    s_live["voice_channel_id"] = None
+                                    _hp_save(s_data)
+                                except Exception:
+                                    pass
+                asyncio.create_task(_auto_close_idle_vc())
+                session["vc_empty_since"] = None
+                changed = True
+        else:
+            if session.get("vc_empty_since") is not None:
+                session["vc_empty_since"] = None
+                changed = True
+    if changed:
+        _hp_save(data)
+
+@_session_vc_idle_check.before_loop
+async def _before_session_vc_idle_check():
+    await bot.wait_until_ready()
 
 
 @bot.command(name="hostperformance")
@@ -14675,6 +14810,8 @@ async def on_ready():
         hierarchy_attendance_loop.start()
     if not host_board_auto_refresh_loop.is_running():
         host_board_auto_refresh_loop.start()
+    if not _session_vc_idle_check.is_running():
+        _session_vc_idle_check.start()
     if not gta_weather_refresh_loop.is_running():
         gta_weather_refresh_loop.start()
 
