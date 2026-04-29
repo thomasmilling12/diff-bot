@@ -1230,7 +1230,15 @@ class HostTeamAnnouncementPanel(commands.Cog):
         for announcement_id in data.get("announcements", {}).keys():
             self.bot.add_view(AnnouncementAcknowledgeView(announcement_id))
 
-        await ensure_unified_host_team_panel(self.bot)
+        # Retry up to 3 times in case Discord returns a transient 503
+        for _attempt in range(3):
+            try:
+                await ensure_unified_host_team_panel(self.bot)
+                break
+            except Exception as _panel_err:
+                print(f"[HostTeamAnnouncementPanel] Panel setup attempt {_attempt + 1} failed: {_panel_err}")
+                if _attempt < 2:
+                    await asyncio.sleep(5)
 
         if self.reminder_task is None:
             self.reminder_task = self.bot.loop.create_task(self._reminder_loop())
