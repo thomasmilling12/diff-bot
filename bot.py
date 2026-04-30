@@ -12066,7 +12066,10 @@ async def _cmd_remindrollcall(ctx: commands.Context):
 
     # Get everyone who has responded (any status) for the current roll call
     all_responses = _rc_db.get_all_responses(ctx.guild.id)
-    responded_ids: set[int] = {int(r["user_id"]) for r in all_responses}
+    responded_ids: set[int] = set()
+    for meet_data in all_responses.values():
+        for uids in meet_data.values():
+            responded_ids.update(int(u) for u in uids)
 
     # Get all crew members
     crew_role = ctx.guild.get_role(CREW_MEMBER_ROLE_ID)
