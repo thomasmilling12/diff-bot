@@ -12050,6 +12050,73 @@ async def _cmd_postrollcall(ctx: commands.Context):
     await _rc_post_new_panel(ctx.guild, ping_roles=True)
 
 
+@bot.command(name="remindrollcall")
+async def _cmd_remindrollcall(ctx: commands.Context):
+    """DM all crew members who haven't responded to the current roll call yet."""
+    if not _rc_is_admin(ctx.author):
+        return await ctx.send("Staff only.", delete_after=5)
+    if not ctx.guild:
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    await ctx.send("⏳ Sending roll call reminders, please wait...", delete_after=10)
+
+    # Get everyone who has responded (any status) for the current roll call
+    all_responses = _rc_db.get_all_responses(ctx.guild.id)
+    responded_ids: set[int] = {int(r["user_id"]) for r in all_responses}
+
+    # Get all crew members
+    crew_role = ctx.guild.get_role(CREW_MEMBER_ROLE_ID)
+    if not crew_role:
+        return await ctx.send("Crew member role not found.", delete_after=10)
+
+    non_responders = [m for m in crew_role.members if not m.bot and m.id not in responded_ids]
+
+    if not non_responders:
+        return await ctx.send("✅ All crew members have already responded to the roll call!", delete_after=15)
+
+    # Build the reminder embed
+    rc_channel = ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    rc_mention = rc_channel.jump_url if rc_channel else f"<#{ROLL_CALL_CHANNEL_ID}>"
+
+    reminder_embed = discord.Embed(
+        title="📋 DIFF Roll Call Reminder",
+        description=(
+            "Hey! You haven't responded to this week's **DIFF Roll Call** yet.\n\n"
+            "The roll call tracks which meets you plan to attend — it only takes a few seconds to fill out.\n\n"
+            f"👉 **[Click here to respond]({rc_mention})**\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Failing to respond to roll calls consistently may affect your standing as a crew member."
+        ),
+        color=discord.Color.orange(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    reminder_embed.set_footer(text="Different Meets • Roll Call System")
+
+    sent, failed = 0, 0
+    for member in non_responders:
+        try:
+            await member.send(embed=reminder_embed)
+            sent += 1
+        except (discord.Forbidden, discord.HTTPException):
+            failed += 1
+        await asyncio.sleep(0.5)
+
+    result_embed = discord.Embed(
+        title="📨 Roll Call Reminders Sent",
+        color=discord.Color.green() if sent > 0 else discord.Color.red(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    result_embed.add_field(name="✅ DMs Delivered", value=str(sent), inline=True)
+    result_embed.add_field(name="❌ Failed (DMs closed)", value=str(failed), inline=True)
+    result_embed.add_field(name="📊 Total Non-Responders", value=str(len(non_responders)), inline=True)
+    result_embed.set_footer(text="Staff only • Different Meets")
+    await ctx.send(embed=result_embed)
+
+
 @bot.command(name="rollleaderboard")
 async def _cmd_rollleaderboard(ctx: commands.Context):
     rows = _rc_db.get_top_attendance(ctx.guild.id, 10)
