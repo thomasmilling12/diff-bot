@@ -2854,13 +2854,60 @@ async def _ft_auto_progression_loop() -> None:
     while not bot.is_closed():
         await asyncio.sleep(43200)
         guild = bot.get_guild(GUILD_ID)
-        if guild:
-            for member in guild.members:
-                if not member.bot:
-                    try:
-                        await _ft_refresh_progression(member)
-                    except Exception:
-                        pass
+        if not guild:
+            continue
+        # Load data ONCE — avoids hundreds of blocking file reads
+        data = await asyncio.to_thread(_ft_load)
+        users = data.setdefault("users", {})
+        guild_roles = {r.id: r for r in guild.roles}
+
+        for member in guild.members:
+            if member.bot:
+                continue
+            try:
+                key = str(member.id)
+                if key not in users:
+                    users[key] = {
+                        "behaviorScore": 10,
+                        "notes": [],
+                        "hostedMeets": 0,
+                        "hostAttendanceTotal": 0,
+                        "rank": "Member",
+                        "leaderboardEligible": True,
+                        "crewInviteEligible": False,
+                    }
+                ft_user = users[key]
+                attendance = int(_rsvp_leaderboard.get(key, {}).get("attendance_count", 0))
+                behavior = int(ft_user.get("behaviorScore", 10) or 10)
+                strikes = _ft_get_strike_count(member)
+                rank = _ft_compute_rank(attendance, behavior, strikes)
+                lb_eligible = strikes < 3
+                crew_eligible = (rank == "Crew Candidate" and strikes == 0)
+                ft_user["rank"] = rank
+                ft_user["leaderboardEligible"] = lb_eligible
+                ft_user["crewInviteEligible"] = crew_eligible
+                # Role assignments
+                controlled = [r for rid in [ACTIVE_ROLE_ID, ELITE_ROLE_ID, CREW_CANDIDATE_ROLE_ID]
+                              if rid for r in [guild_roles.get(rid)] if r and r in member.roles]
+                to_add_id = {"Active": ACTIVE_ROLE_ID, "Elite": ELITE_ROLE_ID,
+                             "Crew Candidate": CREW_CANDIDATE_ROLE_ID}.get(rank, 0)
+                to_add = [guild_roles[to_add_id]] if to_add_id and to_add_id in guild_roles else []
+                try:
+                    if controlled:
+                        await member.remove_roles(*controlled, reason="DIFF tier progression")
+                    if to_add:
+                        await member.add_roles(*to_add, reason="DIFF tier progression")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            await asyncio.sleep(0)  # yield between members so heartbeat can fire
+
+        # Save ONCE at the end using a thread so the event loop isn't blocked
+        try:
+            await asyncio.to_thread(_ft_save, data)
+        except Exception as _ft_save_err:
+            print(f"[FT] Auto progression save error: {_ft_save_err}")
 
 
 # =========================
