@@ -418,6 +418,7 @@ class DiffAdvancedFeatures(commands.Cog):
                             )))
                         except Exception:
                             pass
+                        await asyncio.sleep(1)
 
             # ── 30-minute reminder ────────────────────────────────────────
             if mid not in self._reminded and 1740 <= diff <= 1860:
@@ -437,6 +438,7 @@ class DiffAdvancedFeatures(commands.Cog):
                             )))
                         except Exception:
                             pass
+                        await asyncio.sleep(1)
 
     @_reminder_check.before_loop
     async def _before_reminder(self) -> None:

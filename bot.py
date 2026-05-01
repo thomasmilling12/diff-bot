@@ -7229,7 +7229,18 @@ async def post_or_refresh_live_attendance(guild: discord.Guild) -> None:
     _save_diff_json(DIFF_PANEL_STATE_FILE, state)
 
 
+# Stores MD5 hashes of the last-sent hierarchy embeds so we can skip
+# editing messages whose content hasn't changed, reducing 429 rate-limit hits.
+_hierarchy_embed_hashes: list[str] = []
+
+def _hash_embed(emb: discord.Embed) -> str:
+    import hashlib as _hashlib
+    raw = json.dumps(emb.to_dict(), sort_keys=True, ensure_ascii=False)
+    return _hashlib.md5(raw.encode()).hexdigest()
+
+
 async def _hierarchy_attendance_loop_logic():
+    global _hierarchy_embed_hashes
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
         return
@@ -7238,6 +7249,7 @@ async def _hierarchy_attendance_loop_logic():
         if isinstance(channel, discord.TextChannel):
             embeds = build_hierarchy_embeds(guild)
             support_view = build_hierarchy_support_view()
+            new_hashes = [_hash_embed(e) for e in embeds]
 
             # Try stored IDs first
             hierarchy_message_ids = data.get("hierarchy_message_ids", [])
@@ -7254,13 +7266,18 @@ async def _hierarchy_attendance_loop_logic():
             if len(msgs) != len(embeds):
                 msgs = await find_existing_hierarchy_messages(channel, len(embeds))
                 if len(msgs) == len(embeds):
-                    # Update stored IDs so future iterations use the correct ones
                     data["hierarchy_message_ids"] = [m.id for m in msgs]
                     data["hierarchy_message_id"] = msgs[0].id if msgs else None
                     save_data(data)
+                    # Force all edits when we just rediscovered the messages
+                    _hierarchy_embed_hashes = []
 
             if len(msgs) == len(embeds):
                 for i, (msg, emb) in enumerate(zip(msgs, embeds)):
+                    # Skip edit if this embed is identical to the last sent version
+                    if i < len(_hierarchy_embed_hashes) and _hierarchy_embed_hashes[i] == new_hashes[i]:
+                        await asyncio.sleep(0.1)
+                        continue
                     is_last = i == len(embeds) - 1
                     try:
                         await msg.edit(
@@ -7271,6 +7288,7 @@ async def _hierarchy_attendance_loop_logic():
                     except Exception:
                         pass
                     await asyncio.sleep(2)
+                _hierarchy_embed_hashes = new_hashes
     except Exception:
         pass
     try:
@@ -10448,11 +10466,12 @@ async def _session_vc_idle_check():
         member_count = len([m for m in vc.members if not m.bot])
         if member_count == 0:
             empty_since = session.get("vc_empty_since")
+            alert_sent  = session.get("vc_idle_alert_sent", False)
             if empty_since is None:
                 session["vc_empty_since"] = now_ts
                 changed = True
-            elif now_ts - empty_since >= 15 * 60:
-                # Post alert in session thread
+            elif not alert_sent and now_ts - empty_since >= 15 * 60:
+                # Post alert in session thread — only fires ONCE per idle window
                 thread_id = session.get("thread_id")
                 thread = guild.get_channel(thread_id) if thread_id else None
                 if isinstance(thread, discord.Thread):
@@ -10471,6 +10490,9 @@ async def _session_vc_idle_check():
                         await thread.send(content=f"<@{session['host_id']}>", embed=alert)
                     except Exception:
                         pass
+                # Mark alert as sent so it won't re-fire if VC stays empty
+                session["vc_idle_alert_sent"] = True
+                changed = True
                 # Schedule auto-delete of VC after 10 more minutes
                 async def _auto_close_idle_vc(s=session, g=guild):
                     await asyncio.sleep(10 * 60)
@@ -10488,11 +10510,11 @@ async def _session_vc_idle_check():
                                 except Exception:
                                     pass
                 asyncio.create_task(_auto_close_idle_vc())
-                session["vc_empty_since"] = None
-                changed = True
         else:
-            if session.get("vc_empty_since") is not None:
-                session["vc_empty_since"] = None
+            # Members present — reset idle tracking so the alert can fire again next time
+            if session.get("vc_empty_since") is not None or session.get("vc_idle_alert_sent"):
+                session["vc_empty_since"]    = None
+                session["vc_idle_alert_sent"] = False
                 changed = True
     if changed:
         _hp_save(data)
@@ -10508,6 +10530,64 @@ async def cmd_hostperformance(ctx: commands.Context):
         return await ctx.reply("Server Operations+ only.", mention_author=False)
     await _hp_post_or_refresh()
     await ctx.reply("Host Performance Hub posted/updated.", mention_author=False)
+
+
+@bot.command(name="botstatus")
+async def cmd_botstatus(ctx: commands.Context):
+    """Staff-only: show loop health, uptime, and key stats."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    now = time.time()
+    uptime_secs = int(now - _bot_start_time) if _bot_start_time else 0
+    hours, rem  = divmod(uptime_secs, 3600)
+    mins, secs  = divmod(rem, 60)
+    uptime_str  = f"{hours}h {mins}m {secs}s"
+
+    # Build loop health lines
+    tracked_loops = [
+        "hierarchy_attendance_loop",
+        "host_board_auto_refresh_loop",
+        "gta_weather_refresh_loop",
+        "_rc_ensure_loop",
+        "_host_weekly_reminder_loop",
+        "_rotating_presence_loop",
+        "_join_auto_bump_loop",
+        "ticket_scan_loop",
+        "_rc_finalize_reminder_loop",
+        "_psn_board_refresh_loop",
+        "_mgmt_alert_loop",
+        "_anniversary_check_task",
+    ]
+    loop_lines = []
+    for name in tracked_loops:
+        last = _loop_last_run.get(name)
+        fails = _loop_fail_counts.get(name, 0)
+        if last is None:
+            status = "⚪ not yet run"
+        else:
+            ago = int(now - last)
+            m, s = divmod(ago, 60)
+            ago_str = f"{m}m {s}s ago"
+            status = f"{'🔴' if fails > 0 else '🟢'} last ran {ago_str}" + (f" · {fails} fail(s)" if fails else "")
+        short = name.replace("_loop", "").replace("_task", "").lstrip("_")
+        loop_lines.append(f"`{short}` — {status}")
+
+    embed = discord.Embed(
+        title="🤖 DIFF Bot Status",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.add_field(name="⏱ Uptime", value=uptime_str, inline=True)
+    embed.add_field(name="🏠 Guild Members", value=str(ctx.guild.member_count), inline=True)
+    embed.add_field(name="📦 Cogs Loaded", value=str(len(bot.cogs)), inline=True)
+    embed.add_field(name="🔄 Loop Health", value="\n".join(loop_lines) or "None tracked", inline=False)
+    embed.set_footer(text="Different Meets • Bot Diagnostics")
+    await ctx.send(embed=embed, delete_after=60)
 
 
 # =============================================================
