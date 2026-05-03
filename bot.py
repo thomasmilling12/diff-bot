@@ -11066,6 +11066,396 @@ async def cmd_crew_stats(ctx: commands.Context, member: discord.Member = None):
 
 
 # =============================================================
+# WARNING SYSTEM
+# =============================================================
+_WARNINGS_FILE = os.path.join("diff_data", "diff_warnings.json")
+
+def _warnings_load() -> dict:
+    try:
+        with open(_WARNINGS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _warnings_save(data: dict) -> None:
+    _atomic_json_save(_WARNINGS_FILE, data)
+
+# =============================================================
+# HOST NOTES SYSTEM
+# =============================================================
+_HOST_NOTES_FILE = os.path.join("diff_data", "diff_host_notes.json")
+
+def _host_notes_load() -> dict:
+    try:
+        with open(_HOST_NOTES_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _host_notes_save(data: dict) -> None:
+    _atomic_json_save(_HOST_NOTES_FILE, data)
+
+# =============================================================
+# RC STREAK SYSTEM
+# =============================================================
+_RC_STREAKS_FILE = os.path.join("diff_data", "diff_rc_streaks.json")
+
+def _rc_streaks_load() -> dict:
+    try:
+        with open(_RC_STREAKS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _rc_streaks_save(data: dict) -> None:
+    _atomic_json_save(_RC_STREAKS_FILE, data)
+
+
+@bot.command(name="warn")
+async def cmd_warn(ctx: commands.Context, member: discord.Member = None, *, reason: str = None):
+    """Leadership-only: issue a formal warning to a member."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    if member is None or reason is None:
+        return await ctx.send("Usage: `!warn @user <reason>`", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    import uuid as _uuid
+    warn_id = str(_uuid.uuid4())[:8].upper()
+    ts = datetime.now(_EST_TZ).isoformat()
+    data = _warnings_load()
+    uid_key = str(member.id)
+    data.setdefault(uid_key, []).append({
+        "id": warn_id,
+        "reason": reason,
+        "issued_by": ctx.author.id,
+        "issued_by_name": ctx.author.display_name,
+        "timestamp": ts,
+    })
+    _warnings_save(data)
+
+    total = len(data[uid_key])
+
+    # DM the member
+    try:
+        dm_embed = discord.Embed(
+            title="⚠️ You have received a formal warning",
+            description=(
+                f"**Reason:** {reason}\n\n"
+                "If you believe this was issued in error, contact leadership."
+            ),
+            color=discord.Color.red(),
+            timestamp=datetime.now(_EST_TZ),
+        )
+        dm_embed.add_field(name="Warning ID", value=f"`{warn_id}`", inline=True)
+        dm_embed.add_field(name="Total Warnings", value=str(total), inline=True)
+        dm_embed.set_footer(text="Different Meets • Formal Warning")
+        await member.send(embed=dm_embed)
+        dm_status = "✅ DM sent"
+    except discord.Forbidden:
+        dm_status = "❌ DM failed (closed)"
+
+    # Staff log
+    logs_ch = ctx.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(logs_ch, discord.TextChannel):
+        log_embed = discord.Embed(
+            title="⚠️ Warning Issued",
+            color=discord.Color.red(),
+            timestamp=datetime.now(_EST_TZ),
+        )
+        log_embed.add_field(name="Member", value=member.mention, inline=True)
+        log_embed.add_field(name="Issued By", value=ctx.author.mention, inline=True)
+        log_embed.add_field(name="Warning ID", value=f"`{warn_id}`", inline=True)
+        log_embed.add_field(name="Reason", value=reason, inline=False)
+        log_embed.add_field(name="Total Warnings", value=str(total), inline=True)
+        log_embed.add_field(name="DM Status", value=dm_status, inline=True)
+        log_embed.set_footer(text="Different Meets • Warning System")
+        await logs_ch.send(embed=log_embed)
+
+    await ctx.send(
+        f"⚠️ Warning `{warn_id}` issued to {member.mention} — total: **{total}** · {dm_status}",
+        delete_after=15,
+    )
+
+
+@bot.command(name="warnings")
+async def cmd_warnings(ctx: commands.Context, member: discord.Member = None):
+    """Leadership-only: view all warnings for a member."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    if member is None:
+        return await ctx.send("Usage: `!warnings @user`", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    data = _warnings_load()
+    warns = data.get(str(member.id), [])
+
+    embed = discord.Embed(
+        title=f"⚠️ Warnings — {member.display_name}",
+        color=discord.Color.red() if warns else discord.Color.green(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    if not warns:
+        embed.description = "No warnings on record. ✅"
+    else:
+        for w in warns[-10:]:
+            try:
+                dt = datetime.fromisoformat(w["timestamp"]).astimezone(_EST_TZ)
+                date_str = dt.strftime("%b %d %Y, %I:%M %p ET")
+            except Exception:
+                date_str = w.get("timestamp", "?")[:10]
+            embed.add_field(
+                name=f"`{w['id']}` — {date_str}",
+                value=f"**Reason:** {w['reason']}\n**By:** {w.get('issued_by_name','?')}",
+                inline=False,
+            )
+        if len(warns) > 10:
+            embed.set_footer(text=f"Showing last 10 of {len(warns)} warnings • Different Meets")
+        else:
+            embed.set_footer(text=f"{len(warns)} total warning(s) • Different Meets")
+
+    await ctx.send(embed=embed, delete_after=120)
+
+
+@bot.command(name="hostnote")
+async def cmd_host_note(ctx: commands.Context, member: discord.Member = None, *, note: str = None):
+    """Leadership-only: add a private note to a host's profile."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    if member is None or note is None:
+        return await ctx.send("Usage: `!hostnote @user <note>`", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    data = _host_notes_load()
+    uid_key = str(member.id)
+    data.setdefault(uid_key, []).append({
+        "note": note,
+        "added_by": ctx.author.id,
+        "added_by_name": ctx.author.display_name,
+        "timestamp": datetime.now(_EST_TZ).isoformat(),
+    })
+    _host_notes_save(data)
+    await ctx.send(f"📝 Note added to {member.mention}'s profile ({len(data[uid_key])} total).", delete_after=10)
+
+
+@bot.command(name="hostprofile")
+async def cmd_host_profile(ctx: commands.Context, member: discord.Member = None):
+    """Leadership-only: full host profile — stats, history, warnings, notes."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    if member is None:
+        return await ctx.send("Usage: `!hostprofile @user`", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    hp_data = _hp_load()
+    stats = hp_data.get("host_stats", {}).get(str(member.id), {})
+    sessions = hp_data.get("active_sessions", {})
+    host_sessions = sorted(
+        [s for s in sessions.values() if s.get("host_id") == member.id and s.get("ended")],
+        key=lambda s: s.get("ended_at") or "", reverse=True,
+    )
+    warnings = _warnings_load().get(str(member.id), [])
+    notes = _host_notes_load().get(str(member.id), [])
+
+    embed = discord.Embed(
+        title=f"🎯 Host Profile — {member.display_name}",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+
+    meets_hosted = stats.get("meets_hosted", 0)
+    avg_score = round(stats.get("score_total", 0) / meets_hosted, 1) if meets_hosted else 0
+    avg_att = round(stats.get("total_attendance_sum", 0) / meets_hosted, 1) if meets_hosted else 0
+    embed.add_field(
+        name="📊 Performance",
+        value=(
+            f"Sessions: **{meets_hosted}** · Avg Score: **{avg_score}**\n"
+            f"Avg Attendance: **{avg_att}** · Warnings: **{stats.get('warning_count', 0)}**\n"
+            f"Blacklist checks: **{stats.get('blacklist_checks', 0)}** · "
+            f"Checklists: **{stats.get('checklists_completed', 0)}**"
+        ),
+        inline=False,
+    )
+
+    if host_sessions:
+        last = host_sessions[0]
+        try:
+            dt = datetime.fromisoformat(last.get("ended_at","")).astimezone(_EST_TZ)
+            last_date = dt.strftime("%b %d %Y")
+        except Exception:
+            last_date = "?"
+        embed.add_field(
+            name="🕐 Last Session",
+            value=f"**{last.get('meet_name','?')}** — {last_date} · Score {last.get('score','?')}",
+            inline=False,
+        )
+
+    embed.add_field(
+        name=f"⚠️ Warnings ({len(warnings)})",
+        value="\n".join(f"`{w['id']}` {w['reason'][:60]}" for w in warnings[-3:]) or "None",
+        inline=False,
+    )
+    embed.add_field(
+        name=f"📝 Notes ({len(notes)})",
+        value="\n".join(f"• {n['note'][:80]}" for n in notes[-3:]) or "None",
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Host Profile")
+    await ctx.send(embed=embed, delete_after=120)
+
+
+@bot.command(name="activevc")
+async def cmd_active_vc(ctx: commands.Context):
+    """Leadership-only: show all currently active HP session voice channels."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    hp_data = _hp_load()
+    sessions = hp_data.get("active_sessions", {})
+    active = [s for s in sessions.values() if not s.get("ended")]
+
+    if not active:
+        return await ctx.send("No active HP sessions right now.", delete_after=10)
+
+    lines = []
+    for s in active:
+        vc_id = s.get("voice_channel_id")
+        vc = ctx.guild.get_channel(vc_id) if vc_id else None
+        members_in_vc = len(vc.members) if vc and hasattr(vc, "members") else 0
+        try:
+            start_dt = datetime.fromisoformat(s.get("started_at","")).astimezone(_EST_TZ)
+            elapsed = datetime.now(_EST_TZ) - start_dt
+            hrs, rem = divmod(int(elapsed.total_seconds()), 3600)
+            mins = rem // 60
+            time_str = f"{hrs}h {mins}m" if hrs else f"{mins}m"
+        except Exception:
+            time_str = "?"
+        steps_done = sum([
+            s.get("blacklist_checked", False),
+            s.get("checklist_completed", False),
+            s.get("lobby_opened", False),
+            s.get("lobby_proof_posted", False),
+            s.get("todays_meet_posted", False),
+        ])
+        lines.append(
+            f"**{s.get('meet_name','?')}** — <@{s['host_id']}>\n"
+            f"  VC: {vc.mention if vc else '`unknown`'} · {members_in_vc} members · ⏱ {time_str} · Steps {steps_done}/5"
+        )
+
+    embed = discord.Embed(
+        title=f"🔴 Active Sessions ({len(active)})",
+        description="\n\n".join(lines),
+        color=discord.Color.red(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text="Different Meets • Live Session Monitor")
+    await ctx.send(embed=embed, delete_after=60)
+
+
+@bot.command(name="hostping")
+async def cmd_host_ping(ctx: commands.Context):
+    """Leadership-only: ping all hosts who marked available this week in HRSVP."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    hrsvp = _hrsvp_load()
+    available_uids: set = set()
+    for day in _HRSVP_DAYS:
+        for entry in hrsvp.get(day, {}).get("yes", []):
+            available_uids.add(_hrsvp_uid(entry))
+
+    if not available_uids:
+        return await ctx.send("No hosts have marked themselves available this week.", delete_after=10)
+
+    guild = ctx.guild
+    mentions = []
+    for uid_str in available_uids:
+        try:
+            m = guild.get_member(int(uid_str))
+            if m:
+                mentions.append(m.mention)
+        except Exception:
+            pass
+
+    if not mentions:
+        return await ctx.send("Could not resolve any available hosts.", delete_after=10)
+
+    host_ch = guild.get_channel(_HOST_TEAM_CHANNEL_ID)
+    target = host_ch if isinstance(host_ch, discord.TextChannel) else ctx.channel
+    await target.send(
+        f"📣 **Host ping from {ctx.author.display_name}:**\n"
+        + " ".join(mentions)
+        + "\n\nA meet slot may be available — check in if you're ready to host!"
+    )
+    if target != ctx.channel:
+        await ctx.send(f"✅ Pinged {len(mentions)} available host(s) in {target.mention}.", delete_after=8)
+
+
+@bot.command(name="topattendance")
+async def cmd_top_attendance(ctx: commands.Context):
+    """Leadership-only: rank crew by all-time meets attended."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    guild = ctx.guild
+    cur = _rc_db.conn.cursor()
+    cur.execute(
+        "SELECT user_id, attended_count, yes_count, no_show_count FROM attendance_stats "
+        "WHERE guild_id=? AND attended_count > 0 ORDER BY attended_count DESC LIMIT 20",
+        (guild.id,),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return await ctx.send("No attendance data recorded yet.", delete_after=10)
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, row in enumerate(rows):
+        m = guild.get_member(row["user_id"])
+        name = m.mention if m else f"`{row['user_id']}`"
+        medal = medals[i] if i < 3 else f"`#{i+1}`"
+        ns = row["no_show_count"]
+        lines.append(
+            f"{medal} {name} — **{row['attended_count']}** attended · "
+            f"👻 {ns} no-show{'s' if ns != 1 else ''}"
+        )
+
+    embed = discord.Embed(
+        title="🏅 Top Attendance — All Time",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text="Different Meets • Crew Attendance Leaderboard")
+    await ctx.send(embed=embed, delete_after=120)
+
+
+# =============================================================
 # DIFF UNIFIED HOST HUB — single combined panel for #host-hub
 # =============================================================
 
@@ -15422,6 +15812,7 @@ async def on_ready():
     bot.loop.create_task(_rc_auto_archive_loop())
     bot.loop.create_task(_rc_saturday_reminder_loop())
     bot.loop.create_task(_rc_pruning_report_loop())
+    bot.loop.create_task(_hp_session_cleanup_loop())
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
     _safe_add_view(_ASchedAnnounceView(),   "_ASchedAnnounceView")
@@ -15788,8 +16179,92 @@ async def _rc_pruning_report_loop() -> None:
             )
             embed.set_footer(text="Different Meets • Crew Pruning Report")
             await logs_ch.send(embed=embed)
+
+            # ── Update roll call streaks ──────────────────────────────
+            try:
+                streaks = _rc_streaks_load()
+                milestone_dms: list[tuple[discord.Member, int]] = []
+                for cm in crew_members:
+                    uid_key = str(cm.id)
+                    entry = streaks.setdefault(uid_key, {"streak": 0, "best": 0})
+                    if cm.id in yes_responders:
+                        entry["streak"] += 1
+                        if entry["streak"] > entry["best"]:
+                            entry["best"] = entry["streak"]
+                        if entry["streak"] in (4, 8, 12, 26, 52):
+                            milestone_dms.append((cm, entry["streak"]))
+                    else:
+                        entry["streak"] = 0
+                _rc_streaks_save(streaks)
+
+                # Send milestone DMs
+                for (cm, wks) in milestone_dms:
+                    try:
+                        await cm.send(embed=discord.Embed(
+                            title="🔥 Roll Call Streak Milestone!",
+                            description=(
+                                f"You've responded **Yes** to the roll call for "
+                                f"**{wks} consecutive week{'s' if wks != 1 else ''}** — keep it up!\n\n"
+                                "Your streak is tracked in your crew stats."
+                            ),
+                            color=discord.Color.orange(),
+                            timestamp=now,
+                        ).set_footer(text="Different Meets • Crew Streaks"))
+                        await asyncio.sleep(1)
+                    except Exception:
+                        pass
+            except Exception as _se:
+                print(f"[PruningReport] Streak update error: {_se}")
         except Exception as _e:
             print(f"[PruningReport] Loop error: {_e}")
+
+
+# =========================
+# HP SESSION CLEANUP LOOP
+# =========================
+_HP_ARCHIVE_FILE = os.path.join("diff_data", "diff_hp_session_archive.json")
+
+async def _hp_session_cleanup_loop() -> None:
+    """Daily at 3:00 AM ET: move HP sessions older than 60 days to a separate archive file."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(3600)
+        try:
+            now = datetime.now(_EST_TZ)
+            if now.hour != 3:
+                continue
+
+            hp_data = _hp_load()
+            sessions = hp_data.get("active_sessions", {})
+            cutoff = now - __import__("datetime").timedelta(days=60)
+            cutoff_str = cutoff.isoformat()
+
+            to_archive = {}
+            to_keep = {}
+            for sid, s in sessions.items():
+                ended_at = s.get("ended_at") or ""
+                if s.get("ended") and ended_at and ended_at < cutoff_str:
+                    to_archive[sid] = s
+                else:
+                    to_keep[sid] = s
+
+            if not to_archive:
+                continue
+
+            # Load existing archive and append
+            try:
+                with open(_HP_ARCHIVE_FILE) as _af:
+                    archive = json.load(_af)
+            except Exception:
+                archive = {}
+            archive.update(to_archive)
+            _atomic_json_save(_HP_ARCHIVE_FILE, archive)
+
+            hp_data["active_sessions"] = to_keep
+            _hp_save(hp_data)
+            print(f"[HpCleanup] Archived {len(to_archive)} old session(s). {len(to_keep)} remain active.")
+        except Exception as _e:
+            print(f"[HpCleanup] Loop error: {_e}")
 
 
 # =========================
