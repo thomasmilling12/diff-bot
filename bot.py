@@ -1017,9 +1017,19 @@ def load_data():
     return loaded
 
 
+def _atomic_json_save(path: str, data, *, indent: int = 2) -> None:
+    """Write *data* to *path* atomically via a .tmp file + os.replace().
+    A crash or power loss mid-write never corrupts the real file."""
+    path = str(path)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as _f:
+        json.dump(data, _f, indent=indent)
+    os.replace(tmp, path)
+
+
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    _atomic_json_save(DATA_FILE, data, indent=4)
 
 
 data = load_data()
@@ -1036,8 +1046,7 @@ def load_apps():
 
 
 def save_apps(app_data):
-    with open(APPLICATIONS_FILE, "w", encoding="utf-8") as f:
-        json.dump(app_data, f, indent=2)
+    _atomic_json_save(APPLICATIONS_FILE, app_data)
 
 
 def create_next_app_id():
@@ -1088,8 +1097,7 @@ def _load_diff_json(path: str) -> dict:
 
 def _save_diff_json(path: str, data: dict):
     _ensure_diff_data()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(path, data)
 
 
 def build_diff_member_name(name: str) -> str:
@@ -1313,8 +1321,7 @@ def _load_activity_json(path: str) -> dict:
 
 def _save_activity_json(path: str, data: dict):
     _ensure_activity_files()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(path, data)
 
 
 def get_user_stats(user_id: int) -> dict:
@@ -2700,9 +2707,7 @@ def _photo_hashes_load() -> dict:
 
 
 def _photo_hashes_save(data: dict) -> None:
-    os.makedirs(os.path.dirname(PHOTO_HASHES_FILE), exist_ok=True)
-    with open(PHOTO_HASHES_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(PHOTO_HASHES_FILE, data)
 
 
 _join_photo_locks: dict[int, asyncio.Lock] = {}
@@ -2725,9 +2730,7 @@ def _crew_pinged_load() -> set:
 
 
 def _crew_pinged_save(data: set) -> None:
-    os.makedirs(os.path.dirname(CREW_PINGED_FILE), exist_ok=True)
-    with open(CREW_PINGED_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(data), f, indent=2)
+    _atomic_json_save(CREW_PINGED_FILE, list(data))
 
 
 def _attachment_hash(attachment: discord.Attachment) -> str:
@@ -2750,9 +2753,7 @@ def _ft_load() -> dict:
 
 
 def _ft_save(data: dict) -> None:
-    os.makedirs(os.path.dirname(FINAL_TIER_FILE), exist_ok=True)
-    with open(FINAL_TIER_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(FINAL_TIER_FILE, data)
 
 
 def _ft_ensure_user(user_id: int) -> dict:
@@ -3057,9 +3058,7 @@ def _season_load() -> dict:
 
 
 def _season_save(data: dict) -> None:
-    os.makedirs(os.path.dirname(SEASON_FILE), exist_ok=True)
-    with open(SEASON_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(SEASON_FILE, data)
 
 
 def _season_get_top3() -> list[tuple[int, int]]:
@@ -3213,9 +3212,7 @@ def _hrsvp_load() -> dict:
 
 
 def _hrsvp_save(data: dict) -> None:
-    os.makedirs("diff_data", exist_ok=True)
-    with open(_HRSVP_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(_HRSVP_FILE, data)
 
 
 def _hrsvp_reset() -> dict:
@@ -3244,9 +3241,7 @@ def _hrel_load() -> dict:
 
 
 def _hrel_save(data: dict) -> None:
-    os.makedirs("diff_data", exist_ok=True)
-    with open(_HREL_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(_HREL_FILE, data)
 
 
 def _hrel_entry(data: dict, uid: str) -> dict:
@@ -3287,9 +3282,7 @@ def _hrsvp_reset_ts_load() -> str | None:
 
 
 def _hrsvp_reset_ts_save(date_str: str) -> None:
-    os.makedirs("diff_data", exist_ok=True)
-    with open(_HRSVP_RESET_FILE, "w") as f:
-        json.dump({"last_reset": date_str}, f)
+    _atomic_json_save(_HRSVP_RESET_FILE, {"last_reset": date_str})
 
 
 def _hrsvp_build_embed() -> discord.Embed:
@@ -3715,9 +3708,7 @@ def _asched_load() -> dict:
 
 
 def _asched_save(data: dict) -> None:
-    os.makedirs("diff_data", exist_ok=True)
-    with open(_ASCHED_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(_ASCHED_FILE, data)
 
 
 def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple:
@@ -4675,6 +4666,22 @@ async def _do_host_weekly_reminder(force: bool = False) -> bool:
             print(f"[HostReminder] DM to {member.id} failed: {_e}")
             failed += 1
     print(f"[HostReminder] Weekly reminder — {sent} DMs delivered, {failed} failed, {len(host_role.members) - len(pending)} already responded.")
+    if failed > 0:
+        try:
+            logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(logs_ch, discord.TextChannel):
+                await logs_ch.send(embed=discord.Embed(
+                    title="⚠️ Host Reminder — DM Failures",
+                    description=(
+                        f"**{failed}** host(s) could not receive the weekly availability reminder DM "
+                        f"(DMs likely closed).\n\n"
+                        f"✅ Delivered: {sent} · ❌ Failed: {failed}"
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now(_EST_TZ),
+                ).set_footer(text="DIFF Meets • Host Reminder System"))
+        except Exception:
+            pass
 
     # ── Color team reminder ───────────────────────────────────
     color_role = guild.get_role(COLOR_TEAM_ROLE_ID)
@@ -5158,10 +5165,8 @@ def _hosthub_get_saved_msg_id() -> int | None:
 
 
 def _hosthub_save_msg_id(msg_id: int) -> None:
-    os.makedirs("diff_data", exist_ok=True)
     try:
-        with open(_HOSTHUB_STATE_FILE, "w") as f:
-            json.dump({"message_id": msg_id}, f)
+        _atomic_json_save(_HOSTHUB_STATE_FILE, {"message_id": msg_id})
     except Exception:
         pass
 
@@ -5871,10 +5876,8 @@ def _hostflow_get_saved_msg_id() -> int | None:
 
 
 def _hostflow_save_msg_id(msg_id: int) -> None:
-    os.makedirs("diff_data", exist_ok=True)
     try:
-        with open(_HOSTFLOW_STATE_FILE, "w") as f:
-            json.dump({"message_id": msg_id}, f)
+        _atomic_json_save(_HOSTFLOW_STATE_FILE, {"message_id": msg_id})
     except Exception:
         pass
 
@@ -9776,8 +9779,7 @@ def _hp_load() -> dict:
 
 
 def _hp_save(data: dict) -> None:
-    with open(_HP_DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(_HP_DATA_FILE, data)
 
 
 def _hp_get_hub_msg_id(data: dict):
@@ -10588,6 +10590,87 @@ async def cmd_botstatus(ctx: commands.Context):
     embed.add_field(name="🔄 Loop Health", value="\n".join(loop_lines) or "None tracked", inline=False)
     embed.set_footer(text="Different Meets • Bot Diagnostics")
     await ctx.send(embed=embed, delete_after=60)
+
+
+@bot.command(name="backup")
+async def cmd_backup(ctx: commands.Context):
+    """Leadership-only: zip all diff_data JSON files and DM the archive."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    import io as _io
+    import zipfile as _zf
+    msg = await ctx.send("⏳ Building backup archive...", delete_after=15)
+    buf = _io.BytesIO()
+    count = 0
+    with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
+        for fname in sorted(os.listdir("diff_data")):
+            fpath = os.path.join("diff_data", fname)
+            if os.path.isfile(fpath) and fname.endswith((".json", ".db")):
+                zf.write(fpath, fname)
+                count += 1
+    buf.seek(0)
+    ts = datetime.now(_EST_TZ).strftime("%Y%m%d_%H%M%S")
+    try:
+        await ctx.author.send(
+            content=f"📦 **DIFF Bot Data Backup** — `{ts} ET` — {count} files",
+            file=discord.File(buf, filename=f"diff_backup_{ts}.zip"),
+        )
+        await ctx.send(f"✅ Backup ({count} files) sent to your DMs.", delete_after=10)
+    except discord.Forbidden:
+        await ctx.send("❌ Couldn't DM you — open your DMs and try again.", delete_after=10)
+
+
+@bot.command(name="hostnoshow")
+async def cmd_host_noshow(ctx: commands.Context):
+    """Leadership-only: show roll call meets whose assigned host hasn't started an HP session."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    guild = ctx.guild
+    meets = _rc_db.get_meets(guild.id)
+    if not meets:
+        return await ctx.send("No meets scheduled in the current roll call.", delete_after=10)
+
+    hp_data = _hp_load()
+    sessions = hp_data.get("active_sessions", {})
+    # Build set of host IDs that have an active or recently ended HP session
+    hosts_with_sessions = {
+        s["host_id"] for s in sessions.values()
+        if s.get("host_id")
+    }
+
+    lines = []
+    for meet in meets:
+        host_id = meet["host_id"]
+        meet_num = meet["meet_number"]
+        class_name = meet["class_name"] or "TBD"
+        date_text = meet["date_text"] or ""
+        if not host_id:
+            lines.append(f"Meet {meet_num} — **{class_name}** ({date_text}) — ⚪ No host assigned")
+        elif host_id not in hosts_with_sessions:
+            member = guild.get_member(host_id)
+            name = member.mention if member else f"`{host_id}`"
+            lines.append(f"Meet {meet_num} — **{class_name}** ({date_text}) — ⚠️ {name} has not started a session")
+        else:
+            member = guild.get_member(host_id)
+            name = member.mention if member else f"`{host_id}`"
+            lines.append(f"Meet {meet_num} — **{class_name}** ({date_text}) — ✅ {name} session active")
+
+    embed = discord.Embed(
+        title="🏁 Host Session Check",
+        description="\n".join(lines) if lines else "No data.",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text="Different Meets • Host No-Show Tracker")
+    await ctx.send(embed=embed, delete_after=120)
 
 
 # =============================================================
@@ -12355,8 +12438,7 @@ def _om_stats_load() -> dict:
 
 def _om_stats_save(data: dict) -> None:
     try:
-        with open(_OM_STATS_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        _atomic_json_save(_OM_STATS_FILE, data)
     except Exception:
         pass
 
@@ -13443,8 +13525,7 @@ def _om_panel_load() -> dict:
 
 def _om_panel_save(data: dict):
     try:
-        with open(_OM_PANEL_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        _atomic_json_save(_OM_PANEL_FILE, data)
     except Exception:
         pass
 
@@ -14946,6 +15027,7 @@ async def on_ready():
     bot.loop.create_task(_season_loop())
     bot.loop.create_task(_hrsvp_auto_reset_loop())
     bot.loop.create_task(_hrsvp_escalation_loop())
+    bot.loop.create_task(_rc_auto_archive_loop())
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
     _safe_add_view(_ASchedAnnounceView(),   "_ASchedAnnounceView")
@@ -15075,6 +15157,73 @@ async def on_guild_join(guild: discord.Guild):
             await guild.leave()
         except Exception as _e:
             print(f"[ServerLock] Could not leave {guild.id}: {_e}")
+
+
+# =========================
+# ROLL CALL AUTO-ARCHIVE LOOP
+# =========================
+_rc_archive_last_ran: str = ""
+
+async def _rc_auto_archive_loop() -> None:
+    """Every Monday at 12:05 AM ET: post a final roll call summary for the week to staff logs."""
+    await bot.wait_until_ready()
+    global _rc_archive_last_ran
+    while not bot.is_closed():
+        await asyncio.sleep(60)
+        try:
+            now = datetime.now(_EST_TZ)
+            # Monday (weekday 0), 12:05 AM
+            if now.weekday() != 0 or now.hour != 0 or now.minute != 5:
+                continue
+            today_key = now.strftime("%Y-%m-%d")
+            if _rc_archive_last_ran == today_key:
+                continue
+            _rc_archive_last_ran = today_key
+
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+            logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if not isinstance(logs_ch, discord.TextChannel):
+                continue
+
+            meets = _rc_db.get_meets(guild.id)
+            responses = _rc_db.get_all_responses(guild.id)
+            crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+            total_crew = len([m for m in crew_role.members if not m.bot]) if crew_role else 0
+
+            embed = discord.Embed(
+                title="📋 Weekly Roll Call Archive",
+                description=f"Automatic end-of-week snapshot for **{now.strftime('%B %d, %Y')}**",
+                color=discord.Color.blurple(),
+                timestamp=now,
+            )
+            if not meets:
+                embed.add_field(name="No meets this week", value="Roll call was not active.", inline=False)
+            else:
+                for meet_row in meets:
+                    mn = meet_row["meet_number"]
+                    meet_responses = responses.get(mn, {})
+                    yes_ids  = meet_responses.get("yes",   [])
+                    no_ids   = meet_responses.get("no",    [])
+                    maybe_ids = meet_responses.get("maybe", [])
+                    total_resp = len(yes_ids) + len(no_ids) + len(maybe_ids)
+                    host_id = meet_row["host_id"]
+                    host_mention = f"<@{host_id}>" if host_id else "Unassigned"
+                    embed.add_field(
+                        name=f"Meet {mn} — {meet_row['class_name'] or 'TBD'} ({meet_row['date_text'] or 'TBD'})",
+                        value=(
+                            f"Host: {host_mention}\n"
+                            f"✅ Yes: **{len(yes_ids)}** · ❌ No: **{len(no_ids)}** · "
+                            f"❓ Maybe: **{len(maybe_ids)}**\n"
+                            f"Total responses: **{total_resp}** / {total_crew} crew"
+                        ),
+                        inline=False,
+                    )
+            embed.set_footer(text="Different Meets • Roll Call Auto-Archive")
+            await logs_ch.send(embed=embed)
+        except Exception as _e:
+            print(f"[RollCall] Auto-archive error: {_e}")
 
 
 # =========================
@@ -21056,8 +21205,7 @@ def _appeal_denial_load() -> dict:
         return {}
 
 def _appeal_denial_save(_d: dict) -> None:
-    with open(_APPEAL_DENIAL_FILE, "w") as _f:
-        json.dump(_d, _f)
+    _atomic_json_save(_APPEAL_DENIAL_FILE, _d)
 
 def _appeal_denial_set(user_id: int, appeal_type: str) -> None:
     _d = _appeal_denial_load()
@@ -21088,8 +21236,7 @@ def _tperf_load() -> dict:
         return {}
 
 def _tperf_save(_d: dict) -> None:
-    with open(_TICKET_PERF_FILE, "w") as _f:
-        json.dump(_d, _f)
+    _atomic_json_save(_TICKET_PERF_FILE, _d)
 
 def _tperf_record_claim(staff_id: int, channel_name: str) -> None:
     _d = _tperf_load()
@@ -21122,8 +21269,7 @@ def _faq_load() -> dict:
         return {}
 
 def _faq_save(_d: dict) -> None:
-    with open(_FAQ_FILE, "w") as _f:
-        json.dump(_d, _f)
+    _atomic_json_save(_FAQ_FILE, _d)
 
 def _faq_lookup(text: str) -> "list[tuple[str,str]]":
     """Return list of (trigger, answer) tuples whose trigger keywords appear in text."""
@@ -22571,8 +22717,7 @@ def _wdm_load() -> dict:
 
 def _wdm_save(data: dict) -> None:
     try:
-        with open(_WELCOME_DM_LOG_FILE, "w") as f:
-            json.dump(data, f)
+        _atomic_json_save(_WELCOME_DM_LOG_FILE, data)
     except Exception:
         pass
 
@@ -24198,6 +24343,34 @@ async def on_voice_state_update(
         except Exception:
             pass
 
+    # Session VC real-time idle tracking — update immediately instead of waiting for the 5-min loop
+    try:
+        hp_data = _hp_load()
+        _hp_changed = False
+        _now_ts = datetime.now(timezone.utc).timestamp()
+        for _sess in hp_data.get("active_sessions", {}).values():
+            if _sess.get("ended"):
+                continue
+            _vc_id = _sess.get("voice_channel_id")
+            if not _vc_id:
+                continue
+            if before.channel and before.channel.id == _vc_id:
+                # Member just left this session VC
+                _remaining = [m for m in before.channel.members if not m.bot]
+                if len(_remaining) == 0 and _sess.get("vc_empty_since") is None:
+                    _sess["vc_empty_since"] = _now_ts
+                    _hp_changed = True
+            if after.channel and after.channel.id == _vc_id:
+                # Member just joined — reset idle timer
+                if _sess.get("vc_empty_since") is not None or _sess.get("vc_idle_alert_sent"):
+                    _sess["vc_empty_since"] = None
+                    _sess["vc_idle_alert_sent"] = False
+                    _hp_changed = True
+        if _hp_changed:
+            _hp_save(hp_data)
+    except Exception:
+        pass
+
 
 @bot.tree.command(name="auto-staff-stats", description="View automatically tracked staff stats for a member (staff only)")
 @app_commands.describe(member="The staff member to look up")
@@ -24583,8 +24756,7 @@ def _join_extra_load() -> dict:
 
 
 def _join_extra_save(data: dict) -> None:
-    with open(_JOIN_EXTRA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(_JOIN_EXTRA_FILE, data)
 
 
 async def _join_idle_timer(channel: discord.TextChannel, applicant: discord.Member) -> None:
@@ -26177,8 +26349,7 @@ def _wh_state_load() -> dict:
 
 def _wh_state_save(data: dict) -> None:
     try:
-        with open(_WH_STATE_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        _atomic_json_save(_WH_STATE_FILE, data)
     except Exception:
         pass
 
@@ -31079,9 +31250,10 @@ async def _health_score_update_loop_on_error(error: Exception) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @bot.command(name="loopstatus", aliases=["loops", "loophealth"])
-@commands.is_owner()
 async def _cmd_loop_status(ctx: commands.Context):
-    """Show health status of all background loops. Owner only."""
+    """Show health status of all background loops. Server Operations+ only."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
     import time as _t
 
     LOOP_NAMES = [
