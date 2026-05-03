@@ -10673,6 +10673,181 @@ async def cmd_host_noshow(ctx: commands.Context):
     await ctx.send(embed=embed, delete_after=120)
 
 
+@bot.command(name="archiverollcall")
+async def cmd_archive_roll_call(ctx: commands.Context):
+    """Leadership-only: manually post a roll call summary to staff logs right now."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    guild = ctx.guild
+    logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(logs_ch, discord.TextChannel):
+        return await ctx.send("❌ Cannot find staff logs channel.", delete_after=10)
+
+    meets = _rc_db.get_meets(guild.id)
+    responses = _rc_db.get_all_responses(guild.id)
+    crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+    total_crew = len([m for m in crew_role.members if not m.bot]) if crew_role else 0
+    now = datetime.now(_EST_TZ)
+
+    embed = discord.Embed(
+        title="📋 Roll Call Snapshot",
+        description=f"Manual snapshot requested by {ctx.author.mention} — **{now.strftime('%B %d, %Y %I:%M %p ET')}**",
+        color=discord.Color.blurple(),
+        timestamp=now,
+    )
+    if not meets:
+        embed.add_field(name="No meets", value="Roll call is not active this week.", inline=False)
+    else:
+        for meet_row in meets:
+            mn = meet_row["meet_number"]
+            meet_responses = responses.get(mn, {})
+            yes_ids   = meet_responses.get("yes",   [])
+            no_ids    = meet_responses.get("no",    [])
+            maybe_ids = meet_responses.get("maybe", [])
+            total_resp = len(yes_ids) + len(no_ids) + len(maybe_ids)
+            host_id = meet_row["host_id"]
+            host_mention = f"<@{host_id}>" if host_id else "Unassigned"
+            embed.add_field(
+                name=f"Meet {mn} — {meet_row['class_name'] or 'TBD'} ({meet_row['date_text'] or 'TBD'})",
+                value=(
+                    f"Host: {host_mention}\n"
+                    f"✅ Yes: **{len(yes_ids)}** · ❌ No: **{len(no_ids)}** · ❓ Maybe: **{len(maybe_ids)}**\n"
+                    f"Total responses: **{total_resp}** / {total_crew} crew"
+                ),
+                inline=False,
+            )
+    embed.set_footer(text="Different Meets • Roll Call Manual Archive")
+    await logs_ch.send(embed=embed)
+    await ctx.send(f"✅ Snapshot posted to {logs_ch.mention}.", delete_after=8)
+
+
+@bot.command(name="rcstats")
+async def cmd_rc_stats(ctx: commands.Context):
+    """Leadership-only: show live roll call response rate for the current week."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    guild = ctx.guild
+    meets = _rc_db.get_meets(guild.id)
+    if not meets:
+        return await ctx.send("No meets in the current roll call.", delete_after=10)
+
+    responses = _rc_db.get_all_responses(guild.id)
+    crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+    crew_members = [m for m in crew_role.members if not m.bot] if crew_role else []
+    total_crew = len(crew_members)
+
+    # Who has responded to at least one meet
+    all_responders: set = set()
+    for mn_data in responses.values():
+        for uid_list in mn_data.values():
+            all_responders.update(uid_list)
+
+    pct_overall = round(len(all_responders) / total_crew * 100) if total_crew else 0
+
+    embed = discord.Embed(
+        title="📊 Roll Call Live Stats",
+        color=discord.Color.green(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.add_field(
+        name="Overall Response Rate",
+        value=f"**{len(all_responders)}** / {total_crew} crew responded ({pct_overall}%)",
+        inline=False,
+    )
+
+    for meet_row in meets:
+        mn = meet_row["meet_number"]
+        mr = responses.get(mn, {})
+        yes_ids   = mr.get("yes",   [])
+        no_ids    = mr.get("no",    [])
+        maybe_ids = mr.get("maybe", [])
+        total_resp = len(yes_ids) + len(no_ids) + len(maybe_ids)
+        pct = round(total_resp / total_crew * 100) if total_crew else 0
+        host_id = meet_row["host_id"]
+        host_val = f"<@{host_id}>" if host_id else "Unassigned"
+        bar_filled = round(pct / 10)
+        bar = "🟩" * bar_filled + "⬜" * (10 - bar_filled)
+        embed.add_field(
+            name=f"Meet {mn} — {meet_row['class_name'] or 'TBD'}",
+            value=(
+                f"Host: {host_val}\n"
+                f"{bar} **{pct}%**\n"
+                f"✅ {len(yes_ids)} · ❌ {len(no_ids)} · ❓ {len(maybe_ids)} "
+                f"({total_resp}/{total_crew})"
+            ),
+            inline=False,
+        )
+
+    # No-responses
+    no_response = [m for m in crew_members if m.id not in all_responders]
+    if no_response:
+        sample = ", ".join(m.mention for m in no_response[:10])
+        suffix = f" + {len(no_response) - 10} more" if len(no_response) > 10 else ""
+        embed.add_field(name=f"⏳ No Response ({len(no_response)})", value=sample + suffix, inline=False)
+
+    embed.set_footer(text="Different Meets • Live Roll Call Stats")
+    await ctx.send(embed=embed, delete_after=120)
+
+
+@bot.command(name="hostleaderboard")
+async def cmd_host_leaderboard(ctx: commands.Context):
+    """Leadership-only: show hosts ranked by meets hosted (all-time from HP data)."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    hp_data = _hp_load()
+    stats = hp_data.get("host_stats", {})
+    if not stats:
+        return await ctx.send("No host stats recorded yet.", delete_after=10)
+
+    # Sort by meets_hosted desc, then score_total desc
+    ranked = sorted(
+        stats.items(),
+        key=lambda kv: (kv[1].get("meets_hosted", 0), kv[1].get("score_total", 0)),
+        reverse=True,
+    )
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, (uid, s) in enumerate(ranked[:15]):
+        meets = s.get("meets_hosted", 0)
+        score = s.get("score_total", 0)
+        warnings = s.get("warning_count", 0)
+        avg_att = (
+            round(s.get("total_attendance_sum", 0) / meets, 1) if meets else 0
+        )
+        medal = medals[i] if i < 3 else f"`#{i + 1}`"
+        member = ctx.guild.get_member(int(uid))
+        name = member.mention if member else f"**{s.get('host_name', uid)}**"
+        lines.append(
+            f"{medal} {name} — **{meets}** session{'s' if meets != 1 else ''} · "
+            f"Score {score} · Avg {avg_att} attendees · ⚠️ {warnings}"
+        )
+
+    embed = discord.Embed(
+        title="🏆 Host Leaderboard",
+        description="\n".join(lines) or "No data.",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text="Different Meets • All-Time Host Stats")
+    await ctx.send(embed=embed, delete_after=120)
+
+
 # =============================================================
 # DIFF UNIFIED HOST HUB — single combined panel for #host-hub
 # =============================================================
@@ -29136,7 +29311,11 @@ def _psn_client():
     if not npsso:
         return None
     try:
-        return _PSNAWP(npsso=npsso)
+        # psnawp_api 2.x dropped the keyword arg — try positional first
+        try:
+            return _PSNAWP(npsso)
+        except TypeError:
+            return _PSNAWP(npsso=npsso)
     except Exception as _e:
         print(f"[PSN] Client init failed: {_e}")
         return None
