@@ -20,7 +20,7 @@ _EST_TZ = ZoneInfo("America/New_York")
 import subprocess
 from dotenv import load_dotenv
 import discord
-from discord import app_commands
+from discord import app_commandsall
 from discord.ext import commands, tasks
 
 try: 
@@ -10848,6 +10848,223 @@ async def cmd_host_leaderboard(ctx: commands.Context):
     await ctx.send(embed=embed, delete_after=120)
 
 
+@bot.command(name="hosthistory")
+async def cmd_host_history(ctx: commands.Context, member: discord.Member = None):
+    """Leadership-only: show a host's completed HP sessions."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    if member is None:
+        return await ctx.send("Usage: `!hosthistory @user`", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    hp_data = _hp_load()
+    sessions = hp_data.get("active_sessions", {})
+    host_sessions = sorted(
+        [s for s in sessions.values() if s.get("host_id") == member.id and s.get("ended")],
+        key=lambda s: s.get("ended_at") or "",
+        reverse=True,
+    )
+
+    if not host_sessions:
+        return await ctx.send(f"No completed sessions found for {member.mention}.", delete_after=10)
+
+    lines = []
+    for s in host_sessions[:10]:
+        ended_at = s.get("ended_at", "")
+        try:
+            from datetime import timezone as _utctz
+            dt = datetime.fromisoformat(ended_at).astimezone(_EST_TZ)
+            date_str = dt.strftime("%b %d %Y, %I:%M %p ET")
+        except Exception:
+            date_str = ended_at[:10] if ended_at else "Unknown"
+        score = s.get("score", "?")
+        warnings = s.get("warning_count", 0)
+        att = s.get("total_attendance", 0)
+        meet = s.get("meet_name", "Unknown Meet")
+        warn_icon = "⚠️" * min(warnings, 3) if warnings else "✅"
+        lines.append(
+            f"**{meet}** — {date_str}\n"
+            f"  Score: **{score}** · Attendance: **{att}** · {warn_icon} {warnings} warning{'s' if warnings != 1 else ''}"
+        )
+
+    stat = hp_data.get("host_stats", {}).get(str(member.id), {})
+    total = stat.get("meets_hosted", len(host_sessions))
+    avg_score = round(stat.get("score_total", 0) / total, 1) if total else 0
+
+    embed = discord.Embed(
+        title=f"📜 Host History — {member.display_name}",
+        description=f"Showing last {len(lines)} of **{total}** session(s) · Avg score: **{avg_score}**\n\n" + "\n\n".join(lines),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text="Different Meets • Host Performance History")
+    await ctx.send(embed=embed, delete_after=120)
+
+
+@bot.command(name="sessionlog")
+async def cmd_session_log(ctx: commands.Context):
+    """Leadership-only: show the last 10 completed HP sessions across all hosts."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    hp_data = _hp_load()
+    sessions = hp_data.get("active_sessions", {})
+    ended = sorted(
+        [s for s in sessions.values() if s.get("ended")],
+        key=lambda s: s.get("ended_at") or "",
+        reverse=True,
+    )
+
+    if not ended:
+        return await ctx.send("No completed sessions on record yet.", delete_after=10)
+
+    lines = []
+    for s in ended[:10]:
+        ended_at = s.get("ended_at", "")
+        try:
+            dt = datetime.fromisoformat(ended_at).astimezone(_EST_TZ)
+            date_str = dt.strftime("%b %d, %I:%M %p ET")
+        except Exception:
+            date_str = ended_at[:10] if ended_at else "?"
+        score = s.get("score", "?")
+        att = s.get("total_attendance", 0)
+        warnings = s.get("warning_count", 0)
+        warn_icon = f"⚠️×{warnings}" if warnings else "✅"
+        lines.append(
+            f"**{s.get('meet_name','?')}** — <@{s['host_id']}> · {date_str}\n"
+            f"  Score **{score}** · {att} attendees · {warn_icon}"
+        )
+
+    embed = discord.Embed(
+        title="🗂 Recent HP Sessions",
+        description="\n\n".join(lines),
+        color=discord.Color.dark_blue(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text=f"Different Meets • Last {len(lines)} sessions shown")
+    await ctx.send(embed=embed, delete_after=120)
+
+
+@bot.command(name="exportrc")
+async def cmd_export_rc(ctx: commands.Context):
+    """Leadership-only: export current roll call responses as a CSV file."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    import io as _io
+    import csv as _csv
+
+    guild = ctx.guild
+    meets = _rc_db.get_meets(guild.id)
+    if not meets:
+        return await ctx.send("No meets in the current roll call.", delete_after=10)
+
+    responses = _rc_db.get_all_responses(guild.id)
+    buf = _io.StringIO()
+    writer = _csv.writer(buf)
+    writer.writerow(["meet_number", "class_name", "date_text", "host_id", "host_name", "status", "user_id", "username"])
+
+    for meet_row in meets:
+        mn = meet_row["meet_number"]
+        class_name = meet_row["class_name"] or "TBD"
+        date_text = meet_row["date_text"] or "TBD"
+        host_id = meet_row["host_id"] or ""
+        host_member = guild.get_member(host_id) if host_id else None
+        host_name = host_member.display_name if host_member else str(host_id)
+        mr = responses.get(mn, {})
+        for status in ("yes", "no", "maybe"):
+            for uid in mr.get(status, []):
+                m = guild.get_member(uid)
+                uname = m.display_name if m else str(uid)
+                writer.writerow([mn, class_name, date_text, host_id, host_name, status, uid, uname])
+
+    buf.seek(0)
+    ts = datetime.now(_EST_TZ).strftime("%Y%m%d_%H%M")
+    await ctx.send(
+        content=f"📄 Roll call export — {ts} ET",
+        file=discord.File(_io.BytesIO(buf.getvalue().encode()), filename=f"rollcall_{ts}.csv"),
+        delete_after=120,
+    )
+
+
+@bot.command(name="crewstats")
+async def cmd_crew_stats(ctx: commands.Context, member: discord.Member = None):
+    """Leadership-only: show a crew member's all-time roll call response stats."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    if member is None:
+        return await ctx.send("Usage: `!crewstats @user`", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    guild = ctx.guild
+    cur = _rc_db.conn.cursor()
+    cur.execute("SELECT * FROM attendance_stats WHERE guild_id=? AND user_id=?", (guild.id, member.id))
+    row = cur.fetchone()
+
+    # Current-week responses
+    all_resp = _rc_db.get_all_responses(guild.id)
+    meets = _rc_db.get_meets(guild.id)
+    week_lines = []
+    for meet_row in meets:
+        mn = meet_row["meet_number"]
+        mr = all_resp.get(mn, {})
+        status = None
+        for st in ("yes", "no", "maybe"):
+            if member.id in mr.get(st, []):
+                status = st
+                break
+        icon = {"yes": "✅", "no": "❌", "maybe": "❓"}.get(status, "⬜")
+        week_lines.append(f"Meet {mn} ({meet_row['class_name'] or 'TBD'}): {icon} {status or 'No response'}")
+
+    embed = discord.Embed(
+        title=f"📊 Crew Stats — {member.display_name}",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    if week_lines:
+        embed.add_field(name="This Week", value="\n".join(week_lines), inline=False)
+
+    if row:
+        yes_c   = row["yes_count"]   if "yes_count"   in row.keys() else 0
+        no_c    = row["no_count"]    if "no_count"    in row.keys() else 0
+        maybe_c = row["maybe_count"] if "maybe_count" in row.keys() else 0
+        att_c   = row["attended_count"]  if "attended_count"  in row.keys() else 0
+        ns_c    = row["no_show_count"]   if "no_show_count"   in row.keys() else 0
+        total_resp = yes_c + no_c + maybe_c
+        embed.add_field(
+            name="All-Time Roll Call",
+            value=(
+                f"✅ Yes: **{yes_c}** · ❌ No: **{no_c}** · ❓ Maybe: **{maybe_c}**\n"
+                f"Total responded: **{total_resp}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Attendance Record",
+            value=f"✅ Attended: **{att_c}** · 👻 No-show: **{ns_c}**",
+            inline=False,
+        )
+    else:
+        embed.add_field(name="All-Time Stats", value="No stats on record yet.", inline=False)
+
+    embed.set_footer(text="Different Meets • Crew Roll Call Stats")
+    await ctx.send(embed=embed, delete_after=120)
+
+
 # =============================================================
 # DIFF UNIFIED HOST HUB — single combined panel for #host-hub
 # =============================================================
@@ -15203,6 +15420,8 @@ async def on_ready():
     bot.loop.create_task(_hrsvp_auto_reset_loop())
     bot.loop.create_task(_hrsvp_escalation_loop())
     bot.loop.create_task(_rc_auto_archive_loop())
+    bot.loop.create_task(_rc_saturday_reminder_loop())
+    bot.loop.create_task(_rc_pruning_report_loop())
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
     _safe_add_view(_ASchedAnnounceView(),   "_ASchedAnnounceView")
@@ -15399,6 +15618,178 @@ async def _rc_auto_archive_loop() -> None:
             await logs_ch.send(embed=embed)
         except Exception as _e:
             print(f"[RollCall] Auto-archive error: {_e}")
+
+
+# =========================
+# ROLL CALL SATURDAY REMINDER LOOP
+# =========================
+_rc_saturday_reminder_last_ran: str = ""
+
+async def _rc_saturday_reminder_loop() -> None:
+    """Every Saturday at 12:00 PM ET: DM crew members who haven't responded to any meet."""
+    await bot.wait_until_ready()
+    global _rc_saturday_reminder_last_ran
+    while not bot.is_closed():
+        await asyncio.sleep(60)
+        try:
+            now = datetime.now(_EST_TZ)
+            # Saturday (weekday 5), noon
+            if now.weekday() != 5 or now.hour != 12 or now.minute != 0:
+                continue
+            today_key = now.strftime("%Y-%m-%d")
+            if _rc_saturday_reminder_last_ran == today_key:
+                continue
+            _rc_saturday_reminder_last_ran = today_key
+
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+            meets = _rc_db.get_meets(guild.id)
+            if not meets:
+                continue
+            responses = _rc_db.get_all_responses(guild.id)
+            crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+            if not crew_role:
+                continue
+
+            # All user IDs who have responded to at least one meet
+            responded: set = set()
+            for mr in responses.values():
+                for uid_list in mr.values():
+                    responded.update(uid_list)
+
+            pending = [m for m in crew_role.members if not m.bot and m.id not in responded]
+            if not pending:
+                continue
+
+            rc_url = f"https://discord.com/channels/{GUILD_ID}/{ROLL_CALL_CHANNEL_ID}"
+            dm_embed = discord.Embed(
+                title="📋 Don't forget — Roll Call closes soon!",
+                description=(
+                    "Hey! You haven't responded to this week's **DIFF Meet roll call** yet.\n\n"
+                    f"📌 **[Open the Roll Call]({rc_url})**\n\n"
+                    "Let the crew know if you're coming — it takes 10 seconds.\n"
+                    "The roll call resets every Monday."
+                ),
+                color=discord.Color.orange(),
+                timestamp=now,
+            )
+            dm_embed.set_footer(text="DIFF Meets • Saturday Roll Call Reminder")
+
+            sent = failed = 0
+            for m in pending:
+                try:
+                    await m.send(embed=dm_embed)
+                    sent += 1
+                    await asyncio.sleep(1)
+                except discord.Forbidden:
+                    failed += 1
+                except Exception as _de:
+                    print(f"[RcReminder] DM to {m.id} failed: {_de}")
+                    failed += 1
+
+            print(f"[RcReminder] Saturday reminder — {sent} DMs sent, {failed} failed, {len(responded)} already responded.")
+            if failed > 0:
+                logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+                if isinstance(logs_ch, discord.TextChannel):
+                    await logs_ch.send(embed=discord.Embed(
+                        title="⚠️ Roll Call Reminder — DM Failures",
+                        description=f"**{failed}** crew member(s) couldn't be DM'd for the Saturday roll call reminder.\n\n✅ Sent: {sent} · ❌ Failed: {failed}",
+                        color=discord.Color.orange(),
+                        timestamp=now,
+                    ).set_footer(text="DIFF Meets • Roll Call Reminder System"))
+        except Exception as _e:
+            print(f"[RcReminder] Loop error: {_e}")
+
+
+# =========================
+# CREW ATTENDANCE PRUNING REPORT LOOP
+# =========================
+_rc_pruning_report_last_ran: str = ""
+
+async def _rc_pruning_report_loop() -> None:
+    """Every Monday at 12:15 AM ET: post a pruning report of crew with zero yes responses this week."""
+    await bot.wait_until_ready()
+    global _rc_pruning_report_last_ran
+    while not bot.is_closed():
+        await asyncio.sleep(60)
+        try:
+            now = datetime.now(_EST_TZ)
+            # Monday (weekday 0), 12:15 AM
+            if now.weekday() != 0 or now.hour != 0 or now.minute != 15:
+                continue
+            today_key = now.strftime("%Y-%m-%d")
+            if _rc_pruning_report_last_ran == today_key:
+                continue
+            _rc_pruning_report_last_ran = today_key
+
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+            logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if not isinstance(logs_ch, discord.TextChannel):
+                continue
+
+            crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+            if not crew_role:
+                continue
+
+            crew_members = [m for m in crew_role.members if not m.bot]
+            responses = _rc_db.get_all_responses(guild.id)
+
+            # Build per-member response map for this week
+            yes_responders:  set = set()
+            any_responders:  set = set()
+            no_only: list = []
+
+            for mr in responses.values():
+                yes_responders.update(mr.get("yes", []))
+                for uid_list in mr.values():
+                    any_responders.update(uid_list)
+
+            no_response = [m for m in crew_members if m.id not in any_responders]
+            no_only_members = [m for m in crew_members if m.id in any_responders and m.id not in yes_responders]
+
+            embed = discord.Embed(
+                title="🔍 Weekly Crew Attendance Pruning Report",
+                description=f"Week ending **{now.strftime('%B %d, %Y')}** — {len(crew_members)} total crew",
+                color=discord.Color.red(),
+                timestamp=now,
+            )
+
+            if no_response:
+                sample = " ".join(m.mention for m in no_response[:20])
+                suffix = f" + {len(no_response) - 20} more" if len(no_response) > 20 else ""
+                embed.add_field(
+                    name=f"⬜ No Response At All ({len(no_response)})",
+                    value=sample + suffix,
+                    inline=False,
+                )
+            else:
+                embed.add_field(name="⬜ No Response At All", value="Everyone responded this week ✅", inline=False)
+
+            if no_only_members:
+                sample2 = " ".join(m.mention for m in no_only_members[:20])
+                suffix2 = f" + {len(no_only_members) - 20} more" if len(no_only_members) > 20 else ""
+                embed.add_field(
+                    name=f"❌ Responded 'No' to All Meets ({len(no_only_members)})",
+                    value=sample2 + suffix2,
+                    inline=False,
+                )
+
+            embed.add_field(
+                name="📊 Summary",
+                value=(
+                    f"✅ Responded yes to ≥1 meet: **{len(yes_responders)}**\n"
+                    f"❌ All no / maybe: **{len(no_only_members)}**\n"
+                    f"⬜ No response: **{len(no_response)}**"
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="Different Meets • Crew Pruning Report")
+            await logs_ch.send(embed=embed)
+        except Exception as _e:
+            print(f"[PruningReport] Loop error: {_e}")
 
 
 # =========================
