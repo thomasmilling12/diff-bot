@@ -5,7 +5,6 @@ import io
 import json
 import logging
 import os
-import randomall
 import re
 import sqlite3
 import sys
@@ -24,7 +23,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-try:
+try: 
     import aiohttp
 except Exception:
     aiohttp = None
@@ -102,10 +101,29 @@ UNVERIFIED_ROLE_ID = 1486011550916411512
 
 HIERARCHY_CHANNEL_ID = 1195941548240687266
 
-LEADER_ROLE_ID = 850391095845584937
-CO_LEADER_ROLE_ID = 850391378559238235
-MANAGER_ROLE_ID = 990011447193006101
-HOST_ROLE_ID = 1055823929358430248
+LEADER_ROLE_ID         = 850391095845584937
+CO_LEADER_ROLE_ID      = 850391378559238235
+MANAGER_ROLE_ID        = 990011447193006101
+HOST_ROLE_ID           = 1055823929358430248
+SESSION_VC_CATEGORY_ID = 1156059930483228732
+TICKET_SUPPORT_ROLE_ID = 1495649501522694225
+SENIOR_ADMIN_ROLE_ID   = 1034280192241307718
+ADMINISTRATOR_ROLE_ID  = 1328458892690063443
+LEAD_MOD_ROLE_ID       = 1034282163513872424
+MODERATOR_ROLE_ID      = 1328458459339030571
+JUNIOR_MOD_ROLE_ID     = 1328458204262305792
+DEVELOPER_ROLE_ID      = 1123234905057402890
+
+# All moderation-tier roles (used for permission checks throughout the bot)
+_ALL_MOD_ROLE_IDS = {
+    SENIOR_ADMIN_ROLE_ID, ADMINISTRATOR_ROLE_ID,
+    LEAD_MOD_ROLE_ID, MODERATOR_ROLE_ID, JUNIOR_MOD_ROLE_ID,
+    DEVELOPER_ROLE_ID,
+}
+
+# Leadership-tier permission sets (Developer included so they have full staff access)
+_LEADERSHIP_ROLE_IDS      = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, DEVELOPER_ROLE_ID}
+_LEADERSHIP_HOST_ROLE_IDS = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID, DEVELOPER_ROLE_ID}
 DESIGNER_TEAM_ROLE_ID = 1128901233160245278
 CONTENT_TEAM_ROLE_ID = 1110037666147336293
 COLOR_TEAM_ROLE_ID = 1115495008670330902
@@ -156,13 +174,16 @@ FINAL_TIER_FILE = os.path.join("diff_data", "diff_final_tier.json")
 PHOTO_HASHES_FILE = os.path.join("diff_data", "diff_photo_hashes.json")
 CREW_PINGED_FILE   = os.path.join("diff_data", "diff_crew_pinged.json")
 _LAST_ONLINE_FILE  = os.path.join("diff_data", "diff_last_online.json")
+_ACTIVITY_DB_FILE  = os.path.join("diff_data", "diff_activity.db")
+
 MEMBER_DATABASE_CHANNEL_ID = 1485274945473871903
 REAPPLY_COOLDOWN_DAYS = 14
 DATA_FOLDER = "diff_data"
 COOLDOWN_FILE = os.path.join(DATA_FOLDER, "diff_reapply_cooldowns.json")
 MEMBER_DB_FILE = os.path.join(DATA_FOLDER, "diff_member_database.json")
-STAFF_LOGS_CHANNEL_ID = 1485265848099799163
-MOD_HUB_CHANNEL_ID    = 1486598266211664003
+STAFF_LOGS_CHANNEL_ID        = 1485265848099799163
+TICKET_TRANSCRIPTS_CHANNEL_ID = 1493691927353364580
+MOD_HUB_CHANNEL_ID           = 1486598266211664003
 GTA_WEATHER_CHANNEL_ID = 1489823828652720248
 MEET_ATTENDANCE_CHANNEL_ID = 1089579004517953546
 LEADERBOARD_CHANNEL_ID = 1485282044392243290
@@ -170,7 +191,7 @@ ACTIVITY_FILE = os.path.join(DATA_FOLDER, "diff_activity_stats.json")
 REPUTATION_FILE = os.path.join(DATA_FOLDER, "diff_reputation_stats.json")
 MEETS_FILE = os.path.join(DATA_FOLDER, "diff_meet_records.json")
 HOST_PROMOTION_ATTENDED = 6
-HOST_PROMOTION_HOSTED = 2
+HOST_PROMOTION_HOSTED = 6
 HOST_PROMOTION_REPUTATION = 15
 MANAGER_PROMOTION_ATTENDED = 14
 MANAGER_PROMOTION_HOSTED = 5
@@ -199,7 +220,7 @@ INTERVIEW_OUTCOME_FILE = os.path.join(DATA_FOLDER, "diff_interview_outcome_panel
 TICKET_APP_BRIDGE_FILE = os.path.join(DATA_FOLDER, "diff_ticket_app_bridge.json")
 COLOR_OPS_STATE_FILE = os.path.join(DATA_FOLDER, "diff_color_ops_state.json")
 INTERVIEW_OUTCOME_LOG_CHANNEL_ID = STAFF_LOGS_CHANNEL_ID
-INTERVIEW_OUTCOME_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+INTERVIEW_OUTCOME_ALLOWED_ROLES = _LEADERSHIP_ROLE_IDS
 INTERVIEW_OUTCOME_ONBOARDING_CHANNEL_ID = INTERVIEW_PANEL_CHANNEL_ID
 INTERVIEW_OUTCOME_AUTO_CLOSE = True
 INTERVIEW_OUTCOME_CLOSE_DELAY = 10
@@ -308,6 +329,7 @@ async def _setup_hook():
         "cogs.diff_extras",
         "cogs.diff_host_posters",
         "cogs.diff_postmeet",
+        "cogs.cleanup",
     ]
     for _cog in _cogs:
         try:
@@ -367,6 +389,583 @@ async def _global_view_on_error(
 
 discord.ui.View.on_error = _global_view_on_error  # type: ignore
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOOP CRASH RECOVERY SYSTEM
+# ═══════════════════════════════════════════════════════════════════════════════
+import os as _os
+_os.makedirs("logs", exist_ok=True)
+
+_bot_log = logging.getLogger("diff_bot")
+_bot_log.setLevel(logging.WARNING)
+_log_formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+# File handler
+_fh = logging.FileHandler("logs/bot.log", encoding="utf-8")
+_fh.setLevel(logging.WARNING)
+_fh.setFormatter(_log_formatter)
+_bot_log.addHandler(_fh)
+# Console handler
+_ch = logging.StreamHandler()
+_ch.setLevel(logging.INFO)
+_ch.setFormatter(_log_formatter)
+_bot_log.addHandler(_ch)
+
+# Per-loop state tracking
+_loop_fail_counts: dict[str, int] = {}
+_loop_alerted:    dict[str, bool]  = {}   # True once staff has been pinged this streak
+_loop_last_run:   dict[str, float] = {}   # unix timestamp of last successful tick
+_LOOP_ALERT_THRESHOLD   = 5   # staff ping after this many consecutive failures
+_LOOP_RESTART_THRESHOLD = 10  # force restart after this many consecutive failures
+
+# Global system failsafe — tracks (loop_name, timestamp) for unique-loop counting
+# One misbehaving loop spamming fails will NOT trigger a full restart;
+# only _SYSTEM_FAILURE_THRESHOLD *different* loop names failing in the window will.
+_system_failure_window: list[tuple[str, float]] = []
+_SYSTEM_FAILURE_THRESHOLD = 5   # distinct loop names that must fail = full restart
+_SYSTEM_TIME_WINDOW       = 60  # rolling window in seconds
+
+# Bot process start time (set in on_ready)
+_bot_start_time: float = time.time()
+
+
+async def trigger_system_restart() -> None:
+    """Called when too many distinct loops fail within a short window.
+    Notifies the staff channel then exits the process. systemd restarts it."""
+    _bot_log.critical(
+        "[SystemRestart] %d loop failures in %ds — triggering full bot restart.",
+        _SYSTEM_FAILURE_THRESHOLD, _SYSTEM_TIME_WINDOW,
+    )
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                await ch.send(
+                    "🚨 **Bot instability detected** — multiple background systems failed "
+                    f"within {_SYSTEM_TIME_WINDOW}s. Restarting automatically via systemd..."
+                )
+    except Exception:
+        pass
+    await asyncio.sleep(2)
+    os._exit(1)
+
+
+async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
+    """Shared error handler for all @tasks.loop functions.
+    Logs full traceback, increments failure counter, alerts staff ONCE per
+    failure streak, and force-restarts the loop at _LOOP_RESTART_THRESHOLD."""
+    _loop_fail_counts[name] = _loop_fail_counts.get(name, 0) + 1
+    count = _loop_fail_counts[name]
+    _bot_log.error(
+        "[LoopCrash] %s (consecutive failure #%d): %s",
+        name, count, error, exc_info=True,
+    )
+    # Alert staff channel ONCE per failure streak
+    if count >= _LOOP_ALERT_THRESHOLD and not _loop_alerted.get(name, False):
+        _loop_alerted[name] = True
+        try:
+            guild = bot.get_guild(GUILD_ID)
+            if guild:
+                ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+                if isinstance(ch, discord.TextChannel):
+                    await ch.send(
+                        f"⚠️ Background loop `{name}` has failed "
+                        f"**{count} consecutive times** and will keep retrying.\n"
+                        f"Check `logs/bot.log` on the Pi for details."
+                    )
+        except Exception:
+            pass
+    # Force-restart if runaway failure streak
+    if count >= _LOOP_RESTART_THRESHOLD and loop is not None:
+        try:
+            _bot_log.warning("[LoopForceRestart] %s hit %d failures — force restarting.", name, count)
+            if loop.is_running():
+                loop.cancel()
+            await asyncio.sleep(2)
+            if not loop.is_running():
+                loop.start()
+        except Exception as e:
+            _bot_log.error("[LoopRestartError] %s failed to restart: %s", name, e, exc_info=True)
+    # Global failsafe — count DISTINCT loop names failing in the rolling window.
+    # A single broken loop can spam failures without triggering a full restart;
+    # only _SYSTEM_FAILURE_THRESHOLD different loop names failing qualifies.
+    _now = time.time()
+    _system_failure_window.append((name, _now))
+    _system_failure_window[:] = [
+        (n, t) for (n, t) in _system_failure_window if _now - t <= _SYSTEM_TIME_WINDOW
+    ]
+    _unique_failing = {n for (n, _t) in _system_failure_window}
+    if len(_unique_failing) >= _SYSTEM_FAILURE_THRESHOLD:
+        await trigger_system_restart()
+
+
+async def run_with_timeout(name: str, coro, timeout: int = 60):
+    """Run a coroutine with a timeout. Raises RuntimeError on timeout so the
+    loop error handler can treat it as a normal failure and trigger recovery."""
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"{name} timed out after {timeout}s")
+
+
+def _loop_success(name: str) -> None:
+    """Call at the very top of every loop body.
+    Resets failure counter, clears alert flag, records last-run timestamp."""
+    # First-ever tick for this loop since startup
+    if name not in _loop_last_run:
+        _bot_log.info("[LoopStart] %s started successfully.", name)
+    prev = _loop_fail_counts.get(name, 0)
+    if prev > 0:
+        _bot_log.info("[LoopRecovered] %s healthy again after %d failure(s).", name, prev)
+    _loop_fail_counts[name] = 0
+    _loop_alerted[name]     = False
+    _loop_last_run[name]    = time.time()
+    _bot_log.debug("[LoopTick] %s", name)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MEMBER RETENTION & ACTIVITY SYSTEM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _activity_db():
+    conn = sqlite3.connect(_ACTIVITY_DB_FILE, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def _init_activity_db() -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    with _activity_db() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS member_activity (
+                user_id             INTEGER PRIMARY KEY,
+                join_ts             REAL,
+                last_message        REAL,
+                last_vc             REAL,
+                last_meet           REAL,
+                unverified_dm_sent  INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS member_leaves (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER,
+                username        TEXT,
+                join_ts         REAL,
+                leave_ts        REAL,
+                days_in_server  REAL,
+                was_verified    INTEGER,
+                had_meet_role   INTEGER,
+                role_names      TEXT,
+                last_message    REAL
+            );
+        """)
+
+_init_activity_db()
+
+
+def _migrate_activity_db() -> None:
+    """Add new columns + tables to the activity DB without destroying existing data."""
+    new_cols = [
+        ("verification_ts",        "REAL"),
+        ("meet_attendance_count",  "INTEGER DEFAULT 0"),
+        ("re_engagement_dm_sent",  "INTEGER DEFAULT 0"),
+        ("reminder_dm_count",      "INTEGER DEFAULT 0"),
+        ("ever_active",            "INTEGER DEFAULT 0"),
+        ("drop_off_stage",         "TEXT"),
+    ]
+    with _activity_db() as conn:
+        for col, typedef in new_cols:
+            try:
+                conn.execute(f"ALTER TABLE member_activity ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+        # Add leave reason tags + drop-off stage to member_leaves
+        for col, typedef in [("reason_tags", "TEXT"), ("drop_off_stage", "TEXT"), ("last_vc", "REAL")]:
+            try:
+                conn.execute(f"ALTER TABLE member_leaves ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS leave_surveys (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER,
+                username     TEXT,
+                response     TEXT,
+                responded_at REAL
+            )
+        """)
+
+_migrate_activity_db()
+
+
+def _migrate_health_score_db() -> None:
+    """Add health-score columns and history table — safe to run on every boot."""
+    health_cols = [
+        ("last_health_score",  "INTEGER"),
+        ("prev_health_score",  "INTEGER"),
+        ("health_tier",        "TEXT"),
+        ("score_updated_at",   "REAL"),
+    ]
+    with _activity_db() as conn:
+        for col, typedef in health_cols:
+            try:
+                conn.execute(f"ALTER TABLE member_activity ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS health_score_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER,
+                score       INTEGER,
+                tier        TEXT,
+                recorded_at REAL
+            )
+        """)
+
+_migrate_health_score_db()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MEMBER HEALTH SCORE — Config, calculation, and storage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Configurable score weights (edit these to tune the system) ─────────────────
+_HEALTH_W = {
+    # Positive
+    "verified":           20,
+    "application":        15,
+    "first_meet":         20,
+    "extra_meets":         5,   # per additional meet, capped at 10 pts total
+    "recent_message_7d":  10,
+    "recent_vc_7d":       10,
+    "join_age_30d":        5,
+    # Negative
+    "p_inactive_7d":     -10,
+    "p_inactive_14d":    -20,
+    "p_inactive_30d":    -30,
+    "p_unverified_24h":   -5,
+    "p_unverified_72h":  -15,   # stacks with 24h penalty
+    "p_ghost":           -20,   # joined 48h+, never sent a message
+}
+
+_HEALTH_TIERS = [
+    (80, "Strong",  "💚", (30,  160, 60)),
+    (60, "Active",  "🔵", (30,  100, 200)),
+    (40, "At Risk", "🟡", (210, 150, 0)),
+    (0,  "Ghost",   "🔴", (200, 30,  30)),
+]
+
+
+def _calc_health_score(row, is_verified: bool, is_applied: bool = False) -> dict:
+    """Pure-Python health score calculation. Returns a full breakdown dict.
+
+    Args:
+        row          — sqlite3.Row from member_activity
+        is_verified  — whether the member currently holds VERIFIED_ROLE_ID
+        is_applied   — whether they hold any application/completion role
+    """
+    now   = time.time()
+    score = 0
+    pos: list[str] = []
+    neg: list[str] = []
+
+    join_ts     = row["join_ts"]    if row else None
+    last_msg    = row["last_message"] if row else None
+    last_vc_ts  = row["last_vc"]    if row else None
+    meet_count  = int(row["meet_attendance_count"] or 0) if row and row["meet_attendance_count"] is not None else 0
+
+    # ── Positive factors ────────────────────────────────────────────────────
+    if is_verified:
+        score += _HEALTH_W["verified"]
+        pos.append(f"+{_HEALTH_W['verified']} pts — Verified ✅")
+
+    if is_applied:
+        score += _HEALTH_W["application"]
+        pos.append(f"+{_HEALTH_W['application']} pts — Completed Application ✅")
+
+    if meet_count >= 1:
+        score += _HEALTH_W["first_meet"]
+        pos.append(f"+{_HEALTH_W['first_meet']} pts — Attended First Meet 🚗")
+
+    if meet_count > 1:
+        extra = min((meet_count - 1) * _HEALTH_W["extra_meets"], 10)
+        score += extra
+        pos.append(f"+{extra} pts — Extra Meet Attendance ({meet_count} total)")
+
+    if last_msg and (now - last_msg) <= 7 * 86400:
+        score += _HEALTH_W["recent_message_7d"]
+        pos.append(f"+{_HEALTH_W['recent_message_7d']} pts — Active in Chat (last 7d) 💬")
+
+    if last_vc_ts and (now - last_vc_ts) <= 7 * 86400:
+        score += _HEALTH_W["recent_vc_7d"]
+        pos.append(f"+{_HEALTH_W['recent_vc_7d']} pts — Active in VC (last 7d) 🎙️")
+
+    if join_ts and (now - join_ts) >= 30 * 86400:
+        score += _HEALTH_W["join_age_30d"]
+        pos.append(f"+{_HEALTH_W['join_age_30d']} pts — Long-term Member (30d+) ⏱️")
+
+    # ── Negative factors ────────────────────────────────────────────────────
+    last_activity = last_msg or last_vc_ts
+    if last_activity:
+        inactive_s = now - last_activity
+        if inactive_s > 30 * 86400:
+            score += _HEALTH_W["p_inactive_30d"]
+            neg.append(f"{_HEALTH_W['p_inactive_30d']} pts — Inactive 30+ Days ⚠️")
+        elif inactive_s > 14 * 86400:
+            score += _HEALTH_W["p_inactive_14d"]
+            neg.append(f"{_HEALTH_W['p_inactive_14d']} pts — Inactive 14+ Days")
+        elif inactive_s > 7 * 86400:
+            score += _HEALTH_W["p_inactive_7d"]
+            neg.append(f"{_HEALTH_W['p_inactive_7d']} pts — Inactive 7+ Days")
+
+    if not is_verified and join_ts:
+        join_age = now - join_ts
+        if join_age > 72 * 3600:
+            score += _HEALTH_W["p_unverified_24h"] + _HEALTH_W["p_unverified_72h"]
+            neg.append(f"{_HEALTH_W['p_unverified_24h'] + _HEALTH_W['p_unverified_72h']} pts — Unverified 72h+ ❌")
+        elif join_age > 24 * 3600:
+            score += _HEALTH_W["p_unverified_24h"]
+            neg.append(f"{_HEALTH_W['p_unverified_24h']} pts — Unverified 24h+")
+
+    if join_ts and not last_msg and (now - join_ts) > 48 * 3600:
+        score += _HEALTH_W["p_ghost"]
+        neg.append(f"{_HEALTH_W['p_ghost']} pts — Ghost (no messages since joining) 👻")
+
+    score = max(0, min(100, score))
+
+    # ── Tier ────────────────────────────────────────────────────────────────
+    tier_name, tier_icon, tier_rgb = "Ghost", "🔴", (200, 30, 30)
+    for threshold, name, icon, rgb in _HEALTH_TIERS:
+        if score >= threshold:
+            tier_name, tier_icon, tier_rgb = name, icon, rgb
+            break
+
+    # ── Trend ───────────────────────────────────────────────────────────────
+    prev = None
+    try:
+        prev = row["prev_health_score"] if row and row["prev_health_score"] is not None else None
+    except (IndexError, TypeError):
+        pass
+    if prev is None:
+        trend = "🆕 New"
+    elif score > prev + 5:
+        trend = "📈 Rising"
+    elif score < prev - 5:
+        trend = "📉 Falling"
+    else:
+        trend = "➡️ Stable"
+
+    # ── Recommendations ─────────────────────────────────────────────────────
+    recs: list[str] = []
+    if not is_verified:
+        recs.append("• Send verification reminder (`!leavedm` or manual nudge)")
+    elif meet_count == 0:
+        recs.append("• Encourage first meet attendance")
+    elif meet_count == 1:
+        recs.append("• Returning member potential — invite to next meet")
+    if last_activity and (now - last_activity) > 14 * 86400:
+        recs.append("• Consider re-engagement DM or flag for removal review")
+    if score >= 80:
+        recs.append("• Strong member — potential future host or community regular")
+    if not recs:
+        recs.append("• No immediate action needed — keep engaging!")
+
+    return {
+        "score":      score,
+        "tier":       tier_name,
+        "tier_icon":  tier_icon,
+        "tier_color": discord.Color.from_rgb(*tier_rgb),
+        "trend":      trend,
+        "pos":        pos,
+        "neg":        neg,
+        "rec":        "\n".join(recs),
+        "prev_score": prev,
+    }
+
+
+def _save_health_score(user_id: int, score: int, tier: str) -> None:
+    """Persist score to DB; rotate prev ← last before saving new."""
+    with _activity_db() as conn:
+        row = conn.execute(
+            "SELECT last_health_score FROM member_activity WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        prev = row["last_health_score"] if row else None
+        conn.execute(
+            "INSERT OR IGNORE INTO member_activity (user_id) VALUES (?)", (user_id,)
+        )
+        conn.execute(
+            """UPDATE member_activity
+               SET last_health_score = ?, prev_health_score = ?, health_tier = ?, score_updated_at = ?
+               WHERE user_id = ?""",
+            (score, prev, tier, time.time(), user_id),
+        )
+        conn.execute(
+            "INSERT INTO health_score_history (user_id, score, tier, recorded_at) VALUES (?,?,?,?)",
+            (user_id, score, tier, time.time()),
+        )
+
+
+async def _update_health_score_for(member: discord.Member) -> dict | None:
+    """Calculate and save health score for one member. Returns breakdown dict."""
+    try:
+        row = _activity_get(member.id)
+        is_verified = any(r.id == VERIFIED_ROLE_ID for r in member.roles)
+        _app_role_names = {"applied", "applicant", "interviewing", "pending", "ps5 member"}
+        is_applied  = any(r.name.lower() in _app_role_names for r in member.roles)
+        result = _calc_health_score(row, is_verified, is_applied)
+        _save_health_score(member.id, result["score"], result["tier"])
+        return result
+    except Exception as _e:
+        _bot_log.error("[HealthScore] update for %s: %s", member, _e, exc_info=True)
+        return None
+
+
+# ── Drop-off stage detection ───────────────────────────────────────────────────
+_STAGE_ORDER = [
+    "Returning Member",
+    "Attended First Meet",
+    "Applied",
+    "Verified",
+    "Joined Only",
+]
+
+def _detect_drop_off_stage(
+    was_verified: bool,
+    had_meet_role: bool,
+    meet_count: int = 0,
+    had_application: bool = False,
+) -> str:
+    if meet_count > 1:
+        return "Returning Member"
+    if had_meet_role or meet_count > 0:
+        return "Attended First Meet"
+    if had_application:
+        return "Applied"
+    if was_verified:
+        return "Verified"
+    return "Joined Only"
+
+
+def _detect_leave_reasons(
+    was_verified: bool,
+    had_meet_role: bool,
+    last_message: float | None,
+    days_in: float | None,
+    leave_ts: float,
+) -> list[str]:
+    """Return a list of human-readable reason tags based on activity signals."""
+    tags = []
+    if not was_verified:
+        tags.append("Never Verified")
+    if not had_meet_role:
+        tags.append("No Meet Attendance")
+    msg_age = (leave_ts - last_message) if last_message else None
+    if last_message is None:
+        tags.append("Likely Ghost Member")
+    elif msg_age and msg_age > 7 * 86400:
+        tags.append("Inactive After Joining")
+    if days_in is not None and days_in < 1:
+        tags.append("Left Immediately")
+    if was_verified and not had_meet_role and (msg_age is None or (msg_age and msg_age > 3 * 86400)):
+        tags.append("Low Engagement")
+    return tags or ["Unknown"]
+
+
+def _activity_upsert(user_id: int, **kwargs) -> None:
+    """Insert or update activity fields for a member."""
+    if not kwargs:
+        return
+    with _activity_db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO member_activity (user_id) VALUES (?)", (user_id,)
+        )
+        set_clause = ", ".join(f"{k} = ?" for k in kwargs)
+        conn.execute(
+            f"UPDATE member_activity SET {set_clause} WHERE user_id = ?",
+            (*kwargs.values(), user_id),
+        )
+
+def _activity_get(user_id: int):
+    with _activity_db() as conn:
+        return conn.execute(
+            "SELECT * FROM member_activity WHERE user_id = ?", (user_id,)
+        ).fetchone()
+
+def _activity_log_leave(
+    user_id: int,
+    username: str,
+    join_ts: float | None,
+    leave_ts: float,
+    was_verified: bool,
+    had_meet_role: bool,
+    role_names: str,
+    last_message: float | None,
+    last_vc: float | None = None,
+    reason_tags: str = "",
+    drop_off_stage: str = "",
+) -> None:
+    days = round((leave_ts - join_ts) / 86400, 1) if join_ts else None
+    with _activity_db() as conn:
+        conn.execute(
+            """INSERT INTO member_leaves
+               (user_id, username, join_ts, leave_ts, days_in_server,
+                was_verified, had_meet_role, role_names, last_message,
+                last_vc, reason_tags, drop_off_stage)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (user_id, username, join_ts, leave_ts, days,
+             int(was_verified), int(had_meet_role), role_names, last_message,
+             last_vc, reason_tags, drop_off_stage),
+        )
+
+def _memberstats_query() -> dict:
+    """Return aggregate stats for !memberstats."""
+    with _activity_db() as conn:
+        total_leaves = conn.execute("SELECT COUNT(*) FROM member_leaves").fetchone()[0]
+        avg_days     = conn.execute(
+            "SELECT AVG(days_in_server) FROM member_leaves WHERE days_in_server IS NOT NULL"
+        ).fetchone()[0]
+        verified_pct = conn.execute(
+            "SELECT ROUND(100.0 * SUM(was_verified) / NULLIF(COUNT(*), 0), 1) FROM member_leaves"
+        ).fetchone()[0]
+        meet_pct     = conn.execute(
+            "SELECT ROUND(100.0 * SUM(had_meet_role) / NULLIF(COUNT(*), 0), 1) FROM member_leaves"
+        ).fetchone()[0]
+        recent_7d    = conn.execute(
+            "SELECT COUNT(*) FROM member_leaves WHERE leave_ts > ?",
+            (time.time() - 7 * 86400,),
+        ).fetchone()[0]
+        total_tracked = conn.execute("SELECT COUNT(*) FROM member_activity").fetchone()[0]
+        now = time.time()
+        inactive_3d   = conn.execute(
+            """SELECT COUNT(*) FROM member_activity
+               WHERE (last_message IS NULL OR last_message < ?)
+                 AND join_ts IS NOT NULL AND join_ts < ?""",
+            (now - 3 * 86400, now - 3 * 86400),
+        ).fetchone()[0]
+        inactive_7d   = conn.execute(
+            """SELECT COUNT(*) FROM member_activity
+               WHERE (last_message IS NULL OR last_message < ?)
+                 AND join_ts IS NOT NULL AND join_ts < ?""",
+            (now - 7 * 86400, now - 7 * 86400),
+        ).fetchone()[0]
+        unverified_24h = conn.execute(
+            """SELECT COUNT(*) FROM member_activity
+               WHERE unverified_dm_sent = 0
+                 AND join_ts IS NOT NULL AND join_ts < ?""",
+            (now - 86400,),
+        ).fetchone()[0]
+    return {
+        "total_leaves":   total_leaves,
+        "avg_days":       round(avg_days, 1) if avg_days else 0,
+        "verified_pct":   verified_pct or 0,
+        "meet_pct":       meet_pct or 0,
+        "recent_7d":      recent_7d,
+        "total_tracked":  total_tracked,
+        "inactive_3d":    inactive_3d,
+        "inactive_7d":    inactive_7d,
+        "unverified_24h": unverified_24h,
+    }
 
 # =========================
 # DATA
@@ -418,9 +1017,19 @@ def load_data():
     return loaded
 
 
+def _atomic_json_save(path: str, data, *, indent: int = 2) -> None:
+    """Write *data* to *path* atomically via a .tmp file + os.replace().
+    A crash or power loss mid-write never corrupts the real file."""
+    path = str(path)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as _f:
+        json.dump(data, _f, indent=indent)
+    os.replace(tmp, path)
+
+
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    _atomic_json_save(DATA_FILE, data, indent=4)
 
 
 data = load_data()
@@ -437,8 +1046,7 @@ def load_apps():
 
 
 def save_apps(app_data):
-    with open(APPLICATIONS_FILE, "w", encoding="utf-8") as f:
-        json.dump(app_data, f, indent=2)
+    _atomic_json_save(APPLICATIONS_FILE, app_data)
 
 
 def create_next_app_id():
@@ -489,8 +1097,7 @@ def _load_diff_json(path: str) -> dict:
 
 def _save_diff_json(path: str, data: dict):
     _ensure_diff_data()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(path, data)
 
 
 def build_diff_member_name(name: str) -> str:
@@ -500,8 +1107,8 @@ def build_diff_member_name(name: str) -> str:
 
 def set_reapply_cooldown(user_id: int):
     data = _load_diff_json(COOLDOWN_FILE)
-    expires_at = (datetime.utcnow() + timedelta(days=REAPPLY_COOLDOWN_DAYS)).isoformat()
-    data[str(user_id)] = {"expires_at": expires_at, "set_at": datetime.utcnow().isoformat()}
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=REAPPLY_COOLDOWN_DAYS)).isoformat()
+    data[str(user_id)] = {"expires_at": expires_at, "set_at": datetime.now(timezone.utc).isoformat()}
     _save_diff_json(COOLDOWN_FILE, data)
 
 
@@ -520,7 +1127,7 @@ def get_reapply_cooldown_text(user_id: int):
         expires_at = datetime.fromisoformat(entry["expires_at"])
     except Exception:
         return None
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if expires_at <= now:
         data.pop(str(user_id), None)
         _save_diff_json(COOLDOWN_FILE, data)
@@ -541,7 +1148,7 @@ async def add_member_to_database(
         "username": str(member),
         "display_name": member.display_name,
         "nickname": nickname or member.nick,
-        "joined_diff_at": datetime.utcnow().isoformat(),
+        "joined_diff_at": datetime.now(timezone.utc).isoformat(),
         "accepted_by_id": accepted_by.id if accepted_by else None,
         "accepted_by_name": str(accepted_by) if accepted_by else None,
     }
@@ -666,7 +1273,7 @@ def build_dashboard_embed() -> discord.Embed:
     members = _load_diff_json(MEMBER_DB_FILE)
     app_data = load_apps()
     apps = app_data.get("applications", {})
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     active_cds = 0
     for e in cooldowns.values():
         try:
@@ -714,8 +1321,7 @@ def _load_activity_json(path: str) -> dict:
 
 def _save_activity_json(path: str, data: dict):
     _ensure_activity_files()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(path, data)
 
 
 def get_user_stats(user_id: int) -> dict:
@@ -743,11 +1349,11 @@ def save_user_reputation(user_id: int, rep: dict):
 def current_rank_name(member: discord.Member) -> str:
     role_ids = {role.id for role in member.roles}
     if LEADER_ROLE_ID in role_ids:
-        return "Leader"
+        return "Founder"
     if CO_LEADER_ROLE_ID in role_ids:
-        return "Co Leader"
+        return "Executive"
     if MANAGER_ROLE_ID in role_ids:
-        return "Manager"
+        return "Server Operations"
     if HOST_ROLE_ID in role_ids:
         return "Host"
     if CREW_MEMBER_ROLE_ID in role_ids:
@@ -761,8 +1367,8 @@ def check_promotion_eligibility(member: discord.Member):
     current = current_rank_name(member)
     thresholds = {
         "Crew Member": (HOST_PROMOTION_ATTENDED, HOST_PROMOTION_HOSTED, HOST_PROMOTION_REPUTATION, "Host"),
-        "Host": (MANAGER_PROMOTION_ATTENDED, MANAGER_PROMOTION_HOSTED, MANAGER_PROMOTION_REPUTATION, "Manager"),
-        "Manager": (LEADER_PROMOTION_ATTENDED, LEADER_PROMOTION_HOSTED, LEADER_PROMOTION_REPUTATION, "Leader"),
+        "Host": (MANAGER_PROMOTION_ATTENDED, MANAGER_PROMOTION_HOSTED, MANAGER_PROMOTION_REPUTATION, "Server Operations"),
+        "Server Operations": (LEADER_PROMOTION_ATTENDED, LEADER_PROMOTION_HOSTED, LEADER_PROMOTION_REPUTATION, "Founder"),
     }
     if current not in thresholds:
         return None
@@ -801,7 +1407,7 @@ async def maybe_post_promotion_suggestion(guild: discord.Guild, member: discord.
 async def record_meet_attendance(guild: discord.Guild, member: discord.Member, meet_name: str, host_member: discord.Member = None):
     stats = get_user_stats(member.id)
     stats["meets_attended"] += 1
-    stats["last_updated"] = datetime.utcnow().isoformat()
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
     stats["username"] = str(member)
     save_user_stats(member.id, stats)
     role_ids = {role.id for role in member.roles}
@@ -825,7 +1431,7 @@ async def record_meet_attendance(guild: discord.Guild, member: discord.Member, m
 async def record_meet_host(guild: discord.Guild, host_member: discord.Member, meet_name: str):
     stats = get_user_stats(host_member.id)
     stats["meets_hosted"] += 1
-    stats["last_updated"] = datetime.utcnow().isoformat()
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
     stats["username"] = str(host_member)
     save_user_stats(host_member.id, stats)
     await maybe_post_promotion_suggestion(guild, host_member)
@@ -844,9 +1450,9 @@ async def record_meet_host(guild: discord.Guild, host_member: discord.Member, me
 async def update_member_reputation(guild: discord.Guild, member: discord.Member, amount: int, note: str, given_by: discord.Member = None):
     rep = get_user_reputation(member.id)
     rep["reputation"] += amount
-    rep["last_updated"] = datetime.utcnow().isoformat()
+    rep["last_updated"] = datetime.now(timezone.utc).isoformat()
     rep["username"] = str(member)
-    note_entry = {"amount": amount, "note": note, "given_by": str(given_by) if given_by else None, "created_at": datetime.utcnow().isoformat()}
+    note_entry = {"amount": amount, "note": note, "given_by": str(given_by) if given_by else None, "created_at": datetime.now(timezone.utc).isoformat()}
     if amount >= 0:
         rep["positive_notes"].append(note_entry)
         rep["positive_notes"] = rep["positive_notes"][-25:]
@@ -1007,7 +1613,7 @@ def count_message_attachments(messages) -> int:
 
 
 def is_staff_reviewer(member: discord.Member) -> bool:
-    allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    allowed = _LEADERSHIP_ROLE_IDS
     return any(role.id in allowed for role in member.roles)
 
 
@@ -1037,6 +1643,7 @@ def build_review_embed(app_id: str, applicant, answers: dict, ticket_channel_id=
     embed.add_field(name="Age", value=answers.get("age", "N/A"), inline=True)
     embed.add_field(name="Timezone", value=answers.get("timezone", "N/A"), inline=True)
     embed.add_field(name="GTA Rank", value=answers.get("gta_rank", "N/A"), inline=True)
+    embed.add_field(name="Prior Warnings / Bans", value=answers.get("prior_history", "N/A"), inline=False)
     embed.add_field(name="How They Heard", value=answers.get("how_heard", "N/A"), inline=True)
     embed.add_field(name="Days Available", value=answers.get("days_available", "N/A"), inline=True)
     embed.add_field(name="Personal Skills", value=answers.get("personal_skills", "N/A"), inline=False)
@@ -1053,18 +1660,53 @@ def build_review_embed(app_id: str, applicant, answers: dict, ticket_channel_id=
 
 
 def build_tracker_embed(app_id: str, applicant, answers: dict, status: str, reviewer_text: str = "Not reviewed yet"):
-    color_map = {"Approved": discord.Color.green(), "Denied": discord.Color.red(), "Closed": discord.Color.dark_grey()}
+    color_map = {
+        "Approved": discord.Color.green(),
+        "Denied": discord.Color.red(),
+        "Closed": discord.Color.dark_grey(),
+        "More Info Requested": discord.Color.yellow(),
+        "Timed Out": discord.Color.dark_orange(),
+    }
+    # Handle applicant who has left the server (applicant is None)
+    if applicant is not None:
+        user_display = applicant.mention
+        user_id = applicant.id
+    else:
+        stored_id = answers.get("user_id", answers.get("applicant_id", "Unknown"))
+        stored_name = answers.get("username", "Unknown User")
+        user_display = f"{stored_name}\n`{stored_id}`"
+        user_id = stored_id
+
     embed = discord.Embed(
         title=f"Application Tracker #{app_id}",
-        description="DIFF application progress",
+        description="DIFF Crew Application",
         color=color_map.get(status, discord.Color.orange()),
         timestamp=utc_now(),
     )
-    embed.add_field(name="User", value=applicant.mention, inline=True)
-    embed.add_field(name="Gamertag", value=answers.get("gamertag", "N/A"), inline=True)
-    embed.add_field(name="Status", value=make_status_emoji(status), inline=True)
-    embed.add_field(name="Reviewed By", value=reviewer_text, inline=False)
-    embed.set_footer(text=f"Applicant ID: {applicant.id}")
+    embed.add_field(name="👤 Applicant", value=user_display, inline=True)
+    embed.add_field(name="🎮 Gamertag", value=answers.get("gamertag", "N/A"), inline=True)
+    embed.add_field(name="📊 Status", value=make_status_emoji(status), inline=True)
+    embed.add_field(name="🏆 GTA Rank", value=answers.get("gta_rank", "N/A"), inline=True)
+    embed.add_field(name="🎂 Age", value=answers.get("age", "N/A"), inline=True)
+    prior = answers.get("prior_history", "N/A")
+    embed.add_field(name="⚠️ Prior Warnings / Bans", value=prior if prior else "None", inline=True)
+    submitted_at = answers.get("submitted_at", "")
+    if submitted_at:
+        try:
+            from datetime import datetime as _dt
+            parsed = _dt.fromisoformat(submitted_at.replace("Z", "+00:00"))
+            submitted_display = f"<t:{int(parsed.timestamp())}:F>"
+        except Exception:
+            submitted_display = submitted_at[:19]
+    else:
+        submitted_display = "N/A"
+    embed.add_field(name="📅 Submitted", value=submitted_display, inline=True)
+    embed.add_field(name="🔍 Reviewed By", value=reviewer_text, inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    deny_reason = answers.get("deny_reason", "")
+    if deny_reason:
+        embed.add_field(name="📝 Decision Notes", value=deny_reason[:1024], inline=False)
+    embed.set_footer(text=f"Applicant ID: {user_id}")
     return embed
 
 
@@ -1412,7 +2054,7 @@ class ReviewView(discord.ui.View):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
         if not is_staff_reviewer(interaction.user):
-            return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can approve applications.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader, Executive, or Manager can approve applications.", ephemeral=True)
         record = get_app(self.app_id)
         if not record:
             return await interaction.response.send_message("Application record not found.", ephemeral=True)
@@ -1462,7 +2104,7 @@ class ReviewView(discord.ui.View):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
         if not is_staff_reviewer(interaction.user):
-            return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can deny applications.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader, Executive, or Manager can deny applications.", ephemeral=True)
         record = get_app(self.app_id)
         if not record:
             return await interaction.response.send_message("Application record not found.", ephemeral=True)
@@ -1475,7 +2117,7 @@ class ReviewView(discord.ui.View):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
         if not is_staff_reviewer(interaction.user):
-            return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can request more info.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader, Executive, or Manager can request more info.", ephemeral=True)
         record = get_app(self.app_id)
         if not record:
             return await interaction.response.send_message("Application record not found.", ephemeral=True)
@@ -1518,9 +2160,8 @@ class ReviewView(discord.ui.View):
                         applicant = guild.get_member(record["user_id"]) or await guild.fetch_member(record["user_id"])
                     except Exception:
                         applicant = None
-                    if applicant:
-                        tracker_embed = build_tracker_embed(self.app_id, applicant, record, new_status, reviewer.mention)
-                        await tracker_msg.edit(embed=tracker_embed)
+                    tracker_embed = build_tracker_embed(self.app_id, applicant, record, new_status, reviewer.mention)
+                    await tracker_msg.edit(embed=tracker_embed)
                 except Exception:
                     pass
             if close_ticket and record.get("ticket_channel_id"):
@@ -1733,8 +2374,7 @@ class TicketAcceptModal(discord.ui.Modal, title="Accept Applicant"):
             tracker_ch = guild.get_channel(record.get("tracker_channel_id"))
             if isinstance(tracker_ch, discord.TextChannel) and record.get("tracker_message_id"):
                 tracker_msg = await tracker_ch.fetch_message(record["tracker_message_id"])
-                answers = {k: record.get(k, "N/A") for k in ("gamertag", "days_available", "why_join")}
-                t_emb = build_tracker_embed(app_id, applicant, answers, "Approved", interaction.user.mention)
+                t_emb = build_tracker_embed(app_id, applicant, record, "Approved", interaction.user.mention)
                 await tracker_msg.edit(embed=t_emb)
         except Exception:
             pass
@@ -1813,8 +2453,7 @@ class TicketDenyModal(discord.ui.Modal, title="Deny Applicant"):
             tracker_ch = guild.get_channel(record.get("tracker_channel_id"))
             if isinstance(tracker_ch, discord.TextChannel) and record.get("tracker_message_id"):
                 tracker_msg = await tracker_ch.fetch_message(record["tracker_message_id"])
-                answers = {k: record.get(k, "N/A") for k in ("gamertag", "days_available", "why_join")}
-                t_emb = build_tracker_embed(app_id, applicant, answers, "Denied", interaction.user.mention)
+                t_emb = build_tracker_embed(app_id, applicant, record, "Denied", interaction.user.mention)
                 await tracker_msg.edit(embed=t_emb)
         except Exception:
             pass
@@ -1994,7 +2633,7 @@ class MeetAttendanceModal(discord.ui.Modal, title="DIFF Meet Attendance"):
         embed.set_footer(text=f"Submitted by {interaction.user}")
         await attendance_channel.send(embed=embed)
         data = _load_activity_json(MEETS_FILE)
-        record_id = f"{interaction.guild.id}-{int(datetime.utcnow().timestamp())}"
+        record_id = f"{interaction.guild.id}-{int(datetime.now(timezone.utc).timestamp())}"
         data[record_id] = {
             "host_name": str(self.host_name),
             "meet_name": str(self.meet_name),
@@ -2003,7 +2642,7 @@ class MeetAttendanceModal(discord.ui.Modal, title="DIFF Meet Attendance"):
             "diff_present": str(self.diff_members_present),
             "submitted_by_id": interaction.user.id,
             "submitted_by": str(interaction.user),
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         _save_activity_json(MEETS_FILE, data)
 
@@ -2068,9 +2707,7 @@ def _photo_hashes_load() -> dict:
 
 
 def _photo_hashes_save(data: dict) -> None:
-    os.makedirs(os.path.dirname(PHOTO_HASHES_FILE), exist_ok=True)
-    with open(PHOTO_HASHES_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(PHOTO_HASHES_FILE, data)
 
 
 _join_photo_locks: dict[int, asyncio.Lock] = {}
@@ -2093,9 +2730,7 @@ def _crew_pinged_load() -> set:
 
 
 def _crew_pinged_save(data: set) -> None:
-    os.makedirs(os.path.dirname(CREW_PINGED_FILE), exist_ok=True)
-    with open(CREW_PINGED_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(data), f, indent=2)
+    _atomic_json_save(CREW_PINGED_FILE, list(data))
 
 
 def _attachment_hash(attachment: discord.Attachment) -> str:
@@ -2118,9 +2753,7 @@ def _ft_load() -> dict:
 
 
 def _ft_save(data: dict) -> None:
-    os.makedirs(os.path.dirname(FINAL_TIER_FILE), exist_ok=True)
-    with open(FINAL_TIER_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(FINAL_TIER_FILE, data)
 
 
 def _ft_ensure_user(user_id: int) -> dict:
@@ -2222,13 +2855,60 @@ async def _ft_auto_progression_loop() -> None:
     while not bot.is_closed():
         await asyncio.sleep(43200)
         guild = bot.get_guild(GUILD_ID)
-        if guild:
-            for member in guild.members:
-                if not member.bot:
-                    try:
-                        await _ft_refresh_progression(member)
-                    except Exception:
-                        pass
+        if not guild:
+            continue
+        # Load data ONCE — avoids hundreds of blocking file reads
+        data = await asyncio.to_thread(_ft_load)
+        users = data.setdefault("users", {})
+        guild_roles = {r.id: r for r in guild.roles}
+
+        for member in guild.members:
+            if member.bot:
+                continue
+            try:
+                key = str(member.id)
+                if key not in users:
+                    users[key] = {
+                        "behaviorScore": 10,
+                        "notes": [],
+                        "hostedMeets": 0,
+                        "hostAttendanceTotal": 0,
+                        "rank": "Member",
+                        "leaderboardEligible": True,
+                        "crewInviteEligible": False,
+                    }
+                ft_user = users[key]
+                attendance = int(_rsvp_leaderboard.get(key, {}).get("attendance_count", 0))
+                behavior = int(ft_user.get("behaviorScore", 10) or 10)
+                strikes = _ft_get_strike_count(member)
+                rank = _ft_compute_rank(attendance, behavior, strikes)
+                lb_eligible = strikes < 3
+                crew_eligible = (rank == "Crew Candidate" and strikes == 0)
+                ft_user["rank"] = rank
+                ft_user["leaderboardEligible"] = lb_eligible
+                ft_user["crewInviteEligible"] = crew_eligible
+                # Role assignments
+                controlled = [r for rid in [ACTIVE_ROLE_ID, ELITE_ROLE_ID, CREW_CANDIDATE_ROLE_ID]
+                              if rid for r in [guild_roles.get(rid)] if r and r in member.roles]
+                to_add_id = {"Active": ACTIVE_ROLE_ID, "Elite": ELITE_ROLE_ID,
+                             "Crew Candidate": CREW_CANDIDATE_ROLE_ID}.get(rank, 0)
+                to_add = [guild_roles[to_add_id]] if to_add_id and to_add_id in guild_roles else []
+                try:
+                    if controlled:
+                        await member.remove_roles(*controlled, reason="DIFF tier progression")
+                    if to_add:
+                        await member.add_roles(*to_add, reason="DIFF tier progression")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            await asyncio.sleep(0)  # yield between members so heartbeat can fire
+
+        # Save ONCE at the end using a thread so the event loop isn't blocked
+        try:
+            await asyncio.to_thread(_ft_save, data)
+        except Exception as _ft_save_err:
+            print(f"[FT] Auto progression save error: {_ft_save_err}")
 
 
 # =========================
@@ -2378,9 +3058,7 @@ def _season_load() -> dict:
 
 
 def _season_save(data: dict) -> None:
-    os.makedirs(os.path.dirname(SEASON_FILE), exist_ok=True)
-    with open(SEASON_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(SEASON_FILE, data)
 
 
 def _season_get_top3() -> list[tuple[int, int]]:
@@ -2403,7 +3081,6 @@ def _season_build_embed(winners: list[tuple[int, int]], month_label: str) -> dis
     )
     embed.set_footer(text="Different Meets • Monthly Season Results")
     return embed
-
 
 
 async def _season_give_rewards(guild: discord.Guild, winners: list[tuple[int, int]]) -> None:
@@ -2535,9 +3212,7 @@ def _hrsvp_load() -> dict:
 
 
 def _hrsvp_save(data: dict) -> None:
-    os.makedirs("diff_data", exist_ok=True)
-    with open(_HRSVP_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(_HRSVP_FILE, data)
 
 
 def _hrsvp_reset() -> dict:
@@ -2566,9 +3241,7 @@ def _hrel_load() -> dict:
 
 
 def _hrel_save(data: dict) -> None:
-    os.makedirs("diff_data", exist_ok=True)
-    with open(_HREL_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(_HREL_FILE, data)
 
 
 def _hrel_entry(data: dict, uid: str) -> dict:
@@ -2609,9 +3282,7 @@ def _hrsvp_reset_ts_load() -> str | None:
 
 
 def _hrsvp_reset_ts_save(date_str: str) -> None:
-    os.makedirs("diff_data", exist_ok=True)
-    with open(_HRSVP_RESET_FILE, "w") as f:
-        json.dump({"last_reset": date_str}, f)
+    _atomic_json_save(_HRSVP_RESET_FILE, {"last_reset": date_str})
 
 
 def _hrsvp_build_embed() -> discord.Embed:
@@ -2715,11 +3386,19 @@ class _HrsvpResetConfirmModal(discord.ui.Modal, title="Confirm Reset"):
             return await interaction.response.send_message(
                 "❌ Reset cancelled — you didn't type RESET.", ephemeral=True
             )
-        _hrsvp_reset()
-        await _hrsvp_update_panel(interaction.client)
-        await interaction.response.send_message(
-            "🗑️ All host availability responses have been cleared for the new week.", ephemeral=True
-        )
+        await interaction.response.defer(ephemeral=True)
+        try:
+            _hrsvp_reset()
+            await _hrsvp_update_panel(interaction.client)
+            await interaction.followup.send(
+                "🗑️ All host availability responses have been cleared for the new week.", ephemeral=True
+            )
+        except Exception as _e:
+            print(f"[HRSVP] Reset on_submit error: {_e}")
+            try:
+                await interaction.followup.send("❌ Reset failed. Try again.", ephemeral=True)
+            except Exception:
+                pass
 
 
 class _HrsvpResetBtn(discord.ui.Button):
@@ -2734,7 +3413,7 @@ class _HrsvpResetBtn(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+            r.id in _LEADERSHIP_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         )
         if not getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False) and not is_staff:
@@ -2826,32 +3505,40 @@ class _HostAvailModal(discord.ui.Modal):
         if not interaction.user:
             await interaction.response.defer()
             return
-        uid       = str(interaction.user.id)
-        raw_dt    = str(self.day_time_input).strip()
-        theme_val = str(self.theme_input).strip() or "Open Class"
+        await interaction.response.defer(ephemeral=True)
+        try:
+            uid       = str(interaction.user.id)
+            raw_dt    = str(self.day_time_input).strip()
+            theme_val = str(self.theme_input).strip() or "Open Class"
 
-        # Split "Sunday 8:00 PM EST" → day_val + time_val (store plain text)
-        parts     = raw_dt.split(None, 1)
-        day_val   = parts[0].capitalize() if parts else raw_dt
-        time_raw  = parts[1] if len(parts) > 1 else raw_dt
-        time_val  = time_raw.strip()   # keep as plain text; timestamps computed at display time
+            # Split "Sunday 8:00 PM EST" → day_val + time_val (store plain text)
+            parts    = raw_dt.split(None, 1)
+            day_val  = parts[0].capitalize() if parts else raw_dt
+            time_raw = parts[1] if len(parts) > 1 else raw_dt
+            time_val = time_raw.strip()
 
-        data = _hrsvp_load()
-        slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
-        for c in ("yes", "no", "maybe"):
-            slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
-        slot["yes"].append({"uid": uid, "day": day_val, "time": time_val, "theme": theme_val})
-        _hrsvp_save(data)
-        _hrel_track_rsvp(uid)
-        await _hrsvp_update_panel(interaction.client)
-        ts = _parse_meet_ts(day_val, time_val)
-        time_display = f"<t:{ts}:F>  (<t:{ts}:R>)" if ts else time_val
-        await interaction.response.send_message(
-            f"✅ **{self.day}** — you're marked available!\n"
-            f"📅 **Day:** {day_val}  🕒 **Time:** {time_display}  🎮 **Class:** {theme_val}\n\n"
-            f"*You can update this anytime by clicking the button again.*",
-            ephemeral=True,
-        )
+            data = _hrsvp_load()
+            slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
+            for c in ("yes", "no", "maybe"):
+                slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
+            slot["yes"].append({"uid": uid, "day": day_val, "time": time_val, "theme": theme_val})
+            _hrsvp_save(data)
+            _hrel_track_rsvp(uid)
+            await _hrsvp_update_panel(interaction.client)
+            ts = _parse_meet_ts(day_val, time_val)
+            time_display = f"<t:{ts}:F>  (<t:{ts}:R>)" if ts else time_val
+            await interaction.followup.send(
+                f"✅ **{self.day}** — you're marked available!\n"
+                f"📅 **Day:** {day_val}  🕒 **Time:** {time_display}  🎮 **Class:** {theme_val}\n\n"
+                f"*You can update this anytime by clicking the button again.*",
+                ephemeral=True,
+            )
+        except Exception as _e:
+            print(f"[HRSVP] AvailModal on_submit error: {_e}")
+            try:
+                await interaction.followup.send("❌ Something went wrong saving your response. Try again.", ephemeral=True)
+            except Exception:
+                pass
 
 
 class _HostMaybeModal(discord.ui.Modal):
@@ -2870,20 +3557,28 @@ class _HostMaybeModal(discord.ui.Modal):
         if not interaction.user:
             await interaction.response.defer()
             return
-        uid      = str(interaction.user.id)
-        day_pref = str(self.day_pref).strip()
-        data     = _hrsvp_load()
-        slot     = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
-        for c in ("yes", "no", "maybe"):
-            slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
-        slot["maybe"].append({"uid": uid, "day": day_pref})
-        _hrsvp_save(data)
-        await _hrsvp_update_panel(interaction.client)
-        pref_str = f" — preference: **{day_pref}**" if day_pref else ""
-        await interaction.response.send_message(
-            f"❓ **{self.day}** — marked as Maybe{pref_str}.\n*Leadership will follow up if needed.*",
-            ephemeral=True,
-        )
+        await interaction.response.defer(ephemeral=True)
+        try:
+            uid      = str(interaction.user.id)
+            day_pref = str(self.day_pref).strip()
+            data     = _hrsvp_load()
+            slot     = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
+            for c in ("yes", "no", "maybe"):
+                slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
+            slot["maybe"].append({"uid": uid, "day": day_pref})
+            _hrsvp_save(data)
+            await _hrsvp_update_panel(interaction.client)
+            pref_str = f" — preference: **{day_pref}**" if day_pref else ""
+            await interaction.followup.send(
+                f"❓ **{self.day}** — marked as Maybe{pref_str}.\n*Leadership will follow up if needed.*",
+                ephemeral=True,
+            )
+        except Exception as _e:
+            print(f"[HRSVP] MaybeModal on_submit error: {_e}")
+            try:
+                await interaction.followup.send("❌ Something went wrong saving your response. Try again.", ephemeral=True)
+            except Exception:
+                pass
 
 
 class _HostRSVPBtn(discord.ui.Button):
@@ -2914,18 +3609,26 @@ class _HostRSVPBtn(discord.ui.Button):
             await interaction.response.send_modal(_HostMaybeModal(self.day))
             return
         # "no" → instant mark, confirm ephemerally
-        uid  = str(interaction.user.id)
-        data = _hrsvp_load()
-        slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
-        for c in ("yes", "no", "maybe"):
-            slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
-        slot["no"].append(uid)
-        _hrsvp_save(data)
-        await _hrsvp_update_panel(interaction.client)
-        await interaction.response.send_message(
-            f"❌ **{self.day}** — you're marked as unavailable.\n*Changed your mind? Hit the button again.*",
-            ephemeral=True,
-        )
+        await interaction.response.defer(ephemeral=True)
+        try:
+            uid  = str(interaction.user.id)
+            data = _hrsvp_load()
+            slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
+            for c in ("yes", "no", "maybe"):
+                slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
+            slot["no"].append(uid)
+            _hrsvp_save(data)
+            await _hrsvp_update_panel(interaction.client)
+            await interaction.followup.send(
+                f"❌ **{self.day}** — you're marked as unavailable.\n*Changed your mind? Hit the button again.*",
+                ephemeral=True,
+            )
+        except Exception as _e:
+            print(f"[HRSVP] NoBtn callback error: {_e}")
+            try:
+                await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
+            except Exception:
+                pass
 
 
 def _hrsvp_is_rsvp_msg(msg: discord.Message, bot_id: int) -> bool:
@@ -3005,9 +3708,7 @@ def _asched_load() -> dict:
 
 
 def _asched_save(data: dict) -> None:
-    os.makedirs("diff_data", exist_ok=True)
-    with open(_ASCHED_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(_ASCHED_FILE, data)
 
 
 def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple:
@@ -3243,7 +3944,7 @@ class _ASchedAnnounceView(discord.ui.View):
     @discord.ui.button(label="Notify", emoji="🔔", style=discord.ButtonStyle.danger, custom_id="diff_asched_announce:notify")
     async def notify_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+            r.id in _LEADERSHIP_HOST_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         )
         if not is_staff:
@@ -3280,10 +3981,14 @@ def _asched_build_finalized_embed() -> discord.Embed:
     """Clean, community-facing embed for the upcoming-meet channel. No management details."""
     schedule = _asched_load()
 
+    rc_mention = f"<#{ROLL_CALL_CHANNEL_ID}>"
     embed = discord.Embed(
-        title="📅 DIFF PS5 Weekly Schedule",
-        description="All 3 meets are confirmed for this week. Mark your calendar! 🗓️",
-        color=0x57F287,   # always green — only posted when all 3 slots confirmed
+        title="🗓️ DIFF PS5 Weekly Car Meet Schedule",
+        description=(
+            "All **3 meets** are locked in for this week — see you on the streets! 🚗💨\n"
+            f"Head to {rc_mention} to mark your attendance."
+        ),
+        color=0x57F287,
         timestamp=utc_now(),
     )
     embed.set_author(
@@ -3293,7 +3998,7 @@ def _asched_build_finalized_embed() -> discord.Embed:
     if DIFF_LOGO_URL:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
 
-    _NUMS = ["〔1〕", "〔2〕", "〔3〕"]
+    _NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
 
     for idx, day in enumerate(_HRSVP_DAYS, start=1):
         entry     = schedule["days"].get(day, {})
@@ -3301,37 +4006,30 @@ def _asched_build_finalized_embed() -> discord.Embed:
         class_val = entry.get("class", "TBD")
         time_val  = entry.get("time",  "TBD")
         date_val  = entry.get("day",   "TBD")
-        num_tag   = _NUMS[idx - 1]
 
         host_str = f"<@{host_id}>" if host_id else "*TBD*"
         meet_ts  = _parse_meet_ts(date_val, time_val)
 
         if meet_ts:
-            when_line = f"📅 <t:{meet_ts}:D>  ·  🕒 <t:{meet_ts}:t>  ·  <t:{meet_ts}:R>"
+            when_line = f"<t:{meet_ts}:F>  ·  <t:{meet_ts}:R>"
         else:
-            when_line = f"📅 {date_val}  ·  🕒 {time_val}"
-
-        field_lines = [
-            f"🎮 **{class_val}**",
-            when_line,
-            f"👤 {host_str}",
-        ]
+            when_line = f"📅 {date_val}  🕒 {time_val}"
 
         embed.add_field(
-            name=f"{num_tag} Meet {idx}",
-            value="\n".join(field_lines),
+            name=f"{_NUM_EMOJI[idx - 1]}  {class_val}",
+            value=f"{when_line}\n👤 {host_str}",
             inline=False,
         )
 
     embed.add_field(
         name="\u200b",
         value=(
-            "*All meets are based on host work & IRL schedules.*\n"
-            "*Meet details are subject to change.*"
+            "-# *Meets are subject to change based on host availability.*\n"
+            "-# *All times are displayed in your local timezone.*"
         ),
         inline=False,
     )
-    embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets • Times shown in your local timezone")
+    embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets")
     return embed
 
 
@@ -3375,7 +4073,7 @@ class _ASchedReminderBtn(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+            r.id in _LEADERSHIP_HOST_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         )
         if not is_staff:
@@ -3383,12 +4081,15 @@ class _ASchedReminderBtn(discord.ui.Button):
         schedule = _asched_load()
         lines = []
         for day in _HRSVP_DAYS:
-            entry = schedule["days"].get(day, {})
-            host_id = entry.get("host_id")
+            entry    = schedule["days"].get(day, {})
+            host_id  = entry.get("host_id")
             host_str = f"<@{host_id}>" if host_id else "*TBD*"
-            lines.append(
-                f"**{day}** — 🎮 {entry.get('class', 'TBD')} | 🕒 {entry.get('time', 'TBD')} | 👤 {host_str}"
-            )
+            cls_val  = entry.get('class', 'TBD')
+            time_val = entry.get('time', 'TBD')
+            date_val = entry.get('day', '')
+            meet_ts  = _parse_meet_ts(date_val, time_val) if date_val and time_val != 'TBD' else None
+            when_str = f"<t:{meet_ts}:F>  ·  <t:{meet_ts}:R>" if meet_ts else f"🕒 {time_val}"
+            lines.append(f"**{day}** — 🎮 {cls_val} | 📅 {when_str} | 👤 {host_str}")
         remind_embed = discord.Embed(
             title="📅 Upcoming DIFF Meets — This Week's Schedule",
             description="\n".join(lines),
@@ -3422,7 +4123,7 @@ class _ASchedSubmitBtn(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+            r.id in _LEADERSHIP_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
         if not is_staff:
@@ -3442,7 +4143,7 @@ class _ASchedSubmitBtn(discord.ui.Button):
                 "start_time": entry.get("time", "TBD"),
                 "host_id": entry.get("host_id"),
                 "date_text": entry.get("day", day),
-                "is_finalized": entry.get("host_id") is not None,
+                "is_finalized": False,
             })
         await _rc_sync_from_schedule(guild, rc_meets)
         await interaction.response.send_message(
@@ -3471,7 +4172,7 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
         max_length=60,
     )
     class_input = discord.ui.TextInput(
-        label="Starting Class / Theme (leave blank = Open Class)",
+        label="Class / Theme (blank = Open Class)",
         placeholder="e.g. JDM  |  Muscle  |  Euro  |  Open Class",
         required=False,
         max_length=100,
@@ -3520,13 +4221,36 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
             slot     = schedule["days"].setdefault(slot_name, {})
             slot.update({"host_id": host_id, "host_status": "yes",
                          "day": day_val, "time": time_val, "class": class_val})
+            slot["locked"] = True   # lock so Rebuild Schedule doesn't overwrite
             schedule["updated_at"] = utc_now().isoformat()
             _asched_save(schedule)
+
+            # ── Inject synthetic HRSVP entry so the availability panel reflects the override ──
+            try:
+                hrsvp = _hrsvp_load()
+                uid_str = str(host_id)
+                synthetic = {"uid": uid_str, "day": day_val, "time": time_val, "theme": class_val}
+                for day_key in _HRSVP_DAYS:
+                    bucket = hrsvp.setdefault(day_key, {"yes": [], "no": [], "maybe": []})
+                    # Remove this host from all slots first (clean slate)
+                    for b in ("yes", "no", "maybe"):
+                        bucket[b] = [e for e in bucket.get(b, [])
+                                     if _hrsvp_uid(e) != uid_str]
+                # Add as confirmed yes for the overridden slot
+                hrsvp.setdefault(slot_name, {"yes": [], "no": [], "maybe": []})["yes"].append(synthetic)
+                _hrsvp_save(hrsvp)
+            except Exception as _he:
+                print(f"[OverrideSlot] HRSVP inject failed: {_he}")
 
             try:
                 await _asched_update_panel(interaction.client)
             except Exception as _pe:
-                print(f"[OverrideSlot] Panel update failed: {_pe}")
+                print(f"[OverrideSlot] Schedule panel update failed: {_pe}")
+
+            try:
+                await _hrsvp_update_panel(interaction.client)
+            except Exception as _pe:
+                print(f"[OverrideSlot] HRSVP panel update failed: {_pe}")
 
             all_filled = all(schedule["days"].get(d, {}).get("host_id") for d in _HRSVP_DAYS)
             if all_filled:
@@ -3604,15 +4328,34 @@ class _ASchedOverrideBtn(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
-            for r in getattr(interaction.user, "roles", [])
-        ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
-        if not is_staff:
-            return await interaction.response.send_message(
-                "Only leadership can override schedule slots.", ephemeral=True
+        try:
+            user   = interaction.user
+            roles  = getattr(user, "roles", [])
+            perms  = getattr(user, "guild_permissions", None)
+            is_admin = getattr(perms, "administrator", False)
+            is_owner = (
+                interaction.guild is not None
+                and interaction.guild.owner_id == getattr(user, "id", None)
             )
-        await interaction.response.send_modal(_ASchedOverrideModal())
+            is_staff = is_admin or is_owner or any(
+                r.id in _LEADERSHIP_HOST_ROLE_IDS
+                for r in roles
+            )
+            if not is_staff:
+                return await interaction.response.send_message(
+                    "Only leadership can override schedule slots.", ephemeral=True
+                )
+            await interaction.response.send_modal(_ASchedOverrideModal())
+        except Exception as _e:
+            print(f"[OverrideBtn] callback error: {_e}")
+            import traceback as _tb; _tb.print_exc()
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(f"❌ Override failed to open: {_e}", ephemeral=True)
+                else:
+                    await interaction.followup.send(f"❌ Override failed to open: {_e}", ephemeral=True)
+            except Exception:
+                pass
 
 
 class _ASchedPingNonRespondersBtn(discord.ui.Button):
@@ -3627,7 +4370,7 @@ class _ASchedPingNonRespondersBtn(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+            r.id in _LEADERSHIP_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         )
         if not is_staff:
@@ -3707,7 +4450,7 @@ class AutoScheduleView(discord.ui.View):
     @discord.ui.button(label="Rebuild Schedule", emoji="🧠", style=discord.ButtonStyle.primary, custom_id=_ASCHED_REBUILD_ID)
     async def rebuild_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         is_staff = any(
-            r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+            r.id in _LEADERSHIP_HOST_ROLE_IDS
             for r in getattr(interaction.user, "roles", [])
         )
         if not is_staff:
@@ -3729,7 +4472,7 @@ class AutoScheduleView(discord.ui.View):
                     "start_time": entry.get("time", "TBD"),
                     "host_id": entry.get("host_id"),
                     "date_text": entry.get("day", "TBD"),
-                    "is_finalized": entry.get("host_id") is not None,
+                    "is_finalized": False,
                 })
             await _rc_sync_from_schedule(interaction.guild, rc_meets)
 
@@ -3923,6 +4666,22 @@ async def _do_host_weekly_reminder(force: bool = False) -> bool:
             print(f"[HostReminder] DM to {member.id} failed: {_e}")
             failed += 1
     print(f"[HostReminder] Weekly reminder — {sent} DMs delivered, {failed} failed, {len(host_role.members) - len(pending)} already responded.")
+    if failed > 0:
+        try:
+            logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(logs_ch, discord.TextChannel):
+                await logs_ch.send(embed=discord.Embed(
+                    title="⚠️ Host Reminder — DM Failures",
+                    description=(
+                        f"**{failed}** host(s) could not receive the weekly availability reminder DM "
+                        f"(DMs likely closed).\n\n"
+                        f"✅ Delivered: {sent} · ❌ Failed: {failed}"
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now(_EST_TZ),
+                ).set_footer(text="DIFF Meets • Host Reminder System"))
+        except Exception:
+            pass
 
     # ── Color team reminder ───────────────────────────────────
     color_role = guild.get_role(COLOR_TEAM_ROLE_ID)
@@ -3971,12 +4730,20 @@ async def _do_host_weekly_reminder(force: bool = False) -> bool:
     return True
 
 
-@tasks.loop(minutes=30)
-async def _host_weekly_reminder_loop():
+async def __host_weekly_reminder_loop_logic():
     """Every 30 min: check if it's Sunday ≥12 PM ET and send the reminder if not yet sent today."""
     await _do_host_weekly_reminder(force=False)
 
-
+@tasks.loop(minutes=30)
+async def _host_weekly_reminder_loop():
+    _loop_success('_host_weekly_reminder_loop')
+    try:
+        await run_with_timeout('_host_weekly_reminder_loop', __host_weekly_reminder_loop_logic(), timeout=120)
+    except Exception as _lte:
+        await _handle_loop_error('_host_weekly_reminder_loop', _lte, _host_weekly_reminder_loop)
+@_host_weekly_reminder_loop.error
+async def __host_weekly_reminder_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('_host_weekly_reminder_loop', error, _host_weekly_reminder_loop)
 @_host_weekly_reminder_loop.before_loop
 async def _before_host_weekly_reminder():
     await bot.wait_until_ready()
@@ -3989,7 +4756,7 @@ async def _cmd_send_host_reminder(ctx: commands.Context):
         isinstance(ctx.author, discord.Member)
         and (
             ctx.author.guild_permissions.administrator
-            or any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+            or any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
         )
     )
     if not is_staff:
@@ -4065,7 +4832,7 @@ class _HostAutoDB:
             VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
         """, (guild_id, user_id, discord_tag, psn, reason, evidence, severity,
               submitted_by_id, submitted_by_tag, 1 if removed_host_role else 0,
-              datetime.utcnow().isoformat()))
+              datetime.now(timezone.utc).isoformat()))
         self.conn.commit()
         return int(cur.lastrowid)
 
@@ -4119,7 +4886,7 @@ class _HostAutoDB:
                 points=points+excluded.points,
                 penalties=penalties+excluded.penalties,
                 last_updated=excluded.last_updated
-        """, (guild_id, user_id, delta, penalty_delta, datetime.utcnow().isoformat()))
+        """, (guild_id, user_id, delta, penalty_delta, datetime.now(timezone.utc).isoformat()))
         self.conn.commit()
         cur.execute("SELECT points FROM host_points WHERE guild_id=? AND user_id=?",
                     (guild_id, user_id))
@@ -4168,7 +4935,7 @@ async def _hauto_update_leaderboard(guild: discord.Guild) -> None:
         title="🏆 DIFF Host Performance Leaderboard",
         description="\n".join(lines) if lines else "*No host performance data yet.*",
         color=discord.Color.gold(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.set_footer(text="Auto-updated host rankings • DIFF Host System")
     try:
@@ -4398,10 +5165,8 @@ def _hosthub_get_saved_msg_id() -> int | None:
 
 
 def _hosthub_save_msg_id(msg_id: int) -> None:
-    os.makedirs("diff_data", exist_ok=True)
     try:
-        with open(_HOSTHUB_STATE_FILE, "w") as f:
-            json.dump({"message_id": msg_id}, f)
+        _atomic_json_save(_HOSTHUB_STATE_FILE, {"message_id": msg_id})
     except Exception:
         pass
 
@@ -4567,7 +5332,7 @@ class HostHubView(discord.ui.View):
     # ── Row 1: blacklist actions ──
     @discord.ui.button(label="Submit Blacklist", emoji="🔴", style=discord.ButtonStyle.danger, custom_id="diff_host_hub:submit_blacklist", row=1)
     async def submit_blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in getattr(interaction.user, "roles", []))
+        is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in getattr(interaction.user, "roles", []))
         if not is_staff:
             await interaction.response.send_message("Only staff can submit blacklist entries.", ephemeral=True)
             return
@@ -4629,11 +5394,11 @@ async def _hosthub_post_or_refresh() -> None:
 @bot.command(name="hosthub")
 async def _hosthub_cmd(ctx: commands.Context):
     is_staff = any(
-        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+        r.id in _LEADERSHIP_ROLE_IDS
         for r in ctx.author.roles
     )
     if not is_staff:
-        return await ctx.reply("Manager+ only.", mention_author=False)
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
     try:
         await ctx.message.delete()
     except Exception:
@@ -4644,7 +5409,7 @@ async def _hosthub_cmd(ctx: commands.Context):
 
 @bot.command(name="blacklistsearch")
 async def _cmd_blacklistsearch(ctx: commands.Context, *, query: str = ""):
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     if not query:
@@ -4658,7 +5423,7 @@ async def _cmd_blacklistsearch(ctx: commands.Context, *, query: str = ""):
         title="🔎 Host Blacklist Search Results",
         description=f"Showing up to 10 active results for `{query}`",
         color=discord.Color.dark_grey(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     for row in rows:
         who = row["discord_tag"] or (f"User ID {row['user_id']}" if row["user_id"] else "Unknown")
@@ -4677,7 +5442,7 @@ async def _cmd_blacklistsearch(ctx: commands.Context, *, query: str = ""):
 
 @bot.command(name="clearblacklist")
 async def _cmd_clearblacklist(ctx: commands.Context, entry_id: int = 0):
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     if not entry_id:
@@ -4691,7 +5456,7 @@ async def _cmd_clearblacklist(ctx: commands.Context, entry_id: int = 0):
         title="✅ Host Blacklist Cleared",
         description=f"Blacklist entry #{entry_id} has been cleared.",
         color=discord.Color.green(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.set_footer(text=f"Cleared by {ctx.author}")
     log_ch = ctx.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
@@ -4705,7 +5470,7 @@ async def _cmd_clearblacklist(ctx: commands.Context, entry_id: int = 0):
 
 @bot.command(name="hostreport")
 async def _cmd_hostreport(ctx: commands.Context, host: Optional[discord.Member] = None, *, args: str = ""):
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     if not host:
@@ -4748,7 +5513,7 @@ async def _cmd_hostreport(ctx: commands.Context, host: Optional[discord.Member] 
     embed = discord.Embed(
         title="📊 DIFF Host Report",
         color=discord.Color.green() if point_change >= 0 else discord.Color.orange(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Host", value=host.mention, inline=False)
     embed.add_field(name="Meet", value=meet_name, inline=True)
@@ -4773,7 +5538,7 @@ async def _cmd_hostreport(ctx: commands.Context, host: Optional[discord.Member] 
 
 @bot.command(name="hostpoints")
 async def _cmd_hostpoints(ctx: commands.Context, user: Optional[discord.Member] = None, points: int = 0):
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     if not user:
@@ -5094,7 +5859,7 @@ _MEET_QA_TRIGGERS = [
 
 _HOSTFLOW_COOLDOWNS: dict[int, float] = {}
 _HOSTFLOW_COOLDOWN_SECS = 5
-_HOSTFLOW_ALLOWED_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+_HOSTFLOW_ALLOWED_ROLES = _LEADERSHIP_HOST_ROLE_IDS
 _HOSTFLOW_PING_ON_START = True
 _HOSTFLOW_PING_ON_END = False
 _HOSTFLOW_SMART_PING_COOLDOWN = 3600  # seconds (60 min)
@@ -5111,10 +5876,8 @@ def _hostflow_get_saved_msg_id() -> int | None:
 
 
 def _hostflow_save_msg_id(msg_id: int) -> None:
-    os.makedirs("diff_data", exist_ok=True)
     try:
-        with open(_HOSTFLOW_STATE_FILE, "w") as f:
-            json.dump({"message_id": msg_id}, f)
+        _atomic_json_save(_HOSTFLOW_STATE_FILE, {"message_id": msg_id})
     except Exception:
         pass
 
@@ -5196,7 +5959,7 @@ def _hostflow_end_embed(guild: discord.Guild) -> tuple:
     )
     embed.add_field(
         name="🚗 Interested in Joining DIFF?",
-        value="Complete the **Crew Application** and message a DIFF Crew Manager for more information.",
+        value="Complete the **Crew Application** and message a DIFF Server Operations for more information.",
         inline=False,
     )
     embed.add_field(
@@ -5227,7 +5990,7 @@ def _hostflow_voice_script(host_mention: str) -> str:
         "Alright everyone, tonight's meet is now over.\n\n"
         "Thank you all for coming out and being part of DIFF tonight.\n\n"
         "If you enjoyed the meet, please leave us feedback in the Discord and check out our socials at @diff_meets.\n\n"
-        "If you're interested in joining DIFF, fill out the crew application and message a DIFF Crew Manager.\n\n"
+        "If you're interested in joining DIFF, fill out the crew application and message a DIFF Server Operations.\n\n"
         "The lobby is now a chill lobby — no killing. Have a great night, everyone."
     )
 
@@ -5595,7 +6358,7 @@ class _MobileRefreshView(discord.ui.View):
 
 @bot.command(name="postmobilejoin")
 async def _pmobile_join(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -5607,7 +6370,7 @@ async def _pmobile_join(ctx: commands.Context):
 
 @bot.command(name="postmobilehost")
 async def _pmobile_host(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -5619,7 +6382,7 @@ async def _pmobile_host(ctx: commands.Context):
 
 @bot.command(name="postmobilehub")
 async def _pmobile_hub(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -5631,7 +6394,7 @@ async def _pmobile_hub(ctx: commands.Context):
 
 @bot.command(name="postmobileleaderboard")
 async def _pmobile_lb(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -5643,7 +6406,7 @@ async def _pmobile_lb(ctx: commands.Context):
 
 @bot.command(name="postmobilesupport")
 async def _pmobile_support(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -6066,7 +6829,6 @@ def is_host_or_admin(interaction: discord.Interaction) -> bool:
     return any(role.id == host_role_id for role in interaction.user.roles)
 
 
-
 def get_warning_count(member_id: int) -> int:
     return len(data.get("warnings", {}).get(str(member_id), []))
 
@@ -6093,7 +6855,7 @@ def add_warning(member_id: int, moderator_id: int, reason: str, proof: str = "",
             "reason": reason,
             "proof": proof,
             "moderator_id": moderator_id,
-            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         }
     )
     save_data(data)
@@ -6103,7 +6865,6 @@ def clear_warnings_for_member(member_id: int):
     warnings = data.setdefault("warnings", {})
     warnings[str(member_id)] = []
     save_data(data)
-
 
 
 def get_member_status_emoji(member: discord.Member) -> str:
@@ -6193,9 +6954,22 @@ def build_hierarchy_embeds(guild: discord.Guild):
             "👑 DIFF Leadership",
             "Server leadership & management team.",
             [
-                (LEADER_ROLE_ID,     "👑 Leader"),
-                (CO_LEADER_ROLE_ID,  "🛡️ Co-Leader"),
-                (MANAGER_ROLE_ID,    "🔴 Manager"),
+                (LEADER_ROLE_ID,     "👑 Founder"),
+                (CO_LEADER_ROLE_ID,  "🛡️ Executive"),
+                (MANAGER_ROLE_ID,    "🔴 Server Operations"),
+                (DEVELOPER_ROLE_ID,  "🛠️ Developer"),
+            ],
+        ),
+        (
+            "🔨 Moderation Team",
+            "Staff who keep the server safe and running.",
+            [
+                (SENIOR_ADMIN_ROLE_ID,   "⭐ Senior Admin"),
+                (ADMINISTRATOR_ROLE_ID,  "🔰 Administrator"),
+                (LEAD_MOD_ROLE_ID,       "🔷 Lead Moderator"),
+                (MODERATOR_ROLE_ID,      "🔹 Moderator"),
+                (JUNIOR_MOD_ROLE_ID,     "🔸 Junior Moderator"),
+                (TICKET_SUPPORT_ROLE_ID, "🎫 Ticket Support"),
             ],
         ),
         (
@@ -6249,7 +7023,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
             embed.add_field(name=field_name, value=field_value, inline=False)
 
         embed.set_footer(text="Different Meets • Hierarchy Panel  |  Live status • Updates every 2 min")
-        embed.timestamp = datetime.utcnow()
+        embed.timestamp = datetime.now(timezone.utc)
         embeds.append(embed)
 
     return embeds
@@ -6257,7 +7031,7 @@ def build_hierarchy_embeds(guild: discord.Guild):
 
 _HIERARCHY_OLD_TITLE = "🏆 DIFF SERVER HIERARCHY"
 _HIERARCHY_FOOTER    = "Different Meets • Hierarchy Panel  |  Live status • Updates every 2 min"
-_HIERARCHY_NEW_TITLES = {"👑 DIFF Leadership", "🏁 Meet Operations", "🎨 Creative Teams"}
+_HIERARCHY_NEW_TITLES = {"👑 DIFF Leadership", "🔨 Moderation Team", "🏁 Meet Operations", "🎨 Creative Teams"}
 
 
 def _is_hierarchy_msg(msg: discord.Message, bot_user) -> bool:
@@ -6392,7 +7166,7 @@ def build_live_attendance_embed(guild: discord.Guild) -> discord.Embed:
             "━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.green(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     for i, chunk in enumerate(online_chunks):
@@ -6423,11 +7197,21 @@ async def post_or_refresh_live_attendance(guild: discord.Guild) -> None:
         except (discord.NotFound, discord.HTTPException):
             message = None
 
+    old_panels = []
     if message is None:
-        async for msg in channel.history(limit=30):
+        async for msg in channel.history(limit=100):
             if msg.author.id == bot.user.id and msg.embeds and msg.embeds[0].title == LIVE_ATTENDANCE_PANEL_TITLE:
-                message = msg
-                break
+                old_panels.append(msg)
+
+        if old_panels:
+            # Use the most recent one, delete any extras
+            old_panels.sort(key=lambda m: m.created_at, reverse=True)
+            message = old_panels[0]
+            for dupe in old_panels[1:]:
+                try:
+                    await dupe.delete()
+                except Exception:
+                    pass
 
     if message:
         try:
@@ -6436,14 +7220,30 @@ async def post_or_refresh_live_attendance(guild: discord.Guild) -> None:
             message = None
 
     if message is None:
+        # Last resort new post — delete any stale panels first
+        for dupe in old_panels:
+            try:
+                await dupe.delete()
+            except Exception:
+                pass
         message = await channel.send(embed=embed)
 
     state["live_attendance_message_id"] = message.id
     _save_diff_json(DIFF_PANEL_STATE_FILE, state)
 
 
-@tasks.loop(minutes=2)
-async def hierarchy_attendance_loop():
+# Stores MD5 hashes of the last-sent hierarchy embeds so we can skip
+# editing messages whose content hasn't changed, reducing 429 rate-limit hits.
+_hierarchy_embed_hashes: list[str] = []
+
+def _hash_embed(emb: discord.Embed) -> str:
+    import hashlib as _hashlib
+    raw = json.dumps(emb.to_dict(), sort_keys=True, ensure_ascii=False)
+    return _hashlib.md5(raw.encode()).hexdigest()
+
+
+async def _hierarchy_attendance_loop_logic():
+    global _hierarchy_embed_hashes
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
         return
@@ -6452,6 +7252,7 @@ async def hierarchy_attendance_loop():
         if isinstance(channel, discord.TextChannel):
             embeds = build_hierarchy_embeds(guild)
             support_view = build_hierarchy_support_view()
+            new_hashes = [_hash_embed(e) for e in embeds]
 
             # Try stored IDs first
             hierarchy_message_ids = data.get("hierarchy_message_ids", [])
@@ -6468,13 +7269,18 @@ async def hierarchy_attendance_loop():
             if len(msgs) != len(embeds):
                 msgs = await find_existing_hierarchy_messages(channel, len(embeds))
                 if len(msgs) == len(embeds):
-                    # Update stored IDs so future iterations use the correct ones
                     data["hierarchy_message_ids"] = [m.id for m in msgs]
                     data["hierarchy_message_id"] = msgs[0].id if msgs else None
                     save_data(data)
+                    # Force all edits when we just rediscovered the messages
+                    _hierarchy_embed_hashes = []
 
             if len(msgs) == len(embeds):
                 for i, (msg, emb) in enumerate(zip(msgs, embeds)):
+                    # Skip edit if this embed is identical to the last sent version
+                    if i < len(_hierarchy_embed_hashes) and _hierarchy_embed_hashes[i] == new_hashes[i]:
+                        await asyncio.sleep(0.1)
+                        continue
                     is_last = i == len(embeds) - 1
                     try:
                         await msg.edit(
@@ -6484,6 +7290,8 @@ async def hierarchy_attendance_loop():
                         )
                     except Exception:
                         pass
+                    await asyncio.sleep(2)
+                _hierarchy_embed_hashes = new_hashes
     except Exception:
         pass
     try:
@@ -6491,14 +7299,23 @@ async def hierarchy_attendance_loop():
     except Exception:
         pass
 
-
+@tasks.loop(minutes=10)
+async def hierarchy_attendance_loop():
+    _loop_success('hierarchy_attendance_loop')
+    try:
+        await run_with_timeout('hierarchy_attendance_loop', _hierarchy_attendance_loop_logic(), timeout=60)
+    except Exception as _lte:
+        await _handle_loop_error('hierarchy_attendance_loop', _lte, hierarchy_attendance_loop)
 @hierarchy_attendance_loop.before_loop
 async def before_hierarchy_attendance_loop():
     await bot.wait_until_ready()
 
 
-@tasks.loop(minutes=2)
-async def host_board_auto_refresh_loop():
+@hierarchy_attendance_loop.error
+async def _hierarchy_attendance_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('hierarchy_attendance_loop', error, hierarchy_attendance_loop)
+
+async def _host_board_auto_refresh_loop_logic():
     """Edit the Host Activity Board embed every 2 minutes — never posts new messages."""
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
@@ -6525,12 +7342,21 @@ async def host_board_auto_refresh_loop():
         except Exception as _e:
             print(f"[BoardLoop] edit failed: {_e}")
 
-
+@tasks.loop(minutes=15)
+async def host_board_auto_refresh_loop():
+    _loop_success('host_board_auto_refresh_loop')
+    try:
+        await run_with_timeout('host_board_auto_refresh_loop', _host_board_auto_refresh_loop_logic(), timeout=60)
+    except Exception as _lte:
+        await _handle_loop_error('host_board_auto_refresh_loop', _lte, host_board_auto_refresh_loop)
 @host_board_auto_refresh_loop.before_loop
 async def before_host_board_auto_refresh_loop():
     await bot.wait_until_ready()
 
 
+@host_board_auto_refresh_loop.error
+async def _host_board_auto_refresh_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('host_board_auto_refresh_loop', error, host_board_auto_refresh_loop)
 # ════════════════════════════════════════════════════════════════════
 #  GTA ONLINE WEATHER  —  live-refreshing embed (edit-only, no spam)
 #  Algorithm ported directly from gtalens.com module 48733
@@ -6758,8 +7584,7 @@ async def _gta_post_or_refresh(channel: discord.TextChannel) -> None:
         save_data(data)
 
 
-@tasks.loop(seconds=120)
-async def gta_weather_refresh_loop():
+async def _gta_weather_refresh_loop_logic():
     """Edit the GTA weather embed every 2 minutes (= 1 in-game hour)."""
     ch = bot.get_channel(GTA_WEATHER_CHANNEL_ID)
     if not isinstance(ch, discord.TextChannel):
@@ -6769,12 +7594,21 @@ async def gta_weather_refresh_loop():
     except Exception as _e:
         print(f"[GTAWeather] loop error: {_e}")
 
-
+@tasks.loop(seconds=120)
+async def gta_weather_refresh_loop():
+    _loop_success('gta_weather_refresh_loop')
+    try:
+        await run_with_timeout('gta_weather_refresh_loop', _gta_weather_refresh_loop_logic(), timeout=60)
+    except Exception as _lte:
+        await _handle_loop_error('gta_weather_refresh_loop', _lte, gta_weather_refresh_loop)
 @gta_weather_refresh_loop.before_loop
 async def before_gta_weather_refresh_loop():
     await bot.wait_until_ready()
 
 
+@gta_weather_refresh_loop.error
+async def _gta_weather_refresh_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('gta_weather_refresh_loop', error, gta_weather_refresh_loop)
 async def post_or_refresh_hierarchy_panel(guild: discord.Guild):
     channel = guild.get_channel(HIERARCHY_CHANNEL_ID)
     if channel is None:
@@ -7024,7 +7858,7 @@ def build_meet_info_embed() -> discord.Embed:
         value=(
             f"▢ Warnings are issued for breaking rules listed in {meet_rules_mention}.\n"
             "▢ **Two warnings = ban** from the server and all meets.\n"
-            "▢ You'll receive a DM from a Crew Manager explaining the reason.\n"
+            "▢ You'll receive a DM from a Server Operations explaining the reason.\n"
             "▢ **Ban Appeals:** you may appeal after **30 days**. Hosts & Management vote on every appeal."
         ),
         inline=False,
@@ -7288,8 +8122,6 @@ def get_rules_embed():
     return embed
 
 
-
-
 def get_discord_rules_embed():
     embed = discord.Embed(
         title="💬🛡️ DIFF DISCORD • SERVER RULES 🛡️💬",
@@ -7338,7 +8170,6 @@ def get_discord_rules_embed():
     return embed
 
 
-
 def get_bannable_offenses_embed():
     embed = discord.Embed(
         title="🚫⚠️ DIFF • BANNABLE OFFENSES ⚠️🚫",
@@ -7376,8 +8207,6 @@ def get_bannable_offenses_embed():
     embed.add_field(name="🚫 Offenses (2/2)", value=offenses_part2, inline=False)
     embed.set_footer(text="DIFF Meets • Serious violations can result in a permanent ban")
     return embed
-
-
 
 
 class RulesAcceptView(discord.ui.View):
@@ -7550,20 +8379,37 @@ _application_data = {}  # user_id -> {"step1": {...}, "step2": {...}}
 
 
 class CrewAppStep1Modal(discord.ui.Modal, title="DIFF Crew Application — Part 1 of 3"):
-    age = discord.ui.TextInput(label="How old are you?", required=True, max_length=3)
+    age = discord.ui.TextInput(label="How old are you? (Must be 18+)", required=True, max_length=3)
     timezone = discord.ui.TextInput(label="What timezone do you live in?", placeholder="e.g. Eastern, Central, Pacific, GMT", required=True, max_length=100)
     gamertag = discord.ui.TextInput(label="PlayStation or PC Gamertag", required=True, max_length=100)
-    discord_name = discord.ui.TextInput(label="Discord Name", required=True, max_length=100)
     gta_rank = discord.ui.TextInput(label="What is your GTA Rank?", required=True, max_length=50)
+    prior_history = discord.ui.TextInput(
+        label="Any warnings or bans in DIFF? Explain.",
+        placeholder="None / Yes — explain here...",
+        required=True,
+        max_length=300,
+        style=discord.TextStyle.short,
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
+        age_str = self.age.value.strip()
+        try:
+            age_val = int(age_str)
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Please enter a valid age (numbers only).", ephemeral=True
+            )
+        if age_val < 18:
+            return await interaction.response.send_message(
+                "❌ You must be **18 or older** to apply to DIFF.", ephemeral=True
+            )
         _application_data[interaction.user.id] = {
             "step1": {
-                "age": self.age.value,
+                "age": age_str,
                 "timezone": self.timezone.value,
                 "gamertag": self.gamertag.value,
-                "discord_name": self.discord_name.value,
                 "gta_rank": self.gta_rank.value,
+                "prior_history": self.prior_history.value,
             }
         }
         await interaction.response.send_message(
@@ -7667,8 +8513,8 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
             "age": s1["age"],
             "timezone": s1["timezone"],
             "gamertag": s1["gamertag"],
-            "discord_name": s1["discord_name"],
             "gta_rank": s1["gta_rank"],
+            "prior_history": s1["prior_history"],
             "how_heard": s2["how_heard"],
             "days_available": s2["days_available"],
             "personal_skills": s2["personal_skills"],
@@ -7853,7 +8699,7 @@ def _build_crew_topic_embed(topic: str) -> discord.Embed:
             title="📌 Crew Positions",
             description=(
                 "Once you're a member, you can try out for these positions. "
-                "Contact the **Leader or Co-Leader** to express interest.\n\n"
+                "Contact the **Founder or Executive** to express interest.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=discord.Color.purple(),
@@ -7881,7 +8727,7 @@ def _build_crew_topic_embed(topic: str) -> discord.Embed:
         )
         embed.add_field(name="\u200b", value="\u200b", inline=True)
         embed.add_field(
-            name="📋 Crew Managers",
+            name="📋 Server Operations",
             value="Help run server operations and support management.",
             inline=True,
         )
@@ -7889,7 +8735,7 @@ def _build_crew_topic_embed(topic: str) -> discord.Embed:
 
     elif topic == "offers":
         embed = discord.Embed(
-            title="🌟 What DIFF Offers",
+            title="🌟 DIFF Perks & Benefits",
             description=(
                 "DIFF isn't just a crew — it's a full community.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
@@ -7926,7 +8772,53 @@ def _build_crew_topic_embed(topic: str) -> discord.Embed:
             value="A structured environment where active members are recognized and promoted.",
             inline=False,
         )
-        embed.set_footer(text="Different Meets • What DIFF Offers")
+        embed.set_footer(text="Different Meets • Perks & Benefits")
+
+    elif topic == "rules":
+        embed = discord.Embed(
+            title="📜 DIFF Rules & Expectations",
+            description=(
+                "All DIFF members are held to these standards at all times.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.red(),
+        )
+        embed.add_field(
+            name="🎧 Headset & Communication",
+            value="A working headset is **mandatory** for all meets and events. You must be audible and responsive.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🏷️ Crew Tag & Jacket",
+            value="Set **DIFF as your active crew** and wear the crew jacket to all meets. Failure to do so results in a strike.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🕐 Punctuality",
+            value="Join the lobby **30 minutes before meet start**. Repeat tardiness or no-shows will be tracked.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🚗 Build Standards",
+            value="All cars must be **clean and realistic** at all times. No modded, riced, or unrealistic builds at DIFF events.",
+            inline=False,
+        )
+        embed.add_field(
+            name="📋 Roll Call",
+            value="Respond to the weekly roll call. Failing to respond or no-showing without notice counts against your standing.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🤝 Conduct",
+            value="Respect all members, staff, and guests. Toxicity, drama, or behaviour that damages DIFF's reputation will result in removal.",
+            inline=False,
+        )
+        embed.add_field(
+            name="⚠️ Strikes & Removal",
+            value="Repeated violations result in strikes. Three strikes and you are removed from the crew.",
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Rules & Expectations")
 
     elif topic == "faq":
         embed = discord.Embed(
@@ -8003,10 +8895,16 @@ class CrewInfoSelect(discord.ui.Select):
                     description="Roles you can work toward once you're a member.",
                 ),
                 discord.SelectOption(
-                    label="What DIFF Offers",
+                    label="Perks & Benefits",
                     value="offers",
                     emoji="🌟",
                     description="Meets, events, colors, and community perks.",
+                ),
+                discord.SelectOption(
+                    label="Rules & Expectations",
+                    value="rules",
+                    emoji="📜",
+                    description="What's expected of every DIFF member.",
                 ),
                 discord.SelectOption(
                     label="FAQ",
@@ -8046,6 +8944,14 @@ class CrewPanelView(discord.ui.View):
         row=1,
     )
     async def crew_application(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cooldown_text = get_reapply_cooldown_text(interaction.user.id)
+        if cooldown_text:
+            return await interaction.response.send_message(
+                f"❌ You cannot apply to DIFF yet.\n"
+                f"Your reapply cooldown is still active: **{cooldown_text}**.\n"
+                "Please wait until the cooldown expires before submitting a new application.",
+                ephemeral=True,
+            )
         await interaction.response.send_modal(CrewAppStep1Modal())
 
 
@@ -8095,7 +9001,8 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
             "• Crew requirements\n"
             "• Application process\n"
             "• Crew positions\n"
-            "• What DIFF offers\n"
+            "• Perks & benefits\n"
+            "• Rules & expectations\n"
             "• FAQ"
         ),
         inline=False,
@@ -8243,7 +9150,7 @@ class UnifiedCrewHubView(discord.ui.View):
                 title="📋 DIFF Roles & Responsibility",
                 description=(
                     "**Leader** — Oversees the full crew, staff direction, and major decisions.\n\n"
-                    "**Co-Leader / Manager** — Helps run operations, reviews activity, and supports hosts and staff.\n\n"
+                    "**Executive / Manager** — Helps run operations, reviews activity, and supports hosts and staff.\n\n"
                     "**Host** — Runs meets, organizes the lobby, helps with attendance, and keeps events smooth.\n\n"
                     "**Crew Member** — Represents DIFF properly, does roll calls, follows rules, votes on colors, and stays active.\n\n"
                     "**What DIFF expects from everyone:**\n"
@@ -8447,7 +9354,7 @@ async def setup_jackets(ctx):
     """Upload jacket images to Discord and cache their CDN URLs. Manager+ only."""
     if not isinstance(ctx.author, discord.Member):
         return
-    manager_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    manager_ids = _LEADERSHIP_ROLE_IDS
     if not any(r.id in manager_ids for r in ctx.author.roles):
         return await ctx.send("❌ Manager+ only.", delete_after=5)
 
@@ -8485,7 +9392,7 @@ async def set_logo(ctx, url: str = ""):
     """Update the DIFF logo URL stored in config. Manager+ only."""
     if not isinstance(ctx.author, discord.Member):
         return
-    manager_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    manager_ids = _LEADERSHIP_ROLE_IDS
     if not any(r.id in manager_ids for r in ctx.author.roles):
         return await ctx.send("❌ Manager+ only.", delete_after=5)
     if not url.startswith("http"):
@@ -8508,7 +9415,7 @@ async def set_banner(ctx, url: str = ""):
     """Update the DIFF banner URL stored in config separately. Manager+ only."""
     if not isinstance(ctx.author, discord.Member):
         return
-    manager_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    manager_ids = _LEADERSHIP_ROLE_IDS
     if not any(r.id in manager_ids for r in ctx.author.roles):
         return await ctx.send("❌ Manager+ only.", delete_after=5)
     if not url.startswith("http"):
@@ -8543,14 +9450,14 @@ def _get_member_activity(data: dict, user_id: int) -> dict:
     uid = str(user_id)
     members = data.setdefault("members", {})
     if uid not in members:
-        members[uid] = {"attended": 0, "hosted": 0, "maybe": 0, "declined": 0, "no_shows": 0, "penalty_points": 0, "last_updated": datetime.utcnow().isoformat()}
+        members[uid] = {"attended": 0, "hosted": 0, "maybe": 0, "declined": 0, "no_shows": 0, "penalty_points": 0, "last_updated": datetime.now(timezone.utc).isoformat()}
     return members[uid]
 
 
 def _get_meet(data: dict, meet_id: str) -> dict:
     meets = data.setdefault("meets", {})
     if meet_id not in meets:
-        meets[meet_id] = {"title": meet_id, "host_id": None, "scheduled_time": None, "created_at": datetime.utcnow().isoformat(), "rsvps": {}, "checked_in": [], "closed": False}
+        meets[meet_id] = {"title": meet_id, "host_id": None, "scheduled_time": None, "created_at": datetime.now(timezone.utc).isoformat(), "rsvps": {}, "checked_in": [], "closed": False}
     return meets[meet_id]
 
 
@@ -8564,9 +9471,9 @@ def _activity_promotion_suggestion(member: discord.Member, stats: dict) -> Optio
     if CREW_MEMBER_ROLE_ID in role_ids and attended >= 5:
         return "Host"
     if HOST_ROLE_ID in role_ids and attended >= 10 and hosted >= 3:
-        return "Manager"
+        return "Server Operations"
     if MANAGER_ROLE_ID in role_ids and attended >= 18 and hosted >= 6:
-        return "Co-Leader"
+        return "Executive"
     return None
 
 
@@ -8668,7 +9575,7 @@ async def meet_rsvp(interaction: discord.Interaction, meet_id: str, member: disc
         stats["maybe"] = stats.get("maybe", 0) + 1
     elif status.value == "not_going":
         stats["declined"] = stats.get("declined", 0) + 1
-    stats["last_updated"] = datetime.utcnow().isoformat()
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
     _save_activity_meets(data)
     rsvps = meet.get("rsvps", {})
     going = sum(1 for v in rsvps.values() if v == "going")
@@ -8689,7 +9596,7 @@ async def meet_checkin(interaction: discord.Interaction, meet_id: str, member: d
         checked_in.append(member.id)
     stats = _get_member_activity(data, member.id)
     stats["attended"] = stats.get("attended", 0) + 1
-    stats["last_updated"] = datetime.utcnow().isoformat()
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
     _save_activity_meets(data)
     suggestion = _activity_promotion_suggestion(member, stats)
     if suggestion and interaction.guild:
@@ -8713,7 +9620,7 @@ async def meet_hosted(interaction: discord.Interaction, member: discord.Member):
     data = _load_activity_meets()
     stats = _get_member_activity(data, member.id)
     stats["hosted"] = stats.get("hosted", 0) + 1
-    stats["last_updated"] = datetime.utcnow().isoformat()
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
     _save_activity_meets(data)
     if interaction.guild:
         await _refresh_activity_dashboard(interaction.guild, data)
@@ -8737,7 +9644,7 @@ async def meet_close(interaction: discord.Interaction, meet_id: str):
             stats = _get_member_activity(data, int(uid))
             stats["no_shows"] = stats.get("no_shows", 0) + 1
             stats["penalty_points"] = stats.get("penalty_points", 0) + 1
-            stats["last_updated"] = datetime.utcnow().isoformat()
+            stats["last_updated"] = datetime.now(timezone.utc).isoformat()
             no_show_ids.append(int(uid))
     meet["closed"] = True
     _save_activity_meets(data)
@@ -8849,7 +9756,7 @@ async def diff_reset_member(interaction: discord.Interaction, member: discord.Me
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
         return await interaction.response.send_message("Staff only.", ephemeral=True)
     data = _load_activity_meets()
-    data.setdefault("members", {})[str(member.id)] = {"attended": 0, "hosted": 0, "maybe": 0, "declined": 0, "no_shows": 0, "penalty_points": 0, "last_updated": datetime.utcnow().isoformat()}
+    data.setdefault("members", {})[str(member.id)] = {"attended": 0, "hosted": 0, "maybe": 0, "declined": 0, "no_shows": 0, "penalty_points": 0, "last_updated": datetime.now(timezone.utc).isoformat()}
     _save_activity_meets(data)
     if interaction.guild:
         await _refresh_activity_dashboard(interaction.guild, data)
@@ -8872,8 +9779,7 @@ def _hp_load() -> dict:
 
 
 def _hp_save(data: dict) -> None:
-    with open(_HP_DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(_HP_DATA_FILE, data)
 
 
 def _hp_get_hub_msg_id(data: dict):
@@ -9032,7 +9938,7 @@ class _HPStartModal(discord.ui.Modal, title="Start Host Session"):
         if not isinstance(parent, discord.TextChannel):
             return await interaction.response.send_message("Use this inside the host channel.", ephemeral=True)
 
-        session_id = f"{interaction.user.id}-{int(datetime.utcnow().timestamp())}"
+        session_id = f"{interaction.user.id}-{int(datetime.now(timezone.utc).timestamp())}"
         try:
             thread = await parent.create_thread(
                 name=f"host-session-{interaction.user.display_name[:20]}-{self.meet_name.value[:30]}",
@@ -9066,13 +9972,31 @@ class _HPStartModal(discord.ui.Modal, title="Start Host Session"):
             "ended": False,
             "score": 0,
             "warning_count": 0,
+            "voice_channel_id": None,
+            "vc_locked": False,
+            "vc_empty_since": None,
         }
+
+        # Auto-create a voice channel for this session
+        try:
+            category = interaction.guild.get_channel(SESSION_VC_CATEGORY_ID)
+            if isinstance(category, discord.CategoryChannel):
+                vc = await interaction.guild.create_voice_channel(
+                    name=f"| {interaction.user.display_name} Session",
+                    category=category,
+                    reason=f"Host session started by {interaction.user.display_name}",
+                )
+                session["voice_channel_id"] = vc.id
+        except Exception as _vc_err:
+            print(f"[HostSession] Could not create voice channel: {_vc_err}")
+
         data["active_sessions"][session_id] = session
         _hp_save(data)
 
+        vc_mention = f"\n🎙️ Voice channel: <#{session['voice_channel_id']}>" if session.get("voice_channel_id") else ""
         await thread.send(embed=_hp_session_embed(session), view=HostSessionView())
         await interaction.response.send_message(
-            f"Host session started: {thread.mention}", ephemeral=True
+            f"Host session started: {thread.mention}{vc_mention}", ephemeral=True
         )
 
 
@@ -9261,6 +10185,36 @@ class HostSessionView(discord.ui.View):
         session, _ = result
         await interaction.response.send_modal(_HPAttendanceModal(session["session_id"]))
 
+    @discord.ui.button(label="Lock VC", emoji="🔒", style=discord.ButtonStyle.secondary,
+                       custom_id="diff_host_session:lock_vc", row=2)
+    async def lock_vc(self, interaction: discord.Interaction, button: discord.ui.Button):
+        result = await self._get_session(interaction)
+        if not result:
+            return
+        session, data = result
+        is_host = interaction.user.id == session["host_id"]
+        is_staff = isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
+        if not is_host and not is_staff:
+            return await interaction.response.send_message("Only the session host or staff can do this.", ephemeral=True)
+        vc_id = session.get("voice_channel_id")
+        if not vc_id:
+            return await interaction.response.send_message("No voice channel is linked to this session.", ephemeral=True)
+        vc = interaction.guild.get_channel(vc_id) if interaction.guild else None
+        if not isinstance(vc, discord.VoiceChannel):
+            return await interaction.response.send_message("Session voice channel not found.", ephemeral=True)
+        everyone = interaction.guild.default_role
+        is_locked = session.get("vc_locked", False)
+        if is_locked:
+            await vc.set_permissions(everyone, connect=None)
+            session["vc_locked"] = False
+            _hp_save(data)
+            await interaction.response.send_message("✅ Voice channel unlocked — members can join again.", ephemeral=True)
+        else:
+            await vc.set_permissions(everyone, connect=False)
+            session["vc_locked"] = True
+            _hp_save(data)
+            await interaction.response.send_message("🔒 Voice channel locked — no new members can join.", ephemeral=True)
+
     @discord.ui.button(label="End Meet Session", emoji="🏁", style=discord.ButtonStyle.danger,
                        custom_id="diff_host_session:end_session", row=2)
     async def end_session(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -9403,6 +10357,16 @@ class HostSessionView(discord.ui.View):
 
         async def _delete_thread():
             await asyncio.sleep(10)
+            # Delete the session voice channel
+            vc_id = session.get("voice_channel_id")
+            if vc_id:
+                try:
+                    vc = bot.get_channel(vc_id)
+                    if isinstance(vc, discord.VoiceChannel):
+                        await vc.delete(reason=f"Host session ended — {session.get('meet_name', '')}")
+                except Exception as _vc_del_err:
+                    print(f"[HostSession] Could not delete session VC: {_vc_del_err}")
+            # Delete the session thread
             try:
                 if isinstance(interaction.channel, discord.Thread):
                     await interaction.channel.delete()
@@ -9482,12 +10446,231 @@ async def _hp_post_or_refresh() -> None:
         print(f"[HP] post error: {e}")
 
 
+@tasks.loop(minutes=5)
+async def _session_vc_idle_check():
+    """Alert and auto-clean session VCs that have been empty for 15+ minutes."""
+    await bot.wait_until_ready()
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild is None:
+        return
+    data = _hp_load()
+    changed = False
+    now_ts = datetime.now(timezone.utc).timestamp()
+    for session in list(data.get("active_sessions", {}).values()):
+        if session.get("ended"):
+            continue
+        vc_id = session.get("voice_channel_id")
+        if not vc_id:
+            continue
+        vc = guild.get_channel(vc_id)
+        if not isinstance(vc, discord.VoiceChannel):
+            continue
+        member_count = len([m for m in vc.members if not m.bot])
+        if member_count == 0:
+            empty_since = session.get("vc_empty_since")
+            alert_sent  = session.get("vc_idle_alert_sent", False)
+            if empty_since is None:
+                session["vc_empty_since"] = now_ts
+                changed = True
+            elif not alert_sent and now_ts - empty_since >= 15 * 60:
+                # Post alert in session thread — only fires ONCE per idle window
+                thread_id = session.get("thread_id")
+                thread = guild.get_channel(thread_id) if thread_id else None
+                if isinstance(thread, discord.Thread):
+                    try:
+                        alert = discord.Embed(
+                            title="⚠️ Session VC Empty",
+                            description=(
+                                f"<@{session['host_id']}> — your session voice channel has been empty for **15 minutes**.\n\n"
+                                "If your meet has ended, please press **End Meet Session** to close this session.\n"
+                                "The voice channel will be automatically deleted in **10 minutes** if it remains empty."
+                            ),
+                            color=discord.Color.orange(),
+                            timestamp=datetime.now(_EST_TZ),
+                        )
+                        alert.set_footer(text="DIFF Host Session • Idle Detection")
+                        await thread.send(content=f"<@{session['host_id']}>", embed=alert)
+                    except Exception:
+                        pass
+                # Mark alert as sent so it won't re-fire if VC stays empty
+                session["vc_idle_alert_sent"] = True
+                changed = True
+                # Schedule auto-delete of VC after 10 more minutes
+                async def _auto_close_idle_vc(s=session, g=guild):
+                    await asyncio.sleep(10 * 60)
+                    s_data = _hp_load()
+                    s_live = s_data.get("active_sessions", {}).get(s["session_id"])
+                    if s_live and not s_live.get("ended"):
+                        v = g.get_channel(s_live.get("voice_channel_id"))
+                        if isinstance(v, discord.VoiceChannel):
+                            members_now = [m for m in v.members if not m.bot]
+                            if len(members_now) == 0:
+                                try:
+                                    await v.delete(reason="Session VC auto-closed after 25 min idle")
+                                    s_live["voice_channel_id"] = None
+                                    _hp_save(s_data)
+                                except Exception:
+                                    pass
+                asyncio.create_task(_auto_close_idle_vc())
+        else:
+            # Members present — reset idle tracking so the alert can fire again next time
+            if session.get("vc_empty_since") is not None or session.get("vc_idle_alert_sent"):
+                session["vc_empty_since"]    = None
+                session["vc_idle_alert_sent"] = False
+                changed = True
+    if changed:
+        _hp_save(data)
+
+@_session_vc_idle_check.before_loop
+async def _before_session_vc_idle_check():
+    await bot.wait_until_ready()
+
+
 @bot.command(name="hostperformance")
 async def cmd_hostperformance(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
-        return await ctx.reply("Manager+ only.", mention_author=False)
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
     await _hp_post_or_refresh()
     await ctx.reply("Host Performance Hub posted/updated.", mention_author=False)
+
+
+@bot.command(name="botstatus")
+async def cmd_botstatus(ctx: commands.Context):
+    """Staff-only: show loop health, uptime, and key stats."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    now = time.time()
+    uptime_secs = int(now - _bot_start_time) if _bot_start_time else 0
+    hours, rem  = divmod(uptime_secs, 3600)
+    mins, secs  = divmod(rem, 60)
+    uptime_str  = f"{hours}h {mins}m {secs}s"
+
+    # Build loop health lines
+    tracked_loops = [
+        "hierarchy_attendance_loop",
+        "host_board_auto_refresh_loop",
+        "gta_weather_refresh_loop",
+        "_rc_ensure_loop",
+        "_host_weekly_reminder_loop",
+        "_rotating_presence_loop",
+        "_join_auto_bump_loop",
+        "ticket_scan_loop",
+        "_rc_finalize_reminder_loop",
+        "_psn_board_refresh_loop",
+        "_mgmt_alert_loop",
+        "_anniversary_check_task",
+    ]
+    loop_lines = []
+    for name in tracked_loops:
+        last = _loop_last_run.get(name)
+        fails = _loop_fail_counts.get(name, 0)
+        if last is None:
+            status = "⚪ not yet run"
+        else:
+            ago = int(now - last)
+            m, s = divmod(ago, 60)
+            ago_str = f"{m}m {s}s ago"
+            status = f"{'🔴' if fails > 0 else '🟢'} last ran {ago_str}" + (f" · {fails} fail(s)" if fails else "")
+        short = name.replace("_loop", "").replace("_task", "").lstrip("_")
+        loop_lines.append(f"`{short}` — {status}")
+
+    embed = discord.Embed(
+        title="🤖 DIFF Bot Status",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.add_field(name="⏱ Uptime", value=uptime_str, inline=True)
+    embed.add_field(name="🏠 Guild Members", value=str(ctx.guild.member_count), inline=True)
+    embed.add_field(name="📦 Cogs Loaded", value=str(len(bot.cogs)), inline=True)
+    embed.add_field(name="🔄 Loop Health", value="\n".join(loop_lines) or "None tracked", inline=False)
+    embed.set_footer(text="Different Meets • Bot Diagnostics")
+    await ctx.send(embed=embed, delete_after=60)
+
+
+@bot.command(name="backup")
+async def cmd_backup(ctx: commands.Context):
+    """Leadership-only: zip all diff_data JSON files and DM the archive."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    import io as _io
+    import zipfile as _zf
+    msg = await ctx.send("⏳ Building backup archive...", delete_after=15)
+    buf = _io.BytesIO()
+    count = 0
+    with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as zf:
+        for fname in sorted(os.listdir("diff_data")):
+            fpath = os.path.join("diff_data", fname)
+            if os.path.isfile(fpath) and fname.endswith((".json", ".db")):
+                zf.write(fpath, fname)
+                count += 1
+    buf.seek(0)
+    ts = datetime.now(_EST_TZ).strftime("%Y%m%d_%H%M%S")
+    try:
+        await ctx.author.send(
+            content=f"📦 **DIFF Bot Data Backup** — `{ts} ET` — {count} files",
+            file=discord.File(buf, filename=f"diff_backup_{ts}.zip"),
+        )
+        await ctx.send(f"✅ Backup ({count} files) sent to your DMs.", delete_after=10)
+    except discord.Forbidden:
+        await ctx.send("❌ Couldn't DM you — open your DMs and try again.", delete_after=10)
+
+
+@bot.command(name="hostnoshow")
+async def cmd_host_noshow(ctx: commands.Context):
+    """Leadership-only: show roll call meets whose assigned host hasn't started an HP session."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    guild = ctx.guild
+    meets = _rc_db.get_meets(guild.id)
+    if not meets:
+        return await ctx.send("No meets scheduled in the current roll call.", delete_after=10)
+
+    hp_data = _hp_load()
+    sessions = hp_data.get("active_sessions", {})
+    # Build set of host IDs that have an active or recently ended HP session
+    hosts_with_sessions = {
+        s["host_id"] for s in sessions.values()
+        if s.get("host_id")
+    }
+
+    lines = []
+    for meet in meets:
+        host_id = meet["host_id"]
+        meet_num = meet["meet_number"]
+        class_name = meet["class_name"] or "TBD"
+        date_text = meet["date_text"] or ""
+        if not host_id:
+            lines.append(f"Meet {meet_num} — **{class_name}** ({date_text}) — ⚪ No host assigned")
+        elif host_id not in hosts_with_sessions:
+            member = guild.get_member(host_id)
+            name = member.mention if member else f"`{host_id}`"
+            lines.append(f"Meet {meet_num} — **{class_name}** ({date_text}) — ⚠️ {name} has not started a session")
+        else:
+            member = guild.get_member(host_id)
+            name = member.mention if member else f"`{host_id}`"
+            lines.append(f"Meet {meet_num} — **{class_name}** ({date_text}) — ✅ {name} session active")
+
+    embed = discord.Embed(
+        title="🏁 Host Session Check",
+        description="\n".join(lines) if lines else "No data.",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text="Different Meets • Host No-Show Tracker")
+    await ctx.send(embed=embed, delete_after=120)
 
 
 # =============================================================
@@ -9537,7 +10720,7 @@ def _unified_hosthub_embed() -> discord.Embed:
         inline=False,
     )
     embed.set_footer(text="Different Meets • Host Hub  |  Use the dropdowns below")
-    embed.timestamp = datetime.utcnow()
+    embed.timestamp = datetime.now(timezone.utc)
     return embed
 
 
@@ -9848,7 +11031,7 @@ class _HostHubBlacklistSelect(discord.ui.Select):
             await interaction.response.send_message(embed=_hosthub_blacklist_embed(), view=bl_view, ephemeral=True)
         elif val == "bl_submit":
             is_staff = any(
-                r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+                r.id in _LEADERSHIP_HOST_ROLE_IDS
                 for r in getattr(interaction.user, "roles", [])
             )
             if not is_staff:
@@ -9978,7 +11161,7 @@ async def _unified_hosthub_post_or_refresh() -> None:
 # AUTO ROLL CALL SYSTEM
 # =========================
 _RC_DB_PATH = os.path.join("diff_data", "diff_rollcall.db")
-_RC_ADMIN_ROLE_IDS = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+_RC_ADMIN_ROLE_IDS = _LEADERSHIP_ROLE_IDS
 
 
 class _RollCallDB:
@@ -10270,7 +11453,6 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
                 f"📅 {when_fin}  🎮 {class_name}",
                 f"👤 **Host:** {host_text}",
                 f"✅ **{c['yes']}** yes  ·  ❓ **{c['maybe']}** maybe  ·  ❌ **{c['no']}** no",
-                "*🔒 Voting closed*",
             ]
         else:
             if class_name == "TBD" or start_time == "TBD":
@@ -10425,26 +11607,64 @@ class _RcMyRsvpBtn(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        uid       = interaction.user.id
-        guild     = interaction.guild
-        responses = _rc_db.get_all_responses(guild.id)
-        meets     = _rc_db.get_meets(guild.id)
-        meets_by_num = {row["meet_number"]: row for row in meets}
-        status_labels = {"yes": "✅ Attending", "maybe": "❓ Maybe", "no": "❌ Not Attending"}
-        lines = []
+        uid          = interaction.user.id
+        guild        = interaction.guild
+        responses    = _rc_db.get_all_responses(guild.id)
+        meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
+
+        status_emoji  = {"yes": "✅", "maybe": "❓", "no": "❌"}
+        status_label  = {"yes": "Attending", "maybe": "Maybe", "no": "Not Attending"}
+
+        answered = []
         for n in (1, 2, 3):
-            r    = responses.get(n, {})
-            meet = meets_by_num.get(n)
-            info = ""
-            if meet and meet["class_name"] != "TBD":
-                info = f" — {meet['date_text']} · {meet['start_time']} · {meet['class_name']}"
+            r = responses.get(n, {})
             found = next((s for s in ("yes", "maybe", "no") if uid in r.get(s, [])), None)
-            lines.append(f"**Meet {n}**{info}\n　{status_labels.get(found, '⬜ No response yet')}")
-        await interaction.response.send_message(
-            "**Your current RSVP:**\n\n" + "\n\n".join(lines)
-            + "\n\n*Update anytime by clicking the buttons above.*",
-            ephemeral=True,
+            answered.append(found)
+
+        # Pick embed colour: green = all yes, orange = any maybe, red = any no, grey = no responses
+        if all(a == "yes" for a in answered if a):
+            color = discord.Color.green()
+        elif any(a == "maybe" for a in answered):
+            color = discord.Color.orange()
+        elif any(a == "no" for a in answered):
+            color = discord.Color.red()
+        else:
+            color = discord.Color.greyple()
+
+        embed = discord.Embed(
+            title="📊 Your Roll Call RSVP",
+            description="Here's how you've responded for each meet this week.",
+            color=color,
+            timestamp=datetime.now(timezone.utc),
         )
+
+        for n, found in zip((1, 2, 3), answered):
+            meet  = meets_by_num.get(n)
+            cls   = meet["class_name"] if meet else "TBD"
+            dt    = meet["date_text"]  if meet else ""
+            st    = meet["start_time"] if meet else "TBD"
+            ts    = _parse_meet_ts(dt, st) if meet and cls != "TBD" else None
+
+            if ts:
+                when = f"<t:{ts}:F>\n<t:{ts}:R>"
+            elif cls != "TBD":
+                when = f"📅 {dt}  🕒 {st}"
+            else:
+                when = "*Schedule not posted yet*"
+
+            status_str = (
+                f"{status_emoji[found]} **{status_label[found]}**"
+                if found else "⬜ *No response yet*"
+            )
+
+            embed.add_field(
+                name=f"Meet {n}  ·  🎮 {cls}",
+                value=f"{when}\n{status_str}",
+                inline=False,
+            )
+
+        embed.set_footer(text="Update anytime by clicking the buttons above  •  Only you can see this")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class _RcRollCallView(discord.ui.View):
@@ -10458,8 +11678,8 @@ class _RcRollCallView(discord.ui.View):
             lock = False
             if meet:
                 ts = _parse_meet_ts(
-                    meet.get("date_text", ""),
-                    meet.get("start_time", ""),
+                    meet["date_text"] if "date_text" in meet.keys() else "",
+                    meet["start_time"] if "start_time" in meet.keys() else "",
                 )
                 if ts:
                     event_date = _dt.fromtimestamp(ts, tz=_tz.utc).date()
@@ -10555,37 +11775,54 @@ async def _rc_refresh_panel(guild: discord.Guild):
         existing.cancel()
 
     async def _do_refresh():
-        await asyncio.sleep(0.5)          # brief wait to coalesce rapid clicks
-        panel   = _rc_db.get_panel(guild.id)
-        channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
-            return
-
-        # --- try stored ID first ---
-        meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
-        if panel:
-            try:
-                msg = await channel.fetch_message(panel["message_id"])
-                await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
-                return
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                print(f"[RcPanel] refresh error (stored msg): {e}")
+        try:
+            await asyncio.sleep(0.5)          # brief wait to coalesce rapid clicks
+            panel   = _rc_db.get_panel(guild.id)
+            # Prefer guild cache, fall back to bot-level lookup
+            channel = guild.get_channel(ROLL_CALL_CHANNEL_ID) or bot.get_channel(ROLL_CALL_CHANNEL_ID)
+            if not isinstance(channel, discord.TextChannel):
+                try:
+                    channel = await bot.fetch_channel(ROLL_CALL_CHANNEL_ID)
+                except Exception as _ce:
+                    print(f"[RcPanel] cannot resolve roll-call channel: {_ce}")
+                    return
+            if not isinstance(channel, discord.TextChannel):
+                print(f"[RcPanel] roll-call channel {ROLL_CALL_CHANNEL_ID} not a TextChannel")
                 return
 
-        # --- stored ID stale: scan channel and recover ---
-        rc_msg_id, _ = await _rc_scan_and_recover(channel, guild.id, guild.me.id)
-        if rc_msg_id:
-            try:
-                msg = await channel.fetch_message(rc_msg_id)
-                await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
-                return
-            except Exception as e:
-                print(f"[RcPanel] refresh error (scanned msg): {e}")
+            # --- try stored ID first ---
+            meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
+            print(f"[RcPanel] refresh — meets in DB: {[dict(r) for r in meets_by_num.values()]}")
+            if panel:
+                try:
+                    msg = await channel.fetch_message(panel["message_id"])
+                    await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
+                    print(f"[RcPanel] panel edited OK (stored msg {panel['message_id']})")
+                    return
+                except discord.NotFound:
+                    print(f"[RcPanel] stored message not found, scanning channel")
+                except Exception as e:
+                    print(f"[RcPanel] refresh error (stored msg): {e}")
+                    import traceback as _tb; _tb.print_exc()
+                    return
 
-        # --- nothing found: post fresh ---
-        await _rc_post_new_panel(guild, ping_roles=False)
+            # --- stored ID stale: scan channel and recover ---
+            rc_msg_id, _ = await _rc_scan_and_recover(channel, guild.id, guild.me.id)
+            if rc_msg_id:
+                try:
+                    msg = await channel.fetch_message(rc_msg_id)
+                    await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
+                    print(f"[RcPanel] panel edited OK (recovered msg {rc_msg_id})")
+                    return
+                except Exception as e:
+                    print(f"[RcPanel] refresh error (scanned msg): {e}")
+
+            # --- nothing found: post fresh ---
+            print(f"[RcPanel] no existing panel found — posting fresh")
+            await _rc_post_new_panel(guild, ping_roles=False)
+        except Exception as _task_err:
+            print(f"[RcPanel] _do_refresh unhandled error: {_task_err}")
+            import traceback as _tb; _tb.print_exc()
 
     task = asyncio.create_task(_do_refresh())
     _rc_refresh_tasks[guild.id] = task
@@ -10884,20 +12121,122 @@ async def _rc_sync_from_schedule(guild: discord.Guild, meets: list):
         if n not in present:
             meets.append({"meet_number": n, "class_name": "TBD", "start_time": "TBD", "host_id": None, "date_text": "TBD", "is_finalized": False})
     meets.sort(key=lambda x: x["meet_number"])
+    print(f"[RcSync] writing {len(meets)} meets to DB for guild {guild.id}: "
+          + ", ".join(f"M{m['meet_number']}={m.get('class_name','?')}/{m.get('start_time','?')}" for m in meets))
     _rc_db.upsert_meets(guild.id, meets)
+    # verify write
+    written = {r["meet_number"]: r["class_name"] for r in _rc_db.get_meets(guild.id)}
+    print(f"[RcSync] verified DB after upsert: {written}")
     await _rc_refresh_panel(guild)
     asyncio.create_task(_rc_notify_crew_of_schedule(guild, meets))
 
 
-@tasks.loop(minutes=10)
-async def _rc_ensure_loop():
+@bot.command(name="syncrc")
+async def _cmd_syncrc(ctx: commands.Context):
+    """Staff command: manually sync the auto-schedule → roll call panel."""
+    if not _rc_is_admin(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    schedule = _asched_load()
+    rc_meets = []
+    for idx, day in enumerate(_HRSVP_DAYS, 1):
+        entry = schedule.get("days", {}).get(day, {})
+        rc_meets.append({
+            "meet_number": idx,
+            "class_name": entry.get("class", "TBD"),
+            "start_time": entry.get("time", "TBD"),
+            "host_id": entry.get("host_id"),
+            "date_text": entry.get("day", "TBD"),
+            "is_finalized": False,
+        })
+
+    # Write meets to DB
+    _rc_db.upsert_meets(ctx.guild.id, rc_meets)
+    written = {r["meet_number"]: r["class_name"] for r in _rc_db.get_meets(ctx.guild.id)}
+
+    # Resolve the roll call channel
+    rc_channel = (
+        ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
+        or bot.get_channel(ROLL_CALL_CHANNEL_ID)
+    )
+    if not isinstance(rc_channel, discord.TextChannel):
+        try:
+            rc_channel = await bot.fetch_channel(ROLL_CALL_CHANNEL_ID)
+        except Exception as _fe:
+            await ctx.send(f"❌ Cannot resolve roll-call channel: {_fe}", delete_after=15)
+            return
+
+    # Try stored panel ID first
+    panel = _rc_db.get_panel(ctx.guild.id)
+    meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(ctx.guild.id)}
+    edited = False
+
+    if panel:
+        try:
+            rc_msg = await rc_channel.fetch_message(panel["message_id"])
+            await rc_msg.edit(
+                embed=_rc_build_rollcall_embed(ctx.guild),
+                view=_RcRollCallView(meets_by_num),
+            )
+            edited = True
+        except discord.NotFound:
+            pass
+        except Exception as _ee:
+            await ctx.send(f"❌ Edit failed: {_ee}", delete_after=15)
+            return
+
+    # If stored ID stale, scan the channel
+    if not edited:
+        async for msg in rc_channel.history(limit=40):
+            if _rc_classify_msg(msg, ctx.guild.me.id) == "rollcall":
+                try:
+                    await msg.edit(
+                        embed=_rc_build_rollcall_embed(ctx.guild),
+                        view=_RcRollCallView(meets_by_num),
+                    )
+                    _rc_db.upsert_panel(ctx.guild.id, rc_channel.id, msg.id,
+                                        panel["admin_message_id"] if panel else None)
+                    edited = True
+                except Exception as _se:
+                    await ctx.send(f"❌ Scan-edit failed: {_se}", delete_after=15)
+                    return
+                break
+
+    filled = sum(1 for m in rc_meets if m["host_id"])
+    if edited:
+        await ctx.send(
+            f"✅ Roll call panel updated — {filled}/3 slots pushed. DB: {written}",
+            delete_after=12,
+        )
+    else:
+        await ctx.send(
+            f"⚠️ No roll-call panel found in <#{ROLL_CALL_CHANNEL_ID}>. "
+            f"Run `!postrollcall` to post a fresh one.",
+            delete_after=15,
+        )
+
+
+async def __rc_ensure_loop_logic():
     for guild in bot.guilds:
         try:
             await _rc_ensure_panel(guild)
         except Exception as e:
             print(f"[RollCall] ensure loop error: {e}")
 
-
+@tasks.loop(minutes=10)
+async def _rc_ensure_loop():
+    _loop_success('_rc_ensure_loop')
+    try:
+        await run_with_timeout('_rc_ensure_loop', __rc_ensure_loop_logic(), timeout=90)
+    except Exception as _lte:
+        await _handle_loop_error('_rc_ensure_loop', _lte, _rc_ensure_loop)
+@_rc_ensure_loop.error
+async def __rc_ensure_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('_rc_ensure_loop', error, _rc_ensure_loop)
 @bot.command(name="postrollcall")
 async def _cmd_postrollcall(ctx: commands.Context):
     if not _rc_is_admin(ctx.author):
@@ -10921,13 +12260,83 @@ async def _cmd_postrollcall(ctx: commands.Context):
     await _rc_post_new_panel(ctx.guild, ping_roles=True)
 
 
+@bot.command(name="remindrollcall")
+async def _cmd_remindrollcall(ctx: commands.Context):
+    """DM all crew members who haven't responded to the current roll call yet."""
+    if not _rc_is_admin(ctx.author):
+        return await ctx.send("Staff only.", delete_after=5)
+    if not ctx.guild:
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    await ctx.send("⏳ Sending roll call reminders, please wait...", delete_after=10)
+
+    # Get everyone who has responded (any status) for the current roll call
+    all_responses = _rc_db.get_all_responses(ctx.guild.id)
+    responded_ids: set[int] = set()
+    for meet_data in all_responses.values():
+        for uids in meet_data.values():
+            responded_ids.update(int(u) for u in uids)
+
+    # Get all crew members
+    crew_role = ctx.guild.get_role(CREW_MEMBER_ROLE_ID)
+    if not crew_role:
+        return await ctx.send("Crew member role not found.", delete_after=10)
+
+    non_responders = [m for m in crew_role.members if not m.bot and m.id not in responded_ids]
+
+    if not non_responders:
+        return await ctx.send("✅ All crew members have already responded to the roll call!", delete_after=15)
+
+    # Build the reminder embed
+    rc_channel = ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    rc_mention = rc_channel.jump_url if rc_channel else f"<#{ROLL_CALL_CHANNEL_ID}>"
+
+    reminder_embed = discord.Embed(
+        title="📋 DIFF Roll Call Reminder",
+        description=(
+            "Hey! You haven't responded to this week's **DIFF Roll Call** yet.\n\n"
+            "The roll call tracks which meets you plan to attend — it only takes a few seconds to fill out.\n\n"
+            f"👉 **[Click here to respond]({rc_mention})**\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Failing to respond to roll calls consistently may affect your standing as a crew member."
+        ),
+        color=discord.Color.orange(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    reminder_embed.set_footer(text="Different Meets • Roll Call System")
+
+    sent, failed = 0, 0
+    for member in non_responders:
+        try:
+            await member.send(embed=reminder_embed)
+            sent += 1
+        except (discord.Forbidden, discord.HTTPException):
+            failed += 1
+        await asyncio.sleep(0.5)
+
+    result_embed = discord.Embed(
+        title="📨 Roll Call Reminders Sent",
+        color=discord.Color.green() if sent > 0 else discord.Color.red(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    result_embed.add_field(name="✅ DMs Delivered", value=str(sent), inline=True)
+    result_embed.add_field(name="❌ Failed (DMs closed)", value=str(failed), inline=True)
+    result_embed.add_field(name="📊 Total Non-Responders", value=str(len(non_responders)), inline=True)
+    result_embed.set_footer(text="Staff only • Different Meets")
+    await ctx.send(embed=result_embed)
+
+
 @bot.command(name="rollleaderboard")
 async def _cmd_rollleaderboard(ctx: commands.Context):
     rows = _rc_db.get_top_attendance(ctx.guild.id, 10)
     if not rows:
         await ctx.send("No attendance data yet.", delete_after=10)
         return
-    embed = discord.Embed(title="🏆 DIFF Attendance Leaderboard", color=discord.Color.gold(), timestamp=datetime.utcnow())
+    embed = discord.Embed(title="🏆 DIFF Attendance Leaderboard", color=discord.Color.gold(), timestamp=datetime.now(timezone.utc))
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     lines = []
     for idx, row in enumerate(rows, 1):
@@ -11029,8 +12438,7 @@ def _om_stats_load() -> dict:
 
 def _om_stats_save(data: dict) -> None:
     try:
-        with open(_OM_STATS_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        _atomic_json_save(_OM_STATS_FILE, data)
     except Exception:
         pass
 
@@ -11671,6 +13079,177 @@ async def _om_restore_on_ready() -> None:
                     pass
 
 
+# ── Theme Guide ─────────────────────────────────────────────────────────────
+# Keys are lowercase keywords; values are the "Accepted Cars" description shown
+# in meet announcements. Add/edit entries here to update all announcements.
+_THEME_GUIDE: dict[str, tuple[str, str]] = {
+    # keyword(s) → (display name, accepted cars text)
+    "dealership": (
+        "Dealership / Showroom",
+        "• Stock or near-stock vehicles — showroom-ready builds only\n"
+        "• No heavy visual mods (no wings, cages, widebody kits unless factory-style)\n"
+        "• Clean colours — solid, metallic, or pearl only\n"
+        "• Think: a car you'd see on a real dealership floor",
+    ),
+    "jdm": (
+        "JDM",
+        "• Japanese-branded vehicles only (Annis, Karin, Dinka, etc.)\n"
+        "• Clean builds — sport, stance, or stock fitment\n"
+        "• Examples: Elegy Retro/RH8, Sultan RS/Classic, Futo GTX, Jester Classic, "
+        "Calico GTF, ZR350, Savestra, Previon\n"
+        "• No heavily armoured or weaponised variants",
+    ),
+    "euro": (
+        "Euro / European",
+        "• European-branded vehicles only (Pegassi, Grotti, Benefactor, Übermacht, "
+        "Dewbauchee, Lampadati, Pfister, etc.)\n"
+        "• Examples: Zentorno, Turismo R, Carbonizzare, Schafter, Sentinel, Feltzer, "
+        "Massacro, Felon, Furore\n"
+        "• Builds should feel refined — clean or tastefully modified",
+    ),
+    "muscle": (
+        "American Muscle",
+        "• American-branded vehicles only (Vapid, Bravado, Albany, Declasse, etc.)\n"
+        "• Classic or modern muscle body styles\n"
+        "• Examples: Dominator, Gauntlet, Vigero, Sabre Turbo, Ellie, Greenwood, "
+        "Clique, Mamba, Banshee\n"
+        "• Builds should have that raw, powerful American look",
+    ),
+    "classic": (
+        "Classic / Vintage",
+        "• Vehicles with a vintage or retro body style (pre-1980s aesthetic)\n"
+        "• Examples: Peyote, Buccaneer, Manana, Roosevelt, Tornado, Coquette Classic, "
+        "Bel-Air style cars, Stirling GT\n"
+        "• Keep the old-school vibe — no modern body kits",
+    ),
+    "lowrider": (
+        "Lowrider",
+        "• Lowrider or Benny's Originals-style builds\n"
+        "• Must have a lowered, slammed, or hydraulic look\n"
+        "• Examples: Buccaneer Custom, Moonbeam Custom, Slamvan Custom, Faction "
+        "Custom, Voodoo, Tornado Custom\n"
+        "• Chrome, candy, two-tone, and wire wheels encouraged",
+    ),
+    "stance": (
+        "Stance",
+        "• Any platform — the build must be visually stanced\n"
+        "• Aggressively lowered, stretched tyres, negative camber aesthetic\n"
+        "• Clean wide-body or flush fitment builds welcomed\n"
+        "• No lifted or stock-height vehicles",
+    ),
+    "drift": (
+        "Drift",
+        "• Rear-wheel-drive vehicles with a drift build aesthetic\n"
+        "• Examples: Karin Futo GTX, Annis ZR350, Elegy Retro Custom, Willard "
+        "Faction, Warrener HKR\n"
+        "• Roll cages, bucket seats, and drift liveries encouraged\n"
+        "• No all-wheel-drive supercars",
+    ),
+    "exotic": (
+        "Exotic / Supercar",
+        "• Supercar or hypercar class vehicles\n"
+        "• Examples: Zentorno, Vacca, Osiris, Turismo R, X80 Proto, Tempesta, "
+        "Itali RSX, T20, Reaper, Overflod Entity\n"
+        "• Builds should look exotic — no plain/unmodified stock supers",
+    ),
+    "supercar": (
+        "Exotic / Supercar",
+        "• Supercar or hypercar class vehicles\n"
+        "• Examples: Zentorno, Vacca, Osiris, Turismo R, X80 Proto, Tempesta, "
+        "Itali RSX, T20, Reaper, Overflod Entity\n"
+        "• Builds should look exotic — no plain/unmodified stock supers",
+    ),
+    "truck": (
+        "Truck / SUV",
+        "• Trucks, pickups, and SUV-class vehicles\n"
+        "• Examples: Sandking, Bison, Contender, FQ2, Granger, Baller, "
+        "Landstalker, Dubsta, Rebla GTS\n"
+        "• Lifted, stock, or lowered all welcome — keep it clean",
+    ),
+    "suv": (
+        "Truck / SUV",
+        "• Trucks, pickups, and SUV-class vehicles\n"
+        "• Examples: Sandking, Bison, Contender, FQ2, Granger, Baller, "
+        "Landstalker, Dubsta, Rebla GTS\n"
+        "• Lifted, stock, or lowered all welcome — keep it clean",
+    ),
+    "luxury": (
+        "Luxury",
+        "• High-end sedans, grand tourers, and luxury SUVs\n"
+        "• Examples: Enus Stafford, Paragon R, Windsor, Cognoscenti, Benefactor "
+        "Schafter V12, Übermacht Oracle, Rolls-style builds\n"
+        "• Refined colours and tasteful mods only — no race liveries",
+    ),
+    "tuner": (
+        "Import / Tuner",
+        "• Modified sport compacts and tuner-class vehicles\n"
+        "• Tuner update cars strongly recommended: Calico GTF, Annis Euros, "
+        "Dinka RT3000, Pfister Growler, Karin Previon, Fathom FR36\n"
+        "• Aftermarket-style builds — body kits, splitters, and liveries welcome",
+    ),
+    "import": (
+        "Import / Tuner",
+        "• Modified sport compacts and tuner-class vehicles\n"
+        "• Tuner update cars strongly recommended: Calico GTF, Annis Euros, "
+        "Dinka RT3000, Pfister Growler, Karin Previon, Fathom FR36\n"
+        "• Aftermarket-style builds — body kits, splitters, and liveries welcome",
+    ),
+    "open": (
+        "Open Class",
+        "• Any vehicle is welcome — no brand or class restrictions\n"
+        "• Must still follow standard DIFF meet rules and standards\n"
+        "• Keep your build clean and appropriate for the meet",
+    ),
+    "show": (
+        "Show Meet",
+        "• Any vehicle — but presentation is everything\n"
+        "• This is a display meet: clean, detailed, well-thought-out builds only\n"
+        "• Matching crew colour, livery, or coordinated colour schemes encouraged",
+    ),
+    "sport": (
+        "Sport / Sport Compact",
+        "• Sport or sport compact class vehicles\n"
+        "• Clean, modified, or stock sport builds\n"
+        "• Examples: Comet, Elegy, Jester, Banshee, Lynx, Jugular, Issi Sport\n"
+        "• No heavyweight muscle or SUVs",
+    ),
+    "offroad": (
+        "Off-Road",
+        "• Off-road or rally-built vehicles\n"
+        "• Examples: Sandking, Kamacho, Caracara, Dubsta 6x6, Brawler, Riata\n"
+        "• Lifted suspension, off-road tyres, and muddy liveries welcome",
+    ),
+    "van": (
+        "Vans / Wagons",
+        "• Van or wagon-bodied vehicles\n"
+        "• Examples: Moonbeam, Youga, Speedo, Minivan, Pony, Journey\n"
+        "• Custom builds, slammed vans, or stock — all welcome",
+    ),
+    "motorcycle": (
+        "Motorcycles / Bikes",
+        "• Motorcycles and bikes only — no cars or trucks\n"
+        "• Examples: Bati 801, Shotaro, Innovation, Hakuchou, Lectro, Hexer\n"
+        "• Sport, cruiser, chopper, or café racer styles all welcome",
+    ),
+    "bike": (
+        "Motorcycles / Bikes",
+        "• Motorcycles and bikes only — no cars or trucks\n"
+        "• Examples: Bati 801, Shotaro, Innovation, Hakuchou, Lectro, Hexer\n"
+        "• Sport, cruiser, chopper, or café racer styles all welcome",
+    ),
+}
+
+def _get_theme_guide(theme: str) -> tuple[str, str] | None:
+    """Return (display_name, accepted_cars_text) if the theme matches a guide entry, else None."""
+    if not theme:
+        return None
+    lower = theme.lower()
+    for keyword, entry in _THEME_GUIDE.items():
+        if keyword in lower:
+            return entry
+    return None
+
+
 def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str = "") -> discord.Embed:
     embed = discord.Embed(
         title="🏁 DIFF Official Meet",
@@ -11700,11 +13279,20 @@ def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str
         ),
         inline=False,
     )
-    embed.add_field(
-        name="🚗 Style Direction",
-        value="Choose vehicles that match tonight's theme and represent DIFF properly.",
-        inline=False,
-    )
+    guide = _get_theme_guide(theme)
+    if guide:
+        _display_name, _accepted = guide
+        embed.add_field(
+            name=f"✅ Accepted Cars — {_display_name}",
+            value=_accepted,
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="🚗 Style Direction",
+            value="Choose vehicles that match tonight's theme and represent DIFF properly.",
+            inline=False,
+        )
     if notes:
         embed.add_field(name="📝 Staff Notes", value=notes, inline=False)
     embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -11937,8 +13525,7 @@ def _om_panel_load() -> dict:
 
 def _om_panel_save(data: dict):
     try:
-        with open(_OM_PANEL_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        _atomic_json_save(_OM_PANEL_FILE, data)
     except Exception:
         pass
 
@@ -12537,7 +14124,7 @@ def _popup_parse_time(raw: str) -> str:
         return raw
 
 
-_POPUP_STAFF_ROLES = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+_POPUP_STAFF_ROLES = _LEADERSHIP_ROLE_IDS
 
 
 def _popup_build_meet_embed(
@@ -12587,6 +14174,16 @@ def _popup_build_meet_embed(
     )
     if notes:
         embed.add_field(name="📝 Notes", value=notes, inline=False)
+
+    if not is_ended:
+        guide = _get_theme_guide(theme or "")
+        if guide:
+            _display_name, _accepted = guide
+            embed.add_field(
+                name=f"✅ Accepted Cars — {_display_name}",
+                value=_accepted,
+                inline=False,
+            )
 
     footer = f"DIFF Pop-Up Meet #{meet_id}"
     if is_ended:
@@ -12960,8 +14557,7 @@ def _status_next_meet_label() -> str | None:
     except Exception:
         return None
 
-@tasks.loop(seconds=45)
-async def _rotating_presence_loop():
+async def __rotating_presence_loop_logic():
     global _presence_index
     guild        = bot.get_guild(GUILD_ID)
     member_count = guild.member_count if guild else 0
@@ -12992,12 +14588,22 @@ async def _rotating_presence_loop():
     except Exception:
         pass
 
+@tasks.loop(seconds=45)
+async def _rotating_presence_loop():
+    _loop_success('_rotating_presence_loop')
+    try:
+        await run_with_timeout('_rotating_presence_loop', __rotating_presence_loop_logic(), timeout=30)
+    except Exception as _lte:
+        await _handle_loop_error('_rotating_presence_loop', _lte, _rotating_presence_loop)
+@_rotating_presence_loop.error
+async def __rotating_presence_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('_rotating_presence_loop', error, _rotating_presence_loop)
 # =========================
-# JOIN TICKET AUTO-BUMP (24h after photos complete, no decision yet)
+# JOIN TICKET AUTO-BUMP (escalating: 2h → 6h → 24h → 72h auto-close)
 # =========================
-@tasks.loop(minutes=30)
-async def _join_auto_bump_loop():
-    """Ping staff if an application has had photos for 24h+ with no accept/deny."""
+
+async def __join_auto_bump_loop_logic():
+    """Escalating staff pings after photos submitted with no decision: 2h / 6h / 24h / 72h auto-close."""
     try:
         guild = bot.get_guild(GUILD_ID)
         if not guild:
@@ -13008,16 +14614,26 @@ async def _join_auto_bump_loop():
         extra = _join_extra_load()
         changed = False
         now_utc = datetime.now(timezone.utc)
+        ts_role  = guild.get_role(TICKET_SUPPORT_ROLE_ID)
+        mgr_role = guild.get_role(MANAGER_ROLE_ID)
+        lead     = guild.get_role(LEADER_ROLE_ID)
+        co       = guild.get_role(CO_LEADER_ROLE_ID)
         for ch in category.text_channels:
             topic = ch.topic or ""
             if "JOIN_USER:" not in topic:
                 continue
             ch_key = str(ch.id)
             entry = extra.get(ch_key, {})
-            if entry.get("bump_sent"):
+            # Backward-compat: old bump_sent=True means already reached level 3
+            if entry.get("bump_sent") and "bump_level" not in entry:
+                entry["bump_level"] = 3
+            bump_level = entry.get("bump_level", 0)
+            if bump_level >= 4:
+                extra[ch_key] = entry
                 continue
             photos_ts = entry.get("photos_complete_at")
             if not photos_ts:
+                extra[ch_key] = entry
                 continue
             try:
                 complete_at = datetime.fromisoformat(photos_ts)
@@ -13025,31 +14641,206 @@ async def _join_auto_bump_loop():
                     complete_at = complete_at.replace(tzinfo=timezone.utc)
             except Exception:
                 continue
-            if (now_utc - complete_at).total_seconds() < 86400:   # 24 hours
+            hours = (now_utc - complete_at).total_seconds() / 3600
+
+            if bump_level < 1 and hours >= 2:
+                # Level 1 — 2h: ping Ticket Support in ticket
+                ts_mention = ts_role.mention if ts_role else ""
+                emb = discord.Embed(
+                    title="⏰ Review Needed — 2h",
+                    description=(
+                        "All required photos have been submitted for **over 2 hours** "
+                        "with no decision yet.\n\nPlease review this application."
+                    ),
+                    color=discord.Color.yellow(),
+                    timestamp=now_utc,
+                )
+                emb.set_footer(text="Different Meets • Join Hub Auto-Bump")
+                try:
+                    await ch.send(
+                        content=ts_mention or None,
+                        embed=emb,
+                        allowed_mentions=discord.AllowedMentions(roles=True),
+                    )
+                    entry["bump_level"] = 1
+                    changed = True
+                except Exception:
+                    pass
+
+            elif bump_level < 2 and hours >= 6:
+                # Level 2 — 6h: ping Ticket Support + Server Operations
+                mentions = " ".join(r.mention for r in [ts_role, mgr_role] if r)
+                emb = discord.Embed(
+                    title="⏰ Review Needed — 6h",
+                    description=(
+                        "This application has been waiting for a decision for **over 6 hours**.\n\n"
+                        "Ticket Support and Server Operations — please review and action this ticket."
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=now_utc,
+                )
+                emb.set_footer(text="Different Meets • Join Hub Auto-Bump")
+                try:
+                    await ch.send(
+                        content=mentions or None,
+                        embed=emb,
+                        allowed_mentions=discord.AllowedMentions(roles=True),
+                    )
+                    entry["bump_level"] = 2
+                    changed = True
+                except Exception:
+                    pass
+
+            elif bump_level < 3 and hours >= 24:
+                # Level 3 — 24h: ping Founder + Executive + Server Operations
+                mentions = " ".join(r.mention for r in [lead, co, mgr_role] if r)
+                emb = discord.Embed(
+                    title="🚨 Application Still Unresolved — 24h",
+                    description=(
+                        "This join application has had all required photos for **over 24 hours** "
+                        "with no accept or deny decision.\n\n"
+                        "This needs to be resolved immediately."
+                    ),
+                    color=discord.Color.red(),
+                    timestamp=now_utc,
+                )
+                emb.set_footer(text="Different Meets • Join Hub Auto-Bump")
+                try:
+                    await ch.send(
+                        content=mentions or None,
+                        embed=emb,
+                        allowed_mentions=discord.AllowedMentions(roles=True),
+                    )
+                    entry["bump_level"] = 3
+                    entry["bump_sent"] = True  # backward-compat flag
+                    changed = True
+                except Exception:
+                    pass
+
+            elif bump_level < 4 and hours >= 72:
+                # Level 4 — 72h: auto-close ticket, DM applicant
+                uid_raw = _join_parse_user_id(topic)
+                applicant = guild.get_member(int(uid_raw)) if uid_raw and uid_raw.isdigit() else None
+                if applicant:
+                    try:
+                        await safe_dm(
+                            applicant,
+                            "**DIFF Join Application Update**\n\n"
+                            "Your join application ticket was automatically closed after **72 hours** "
+                            "because our review team was unable to action it in time.\n\n"
+                            "This is **not a rejection** — you are welcome to reapply when our team "
+                            "is available. We apologise for the delay.",
+                        )
+                    except Exception:
+                        pass
+                try:
+                    await ch.send(embed=discord.Embed(
+                        title="🔒 Auto-Closed — 72h No Decision",
+                        description=(
+                            "This ticket has been automatically closed after **72 hours** "
+                            "of staff inactivity. The applicant has been notified and may reapply."
+                        ),
+                        color=discord.Color.dark_grey(),
+                        timestamp=now_utc,
+                    ))
+                except Exception:
+                    pass
+                try:
+                    new_name = f"closed-{ch.name}"[:90]
+                    await ch.edit(name=new_name)
+                    await ch.set_permissions(guild.default_role, view_channel=False)
+                    if applicant:
+                        await ch.set_permissions(applicant, view_channel=False)
+                except Exception:
+                    pass
+                entry["bump_level"] = 4
+                entry["bump_sent"] = True
+                changed = True
+
+            extra[ch_key] = entry
+        if changed:
+            _join_extra_save(extra)
+    except Exception as _e:
+        print(f"[JoinAutoBump] Error: {_e}")
+
+@tasks.loop(minutes=30)
+async def _join_auto_bump_loop():
+    _loop_success('_join_auto_bump_loop')
+    try:
+        await run_with_timeout('_join_auto_bump_loop', __join_auto_bump_loop_logic(), timeout=120)
+    except Exception as _lte:
+        await _handle_loop_error('_join_auto_bump_loop', _lte, _join_auto_bump_loop)
+@_join_auto_bump_loop.error
+async def __join_auto_bump_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('_join_auto_bump_loop', error, _join_auto_bump_loop)
+
+# =========================
+# JOIN TICKET MICRO-BUMP (every 10 min after photos complete, until claimed)
+# =========================
+
+_JOIN_MICRO_BUMP_MAX = 12  # max pings before handing off to escalating system (~2h)
+
+async def __join_micro_bump_logic():
+    """Ping @Ticket Support every 10 min in-ticket after photos are complete, until someone claims the review."""
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+        category = guild.get_channel(JOIN_TICKET_CATEGORY_ID)
+        if not isinstance(category, discord.CategoryChannel):
+            return
+        ts_role = guild.get_role(TICKET_SUPPORT_ROLE_ID)
+        extra = _join_extra_load()
+        changed = False
+        now_utc = datetime.now(timezone.utc)
+        for ch in category.text_channels:
+            topic = ch.topic or ""
+            if "JOIN_USER:" not in topic:
                 continue
-            # 24h elapsed — ping staff
-            lead   = guild.get_role(LEADER_ROLE_ID)
-            co     = guild.get_role(CO_LEADER_ROLE_ID)
-            mgr    = guild.get_role(MANAGER_ROLE_ID)
-            mentions = " ".join(r.mention for r in [lead, co, mgr] if r)
-            bump_embed = discord.Embed(
-                title="⏰ Application Awaiting Decision — 24h Reminder",
+            # Stop if already claimed or auto-closed
+            if "join_claimed_by=" in topic:
+                continue
+            ch_key = str(ch.id)
+            entry = extra.get(ch_key, {})
+            if entry.get("bump_level", 0) >= 4:
+                continue
+            # Only fire after photos are complete
+            if not entry.get("photos_complete_at"):
+                continue
+            # Stop after max pings — escalating system takes over
+            micro_count = entry.get("micro_bump_count", 0)
+            if micro_count >= _JOIN_MICRO_BUMP_MAX:
+                continue
+            # Rate-limit: at least 9 minutes since last micro ping (buffer for loop jitter)
+            last_micro = entry.get("micro_last_ping")
+            if last_micro:
+                try:
+                    last_dt = datetime.fromisoformat(last_micro)
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    if (now_utc - last_dt).total_seconds() < 540:
+                        continue
+                except Exception:
+                    pass
+            ts_mention = ts_role.mention if ts_role else ""
+            emb = discord.Embed(
+                title="🔔 Review Reminder",
                 description=(
-                    "This join application has had all required photos for **over 24 hours** "
-                    "with no accept or deny decision.\n\n"
-                    "Please review and close this ticket."
+                    "All required photos have been submitted and this application is "
+                    "**waiting for a decision**.\n\nClick **Claim Review** to take this ticket, then Accept or Deny."
                 ),
-                color=discord.Color.yellow(),
+                color=discord.Color.blurple(),
                 timestamp=now_utc,
             )
-            bump_embed.set_footer(text="Different Meets • Join Hub Auto-Bump")
+            emb.set_footer(text=f"Different Meets • Reminder {micro_count + 1}/{_JOIN_MICRO_BUMP_MAX}")
             try:
                 await ch.send(
-                    content=mentions if mentions else None,
-                    embed=bump_embed,
+                    content=ts_mention or None,
+                    embed=emb,
                     allowed_mentions=discord.AllowedMentions(roles=True),
                 )
-                entry["bump_sent"] = True
+                entry["micro_bump_count"] = micro_count + 1
+                entry["micro_last_ping"] = now_utc.isoformat()
                 extra[ch_key] = entry
                 changed = True
             except Exception:
@@ -13057,8 +14848,21 @@ async def _join_auto_bump_loop():
         if changed:
             _join_extra_save(extra)
     except Exception as _e:
-        print(f"[JoinAutoBump] Error: {_e}")
+        print(f"[JoinMicroBump] Error: {_e}")
 
+@tasks.loop(minutes=10)
+async def _join_micro_bump_loop():
+    _loop_success("_join_micro_bump_loop")
+    try:
+        await run_with_timeout("_join_micro_bump_loop", __join_micro_bump_logic(), timeout=60)
+    except Exception as _lte:
+        await _handle_loop_error("_join_micro_bump_loop", _lte, _join_micro_bump_loop)
+@_join_micro_bump_loop.error
+async def __join_micro_bump_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error("_join_micro_bump_loop", error, _join_micro_bump_loop)
+@_join_micro_bump_loop.before_loop
+async def _before_join_micro_bump():
+    await bot.wait_until_ready()
 
 # =========================
 # HOST POSTERS — received button
@@ -13102,8 +14906,19 @@ class _PostmeetReceivedView(discord.ui.View):
 # EVENTS
 # =========================
 @bot.event
+async def on_disconnect():
+    print(f"[Gateway] ⚠️  Bot disconnected from Discord — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
+
+@bot.event
+async def on_resumed():
+    print(f"[Gateway] ✅  Bot session resumed — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
+
+@bot.event
 async def on_ready():
-    global status_message_id
+    global status_message_id, _bot_start_time
+    _bot_start_time = time.time()
 
     print(f"Logged in as {bot.user}")
     try:
@@ -13212,6 +15027,7 @@ async def on_ready():
     bot.loop.create_task(_season_loop())
     bot.loop.create_task(_hrsvp_auto_reset_loop())
     bot.loop.create_task(_hrsvp_escalation_loop())
+    bot.loop.create_task(_rc_auto_archive_loop())
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
     _safe_add_view(_ASchedAnnounceView(),   "_ASchedAnnounceView")
@@ -13247,6 +15063,7 @@ async def on_ready():
     _safe_add_view(_PshipPanelView(),                     "_PshipPanelView")
     _safe_add_view(_PshipStaffView(),                     "_PshipStaffView")
     _safe_add_view(_PartnerPanelView(_pp_get_partners()), "_PartnerPanelView")
+    _safe_add_view(_PPPartnerTicketCloseView(),            "_PPPartnerTicketCloseView")
     _safe_add_view(_RsvpView(),                           "_RsvpView")
     _safe_add_view(_IgDropView(),                         "_IgDropView")
     for _g in bot.guilds:
@@ -13264,19 +15081,23 @@ async def on_ready():
         _rotating_presence_loop.start()
     if not _join_auto_bump_loop.is_running():
         _join_auto_bump_loop.start()
+        if not _join_micro_bump_loop.is_running():
+            _join_micro_bump_loop.start()
     _om_restore_rsvp_counts()
 
     if not hierarchy_attendance_loop.is_running():
         hierarchy_attendance_loop.start()
     if not host_board_auto_refresh_loop.is_running():
         host_board_auto_refresh_loop.start()
+    if not _session_vc_idle_check.is_running():
+        _session_vc_idle_check.start()
     if not gta_weather_refresh_loop.is_running():
         gta_weather_refresh_loop.start()
 
     status_message_id = data.get("panel_message_id")
 
-    # ── Startup welcome DM catch-up (DM members who joined while offline) ──
-    asyncio.create_task(_startup_catchup_welcome_dms())
+    # ── Startup welcome DM catch-up DISABLED — violated Discord Developer Policy ──
+    # asyncio.create_task(_startup_catchup_welcome_dms())
 
     # ── Roll call finalize reminder (starts after first 30min loop tick) ──
     if not _rc_finalize_reminder_loop.is_running():
@@ -13295,10 +15116,19 @@ async def on_ready():
         _mgmt_alert_loop.start()
     if not _stale_join_alert_task.is_running():
         _stale_join_alert_task.start()
-    if not _anniversary_check_task.is_running():
-        _anniversary_check_task.start()
+    # Anniversary loop disabled — was flooding staff-logs on Pi
+    # if not _anniversary_check_task.is_running():
+    #     _anniversary_check_task.start()
     if not _host_avail_weekly_dm_task.is_running():
         _host_avail_weekly_dm_task.start()
+    if not _unverified_dm_reminder_loop.is_running():
+        _unverified_dm_reminder_loop.start()
+    if not _inactivity_daily_report_loop.is_running():
+        _inactivity_daily_report_loop.start()
+    if not _re_engagement_loop.is_running():
+        _re_engagement_loop.start()
+    if not _health_score_update_loop.is_running():
+        _health_score_update_loop.start()
 
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
@@ -13327,6 +15157,73 @@ async def on_guild_join(guild: discord.Guild):
             await guild.leave()
         except Exception as _e:
             print(f"[ServerLock] Could not leave {guild.id}: {_e}")
+
+
+# =========================
+# ROLL CALL AUTO-ARCHIVE LOOP
+# =========================
+_rc_archive_last_ran: str = ""
+
+async def _rc_auto_archive_loop() -> None:
+    """Every Monday at 12:05 AM ET: post a final roll call summary for the week to staff logs."""
+    await bot.wait_until_ready()
+    global _rc_archive_last_ran
+    while not bot.is_closed():
+        await asyncio.sleep(60)
+        try:
+            now = datetime.now(_EST_TZ)
+            # Monday (weekday 0), 12:05 AM
+            if now.weekday() != 0 or now.hour != 0 or now.minute != 5:
+                continue
+            today_key = now.strftime("%Y-%m-%d")
+            if _rc_archive_last_ran == today_key:
+                continue
+            _rc_archive_last_ran = today_key
+
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+            logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if not isinstance(logs_ch, discord.TextChannel):
+                continue
+
+            meets = _rc_db.get_meets(guild.id)
+            responses = _rc_db.get_all_responses(guild.id)
+            crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+            total_crew = len([m for m in crew_role.members if not m.bot]) if crew_role else 0
+
+            embed = discord.Embed(
+                title="📋 Weekly Roll Call Archive",
+                description=f"Automatic end-of-week snapshot for **{now.strftime('%B %d, %Y')}**",
+                color=discord.Color.blurple(),
+                timestamp=now,
+            )
+            if not meets:
+                embed.add_field(name="No meets this week", value="Roll call was not active.", inline=False)
+            else:
+                for meet_row in meets:
+                    mn = meet_row["meet_number"]
+                    meet_responses = responses.get(mn, {})
+                    yes_ids  = meet_responses.get("yes",   [])
+                    no_ids   = meet_responses.get("no",    [])
+                    maybe_ids = meet_responses.get("maybe", [])
+                    total_resp = len(yes_ids) + len(no_ids) + len(maybe_ids)
+                    host_id = meet_row["host_id"]
+                    host_mention = f"<@{host_id}>" if host_id else "Unassigned"
+                    embed.add_field(
+                        name=f"Meet {mn} — {meet_row['class_name'] or 'TBD'} ({meet_row['date_text'] or 'TBD'})",
+                        value=(
+                            f"Host: {host_mention}\n"
+                            f"✅ Yes: **{len(yes_ids)}** · ❌ No: **{len(no_ids)}** · "
+                            f"❓ Maybe: **{len(maybe_ids)}**\n"
+                            f"Total responses: **{total_resp}** / {total_crew} crew"
+                        ),
+                        inline=False,
+                    )
+            embed.set_footer(text="Different Meets • Roll Call Auto-Archive")
+            await logs_ch.send(embed=embed)
+        except Exception as _e:
+            print(f"[RollCall] Auto-archive error: {_e}")
 
 
 # =========================
@@ -13914,8 +15811,6 @@ async def refreshcrewpanel(interaction: discord.Interaction):
         pass
 
 
-
-
 @bot.tree.command(name="sethostrole", description="Set the DIFF host role")
 async def sethostrole(interaction: discord.Interaction, role: discord.Role):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -14032,10 +15927,6 @@ async def meethistory_error(interaction: discord.Interaction, error: app_command
         await interaction.response.send_message(msg, ephemeral=True)
 
 
-
-
-
-
 class _WarnProofBtn(discord.ui.Button):
     """Persistent button — staff-only proof viewer on warn posts."""
     def __init__(self, warn_id: int):
@@ -14049,7 +15940,7 @@ class _WarnProofBtn(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         if not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
-        allowed = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+        allowed = _LEADERSHIP_HOST_ROLE_IDS
         if not interaction.user.guild_permissions.administrator and not any(
             r.id in allowed for r in interaction.user.roles
         ):
@@ -14276,9 +16167,6 @@ async def moderation_command_error(interaction: discord.Interaction, error: app_
         await interaction.response.send_message(msg, ephemeral=True)
 
 
-
-
-
 @bot.tree.command(name="posthierarchy", description="Post or refresh the DIFF hierarchy panel")
 async def posthierarchy(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
@@ -14358,7 +16246,7 @@ async def refresh_live_attendance_cmd(interaction: discord.Interaction):
 @app_commands.describe(application_id="Application ID, e.g. 0001")
 async def application_lookup(interaction: discord.Interaction, application_id: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this command.", ephemeral=True)
     record = get_app(application_id)
     if not record:
         return await interaction.response.send_message(f"No application found with ID #{application_id}.", ephemeral=True)
@@ -14377,7 +16265,7 @@ async def application_lookup(interaction: discord.Interaction, application_id: s
 @bot.tree.command(name="application_stats", description="View DIFF application totals (staff only)")
 async def application_stats(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this command.", ephemeral=True)
     app_data = load_apps()
     apps = list(app_data.get("applications", {}).values())
     pending = sum(1 for a in apps if a.get("status") == "Pending")
@@ -14394,7 +16282,7 @@ async def application_stats(interaction: discord.Interaction):
 @bot.tree.command(name="staffreplypanel", description="Post a staff response panel in the current channel (staff only)")
 async def staffreplypanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this command.", ephemeral=True)
     embed = discord.Embed(
         title="📩 DIFF Staff Response System",
         description=(
@@ -14411,7 +16299,7 @@ async def staffreplypanel(interaction: discord.Interaction):
 @discord.app_commands.describe(member="The member who attended", meet_name="Name of the meet")
 async def recordattendance(interaction: discord.Interaction, member: discord.Member, meet_name: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     await record_meet_attendance(interaction.guild, member, meet_name, host_member=interaction.user)
     await interaction.followup.send(f"✅ Recorded attendance for {member.mention} at **{meet_name}**.", ephemeral=True)
@@ -14421,7 +16309,7 @@ async def recordattendance(interaction: discord.Interaction, member: discord.Mem
 @discord.app_commands.describe(member="The member who hosted", meet_name="Name of the meet")
 async def recordhost(interaction: discord.Interaction, member: discord.Member, meet_name: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     await record_meet_host(interaction.guild, member, meet_name)
     await interaction.followup.send(f"✅ Recorded {member.mention} as host for **{meet_name}**.", ephemeral=True)
@@ -14431,7 +16319,7 @@ async def recordhost(interaction: discord.Interaction, member: discord.Member, m
 @discord.app_commands.describe(member="Target member", amount="Positive to add, negative to remove", reason="Reason for the change")
 async def giverep(interaction: discord.Interaction, member: discord.Member, amount: int, reason: str):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     await update_member_reputation(interaction.guild, member, amount, reason, given_by=interaction.user)
     direction = "Added" if amount >= 0 else "Removed"
@@ -14442,7 +16330,7 @@ async def giverep(interaction: discord.Interaction, member: discord.Member, amou
 @discord.app_commands.describe(member="The member to look up")
 async def memberstats(interaction: discord.Interaction, member: discord.Member):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     embed = build_member_stats_embed(member)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -14455,11 +16343,10 @@ async def mystats(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-
 @bot.tree.command(name="postattendancepanel", description="Post the meet attendance panel (staff only)")
 async def postattendancepanel(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     embed = discord.Embed(
         title="DIFF Meet Attendance System",
         description=(
@@ -14491,7 +16378,7 @@ async def rankinfo(interaction: discord.Interaction):
         inline=False,
     )
     embed.add_field(
-        name="Manager → Leader",
+        name="Server Operations → Founder",
         value=f"• Meets Attended: {LEADER_PROMOTION_ATTENDED}\n• Meets Hosted: {LEADER_PROMOTION_HOSTED}\n• Reputation: {LEADER_PROMOTION_REPUTATION}",
         inline=False,
     )
@@ -14502,14 +16389,14 @@ async def rankinfo(interaction: discord.Interaction):
 @bot.tree.command(name="weeklyrollcall", description="Post the weekly DIFF roll call with RSVP buttons (staff only)")
 async def weeklyrollcall(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this.", ephemeral=True)
     await interaction.response.send_modal(WeeklyRollCallModal())
 
 
 @bot.tree.command(name="staffdashboard", description="Post the DIFF staff recruitment dashboard (staff only)")
 async def staffdashboard(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not is_staff_reviewer(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can use this command.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can use this command.", ephemeral=True)
     await interaction.channel.send(embed=build_dashboard_embed(), view=DIFFDashboardView())
     await interaction.response.send_message("✅ Dashboard posted.", ephemeral=True)
 
@@ -14837,8 +16724,7 @@ async def _cs_try_close_vote(guild: discord.Guild) -> bool:
     return True
 
 
-@tasks.loop(minutes=1)
-async def color_schedule_loop():
+async def _color_schedule_loop_logic():
     now = datetime.now(COLOR_TZ)
     current_date = now.date().isoformat()
     data = _cs_load()
@@ -14904,12 +16790,21 @@ async def color_schedule_loop():
     if changed:
         _cs_save(data)
 
-
+@tasks.loop(minutes=1)
+async def color_schedule_loop():
+    _loop_success('color_schedule_loop')
+    try:
+        await run_with_timeout('color_schedule_loop', _color_schedule_loop_logic(), timeout=120)
+    except Exception as _lte:
+        await _handle_loop_error('color_schedule_loop', _lte, color_schedule_loop)
 @color_schedule_loop.before_loop
 async def before_color_schedule_loop():
     await bot.wait_until_ready()
 
 
+@color_schedule_loop.error
+async def _color_schedule_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('color_schedule_loop', error, color_schedule_loop)
 class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
     color_name = discord.ui.TextInput(label="Color Name", placeholder="Example: Tangerine Tango", max_length=100, required=True)
     hex_code = discord.ui.TextInput(label="HEX Code", placeholder="Example: #FF9742", max_length=7, min_length=4, required=True)
@@ -14999,7 +16894,7 @@ class SubmissionActionView(discord.ui.View):
     @discord.ui.button(label="Approve Color", style=discord.ButtonStyle.success, emoji="🏆", custom_id="diff_approve_color_button_v3")
     async def approve_color_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
-            return await interaction.response.send_message("Only Leaders, Co-Leaders, or Managers can approve colors.", ephemeral=True)
+            return await interaction.response.send_message("Only Leaders, Executives, or Managers can approve colors.", ephemeral=True)
         data = _cs_load()
         submission = data["submissions"].get(str(interaction.message.id))
         if not submission:
@@ -15016,7 +16911,7 @@ class SubmissionActionView(discord.ui.View):
     @discord.ui.button(label="Lock Submission", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="diff_lock_submission_button_v3")
     async def lock_submission_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
-            return await interaction.response.send_message("Only Leaders, Co-Leaders, or Managers can lock submissions.", ephemeral=True)
+            return await interaction.response.send_message("Only Leaders, Executives, or Managers can lock submissions.", ephemeral=True)
         data = _cs_load()
         submission = data["submissions"].get(str(interaction.message.id))
         if not submission:
@@ -15138,7 +17033,7 @@ async def color_stats(interaction: discord.Interaction):
 @bot.tree.command(name="force-color-vote", description="Manually post the weekly color vote (leadership only)")
 async def force_color_vote(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
-        return await interaction.response.send_message("Leaders, Co-Leaders, and Managers only.", ephemeral=True)
+        return await interaction.response.send_message("Founders, Executives, and Server Operations only.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     success = await _cs_try_post_weekly_vote(interaction.guild)
     if success:
@@ -15153,7 +17048,7 @@ async def force_color_vote(interaction: discord.Interaction):
 @bot.tree.command(name="force-color-winner", description="Manually close the vote and post the winner (leadership only)")
 async def force_color_winner(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
-        return await interaction.response.send_message("Leaders, Co-Leaders, and Managers only.", ephemeral=True)
+        return await interaction.response.send_message("Founders, Executives, and Server Operations only.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     success = await _cs_try_close_vote(interaction.guild)
     if success:
@@ -15189,7 +17084,7 @@ def _weekly_color_monday_embed() -> discord.Embed:
             title="🎨 Weekly Color Update",
             description="New color is live.\n\nColor Team — start preparing the next vote.",
             color=discord.Color.purple(),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         .add_field(
             name="What to do",
@@ -15206,7 +17101,7 @@ def _weekly_color_tuesday_embed() -> discord.Embed:
             title="🗳️ Voting Now Live",
             description="Voting has started.\n\nGuide members and keep things organized.",
             color=discord.Color.blue(),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         .add_field(
             name="Focus",
@@ -15273,7 +17168,7 @@ def _build_color_team_embed() -> discord.Embed:
             "Use the buttons below to quickly access the main channels for coordination and voting."
         ),
         color=discord.Color.purple(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(
         name="📌 Team Purpose",
@@ -15461,8 +17356,30 @@ def _build_interview_panel_embed() -> discord.Embed:
     )
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
+        name="📜 Rules & Strike System",
+        value="Walk the applicant through expectations and consequences",
+        inline=True,
+    )
+    embed.add_field(
+        name="🎨 Crew Colors & Color Lab",
+        value="Explain the weekly color vote and Color Lab system",
+        inline=True,
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
+        name="✅ Green Flags",
+        value="Staff-only reference — signs of a strong candidate",
+        inline=True,
+    )
+    embed.add_field(
+        name="⚠️ Red Flags",
+        value="Staff-only reference — warning signs and when to escalate",
+        inline=True,
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
         name="📘 Reminder",
-        value="Keep interviews smooth, respectful, and professional so every applicant gets the same clear DIFF experience.",
+        value="Keep every interview smooth, respectful, and consistent — applicants should always leave with a clear picture of DIFF.",
         inline=False,
     )
     embed.set_footer(text="Different Meets • Staff Interview Panel")
@@ -15549,7 +17466,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
             value=(
                 "*Our meet time is 8pm EST. You must join 30 minutes early. "
                 "You're required to attend at least one meet per week. "
-                "If you can't make it, you must let Management know in advance.*"
+                "If you can't make it, you must let a host or Server Operations know in advance.*"
             ),
             inline=False,
         )
@@ -15593,7 +17510,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
         embed = discord.Embed(
             title="📌 Crew Positions",
             description=(
-                "If the applicant is interested in a role, direct them to contact the **Leader or Co-Leader**.\n\n"
+                "If the applicant is interested in a role, direct them to contact the **Founder or Executive**.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=discord.Color.purple(),
@@ -15601,7 +17518,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
         embed.add_field(
             name="Available Positions",
             value=(
-                "📋 **Crew Managers** — help run operations and the server\n"
+                "📋 **Server Operations** — help run operations and the server\n"
                 "🏁 **Crew Meet Hosts** — plan and run crew meets\n"
                 "🎥 **Crew Content Creators** — capture and share crew content\n"
                 "🎨 **Crew Designer Team** — handle graphics and branding\n"
@@ -15637,7 +17554,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
             if not guild.get_role(LEADER_ROLE_ID):
                 leader_text = "**Leader** *(role not set)*"
             if not guild.get_role(CO_LEADER_ROLE_ID):
-                co_leader_text = "**Co-Leader** *(role not set)*"
+                co_leader_text = "**Executive** *(role not set)*"
             if not guild.get_role(MANAGER_ROLE_ID):
                 manager_text = "**Managers** *(role not set)*"
         embed = discord.Embed(
@@ -15649,15 +17566,247 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
             ),
             color=discord.Color.gold(),
         )
-        embed.add_field(name="👑 Leader",      value=leader_text,    inline=False)
-        embed.add_field(name="🛡️ Co-Leader",   value=co_leader_text, inline=False)
-        embed.add_field(name="📋 Managers",    value=manager_text,   inline=False)
+        embed.add_field(name="👑 Founder",             value=leader_text,    inline=False)
+        embed.add_field(name="🛡️ Executive",          value=co_leader_text, inline=False)
+        embed.add_field(name="📋 Server Operations",  value=manager_text,   inline=False)
         embed.add_field(
             name="📅 Founded",
             value="DIFF has been running since **August 20, 2020**.",
             inline=False,
         )
         embed.set_footer(text="Different Meets • Interview Panel — Leadership")
+
+    elif topic == "rules":
+        embed = discord.Embed(
+            title="📜 Rules & Strike System",
+            description=(
+                "Walk the applicant through what's expected of every DIFF member "
+                "and what happens when those expectations aren't met.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.red(),
+        )
+        embed.add_field(
+            name="🎧 Headset",
+            value="A working headset is **mandatory** at all meets and crew events. You must be audible.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🏷️ Crew Tag",
+            value="Set DIFF as your **active crew** at every meet. Crew jacket must also be worn.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🕐 Punctuality",
+            value="Join the lobby **30 minutes before** meet start. Habitual tardiness is tracked.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🚗 Clean Builds",
+            value="Cars must be **clean and realistic** at all DIFF events. No riced or modded builds.",
+            inline=False,
+        )
+        embed.add_field(
+            name="📋 Roll Call",
+            value="Respond to the weekly roll call. Unexplained no-shows count against your standing.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🤝 Conduct",
+            value="Treat all members and guests with respect. Drama or toxicity will not be tolerated.",
+            inline=False,
+        )
+        embed.add_field(
+            name="⚠️ Strike System",
+            value=(
+                "Violations result in **strikes**.\n"
+                "• **1 strike** — verbal warning\n"
+                "• **2 strikes** — formal warning, documented\n"
+                "• **3 strikes** — removal from DIFF"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Rules & Strikes")
+
+    elif topic == "colors":
+        embed = discord.Embed(
+            title="🎨 Crew Colors & Color Lab",
+            description=(
+                "Explain how the weekly crew color system works — this often comes up during interviews.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="🌈 Weekly Crew Color",
+            value=(
+                "Every week, DIFF runs a **community vote** for the next crew color. "
+                "The winning color is announced and **all members must paint their car** "
+                "to that color for the week's meet."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎨 Color Lab",
+            value=(
+                "Members can submit a color code via the **Color Lab** system. "
+                "Submissions go into the weekly vote pool — the community picks the winner."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📌 Why It Matters",
+            value=(
+                "Wearing the correct crew color shows **crew unity** at meets. "
+                "Failing to match the color may result in a strike if repeated."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🛎️ How They'll Know",
+            value=(
+                "The weekly color is posted in the announcements channel on Discord. "
+                "Remind the applicant to check Discord regularly."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Crew Colors")
+
+    elif topic == "greenflags":
+        embed = discord.Embed(
+            title="✅ Green Flags — Staff Reference",
+            description=(
+                "**Staff eyes only.** Positive signs that indicate a strong candidate "
+                "who is likely to be a good fit for DIFF.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.green(),
+        )
+        embed.add_field(
+            name="🎧 Headset Ready",
+            value=(
+                "They join the VC with a clear, working headset immediately. "
+                "No delay, no excuses — they came prepared."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🚗 Strong Car Knowledge",
+            value=(
+                "Can confidently name car brands, explain what clean/realistic means, "
+                "and describes their dream car with genuine enthusiasm."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📱 Active on Discord",
+            value=(
+                "Checks Discord daily, responds to roll calls, and already knows the "
+                "announcements channel — shows they're invested before even joining."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🏁 Crew Tag & Jacket Awareness",
+            value=(
+                "Already knows about the crew tag and jacket requirement without being told, "
+                "or asks about it proactively — shows they did their research."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📅 Meet Availability",
+            value=(
+                "Available most weekends, already knows the 8pm EST meet time, "
+                "and is willing to join 30 minutes early without hesitation."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🤝 Respectful Tone",
+            value=(
+                "Calm, friendly, and professional throughout. Listens well, "
+                "answers questions without being evasive, and asks thoughtful questions."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎯 Clear Motivation",
+            value=(
+                "Has a genuine reason for wanting to join DIFF — not just 'I want a crew tag'. "
+                "References community, meets, or crew culture specifically."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="⏫ Recommendation",
+            value=(
+                "A candidate with multiple green flags should be fast-tracked. "
+                "Move to the garage photo step and flag to a Founder or Executive if exceptional."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Green Flags (Staff Only)")
+
+    elif topic == "redflags":
+        embed = discord.Embed(
+            title="⚠️ Red Flags — Staff Reference",
+            description=(
+                "**Staff eyes only.** Things to watch for during the interview "
+                "that may need escalating or further review.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.dark_red(),
+        )
+        embed.add_field(
+            name="🚫 Prior Bans or Warnings",
+            value=(
+                "If the applicant mentions being previously banned or warned in DIFF, "
+                "**do not accept on the spot.** Flag to a Founder or Executive for review."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="❌ No Headset",
+            value=(
+                "If they cannot speak during the voice interview, that is an immediate concern. "
+                "A headset is non-negotiable — politely decline or reschedule."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🚗 No Car Knowledge",
+            value=(
+                "Can't name any car brands? Doesn't know what a ricer is? "
+                "These are warning signs they won't fit the clean car culture."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📵 Low Discord Activity",
+            value=(
+                "If they rarely check Discord or don't respond to notifications, "
+                "they will miss roll calls and color announcements — flag this."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="😤 Attitude or Deflection",
+            value=(
+                "Defensive answers, dismissing questions, or rushing through the interview "
+                "are signs the applicant may not take DIFF seriously."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="⏫ Escalation",
+            value=(
+                "If anything feels off, **do not make the call alone.** "
+                "End the interview politely and consult a Founder or Executive before deciding."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Interview Panel — Red Flags (Staff Only)")
 
     else:
         embed = discord.Embed(title="Unknown topic", color=discord.Color.red())
@@ -15709,6 +17858,30 @@ class InterviewTopicSelect(discord.ui.Select):
                     value="leadership",
                     emoji="👑",
                     description="Who applicants can contact after the interview.",
+                ),
+                discord.SelectOption(
+                    label="Rules & Strike System",
+                    value="rules",
+                    emoji="📜",
+                    description="Walk the applicant through expectations and consequences.",
+                ),
+                discord.SelectOption(
+                    label="Crew Colors & Color Lab",
+                    value="colors",
+                    emoji="🎨",
+                    description="How the weekly crew color vote and Color Lab work.",
+                ),
+                discord.SelectOption(
+                    label="Green Flags (Staff Only)",
+                    value="greenflags",
+                    emoji="✅",
+                    description="Positive signs of a strong candidate.",
+                ),
+                discord.SelectOption(
+                    label="Red Flags (Staff Only)",
+                    value="redflags",
+                    emoji="⚠️",
+                    description="Signs to watch for and when to escalate.",
                 ),
             ],
             row=0,
@@ -16061,7 +18234,7 @@ class InterviewOutcomeView(discord.ui.View):
             return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
         if not _interview_outcome_can_manage(interaction.user):
             return await interaction.response.send_message(
-                "Only Leader, Co-Leader, or Manager can use this outcome panel.", ephemeral=True
+                "Only Leader, Executive, or Manager can use this outcome panel.", ephemeral=True
             )
         await interaction.response.send_modal(ApplicantLookupModal("accept"))
 
@@ -16077,7 +18250,7 @@ class InterviewOutcomeView(discord.ui.View):
             return await interaction.response.send_message("This can only be used inside the server.", ephemeral=True)
         if not _interview_outcome_can_manage(interaction.user):
             return await interaction.response.send_message(
-                "Only Leader, Co-Leader, or Manager can use this outcome panel.", ephemeral=True
+                "Only Leader, Executive, or Manager can use this outcome panel.", ephemeral=True
             )
         await interaction.response.send_modal(ApplicantLookupModal("deny"))
 
@@ -16126,12 +18299,12 @@ async def _post_or_refresh_interview_outcome_panel(channel: discord.TextChannel)
     _interview_outcome_save({"channel_id": channel.id, "message_id": msg.id})
 
 
-@bot.tree.command(name="post-interview-results-panel", description="Post the accept/deny interview results panel in this channel (Leader/Co-Leader/Manager only)")
+@bot.tree.command(name="post-interview-results-panel", description="Post the accept/deny interview results panel in this channel (Leader/Executive/Manager only)")
 async def post_interview_results_panel(interaction: discord.Interaction):
     if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
         return await interaction.response.send_message("Run this command in the ticket channel where you want the panel.", ephemeral=True)
     if not isinstance(interaction.user, discord.Member) or not _interview_outcome_can_manage(interaction.user):
-        return await interaction.response.send_message("Only Leader, Co-Leader, or Manager can post this panel.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader, Executive, or Manager can post this panel.", ephemeral=True)
     try:
         await interaction.response.defer(ephemeral=True)
     except discord.NotFound:
@@ -16186,7 +18359,7 @@ def _tab_build_status_embed(member: discord.Member, app: dict) -> discord.Embed:
             "This ticket is now directly connected to application review and interview actions."
         ),
         color=discord.Color.blue(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Applicant", value=member.mention, inline=False)
     embed.add_field(name="Current Status", value=f"**{app.get('status', 'Unknown')}**", inline=True)
@@ -16210,7 +18383,7 @@ async def _tab_post_staff_log(title: str, description: str, color: discord.Color
     channel = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         return
-    embed = discord.Embed(title=title, description=description, color=color, timestamp=datetime.utcnow())
+    embed = discord.Embed(title=title, description=description, color=color, timestamp=datetime.now(timezone.utc))
     embed.set_footer(text="Different Meets • Staff Logs")
     await channel.send(embed=embed)
 
@@ -16797,8 +18970,7 @@ async def application_status(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@tasks.loop(minutes=2)
-async def ticket_scan_loop():
+async def _ticket_scan_loop_logic():
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
         return
@@ -16840,12 +19012,21 @@ async def ticket_scan_loop():
         except Exception:
             continue
 
-
+@tasks.loop(minutes=2)
+async def ticket_scan_loop():
+    _loop_success('ticket_scan_loop')
+    try:
+        await run_with_timeout('ticket_scan_loop', _ticket_scan_loop_logic(), timeout=120)
+    except Exception as _lte:
+        await _handle_loop_error('ticket_scan_loop', _lte, ticket_scan_loop)
 @ticket_scan_loop.before_loop
 async def before_ticket_scan_loop():
     await bot.wait_until_ready()
 
 
+@ticket_scan_loop.error
+async def _ticket_scan_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('ticket_scan_loop', error, ticket_scan_loop)
 # =========================
 # COLOR OPS SYSTEM
 # =========================
@@ -16921,7 +19102,7 @@ def _build_color_ops_stats_embed(state: dict) -> discord.Embed:
         title="📊 DIFF Color + Application Stats",
         description="Live tracking panel for color operations and application/interview flow.",
         color=discord.Color.gold(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(
         name="🧾 Applications",
@@ -16977,7 +19158,7 @@ def _build_color_ops_leaderboard_embed(state: dict) -> discord.Embed:
         title="🏆 DIFF Top Color Contributors",
         description="Leaderboard for the most active and successful color contributors.",
         color=discord.Color.purple(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="📈 Leaderboard", value="\n".join(lines), inline=False)
     embed.add_field(
@@ -16995,7 +19176,7 @@ def _build_color_ops_leaderboard_embed(state: dict) -> discord.Embed:
 def _build_color_ops_application_embed(
     member: discord.Member, app_data: dict, title: str, color: discord.Color
 ) -> discord.Embed:
-    embed = discord.Embed(title=title, color=color, timestamp=datetime.utcnow())
+    embed = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
     embed.add_field(name="Member", value=member.mention, inline=False)
     embed.add_field(name="Status", value=f"**{app_data.get('status', 'Unknown')}**", inline=True)
     embed.add_field(name="Submitted", value=app_data.get("submitted_at", "Not logged"), inline=True)
@@ -17021,7 +19202,7 @@ def _build_color_ops_winner_embed(color_name: str, contributor_text: str, image_
             "Use the buttons below for team coordination and the next vote flow."
         ),
         color=discord.Color.blue(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     if image_url:
         embed.set_image(url=image_url)
@@ -17071,19 +19252,27 @@ async def _color_ops_refresh_panels() -> None:
     _color_ops_save(state)
 
 
-@tasks.loop(minutes=5)
-async def color_ops_refresh_loop():
+async def _color_ops_refresh_loop_logic():
     try:
         await _color_ops_refresh_panels()
     except Exception as e:
         print(f"[COLOR OPS AUTO REFRESH ERROR] {e}")
 
-
+@tasks.loop(minutes=5)
+async def color_ops_refresh_loop():
+    _loop_success('color_ops_refresh_loop')
+    try:
+        await run_with_timeout('color_ops_refresh_loop', _color_ops_refresh_loop_logic(), timeout=60)
+    except Exception as _lte:
+        await _handle_loop_error('color_ops_refresh_loop', _lte, color_ops_refresh_loop)
 @color_ops_refresh_loop.before_loop
 async def before_color_ops_refresh_loop():
     await bot.wait_until_ready()
 
 
+@color_ops_refresh_loop.error
+async def _color_ops_refresh_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('color_ops_refresh_loop', error, color_ops_refresh_loop)
 # Application / Interview commands
 
 @bot.tree.command(name="log-application", description="Log a member application into the system (staff only)")
@@ -17211,7 +19400,7 @@ async def log_color_submission(interaction: discord.Interaction, contributor: di
             f"**Logged By:** {interaction.user.mention}"
         ),
         color=discord.Color.purple(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     if image_url:
         embed.set_image(url=image_url)
@@ -17260,7 +19449,7 @@ async def set_color_winner(interaction: discord.Interaction, color_name: str, co
             f"**Logged By:** {interaction.user.mention}"
         ),
         color=discord.Color.blue(),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     if image_url:
         staff_embed.set_image(url=image_url)
@@ -17320,15 +19509,15 @@ ATT_CONTROL_HUB_FILE = os.path.join(DATA_FOLDER, "diff_control_hub_panel.json")
 
 ATT_PROMO_PATH = {
     "Crew Member": "Host",
-    "Host": "Manager",
-    "Manager": "Co-Leader",
-    "Co-Leader": "Leader",
+    "Host": "Server Operations",
+    "Server Operations": "Executive",
+    "Executive": "Founder",
 }
 ATT_PROMO_THRESHOLDS = {
     "Crew Member": 5,
     "Host": 10,
-    "Manager": 18,
-    "Co-Leader": 30,
+    "Server Operations": 18,
+    "Executive": 30,
 }
 ATT_PROMO_RATE_MIN = 60.0
 
@@ -17415,7 +19604,7 @@ def _rsvp_build_embed(meet: RsvpMeet) -> discord.Embed:
 
 
 def _rsvp_top_role(member: discord.Member) -> str:
-    priority = ["Leader", "Co-Leader", "Manager", "Host", "Crew Member"]
+    priority = ["Founder", "Executive", "Server Operations", "Host", "Crew Member"]
     names = {r.name for r in member.roles}
     for name in priority:
         if name in names:
@@ -18098,7 +20287,7 @@ async def my_stats(interaction: discord.Interaction, member: Optional[discord.Me
 async def clear_history(interaction: discord.Interaction, amount: int = 100):
     _leadership_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID}
     if not isinstance(interaction.user, discord.Member) or not any(r.id in _leadership_ids for r in interaction.user.roles):
-        return await interaction.response.send_message("Only Leader or Co-Leader can use this command.", ephemeral=True)
+        return await interaction.response.send_message("Only Leader or Executive can use this command.", ephemeral=True)
     if not isinstance(interaction.channel, discord.TextChannel):
         return await interaction.response.send_message("This command can only be used in a text channel.", ephemeral=True)
     if amount < 0 or amount > 1000:
@@ -18224,7 +20413,7 @@ _TICKET_TYPES: dict[str, _TicketType] = {
             "• What happened and when\n"
             "• Screenshots or video evidence"
         ),
-        ping_role_id=MANAGER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "support": _TicketType(
         key="support",
@@ -18241,7 +20430,7 @@ _TICKET_TYPES: dict[str, _TicketType] = {
             "• Channel / role access issues\n"
             "• Anything that doesn't fit another category"
         ),
-        ping_role_id=HOST_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "apply": _TicketType(
         key="apply",
@@ -18254,7 +20443,7 @@ _TICKET_TYPES: dict[str, _TicketType] = {
             "mature, and ready to contribute to the community.\n\n"
             "**Leadership will review your answers and respond here.**"
         ),
-        ping_role_id=CO_LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     # ── Appeal sub-types (handled via AppealDropdown) ──────────────────────────
     "warning": _TicketType(
@@ -18262,41 +20451,66 @@ _TICKET_TYPES: dict[str, _TicketType] = {
         description="Appeal a warning or write-up you received.",
         title="Warning Appeal Ticket",
         long_description="Appeal a warning issued by staff.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "timeout": _TicketType(
         key="timeout", label="⏰ Timeout Appeal", emoji="⏰",
         description="Appeal a timeout or mute applied to your account.",
         title="Timeout Appeal Ticket",
         long_description="Appeal a timeout or mute.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "ban": _TicketType(
         key="ban", label="🔨 Ban Appeal", emoji="🔨",
         description="Appeal a ban and request reinstatement.",
         title="Ban Appeal Ticket",
         long_description="Appeal a ban from the server.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "kick": _TicketType(
         key="kick", label="👢 Kick Review", emoji="👢",
         description="Request a review of a kick from the server.",
         title="Kick Review Ticket",
         long_description="Request review of a kick.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "build": _TicketType(
         key="build", label="🚗 Build Denial Appeal", emoji="🚙",
         description="Appeal a build denial at a DIFF meet.",
         title="Build Denial Appeal Ticket",
         long_description="Appeal a build denial.",
-        ping_role_id=LEADER_ROLE_ID,
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
     ),
     "exclusion": _TicketType(
         key="exclusion", label="🏁 Meet Exclusion Appeal", emoji="🏁",
         description="Appeal being excluded from a meet or event.",
         title="Meet Exclusion Appeal Ticket",
         long_description="Appeal a meet exclusion.",
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
+    ),
+    "ts_apply": _TicketType(
+        key="ts_apply",
+        label="🎫 Ticket Support Application",
+        emoji="🎫",
+        description="Apply to join the DIFF Ticket Support team.",
+        title="Ticket Support Application",
+        long_description=(
+            "Apply to become a DIFF Ticket Support member.\n\n"
+            "You'll be asked 5 short questions. Leadership will review your answers and respond here."
+        ),
+        ping_role_id=TICKET_SUPPORT_ROLE_ID,
+    ),
+    "mod_apply": _TicketType(
+        key="mod_apply",
+        label="🛡️ Moderator Application",
+        emoji="🛡️",
+        description="Apply to join the DIFF moderation team.",
+        title="Moderator Application",
+        long_description=(
+            "Apply to become a DIFF moderator.\n\n"
+            "All new mods start as **Junior Moderator** and work up through the ranks. "
+            "You'll be asked 5 short questions. Leadership will review and respond here."
+        ),
         ping_role_id=LEADER_ROLE_ID,
     ),
 }
@@ -18361,11 +20575,19 @@ class _TicketRatingButton(discord.ui.Button):
 
 
 class _TicketRatingView(discord.ui.View):
-    """Adds ⭐1–⭐5 rating buttons to the ticket-closed DM."""
-    def __init__(self, channel_name: str, ticket_type: str):
+    """Adds a View Transcript link button + ⭐1–⭐5 rating buttons to the ticket-closed DM."""
+    def __init__(self, channel_name: str, ticket_type: str, transcript_url: str | None = None):
         super().__init__(timeout=None)
         import uuid as _uuid
         uid = _uuid.uuid4().hex[:10]
+        if transcript_url:
+            self.add_item(discord.ui.Button(
+                label="View Transcript",
+                emoji="📋",
+                style=discord.ButtonStyle.link,
+                url=transcript_url,
+                row=0,
+            ))
         _styles = [
             discord.ButtonStyle.danger,   # 1 — red
             discord.ButtonStyle.danger,   # 2 — red
@@ -18912,6 +21134,66 @@ async def _supp_export_transcript(channel: discord.TextChannel) -> discord.File:
     return await _build_html_transcript(channel, limit=None)
 
 
+async def _post_transcript_to_channel(
+    guild: discord.Guild,
+    transcript_file: discord.File,
+    channel_name: str,
+    ticket_type: str,
+    outcome: str = "",
+) -> str | None:
+    """Upload transcript to the transcripts channel to get a CDN URL, delete
+    the raw file message, then post a clean embed + link button.
+    Staff-logs receives only the close embed (caller's responsibility).
+    Returns the CDN URL of the uploaded file, or None on failure."""
+
+    tc = guild.get_channel(TICKET_TRANSCRIPTS_CHANNEL_ID)
+    if not isinstance(tc, discord.TextChannel):
+        return None
+
+    # ── Step 1: upload raw file ───────────────────────────────────────────────
+    # Discord CDN attachment URLs now expire (~24 h) regardless of whether the
+    # message is kept. We return a permanent Discord jump link instead, which
+    # navigates directly to the message so Discord generates a fresh download
+    # URL on demand.
+    jump_url: str | None = None
+    try:
+        upload_msg = await tc.send(file=transcript_file)
+        jump_url = f"https://discord.com/channels/{guild.id}/{tc.id}/{upload_msg.id}"
+    except discord.HTTPException:
+        pass
+
+    # ── Step 2: post clean embed + button directly below the file ────────────
+    ref_embed = discord.Embed(
+        title=f"📄 {ticket_type} Transcript",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    ref_embed.add_field(name="📁 Channel", value=f"`{channel_name}`", inline=True)
+    if outcome:
+        ref_embed.add_field(name="📋 Outcome", value=outcome, inline=True)
+    ref_embed.set_footer(text="Different Meets • Transcripts")
+
+    view: discord.ui.View | None = None
+    if jump_url:
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(
+            label="View Transcript",
+            emoji="📋",
+            style=discord.ButtonStyle.link,
+            url=jump_url,
+        ))
+
+    try:
+        if view:
+            await tc.send(embed=ref_embed, view=view)
+        else:
+            await tc.send(embed=ref_embed)
+    except discord.HTTPException:
+        pass
+
+    return jump_url
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Appeal denial cooldown helpers (30-day cooldown after a denial per type)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -18923,12 +21205,11 @@ def _appeal_denial_load() -> dict:
         return {}
 
 def _appeal_denial_save(_d: dict) -> None:
-    with open(_APPEAL_DENIAL_FILE, "w") as _f:
-        json.dump(_d, _f)
+    _atomic_json_save(_APPEAL_DENIAL_FILE, _d)
 
 def _appeal_denial_set(user_id: int, appeal_type: str) -> None:
     _d = _appeal_denial_load()
-    _d.setdefault(str(user_id), {})[appeal_type] = datetime.utcnow().isoformat()
+    _d.setdefault(str(user_id), {})[appeal_type] = datetime.now(timezone.utc).isoformat()
     _appeal_denial_save(_d)
 
 def _appeal_denial_check(user_id: int, appeal_type: str):
@@ -18941,7 +21222,7 @@ def _appeal_denial_check(user_id: int, appeal_type: str):
         denied_at = datetime.fromisoformat(record)
     except ValueError:
         return None
-    remaining = timedelta(days=30) - (datetime.utcnow() - denied_at)
+    remaining = timedelta(days=30) - (datetime.now(timezone.utc) - denied_at)
     return remaining if remaining.total_seconds() > 0 else None
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -18955,14 +21236,13 @@ def _tperf_load() -> dict:
         return {}
 
 def _tperf_save(_d: dict) -> None:
-    with open(_TICKET_PERF_FILE, "w") as _f:
-        json.dump(_d, _f)
+    _atomic_json_save(_TICKET_PERF_FILE, _d)
 
 def _tperf_record_claim(staff_id: int, channel_name: str) -> None:
     _d = _tperf_load()
     _s = _d.setdefault(str(staff_id), {"claimed": 0, "closed": 0, "total_seconds": 0, "claim_times": {}})
     _s["claimed"] = _s.get("claimed", 0) + 1
-    _s.setdefault("claim_times", {})[channel_name] = datetime.utcnow().isoformat()
+    _s.setdefault("claim_times", {})[channel_name] = datetime.now(timezone.utc).isoformat()
     _tperf_save(_d)
 
 def _tperf_record_close(staff_id: int, channel_name: str) -> None:
@@ -18972,7 +21252,7 @@ def _tperf_record_close(staff_id: int, channel_name: str) -> None:
     _claim_str = _s.get("claim_times", {}).pop(channel_name, None)
     if _claim_str:
         try:
-            _elapsed = (datetime.utcnow() - datetime.fromisoformat(_claim_str)).total_seconds()
+            _elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(_claim_str)).total_seconds()
             _s["total_seconds"] = _s.get("total_seconds", 0) + max(0, _elapsed)
         except Exception:
             pass
@@ -18989,8 +21269,7 @@ def _faq_load() -> dict:
         return {}
 
 def _faq_save(_d: dict) -> None:
-    with open(_FAQ_FILE, "w") as _f:
-        json.dump(_d, _f)
+    _atomic_json_save(_FAQ_FILE, _d)
 
 def _faq_lookup(text: str) -> "list[tuple[str,str]]":
     """Return list of (trigger, answer) tuples whose trigger keywords appear in text."""
@@ -19003,6 +21282,238 @@ def _faq_lookup(text: str) -> "list[tuple[str,str]]":
     return _matches
 
 
+class _TicketSupportAppModal(discord.ui.Modal, title="Ticket Support Application"):
+    age = discord.ui.TextInput(
+        label="How old are you? (Must be 18+)",
+        placeholder="e.g. 21",
+        max_length=3,
+        style=discord.TextStyle.short,
+    )
+    time_and_activity = discord.ui.TextInput(
+        label="Time in DIFF & Weekly Activity",
+        placeholder="e.g. 8 months — active daily / 4–5 days a week",
+        max_length=150,
+        style=discord.TextStyle.short,
+    )
+    why_ts = discord.ui.TextInput(
+        label="Why do you want to join Ticket Support?",
+        placeholder="Tell us why you'd be a good fit...",
+        max_length=500,
+        style=discord.TextStyle.paragraph,
+    )
+    warnings_bans = discord.ui.TextInput(
+        label="Any warnings or bans? If yes, explain.",
+        placeholder="None / Yes — explain here...",
+        max_length=300,
+        style=discord.TextStyle.short,
+    )
+    experience = discord.ui.TextInput(
+        label="Previous moderation or support experience?",
+        placeholder="e.g. Mod at X server, ticket support elsewhere...",
+        max_length=400,
+        style=discord.TextStyle.paragraph,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+
+        # Age gate — must be 18+
+        age_str = self.age.value.strip()
+        try:
+            age_val = int(age_str)
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Please enter a valid age (numbers only).", ephemeral=True
+            )
+        if age_val < 18:
+            return await interaction.response.send_message(
+                "❌ You must be **18 or older** to apply for Ticket Support.", ephemeral=True
+            )
+
+        await interaction.response.defer(ephemeral=True)
+
+        ticket = _TICKET_TYPES["ts_apply"]
+
+        existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, support_only=True)
+        if existing:
+            ex_type_key = _supp_parse_topic(existing.topic, "ticket_type") or "ticket"
+            ex_ticket = _TICKET_TYPES.get(ex_type_key)
+            ex_label = ex_ticket.label if ex_ticket else "ticket"
+            return await interaction.followup.send(
+                f"You already have an open {ex_label}: {existing.mention}\n"
+                "Please close it before opening another ticket.",
+                ephemeral=True,
+            )
+
+        channel = await _supp_create_ticket_channel(interaction, ticket)
+        if not channel:
+            return
+
+        ping = " ".join(filter(None, [interaction.user.mention, _supp_role_mention(ticket.ping_role_id)]))
+        await channel.send(
+            content=ping or None,
+            embed=_supp_build_ticket_embed(ticket, interaction.user),
+        )
+
+        app_embed = discord.Embed(
+            title="🎫 Ticket Support Application",
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        app_embed.set_author(
+            name=interaction.user.display_name,
+            icon_url=interaction.user.display_avatar.url,
+        )
+        app_embed.add_field(name="🔞 Age",                   value=age_str,                         inline=True)
+        app_embed.add_field(name="⏱️ Time in DIFF & Activity", value=self.time_and_activity.value, inline=False)
+        app_embed.add_field(name="💬 Why Ticket Support?",   value=self.why_ts.value,               inline=False)
+        app_embed.add_field(name="⚠️ Warnings / Bans",      value=self.warnings_bans.value,        inline=False)
+        app_embed.add_field(name="🛡️ Prior Experience",     value=self.experience.value,           inline=False)
+        app_embed.set_footer(text="DIFF Meets • Ticket Support Application — Must be 18+")
+        await channel.send(embed=app_embed, view=SupportCloseButton())
+
+        review_channel = interaction.guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
+        if isinstance(review_channel, discord.TextChannel):
+            try:
+                review_note = discord.Embed(
+                    description=f"📬 New **Ticket Support** application from {interaction.user.mention} — {channel.mention}",
+                    color=0x5865F2,
+                )
+                await review_channel.send(embed=review_note)
+                await review_channel.send(embed=app_embed)
+            except discord.HTTPException:
+                pass
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            try:
+                await logs_channel.send(embed=_supp_build_log_embed("Opened", interaction.user, ticket, channel))
+            except discord.HTTPException:
+                pass
+
+        await interaction.followup.send(
+            f"✅ Your Ticket Support application has been submitted: {channel.mention}",
+            ephemeral=True,
+        )
+
+
+class _ModAppModal(discord.ui.Modal, title="Moderator Application"):
+    age = discord.ui.TextInput(
+        label="How old are you? (Must be 18+)",
+        placeholder="e.g. 21",
+        max_length=3,
+        style=discord.TextStyle.short,
+    )
+    time_and_activity = discord.ui.TextInput(
+        label="Time in DIFF & Weekly Activity",
+        placeholder="e.g. 8 months — active daily / 4–5 days a week",
+        max_length=150,
+        style=discord.TextStyle.short,
+    )
+    why_mod = discord.ui.TextInput(
+        label="Why do you want to be a moderator?",
+        placeholder="Tell us what motivates you...",
+        max_length=500,
+        style=discord.TextStyle.paragraph,
+    )
+    warnings_bans = discord.ui.TextInput(
+        label="Any warnings or bans? If yes, explain.",
+        placeholder="None / Yes — explain here...",
+        max_length=300,
+        style=discord.TextStyle.short,
+    )
+    experience = discord.ui.TextInput(
+        label="Previous moderation experience?",
+        placeholder="e.g. Mod at X server, admin experience...",
+        max_length=400,
+        style=discord.TextStyle.paragraph,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+
+        # Age gate — must be 18+
+        age_str = self.age.value.strip()
+        try:
+            age_val = int(age_str)
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Please enter a valid age (numbers only).", ephemeral=True
+            )
+        if age_val < 18:
+            return await interaction.response.send_message(
+                "❌ You must be **18 or older** to apply for a moderator role.", ephemeral=True
+            )
+
+        await interaction.response.defer(ephemeral=True)
+
+        ticket = _TICKET_TYPES["mod_apply"]
+
+        existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, support_only=True)
+        if existing:
+            ex_type_key = _supp_parse_topic(existing.topic, "ticket_type") or "ticket"
+            ex_ticket   = _TICKET_TYPES.get(ex_type_key)
+            ex_label    = ex_ticket.label if ex_ticket else "ticket"
+            return await interaction.followup.send(
+                f"You already have an open {ex_label}: {existing.mention}\n"
+                "Please close it before opening another ticket.",
+                ephemeral=True,
+            )
+
+        channel = await _supp_create_ticket_channel(interaction, ticket)
+        if not channel:
+            return
+
+        ping = " ".join(filter(None, [interaction.user.mention, _supp_role_mention(ticket.ping_role_id)]))
+        await channel.send(
+            content=ping or None,
+            embed=_supp_build_ticket_embed(ticket, interaction.user),
+        )
+
+        app_embed = discord.Embed(
+            title="🛡️ Moderator Application",
+            color=discord.Color.from_rgb(88, 101, 242),
+            timestamp=datetime.now(timezone.utc),
+        )
+        app_embed.set_author(
+            name=interaction.user.display_name,
+            icon_url=interaction.user.display_avatar.url,
+        )
+        app_embed.add_field(name="🔞 Age",                     value=age_str,                         inline=True)
+        app_embed.add_field(name="⏱️ Time in DIFF & Activity", value=self.time_and_activity.value,   inline=False)
+        app_embed.add_field(name="💬 Why Moderator?",          value=self.why_mod.value,              inline=False)
+        app_embed.add_field(name="⚠️ Warnings / Bans",        value=self.warnings_bans.value,        inline=False)
+        app_embed.add_field(name="🛡️ Prior Experience",       value=self.experience.value,           inline=False)
+        app_embed.set_footer(text="DIFF Meets • Moderator Application — All new mods start as Junior Moderator | Must be 18+")
+        await channel.send(embed=app_embed, view=SupportCloseButton())
+
+        review_channel = interaction.guild.get_channel(APPLICATION_REVIEW_CHANNEL_ID)
+        if isinstance(review_channel, discord.TextChannel):
+            try:
+                review_note = discord.Embed(
+                    description=f"📬 New **Moderator** application from {interaction.user.mention} — {channel.mention}",
+                    color=discord.Color.from_rgb(88, 101, 242),
+                )
+                await review_channel.send(embed=review_note)
+                await review_channel.send(embed=app_embed)
+            except discord.HTTPException:
+                pass
+
+        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(logs_channel, discord.TextChannel):
+            try:
+                await logs_channel.send(embed=_supp_build_log_embed("Opened", interaction.user, ticket, channel))
+            except discord.HTTPException:
+                pass
+
+        await interaction.followup.send(
+            f"✅ Your moderator application has been submitted: {channel.mention}",
+            ephemeral=True,
+        )
+
+
 class SupportCloseButton(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -19011,7 +21522,7 @@ class SupportCloseButton(discord.ui.View):
     async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not isinstance(interaction.user, discord.Member):
             return
-        is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in interaction.user.roles)
+        is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles)
         if not is_staff:
             return await interaction.response.send_message("Only staff can claim tickets.", ephemeral=True)
         channel = interaction.channel
@@ -19042,7 +21553,7 @@ class SupportCloseButton(discord.ui.View):
         member = interaction.user
         owner_id = _supp_parse_topic(channel.topic, "ticket_owner")
         is_owner = owner_id == str(member.id)
-        is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in member.roles)
+        is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in member.roles)
         if not (is_owner or is_staff or member.guild_permissions.manage_channels):
             return await interaction.response.send_message("You do not have permission to close this ticket.", ephemeral=True)
 
@@ -19082,13 +21593,15 @@ class SupportCloseButton(discord.ui.View):
             close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
             _supp_brand_embed(close_embed)
             try:
-                # Attach transcript directly — CDN links expire, file attachments don't
-                if transcript_file:
-                    await logs_channel.send(embed=close_embed, file=transcript_file)
-                else:
-                    await logs_channel.send(embed=close_embed)
+                await logs_channel.send(embed=close_embed)
             except discord.HTTPException:
                 pass
+        _transcript_url: str | None = None
+        if transcript_file and interaction.guild:
+            _transcript_url = await _post_transcript_to_channel(
+                interaction.guild, transcript_file,
+                channel.name, "Support Ticket",
+            )
 
         if owner_id:
             try:
@@ -19098,14 +21611,14 @@ class SupportCloseButton(discord.ui.View):
                         title="🔒 Your Ticket Has Been Closed",
                         description=(
                             f"Your **{ticket.label}** ticket in **{interaction.guild.name}** has been closed.\n\n"
-                            "If you still need help, feel free to open a new ticket from the support panel.\n\n"
-                            "⭐ **How was your experience?** Tap a star below to rate this ticket."
+                            "Your full ticket transcript is available via the button below — you can open it in your browser to view the full conversation.\n\n"
+                            "If you still need help, feel free to open a new ticket from the support panel."
                         ),
                         color=_TICKET_COLORS.get(ticket.key, discord.Color.red()),
                         timestamp=datetime.now(timezone.utc),
                     )
                     dm_embed.set_footer(text="Different Meets • Support System")
-                    close_view = _TicketRatingView(channel_name=channel.name, ticket_type=ticket.label)
+                    close_view = _TicketRatingView(channel_name=channel.name, ticket_type=ticket.label, transcript_url=_transcript_url)
                     try:
                         await owner.send(embed=dm_embed, view=close_view)
                     except Exception:
@@ -19127,7 +21640,7 @@ class SupportApplicationReviewView(discord.ui.View):
     async def _check(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return False
-        return any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+        return any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
                or interaction.user.guild_permissions.manage_guild
 
     @discord.ui.button(label="Accept", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_app_accept")
@@ -19215,9 +21728,14 @@ async def _supp_auto_close_ticket(
         close_embed.add_field(name="👤 Member", value=f"<@{owner_id}> (`{owner_id}`)", inline=True)
         close_embed.set_footer(text="Different Meets • Appeal System")
         try:
-            await logs_ch.send(embed=close_embed, file=transcript)
+            await logs_ch.send(embed=close_embed)
         except Exception:
             pass
+        if transcript and guild:
+            await _post_transcript_to_channel(
+                guild, transcript,
+                channel.name, "Appeal Ticket",
+            )
 
     # Inform the ticket channel before deletion
     try:
@@ -19255,7 +21773,7 @@ async def _supp_create_ticket_channel(
         )
         return None
 
-    staff_role_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+    staff_role_ids = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID}
     overwrites: dict = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         interaction.user: discord.PermissionOverwrite(
@@ -19389,7 +21907,7 @@ class _AppealActionView(discord.ui.View):
             child.disabled = disabled  # type: ignore[union-attr]
 
     def _is_staff(self, member: discord.Member) -> bool:
-        return any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in member.roles)
+        return any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in member.roles)
 
     @discord.ui.button(label="Accept Appeal", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_appeal_action_accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -19583,7 +22101,7 @@ def _supp_build_appeal_review_embed(ticket: "_TicketType", user: discord.Member)
 # ── Main support dropdown (Report / General Support / Staff Application) ───────
 
 class SupportDropdown(discord.ui.Select):
-    _SUPPORT_KEYS = {"report", "support", "apply"}
+    _SUPPORT_KEYS = {"report", "support", "apply", "ts_apply", "mod_apply"}
 
     def __init__(self) -> None:
         options = [
@@ -19612,6 +22130,12 @@ class SupportDropdown(discord.ui.Select):
         ticket_key = self.values[0]
         if ticket_key not in self._SUPPORT_KEYS or ticket_key not in _TICKET_TYPES:
             return await interaction.response.send_message("Invalid selection.", ephemeral=True)
+
+        # Modal-based applications — collect answers upfront before creating ticket
+        if ticket_key == "ts_apply":
+            return await interaction.response.send_modal(_TicketSupportAppModal())
+        if ticket_key == "mod_apply":
+            return await interaction.response.send_modal(_ModAppModal())
 
         ticket = _TICKET_TYPES[ticket_key]
 
@@ -19861,8 +22385,7 @@ class SupportDropdownView(discord.ui.View):
 _TICKET_WARN_HOURS  = 48   # warn after this many hours of silence
 _TICKET_CLOSE_HOURS = 72   # auto-close after this many hours of silence
 
-@tasks.loop(minutes=30)
-async def _ticket_inactivity_monitor() -> None:
+async def __ticket_inactivity_monitor_logic():
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
@@ -19919,9 +22442,15 @@ async def _ticket_inactivity_monitor() -> None:
                         idle_embed.add_field(name="⏰ Inactive For", value=f"{age_hours:.0f}h", inline=True)
                         idle_embed.set_footer(text="Different Meets • Ticket System")
                         try:
-                            await logs_ch.send(embed=idle_embed, file=transcript)
+                            await logs_ch.send(embed=idle_embed)
                         except Exception:
                             pass
+                        if transcript and channel.guild:
+                            await _post_transcript_to_channel(
+                                channel.guild, transcript,
+                                channel.name, "Support Ticket",
+                                outcome="Auto-closed (72h inactivity)",
+                            )
                     await channel.delete(reason="Ticket auto-closed: 72h inactivity")
                 except Exception:
                     pass
@@ -19957,7 +22486,16 @@ async def _ticket_inactivity_monitor() -> None:
                 except Exception:
                     pass
 
-
+@tasks.loop(minutes=30)
+async def _ticket_inactivity_monitor() -> None:
+    _loop_success('_ticket_inactivity_monitor')
+    try:
+        await run_with_timeout('_ticket_inactivity_monitor', __ticket_inactivity_monitor_logic(), timeout=180)
+    except Exception as _lte:
+        await _handle_loop_error('_ticket_inactivity_monitor', _lte, _ticket_inactivity_monitor)
+@_ticket_inactivity_monitor.error
+async def __ticket_inactivity_monitor_on_error(error: Exception) -> None:
+    await _handle_loop_error('_ticket_inactivity_monitor', error, _ticket_inactivity_monitor)
 @_ticket_inactivity_monitor.before_loop
 async def _before_ticket_monitor():
     await bot.wait_until_ready()
@@ -19970,7 +22508,7 @@ async def _ticket_stats_cmd(ctx: commands.Context) -> None:
     """Show a count of all currently open tickets by type."""
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     try:
@@ -20038,7 +22576,7 @@ async def _ticket_note_cmd(ctx: commands.Context, *, text: str) -> None:
     """Post a visible staff note inside the current ticket channel."""
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return await ctx.send("Only staff can post ticket notes.", delete_after=8)
     try:
@@ -20064,7 +22602,7 @@ async def _staffperformance_cmd(ctx: commands.Context) -> None:
     """Show per-staff ticket stats (claimed, closed, avg response time)."""
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     try:
@@ -20105,7 +22643,7 @@ async def _faq_group(ctx: commands.Context) -> None:
 async def _faq_add(ctx: commands.Context, *, args: str) -> None:
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return await ctx.send("Only staff can manage FAQs.", delete_after=8)
     if "|" not in args:
@@ -20126,7 +22664,7 @@ async def _faq_add(ctx: commands.Context, *, args: str) -> None:
 async def _faq_remove(ctx: commands.Context, *, trigger: str) -> None:
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return await ctx.send("Only staff can manage FAQs.", delete_after=8)
     _fq = _faq_load()
@@ -20145,7 +22683,7 @@ async def _faq_remove(ctx: commands.Context, *, trigger: str) -> None:
 async def _faq_list(ctx: commands.Context) -> None:
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     if not is_staff:
         return
     _fq = _faq_load()
@@ -20179,8 +22717,7 @@ def _wdm_load() -> dict:
 
 def _wdm_save(data: dict) -> None:
     try:
-        with open(_WELCOME_DM_LOG_FILE, "w") as f:
-            json.dump(data, f)
+        _atomic_json_save(_WELCOME_DM_LOG_FILE, data)
     except Exception:
         pass
 
@@ -20261,68 +22798,9 @@ async def _send_welcome_dm(member: discord.Member) -> None:
 
 
 async def _startup_catchup_welcome_dms() -> None:
-    """On restart, DM any members who joined while the bot was offline."""
-    await asyncio.sleep(10)  # let the gateway fully settle first
-    try:
-        # Load the timestamp from last successful on_ready
-        last_online_ts: float = 0.0
-        try:
-            with open(_LAST_ONLINE_FILE, "r") as _f:
-                last_online_ts = float(json.load(_f).get("ts", 0))
-        except (FileNotFoundError, Exception):
-            pass
-
-        if last_online_ts == 0.0:
-            return  # First ever run — nothing to catch up on
-
-        offline_since = datetime.fromtimestamp(last_online_ts, tz=timezone.utc)
-        now_utc       = datetime.now(timezone.utc)
-
-        guild = bot.get_guild(GUILD_ID)
-        if not guild:
-            return
-
-        missed: list[discord.Member] = [
-            m for m in guild.members
-            if not m.bot
-            and m.joined_at is not None
-            and offline_since < m.joined_at <= now_utc
-        ]
-
-        if not missed:
-            return
-
-        print(f"[CatchUp] Bot was offline since {offline_since.isoformat()}. "
-              f"Sending welcome DMs to {len(missed)} member(s) who joined while down.")
-
-        sent = 0
-        for m in missed:
-            await _send_welcome_dm(m)
-            sent += 1
-            await asyncio.sleep(1.5)  # rate-limit friendly
-
-        # Log summary to staff logs
-        log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-        if isinstance(log_ch, discord.TextChannel):
-            names = ", ".join(m.mention for m in missed[:20])
-            if len(missed) > 20:
-                names += f" …and {len(missed) - 20} more"
-            summary = discord.Embed(
-                title="📬 Startup Welcome DM Catch-Up",
-                description=(
-                    f"Bot was offline from <t:{int(last_online_ts)}:f> to <t:{int(now_utc.timestamp())}:f>.\n"
-                    f"Sent welcome DMs to **{sent}** member(s) who joined during that window:\n{names}"
-                ),
-                color=0x57F287,
-                timestamp=now_utc,
-            )
-            summary.set_footer(text="DIFF Catch-Up System")
-            try:
-                await log_ch.send(embed=summary)
-            except Exception:
-                pass
-    except Exception as _e:
-        print(f"[CatchUp] Error during startup DM catch-up: {_e}")
+    """DISABLED — bulk DM catch-up violated Discord Developer Policy.
+    Welcome DMs are still sent individually via on_member_join."""
+    return
 
 
 # ── Welcome DM on member join ─────────────────────────────────────────────────
@@ -20360,7 +22838,135 @@ async def on_member_join(member: discord.Member) -> None:
             except Exception:
                 pass
 
+    # Record join timestamp for activity tracking
+    try:
+        _activity_upsert(member.id, join_ts=time.time())
+    except Exception:
+        pass
+
     await _send_welcome_dm(member)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member) -> None:
+    """Log leave event with reason tags, drop-off stage, and risk colour to staff logs."""
+    if member.bot:
+        return
+    try:
+        leave_ts      = time.time()
+        row           = _activity_get(member.id)
+        join_ts       = row["join_ts"] if row else (
+            member.joined_at.timestamp() if member.joined_at else None
+        )
+        last_msg      = row["last_message"] if row else None
+        last_vc_ts    = row["last_vc"]       if row else None
+        meet_count    = int(row["meet_attendance_count"] or 0) if row else 0
+        days_in       = round((leave_ts - join_ts) / 86400, 1) if join_ts else None
+
+        was_verified  = any(r.id == VERIFIED_ROLE_ID      for r in member.roles)
+        had_meet_role = any(r.id == MEET_ATTENDER_ROLE_ID for r in member.roles)
+        # Detect if they held any application-related role as proxy for "Applied"
+        _app_role_names = {"applied", "applicant", "interviewing", "pending"}
+        had_application = any(r.name.lower() in _app_role_names for r in member.roles)
+
+        skip_ids   = {member.guild.default_role.id, UNVERIFIED_ROLE_ID}
+        role_names = ", ".join(r.name for r in member.roles if r.id not in skip_ids) or "None"
+
+        # Compute analytics helpers
+        reason_tags   = _detect_leave_reasons(was_verified, had_meet_role, last_msg, days_in, leave_ts)
+        drop_off      = _detect_drop_off_stage(was_verified, had_meet_role, meet_count, had_application)
+
+        # Persist to DB
+        _activity_log_leave(
+            user_id=member.id,
+            username=str(member),
+            join_ts=join_ts,
+            leave_ts=leave_ts,
+            was_verified=was_verified,
+            had_meet_role=had_meet_role,
+            role_names=role_names,
+            last_message=last_msg,
+            last_vc=last_vc_ts,
+            reason_tags=", ".join(reason_tags),
+            drop_off_stage=drop_off,
+        )
+
+        # ── Risk colour ──────────────────────────────────────────────────────
+        # Red = high risk (never engaged), Yellow = medium, Green = was active
+        if not was_verified or "Likely Ghost Member" in reason_tags:
+            embed_colour = discord.Color.from_rgb(200, 30, 30)    # red
+            risk_label   = "🔴 High Risk"
+        elif not had_meet_role or "Inactive After Joining" in reason_tags:
+            embed_colour = discord.Color.from_rgb(210, 150, 0)    # yellow
+            risk_label   = "🟡 Needs Follow-up"
+        else:
+            embed_colour = discord.Color.from_rgb(30, 160, 60)    # green
+            risk_label   = "🟢 Was Active"
+
+        # ── Format helpers ───────────────────────────────────────────────────
+        if days_in is not None:
+            if days_in < 1:
+                stay_str = "< 1 day"
+            elif days_in < 7:
+                stay_str = f"{days_in} days"
+            elif days_in < 30:
+                stay_str = f"{days_in / 7:.1f} weeks"
+            else:
+                stay_str = f"{days_in / 30:.1f} months"
+        else:
+            stay_str = "Unknown"
+
+        def _age_str(ts: float | None) -> str:
+            if not ts:
+                return "Not tracked"
+            age = int(leave_ts - ts)
+            if age < 3600:   return f"{age // 60}m ago"
+            if age < 86400:  return f"{age // 3600}h ago"
+            return f"{age // 86400}d ago"
+
+        # ── Build embed ──────────────────────────────────────────────────────
+        embed = discord.Embed(
+            title="👋 Member Left",
+            color=embed_colour,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(
+            name="User",
+            value=f"`{member}` — ID `{member.id}`",
+            inline=False,
+        )
+        embed.add_field(name="Time in Server", value=stay_str,          inline=True)
+        embed.add_field(name="Risk Level",     value=risk_label,        inline=True)
+        embed.add_field(name="Drop-off Stage", value=f"📍 {drop_off}",  inline=True)
+        embed.add_field(
+            name="Status",
+            value=(
+                f"{'✅' if was_verified  else '❌'} Verified\n"
+                f"{'✅' if had_meet_role else '❌'} Attended a Meet"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Activity",
+            value=f"Last msg: {_age_str(last_msg)}\nLast VC: {_age_str(last_vc_ts)}",
+            inline=True,
+        )
+        embed.add_field(name="Roles", value=role_names[:512], inline=False)
+        embed.add_field(
+            name="🏷️ Leave Reason Tags",
+            value=" · ".join(f"`{t}`" for t in reason_tags),
+            inline=False,
+        )
+        if join_ts:
+            embed.add_field(name="Joined", value=f"<t:{int(join_ts)}:D>", inline=True)
+        embed.set_footer(text="DIFF Leave Analytics  |  !leavedm <user_id> to send survey")
+
+        ch = member.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
+            await ch.send(embed=embed)
+    except Exception as _e:
+        _bot_log.error("[LeaveAnalytics] %s: %s", member, _e, exc_info=True)
 
 
 async def _wipe_old_panels(channel: discord.TextChannel) -> None:
@@ -20428,7 +23034,7 @@ async def post_support_panel(interaction: discord.Interaction) -> None:
 
 @bot.command(name="refreshsupportpanel")
 async def _refresh_support_panel_cmd(ctx: commands.Context):
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
         return
     try:
         await ctx.message.delete()
@@ -20643,7 +23249,7 @@ class StaffReviewView(discord.ui.View):
     async def _handle(self, interaction: discord.Interaction, approved: bool) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
-        if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+        if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
                 and not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("Only DIFF leadership can use this panel.", ephemeral=True)
 
@@ -20747,7 +23353,7 @@ async def staff_stats(interaction: discord.Interaction, member: discord.Member) 
 async def staff_add_ticket(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.add_stat(member.id, "tickets_handled", amount)
@@ -20760,7 +23366,7 @@ async def staff_add_ticket(interaction: discord.Interaction, member: discord.Mem
 async def staff_add_application(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.add_stat(member.id, "applications_reviewed", amount)
@@ -20773,7 +23379,7 @@ async def staff_add_application(interaction: discord.Interaction, member: discor
 async def staff_add_report(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.add_stat(member.id, "reports_resolved", amount)
@@ -20786,7 +23392,7 @@ async def staff_add_report(interaction: discord.Interaction, member: discord.Mem
 async def staff_add_appeal(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 100] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.add_stat(member.id, "appeals_reviewed", amount)
@@ -20798,7 +23404,7 @@ async def staff_add_appeal(interaction: discord.Interaction, member: discord.Mem
 async def staff_post_leaderboard(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     lb_channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
@@ -20840,7 +23446,7 @@ async def staff_post_leaderboard(interaction: discord.Interaction) -> None:
 async def staff_reset_stats(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _staff_store.reset_all()
@@ -20851,7 +23457,7 @@ async def staff_reset_stats(interaction: discord.Interaction) -> None:
 async def post_staff_review_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     if not isinstance(interaction.channel, discord.TextChannel):
@@ -21243,7 +23849,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                     title="⛔ Host Role Auto-Removed",
                     description="A blacklisted user was automatically prevented from holding the host role.",
                     color=discord.Color.red(),
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                 )
                 embed.add_field(name="User", value=after.mention, inline=False)
                 if entry:
@@ -21367,6 +23973,12 @@ async def on_message(message: discord.Message) -> None:
         return
     if not isinstance(message.channel, discord.TextChannel):
         return
+
+    # Track last message timestamp for inactivity system
+    try:
+        _activity_upsert(message.author.id, last_message=time.time())
+    except Exception:
+        pass
 
     # --- Everyone-chat meet Q&A auto-responder ---
     if message.channel.id == EVERYONE_CHAT_CHANNEL_ID:
@@ -21602,10 +24214,8 @@ async def on_message(message: discord.Message) -> None:
                 )
 
                 if not already_notified and prev_total < MIN_GARAGE_PHOTOS <= total_images:
-                    leader_role = message.guild.get_role(LEADER_ROLE_ID)
-                    co_role = message.guild.get_role(CO_LEADER_ROLE_ID)
-                    mgr_role = message.guild.get_role(MANAGER_ROLE_ID)
-                    mentions = " ".join(r.mention for r in [leader_role, co_role, mgr_role] if r)
+                    ticket_support_role = message.guild.get_role(TICKET_SUPPORT_ROLE_ID)
+                    mentions = ticket_support_role.mention if ticket_support_role else None
 
                     review_embed = discord.Embed(
                         title       = "✅ Application Ready for Review",
@@ -21680,7 +24290,7 @@ async def on_interaction(interaction: discord.Interaction) -> None:
         return
     if not _auto_is_ticket_channel(interaction.channel):
         return
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return
     lowered = custom_id.lower()
@@ -21718,6 +24328,50 @@ async def on_interaction(interaction: discord.Interaction) -> None:
     await _auto_check_promotion(interaction.guild, interaction.user)
 
 
+@bot.event
+async def on_voice_state_update(
+    member: discord.Member,
+    before: discord.VoiceState,
+    after: discord.VoiceState,
+) -> None:
+    """Track last VC join for inactivity system."""
+    if member.bot:
+        return
+    if after.channel and not before.channel:
+        try:
+            _activity_upsert(member.id, last_vc=time.time())
+        except Exception:
+            pass
+
+    # Session VC real-time idle tracking — update immediately instead of waiting for the 5-min loop
+    try:
+        hp_data = _hp_load()
+        _hp_changed = False
+        _now_ts = datetime.now(timezone.utc).timestamp()
+        for _sess in hp_data.get("active_sessions", {}).values():
+            if _sess.get("ended"):
+                continue
+            _vc_id = _sess.get("voice_channel_id")
+            if not _vc_id:
+                continue
+            if before.channel and before.channel.id == _vc_id:
+                # Member just left this session VC
+                _remaining = [m for m in before.channel.members if not m.bot]
+                if len(_remaining) == 0 and _sess.get("vc_empty_since") is None:
+                    _sess["vc_empty_since"] = _now_ts
+                    _hp_changed = True
+            if after.channel and after.channel.id == _vc_id:
+                # Member just joined — reset idle timer
+                if _sess.get("vc_empty_since") is not None or _sess.get("vc_idle_alert_sent"):
+                    _sess["vc_empty_since"] = None
+                    _sess["vc_idle_alert_sent"] = False
+                    _hp_changed = True
+        if _hp_changed:
+            _hp_save(hp_data)
+    except Exception:
+        pass
+
+
 @bot.tree.command(name="auto-staff-stats", description="View automatically tracked staff stats for a member (staff only)")
 @app_commands.describe(member="The staff member to look up")
 async def auto_staff_stats(interaction: discord.Interaction, member: discord.Member) -> None:
@@ -21752,7 +24406,7 @@ async def auto_staff_stats(interaction: discord.Interaction, member: discord.Mem
 async def force_weekly_staff_report(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     report_channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
@@ -21770,7 +24424,7 @@ async def force_weekly_staff_report(interaction: discord.Interaction) -> None:
 @bot.command(name="clearweeklyreport")
 async def clearweeklyreport(ctx: commands.Context):
     """Delete the most recent Weekly DIFF Staff Report from the leaderboard channel (leadership only)."""
-    is_leader = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in getattr(ctx.author, "roles", [])) \
+    is_leader = any(r.id in _LEADERSHIP_ROLE_IDS for r in getattr(ctx.author, "roles", [])) \
         or getattr(ctx.author, "guild_permissions", None) and ctx.author.guild_permissions.manage_guild
     if not is_leader:
         return await ctx.send("Leadership only.", delete_after=5)
@@ -21803,7 +24457,7 @@ async def clearweeklyreport(ctx: commands.Context):
 async def auto_add_meet_host(interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 20] = 1) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     _auto_stats.add_stat(member.id, "meets_hosted", amount)
@@ -21815,7 +24469,7 @@ async def auto_add_meet_host(interaction: discord.Interaction, member: discord.M
 async def post_auto_staff_leaderboard(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
     lb_channel = interaction.guild.get_channel(LEADERBOARD_CHANNEL_ID)
@@ -21857,7 +24511,7 @@ async def lockslot_cmd(
     action: str,
 ) -> None:
     if not isinstance(interaction.user, discord.Member) or not any(
-        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in interaction.user.roles
+        r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles
     ):
         return await interaction.response.send_message("Leadership only.", ephemeral=True)
 
@@ -21879,6 +24533,64 @@ async def lockslot_cmd(
     await interaction.response.send_message(msg, ephemeral=True)
 
 
+@bot.command(name="unlockslot")
+async def _cmd_unlockslot(ctx: commands.Context, *, slot: str):
+    """Unlock a schedule slot — usage: !unlockslot Meet 3"""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.send("Leadership only.", delete_after=6)
+    valid = {"Meet 1", "Meet 2", "Meet 3"}
+    slot = slot.strip().title()
+    if slot not in valid:
+        return await ctx.send(f"❌ Invalid slot. Use: `Meet 1`, `Meet 2`, or `Meet 3`", delete_after=8)
+    schedule = _asched_load()
+    schedule["days"].setdefault(slot, {})["locked"] = False
+    _asched_save(schedule)
+    await _asched_update_panel(ctx.bot)
+    await ctx.send(f"🔓 **{slot}** is now unlocked — Rebuild Schedule can reassign it.", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+@bot.command(name="lockslot")
+async def _cmd_lockslot(ctx: commands.Context, *, slot: str):
+    """Lock a schedule slot — usage: !lockslot Meet 3"""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.send("Leadership only.", delete_after=6)
+    valid = {"Meet 1", "Meet 2", "Meet 3"}
+    slot = slot.strip().title()
+    if slot not in valid:
+        return await ctx.send(f"❌ Invalid slot. Use: `Meet 1`, `Meet 2`, or `Meet 3`", delete_after=8)
+    schedule = _asched_load()
+    schedule["days"].setdefault(slot, {})["locked"] = True
+    _asched_save(schedule)
+    await _asched_update_panel(ctx.bot)
+    await ctx.send(f"🔒 **{slot}** is now locked — Rebuild Schedule will skip it.", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+@bot.command(name="clearslot")
+async def _cmd_clearslot(ctx: commands.Context, *, slot: str):
+    """Clear all data from a schedule slot and reset it to Open — usage: !clearslot Meet 3"""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.send("Leadership only.", delete_after=6)
+    valid = {"Meet 1", "Meet 2", "Meet 3"}
+    slot = slot.strip().title()
+    if slot not in valid:
+        return await ctx.send(f"❌ Invalid slot. Use: `Meet 1`, `Meet 2`, or `Meet 3`", delete_after=8)
+    schedule = _asched_load()
+    schedule["days"][slot] = {"locked": False}
+    _asched_save(schedule)
+    await _asched_update_panel(ctx.bot)
+    await ctx.send(f"🗑️ **{slot}** has been cleared and reset to Open Slot.", delete_after=10)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
 @bot.tree.command(
     name="hoststats",
     description="View a host's reliability stats (how often they RSVP and get confirmed)",
@@ -21890,7 +24602,7 @@ async def hoststats_cmd(
     member: discord.Member,
 ) -> None:
     is_staff = any(
-        r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+        r.id in _LEADERSHIP_ROLE_IDS
         for r in getattr(interaction.user, "roles", [])
     ) or getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
     if not is_staff and interaction.user.id != member.id:
@@ -21946,8 +24658,16 @@ async def hoststats_cmd(
 # DIFF JOIN HUB — PLATFORM SELECT + TICKET SYSTEM (V2)
 # =========================
 
-_JOIN_MMI_INVITE = "https://discord.gg/mmi"
-_JOIN_STAFF_ROLE_IDS = {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID}
+_JOIN_MMI_INVITE       = "https://discord.gg/mmi"
+_JOIN_MMI_CHANNEL      = "https://discord.com/channels/726914118736543836/1247511301937430641"
+_JOIN_CREW_APP_CHANNEL = 1103847009653358612
+_JOIN_MMI_LOGO         = "https://images-ext-1.discordapp.net/external/uCyJGU9CHX-Qf0afXUtZPw6fsqXtkG4wLtiokIskeF0/https/cdn-longterm.mee6.xyz/plugins/embeds/images/726914118736543836/012073cc6643a7a2ed45f7217dcf453cd438c42d747b5dd91554a43eccf0f8b6.png?format=webp&quality=lossless&width=1872&height=501"
+_JOIN_STAFF_ROLE_IDS = {
+    LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID,
+    HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID, DEVELOPER_ROLE_ID,
+    SENIOR_ADMIN_ROLE_ID, ADMINISTRATOR_ROLE_ID,
+    LEAD_MOD_ROLE_ID, MODERATOR_ROLE_ID, JUNIOR_MOD_ROLE_ID,
+}
 
 
 def _join_is_staff(member: discord.Member) -> bool:
@@ -21985,39 +24705,39 @@ def _join_sanitize_channel_name(psn: str) -> str:
 
 def _join_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🎮 DIFF MEETS — OFFICIAL JOIN HUB",
-        description="👋 **Select your platform** below to join our GTA car meets.",
+        title="🏁 DIFF MEETS — JOIN HUB",
+        description=(
+            "Welcome to **Different Meets** — a PlayStation GTA V Online car meet community.\n"
+            "Select your platform below to get started."
+        ),
         color=discord.Color.from_str("#00439C"),
     )
     embed.add_field(
-        name="⚠️ Attention",
-        value="Only **clean customized vehicles** are allowed at our meets.",
+        name="🚗 Before You Join",
+        value=(
+            "Only **clean, customized vehicles** are allowed at our meets.\n"
+            "No modded money cars, weaponized vehicles, or stock builds."
+        ),
         inline=False,
     )
     embed.add_field(
-        name="🤝 Want to join the crew too?",
+        name="📋 Want to join the crew?",
         value="Head to the crew application area after getting set up here.",
         inline=False,
     )
     embed.add_field(
         name="🎮 PlayStation",
-        value="Enter your PSN and open a private join ticket",
+        value="Private ticket → PSN rename → you're in.",
         inline=True,
     )
     embed.add_field(
-        name="🟢 Xbox",
-        value="Redirects to our partners at **MMI Meets**",
-        inline=True,
-    )
-    embed.add_field(
-        name="💻 PC",
-        value="Redirects to our partners at **MMI Meets**",
+        name="🟢 Xbox  ·  💻 PC",
+        value="Handled by our partners at **MMI Meets**.",
         inline=True,
     )
     if DIFF_LOGO_URL:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-    if DIFF_BANNER_URL:
-        embed.set_image(url=DIFF_BANNER_URL)
+    embed.set_image(url="https://media.discordapp.net/attachments/1485265848099799163/1486054805796557033/diff_classic.png?format=webp&quality=lossless")
     embed.set_footer(text="Different Meets • GTA Car Meets")
     return embed
 
@@ -22036,8 +24756,7 @@ def _join_extra_load() -> dict:
 
 
 def _join_extra_save(data: dict) -> None:
-    with open(_JOIN_EXTRA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    _atomic_json_save(_JOIN_EXTRA_FILE, data)
 
 
 async def _join_idle_timer(channel: discord.TextChannel, applicant: discord.Member) -> None:
@@ -22129,9 +24848,7 @@ def _join_build_ticket_embed(
         title="🎮 PlayStation Join Application",
         description=(
             f"**Welcome {member.mention}!**\n"
-            "Your application has been received — you're one step closer to joining DIFF! "
-            f"Upload your **{MIN_GARAGE_PHOTOS} car photos** below and a staff member will review you shortly.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━"
+            f"Send your **{MIN_GARAGE_PHOTOS} car photos** below and a staff member will review you shortly."
         ),
         color=0x3B6FE8,
         timestamp=now,
@@ -22147,48 +24864,11 @@ def _join_build_ticket_embed(
 
     # ── Application Details ──────────────────────────────────────
     if psn_name:
-        embed.add_field(name="🎮 PSN",          value=f"`{psn_name}`",  inline=True)
-    if nickname_status:
-        embed.add_field(name="✏️ Nickname",     value=nickname_status,  inline=True)
-    if car_type or heard_from:
-        embed.add_field(name="\u200b",          value="\u200b",         inline=True)
-    if car_type:
-        embed.add_field(name="🚗 Car Style",    value=car_type,         inline=True)
-    if heard_from:
-        embed.add_field(name="📣 How Found Us", value=heard_from,       inline=True)
-    if car_type and not heard_from or heard_from and not car_type:
-        embed.add_field(name="\u200b",          value="\u200b",         inline=True)
-
-    # ── Steps ───────────────────────────────────────────────────
-    steps = (
-        f"✅ PSN submitted\n"
-        f"📸 **Send {MIN_GARAGE_PHOTOS} car photos** — upload your best builds right here\n"
-        f"⏳ Staff review & decision"
-    )
-    embed.add_field(
-        name="━━━━━━━━━━━━━━━━━━━━\n📋 Steps to Complete",
-        value=steps,
-        inline=False,
-    )
-
-    # ── Info row ────────────────────────────────────────────────
-    embed.add_field(
-        name="⏱️ Response Time",
-        value="24–48 hours",
-        inline=True,
-    )
+        embed.add_field(name="🎮 PSN", value=f"`{psn_name}`", inline=True)
     embed.add_field(
         name="📅 Applied",
         value=now.strftime("%-I:%M %p EST"),
         inline=True,
-    )
-    embed.add_field(name="\u200b", value="\u200b", inline=True)
-
-    # ── Staff note ───────────────────────────────────────────────
-    embed.add_field(
-        name="👮 Staff Actions",
-        value="Use the buttons below to **Accept**, **Deny**, request more info, or close this ticket.",
-        inline=False,
     )
 
     footer_kwargs: dict = {"text": "Different Meets • PlayStation GTA Car Meets"}
@@ -22198,35 +24878,229 @@ def _join_build_ticket_embed(
     return embed
 
 
-async def _join_build_transcript(channel: discord.TextChannel) -> discord.File:
-    return await _build_html_transcript(channel, limit=300)
+async def _join_build_transcript(
+    channel: discord.TextChannel,
+    meta: dict | None = None,
+) -> discord.File:
+    """Build an HTML transcript for a join ticket, with an optional summary banner."""
+    msgs: list[discord.Message] = []
+    async for m in channel.history(limit=300, oldest_first=True):
+        msgs.append(m)
+
+    server_name = _esc(channel.guild.name) if channel.guild else "Unknown Server"
+    generated   = datetime.now(_EST_TZ).strftime("%d %b %Y at %I:%M %p EST")
+    ch_name     = _esc(channel.name)
+
+    # ── Mention map ───────────────────────────────────────────────────────────
+    mention_map: dict[int, str] = {}
+    guild = channel.guild
+    if guild:
+        for msg in msgs:
+            for uid in [msg.author.id] + [u.id for u in msg.mentions]:
+                if uid not in mention_map:
+                    member = guild.get_member(uid)
+                    if member:
+                        mention_map[uid] = member.display_name
+                    else:
+                        try:
+                            mention_map[uid] = (await guild.fetch_member(uid)).display_name
+                        except Exception:
+                            pass
+
+    # ── Ticket summary banner ─────────────────────────────────────────────────
+    banner_html = ""
+    if meta:
+        status       = meta.get("status", "Pending")
+        psn          = _esc(meta.get("psn") or "—")
+        reviewed_by  = _esc(meta.get("reviewed_by") or "—")
+        deny_reason  = _esc(meta.get("deny_reason") or "")
+        opened_at_s  = meta.get("opened_at") or ""
+        closed_at_s  = meta.get("closed_at") or ""
+        response_time = meta.get("response_time") or ""
+
+        if status == "Accepted":
+            verdict_colour = "#57f287"
+            verdict_icon   = "✅"
+        elif status == "Denied":
+            verdict_colour = "#ed4245"
+            verdict_icon   = "❌"
+        else:
+            verdict_colour = "#faa61a"
+            verdict_icon   = "🕐"
+
+        deny_row = ""
+        if deny_reason:
+            deny_row = (
+                f'<div class="jt-row"><span class="jt-label">Denial Reason</span>'
+                f'<span class="jt-val">{deny_reason}</span></div>'
+            )
+
+        banner_html = f"""
+<div class="jt-banner" style="border-color:{verdict_colour}">
+  <div class="jt-verdict" style="color:{verdict_colour}">{verdict_icon} {status}</div>
+  <div class="jt-grid">
+    <div class="jt-row"><span class="jt-label">Channel</span><span class="jt-val">#{ch_name}</span></div>
+    <div class="jt-row"><span class="jt-label">PSN</span><span class="jt-val">{psn}</span></div>
+    <div class="jt-row"><span class="jt-label">Reviewed By</span><span class="jt-val">{reviewed_by}</span></div>
+    <div class="jt-row"><span class="jt-label">Opened</span><span class="jt-val">{_esc(opened_at_s)}</span></div>
+    <div class="jt-row"><span class="jt-label">Closed</span><span class="jt-val">{_esc(closed_at_s)}</span></div>
+    {'<div class="jt-row"><span class="jt-label">Response Time</span><span class="jt-val">' + response_time + '</span></div>' if response_time else ''}
+    {deny_row}
+  </div>
+</div>"""
+
+    # ── Message rows (same logic as _build_html_transcript) ───────────────────
+    rows: list[str] = []
+    last_date       = None
+    last_author_id: int | None = None
+    last_ts         = None
+
+    for msg in msgs:
+        ts_utc = msg.created_at.replace(tzinfo=timezone.utc)
+        ts     = ts_utc.astimezone(_EST_TZ)
+        date_label = ts.strftime("%B %d, %Y")
+        if date_label != last_date:
+            rows.append(
+                f'<div class="divider"><div class="divider-line"></div>'
+                f'<div class="divider-text">{date_label}</div>'
+                f'<div class="divider-line"></div></div>'
+            )
+            last_date      = date_label
+            last_author_id = None
+
+        same_author = (
+            last_author_id == msg.author.id
+            and last_ts is not None
+            and (ts_utc - last_ts).total_seconds() < 420
+        )
+        is_first       = not same_author
+        last_author_id = msg.author.id
+        last_ts        = ts_utc
+
+        time_str  = ts.strftime("%-I:%M %p")
+        full_time = ts.strftime("%d %b %Y %-I:%M %p EST")
+        au_class  = _author_class(msg.author)
+        is_bot    = getattr(msg.author, "bot", False)
+        badge     = '<span class="badge">APP</span>' if is_bot else ""
+
+        msg_html = [f'<div class="msg {"first" if is_first else ""}">']
+        if is_first:
+            msg_html.append(f'<div class="av">{_avatar_html(msg.author)}</div>')
+            author_name = _esc(
+                mention_map.get(msg.author.id)
+                or getattr(msg.author, "display_name", None)
+                or str(msg.author)
+            )
+            msg_html.append(
+                f'<div><div class="mh">'
+                f'<span class="au {au_class}">{author_name}{badge}</span>'
+                f'<span class="ts" title="{full_time}">{full_time}</span>'
+                f'</div>'
+            )
+        else:
+            msg_html.append(
+                f'<div><span class="ts" title="{full_time}" style="position:absolute;left:20px;top:7px;font-size:10px">{time_str}</span>'
+            )
+
+        if msg.content:
+            msg_html.append(f'<div class="ct">{_md(msg.content, mention_map)}</div>')
+
+        for att in msg.attachments:
+            is_img = att.content_type and att.content_type.startswith("image/")
+            if is_img:
+                msg_html.append(
+                    f'<img class="att-img" src="{_esc(att.url)}" alt="{_esc(att.filename)}" '
+                    f'onerror="this.style.display:\'none\'">'
+                )
+            else:
+                icon = "🎬" if att.content_type and att.content_type.startswith("video/") else "📄"
+                size = _size_label(att.size) if att.size else ""
+                msg_html.append(
+                    f'<div class="att"><span style="font-size:28px">{icon}</span>'
+                    f'<div><a class="att-name" href="{_esc(att.url)}" target="_blank">{_esc(att.filename)}</a>'
+                    f'<div class="att-size">{size}</div></div></div>'
+                )
+
+        for emb in msg.embeds:
+            msg_html.append(_render_embed(emb, mention_map))
+
+        msg_html.append("</div></div>")
+        rows.append("".join(msg_html))
+
+    msgs_body = "".join(rows) if rows else "<p style=\"padding:24px;color:#949ba4\">No messages found.</p>"
+
+    _jt_css = """
+.jt-banner{background:#1e1f22;border-left:4px solid;border-radius:0 8px 8px 0;
+  margin:16px;padding:16px 20px;max-width:680px}
+.jt-verdict{font-size:18px;font-weight:700;margin-bottom:12px}
+.jt-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 20px}
+.jt-row{display:flex;flex-direction:column}
+.jt-label{font-size:11px;font-weight:700;color:#949ba4;text-transform:uppercase;letter-spacing:.05em}
+.jt-val{font-size:14px;color:#dcddde;margin-top:2px}
+"""
+
+    html = (
+        f'<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>#{ch_name} \u2014 Transcript</title>'
+        f'<style>{_TRANSCRIPT_CSS}{_jt_css}</style></head><body>'
+        f'<div class="hdr"><span class="hdr-icon">\U0001f512</span><div>'
+        f'<div class="hdr-title">#{ch_name}</div>'
+        f'<div class="hdr-meta">{server_name} &nbsp;\u2022&nbsp; {len(msgs)} messages &nbsp;\u2022&nbsp; Generated {generated}</div>'
+        f'</div></div>'
+        f'{banner_html}'
+        f'<div class="msgs">{msgs_body}</div>'
+        f'</body></html>'
+    )
+
+    import io as _io
+    buf = _io.BytesIO(html.encode("utf-8"))
+    return discord.File(buf, filename=f"{channel.name[:80]}-transcript.html")
 
 
 class JoinPlatformSelect(discord.ui.Select):
     def __init__(self) -> None:
         super().__init__(
-            placeholder="Select your platform to get started...",
+            placeholder="🎮  Choose your platform to get started…",
             min_values=1,
             max_values=1,
             custom_id="diff_join_platform_select",
             options=[
                 discord.SelectOption(
-                    label="PlayStation",
+                    label="PlayStation 5",
                     value="playstation",
-                    description="Enter PSN, get renamed, then open a ticket",
+                    description="Open a private ticket, get renamed, and join our meets.",
                     emoji="🎮",
                 ),
                 discord.SelectOption(
-                    label="Xbox",
+                    label="Xbox Series X|S",
                     value="xbox",
-                    description="Join our partners on Xbox Series X|S",
+                    description="Redirected to our Xbox partners at MMI Meets.",
                     emoji="🟢",
                 ),
                 discord.SelectOption(
                     label="PC",
                     value="pc",
-                    description="Join our partners on PC",
+                    description="Redirected to our PC partners at MMI Meets.",
                     emoji="💻",
+                ),
+                discord.SelectOption(
+                    label="How to Join the Crew",
+                    value="join_crew",
+                    description="Steps to become an official DIFF crew member.",
+                    emoji="📋",
+                ),
+                discord.SelectOption(
+                    label="FAQ",
+                    value="faq",
+                    description="Answers to the most common questions about our meets.",
+                    emoji="❓",
+                ),
+                discord.SelectOption(
+                    label="Server Info",
+                    value="server_info",
+                    description="Learn about DIFF Meets and our community.",
+                    emoji="ℹ️",
                 ),
             ],
         )
@@ -22241,22 +25115,145 @@ class JoinPlatformSelect(discord.ui.Select):
             platform = self.values[0]
 
             if platform in ("xbox", "pc"):
-                label = "Xbox Series X|S" if platform == "xbox" else "PC"
+                is_xbox = platform == "xbox"
+                label   = "Xbox Series X|S" if is_xbox else "PC"
+                emoji   = "🟢" if is_xbox else "💻"
                 embed = discord.Embed(
-                    title="🟢 Xbox Join Info" if platform == "xbox" else "💻 PC Join Info",
-                    description="\n".join([
-                        f"Your {label} car meets are handled via our partner **MMI Meets**.",
-                        "",
-                        "**Join their server for more information:**",
-                        _JOIN_MMI_INVITE,
-                        "",
-                        "Then go to **#join-car-meet**.",
-                    ]),
-                    color=discord.Color.from_str("#111111"),
+                    title=f"{emoji} {label} — Join Info",
+                    description=(
+                        f"{label} car meets are handled by our partners at **MMI Meets**.\n"
+                        f"Join their server using the invite below, then head straight to the join channel."
+                    ),
+                    color=discord.Color.from_str("#107C10") if is_xbox else discord.Color.blurple(),
+                )
+                embed.add_field(
+                    name="1️⃣  Join MMI Meets",
+                    value=f"[Click here to join]({_JOIN_MMI_INVITE})",
+                    inline=True,
+                )
+                embed.add_field(
+                    name="2️⃣  Go to their join channel",
+                    value=f"[#join-car-meet]({_JOIN_MMI_CHANNEL})",
+                    inline=True,
+                )
+                embed.set_image(url=_JOIN_MMI_LOGO)
+                embed.set_footer(text="Different Meets • GTA Car Meets  •  Only you can see this")
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+            if platform == "join_crew":
+                embed = discord.Embed(
+                    title="📋 How to Join the DIFF Crew",
+                    description=(
+                        "Joining the **Different Meets crew** is separate from joining our car meets.\n"
+                        "Here's how the process works:"
+                    ),
+                    color=discord.Color.gold(),
+                )
+                embed.add_field(
+                    name="Step 1 — Attend meets & get to know us",
+                    value="Come to a few meets, be active in the server, and get familiar with the community.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Step 2 — Submit an application",
+                    value=f"Head to <#{_JOIN_CREW_APP_CHANNEL}> and fill out the crew application.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Step 3 — Wait for a response",
+                    value="Staff review all applications manually. You'll receive a DM or ticket with the decision.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="⚠️ Requirements",
+                    value=(
+                        "• Active in the server and at meets\n"
+                        "• Clean car — no modded money builds\n"
+                        "• Good standing (no recent bans or warnings)\n"
+                        "• **PlayStation 5 only** — this is a PS5 crew"
+                    ),
+                    inline=False,
                 )
                 if DIFF_LOGO_URL:
                     embed.set_thumbnail(url=DIFF_LOGO_URL)
-                embed.set_footer(text="Different Meets • GTA Car Meets")
+                embed.set_footer(text="Different Meets • Crew Applications")
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+            if platform == "faq":
+                embed = discord.Embed(
+                    title="❓ Frequently Asked Questions",
+                    color=discord.Color.blurple(),
+                )
+                embed.add_field(
+                    name="Do I need to be in the crew to attend meets?",
+                    value="No — anyone with a clean car is welcome. Select **PlayStation** in the dropdown to get set up.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="What cars are allowed?",
+                    value=f"Clean, customized vehicles only. No weaponized, armored, or stock builds. See <#{RULES_CHANNEL_ID}> for the full list.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="How often are meets held?",
+                    value=f"Three meets per week. Check <#{UPCOMING_MEET_CHANNEL_ID}> for the current schedule.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="What platform do you run on?",
+                    value=f"**PlayStation 5 only.** Xbox and PC meets are handled by our partners **MMI Meets** — [join here]({_JOIN_MMI_INVITE}).",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="I got a warning — what does that mean?",
+                    value=f"Warnings are issued for rule breaks. A second warning can result in removal from meets. Full details in <#{RULES_CHANNEL_ID}>.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="How do I join the crew?",
+                    value=f"Select **How to Join the Crew** in this dropdown, or go directly to <#{_JOIN_CREW_APP_CHANNEL}>.",
+                    inline=False,
+                )
+                if DIFF_LOGO_URL:
+                    embed.set_thumbnail(url=DIFF_LOGO_URL)
+                embed.set_footer(text="Different Meets • FAQ  •  Only you can see this")
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+            if platform == "server_info":
+                embed = discord.Embed(
+                    title="ℹ️ About Different Meets",
+                    description=(
+                        "**Different Meets (DIFF)** is a PlayStation GTA V Online car meet community "
+                        "focused on clean, customized builds and good vibes."
+                    ),
+                    color=discord.Color.from_str("#00439C"),
+                )
+                embed.add_field(
+                    name="🚗 What are car meets?",
+                    value=(
+                        "We gather in GTA Online sessions to show off our builds, cruise together, "
+                        "and run organised events. No racing, no fighting — just cars."
+                    ),
+                    inline=False,
+                )
+                embed.add_field(
+                    name="📅 When are meets?",
+                    value=f"Three meets every week. Check <#{UPCOMING_MEET_CHANNEL_ID}> for dates, times, and classes.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="📖 Rules",
+                    value=f"Read the full server and meet rules in <#{RULES_CHANNEL_ID}> before attending.",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="🤝 Partners",
+                    value=f"Xbox and PC players are served by our partners **MMI Meets** — [join their server]({_JOIN_MMI_INVITE}) and head to [#join-car-meet]({_JOIN_MMI_CHANNEL}).",
+                    inline=False,
+                )
+                if DIFF_LOGO_URL:
+                    embed.set_thumbnail(url=DIFF_LOGO_URL)
+                embed.set_footer(text="Different Meets • GTA Car Meets  •  Only you can see this")
                 return await interaction.response.send_message(embed=embed, ephemeral=True)
 
             category = interaction.guild.get_channel(JOIN_TICKET_CATEGORY_ID)
@@ -22397,10 +25394,9 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
             )
 
         ping_parts = [interaction.user.mention]
-        for rid in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID):
-            r = interaction.guild.get_role(rid)
-            if r:
-                ping_parts.append(r.mention)
+        _ts_role = interaction.guild.get_role(TICKET_SUPPORT_ROLE_ID)
+        if _ts_role:
+            ping_parts.append(_ts_role.mention)
         await channel.send(
             content=" ".join(ping_parts),
             embed=_join_build_ticket_embed(
@@ -22507,14 +25503,29 @@ class JoinPlatformView(discord.ui.View):
             await interaction.response.send_message("🔔 Meet notifications **ON** — you'll be pinged for meets.", ephemeral=True)
 
 
+_JOIN_DENY_PRESETS = [
+    ("neon_underglow",   "Neon lights / underglow",          "Your build has neon lights or underglow. Clean builds only — no neon, underglow, or tire lettering allowed at DIFF meets."),
+    ("wheels",           "Poor wheel choice",                 "The wheel choice on your build doesn't meet our standards. Wheels should complement the car's style — avoid oversized, off-road, or mismatched rims."),
+    ("spoiler",          "Oversized spoiler",                 "Your build has a large or oversized spoiler. We look for clean, tasteful builds — large race wings don't fit our meet style."),
+    ("tire_lettering",   "Tire lettering",                    "Your build has tire lettering. This doesn't fit the clean build aesthetic we look for at DIFF meets."),
+    ("build_standards",  "Builds don't meet DIFF standards",  "Your overall build style doesn't meet DIFF's standards. We look for clean, customised vehicles — no stock cars, modded money builds, or overly extreme modifications."),
+    ("photo_quality",    "Blurry / low-quality photos",       "Some of your photos were too blurry or low-quality to properly review your builds. Please retake clearer photos and reapply."),
+    ("not_enough_cars",  "Not enough build variety",          "We need to see more unique builds to review your application. Please submit photos of additional cars and reapply."),
+    ("custom",           "Custom reason…",                    ""),
+]
+
 class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
-    reason = discord.ui.TextInput(
-        label="Reason for denial",
-        style=discord.TextStyle.paragraph,
-        placeholder="e.g. Photos too blurry, builds don't meet standards, insufficient car variety…",
-        required=True,
-        max_length=500,
-    )
+    def __init__(self, preset_reason: str = "") -> None:
+        super().__init__()
+        self.reason = discord.ui.TextInput(
+            label="Reason for denial",
+            style=discord.TextStyle.paragraph,
+            placeholder="e.g. Neon lights / underglow, poor wheel choice, builds don't meet standards…",
+            default=preset_reason,
+            required=True,
+            max_length=500,
+        )
+        self.add_item(self.reason)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not isinstance(interaction.channel, discord.TextChannel):
@@ -22620,6 +25631,31 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
             await interaction.channel.delete(reason=f"Join application denied by {interaction.user}")
         except discord.HTTPException:
             pass
+
+
+class _JoinDenyReasonSelect(discord.ui.Select):
+    def __init__(self) -> None:
+        options = [
+            discord.SelectOption(label=label, value=value, description=desc[:100] if desc else "Enter a custom reason")
+            for value, label, desc in _JOIN_DENY_PRESETS
+        ]
+        super().__init__(
+            placeholder="Choose a denial reason…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected = self.values[0]
+        preset_reason = next((desc for val, _, desc in _JOIN_DENY_PRESETS if val == selected), "")
+        await interaction.response.send_modal(JoinDenyModal(preset_reason=preset_reason))
+
+
+class _JoinDenySelectView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=120)
+        self.add_item(_JoinDenyReasonSelect())
 
 
 class JoinRequestInfoModal(discord.ui.Modal, title="Request More Info"):
@@ -22818,7 +25854,6 @@ class _JoinClaimButton(discord.ui.Button):
 class JoinTicketView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
-        self.add_item(_JoinHoldButton())
         self.add_item(_JoinClaimButton())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
@@ -22839,7 +25874,7 @@ class JoinTicketView(discord.ui.View):
     @discord.ui.button(label="Accept", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_join_accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._staff_check(interaction):
-            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader / Executive / Manager can use this button.", ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
         uid_raw = _join_parse_user_id(interaction.channel.topic)
@@ -22963,7 +25998,7 @@ class JoinTicketView(discord.ui.View):
             )
             onboard_embed.add_field(
                 name="❓ Questions?",
-                value="Open a support ticket in the server or DM a Leader/Co-Leader directly.",
+                value="Open a support ticket in the server or DM a Leader/Executive directly.",
                 inline=False,
             )
             onboard_embed.set_footer(text="Different Meets • PlayStation GTA Car Meets")
@@ -23028,15 +26063,19 @@ class JoinTicketView(discord.ui.View):
     @discord.ui.button(label="Deny", emoji="❌", style=discord.ButtonStyle.danger, custom_id="diff_join_deny")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._staff_check(interaction):
-            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader / Executive / Manager can use this button.", ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
-        await interaction.response.send_modal(JoinDenyModal())
+        await interaction.response.send_message(
+            "**Select a denial reason** — you can edit the text before it sends:",
+            view=_JoinDenySelectView(),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Request Info", emoji="📋", style=discord.ButtonStyle.primary, custom_id="diff_join_request_info")
     async def request_info(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._staff_check(interaction):
-            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can use this button.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader / Executive / Manager can use this button.", ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
         await interaction.response.send_modal(JoinRequestInfoModal())
@@ -23044,54 +26083,118 @@ class JoinTicketView(discord.ui.View):
     @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="diff_join_close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._staff_check(interaction):
-            return await interaction.response.send_message("Only Leader / Co-Leader / Manager can close this ticket.", ephemeral=True)
+            return await interaction.response.send_message("Only Leader / Executive / Manager can close this ticket.", ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
 
-        await interaction.response.send_message("Closing ticket and saving transcript...", ephemeral=True)
+        await interaction.response.send_message("🔒 Closing ticket and saving transcript…", ephemeral=True)
 
+        now     = datetime.now(_EST_TZ)
+        now_utc = datetime.now(timezone.utc)
+        uid_raw = _join_parse_user_id(interaction.channel.topic)
+        psn     = _join_parse_psn(interaction.channel.topic)
+
+        # ── Pull outcome from stored data ─────────────────────────────────────
+        extra      = _join_extra_load()
+        ticket_data = extra.get(str(interaction.channel.id), {})
+        status      = ticket_data.get("status", "Pending")
+        reviewed_by = ticket_data.get("reviewed_by", "")
+        deny_reason = ticket_data.get("deny_reason", "")
+
+        # ── Response time ─────────────────────────────────────────────────────
+        response_time_str = ""
+        opened_at_str     = ""
+        opened_at_iso     = ticket_data.get("opened_at") or (
+            interaction.channel.created_at.isoformat() if interaction.channel.created_at else ""
+        )
+        if opened_at_iso:
+            try:
+                opened_dt = datetime.fromisoformat(opened_at_iso).replace(tzinfo=timezone.utc)
+                delta_s   = int((now_utc - opened_dt).total_seconds())
+                h, rem    = divmod(delta_s, 3600)
+                m_        = rem // 60
+                response_time_str = f"{h}h {m_}m" if h else f"{m_}m"
+                opened_at_str = opened_dt.astimezone(_EST_TZ).strftime("%d %b %Y %-I:%M %p EST")
+            except Exception:
+                pass
+        closed_at_str = now.strftime("%d %b %Y %-I:%M %p EST")
+
+        # ── Build transcript with ticket summary banner ───────────────────────
+        transcript_meta = {
+            "status":        status,
+            "psn":           psn or "",
+            "reviewed_by":   reviewed_by or str(interaction.user),
+            "deny_reason":   deny_reason,
+            "opened_at":     opened_at_str,
+            "closed_at":     closed_at_str,
+            "response_time": response_time_str,
+        }
         transcript_file: discord.File | None = None
         try:
-            transcript_file = await _join_build_transcript(interaction.channel)
+            transcript_file = await _join_build_transcript(interaction.channel, meta=transcript_meta)
         except Exception:
             pass
 
-        from datetime import timezone as _tz
-        now = datetime.now(_EST_TZ)
-        uid_raw = _join_parse_user_id(interaction.channel.topic)
-        psn = _join_parse_psn(interaction.channel.topic)
+        # ── Outcome colour / label ────────────────────────────────────────────
+        if status == "Accepted":
+            embed_colour   = discord.Color.green()
+            outcome_val    = "✅ Accepted"
+        elif status == "Denied":
+            embed_colour   = discord.Color.red()
+            outcome_val    = "❌ Denied"
+        else:
+            embed_colour   = discord.Color.greyple()
+            outcome_val    = "🕐 No Decision"
+
+        # ── Close embed ───────────────────────────────────────────────────────
+        close_embed = discord.Embed(
+            title="🔒 Join Ticket Closed",
+            color=embed_colour,
+            timestamp=now,
+        )
+
+        close_embed.add_field(name="📁 Channel",   value=f"`{interaction.channel.name}`", inline=True)
+        close_embed.add_field(name="🔒 Closed By", value=interaction.user.mention,        inline=True)
+        close_embed.add_field(name="📋 Outcome",   value=outcome_val,                     inline=True)
+
+        if uid_raw and uid_raw.isdigit():
+            _applicant = interaction.guild.get_member(int(uid_raw))
+            _applicant_val = (
+                f"{_applicant.mention}\n`{uid_raw}`"
+                if _applicant else f"<@{uid_raw}>\n`{uid_raw}`"
+            )
+            close_embed.add_field(name="👤 Applicant", value=_applicant_val, inline=True)
+
+        if psn:
+            close_embed.add_field(name="🎮 PSN", value=f"`{psn}`", inline=True)
+
+        if response_time_str:
+            close_embed.add_field(name="⏱️ Response Time", value=response_time_str, inline=True)
+
+        close_embed.add_field(name="⏰ Closed At", value=f"<t:{int(now_utc.timestamp())}:F>", inline=True)
+
+        if deny_reason:
+            close_embed.add_field(name="📝 Denial Reason", value=deny_reason[:512], inline=False)
+
+        if DIFF_LOGO_URL:
+            close_embed.set_thumbnail(url=DIFF_LOGO_URL)
+        close_embed.set_footer(text="Different Meets • Join Hub")
+
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(logs_channel, discord.TextChannel):
-            close_embed = discord.Embed(
-                title="🔒 Join Ticket Closed",
-                color=discord.Color.greyple(),
-                timestamp=now,
-            )
-            close_embed.add_field(name="📁 Channel", value=f"`{interaction.channel.name}`", inline=True)
-            close_embed.add_field(name="🔒 Closed By", value=f"[{interaction.user.display_name}](https://discord.com/users/{interaction.user.id})", inline=True)
-            if uid_raw and uid_raw.isdigit():
-                _applicant = interaction.guild.get_member(int(uid_raw))
-                _applicant_val = (
-                    f"[{_applicant.display_name}](https://discord.com/users/{_applicant.id})"
-                    if _applicant else f"[Unknown User](https://discord.com/users/{uid_raw})"
-                )
-                close_embed.add_field(name="👤 Applicant", value=_applicant_val, inline=True)
-            if psn:
-                close_embed.add_field(name="🎮 PSN", value=f"`{psn}`", inline=True)
-            close_embed.add_field(name="⏰ Closed At", value=f"<t:{int(now.timestamp())}:F>", inline=True)
-            if DIFF_LOGO_URL:
-                close_embed.set_thumbnail(url=DIFF_LOGO_URL)
-            close_embed.set_footer(text="Different Meets • Join Hub")
             try:
-                # Attach transcript directly — CDN links expire, file attachments don't
-                if transcript_file:
-                    await logs_channel.send(embed=close_embed, file=transcript_file)
-                else:
-                    await logs_channel.send(embed=close_embed)
+                await logs_channel.send(embed=close_embed)
             except discord.HTTPException:
                 pass
+        _join_transcript_url: str | None = None
+        if transcript_file:
+            _join_transcript_url = await _post_transcript_to_channel(
+                interaction.guild, transcript_file,
+                interaction.channel.name, "Join Application",
+                outcome=outcome_val,
+            )
 
-        # DM the ticket owner
+        # ── DM the ticket owner ───────────────────────────────────────────────
         if uid_raw and uid_raw.isdigit():
             try:
                 owner = interaction.guild.get_member(int(uid_raw))
@@ -23100,16 +26203,16 @@ class JoinTicketView(discord.ui.View):
                         title="🔒 Your Join Ticket Has Been Closed",
                         description=(
                             f"Your join ticket in **{interaction.guild.name}** has been closed.\n\n"
-                            "If you have any questions, feel free to open a new support ticket from the server.\n\n"
-                            "⭐ **How was your experience?** Tap a star below to rate your join ticket."
+                            "Your full ticket transcript is available via the button below — you can open it in your browser to view the full conversation.\n\n"
+                            "If you have any questions, feel free to open a new support ticket from the server."
                         ),
-                        color=discord.Color.greyple(),
+                        color=embed_colour,
                         timestamp=now,
                     )
                     if psn:
                         dm_embed.add_field(name="🎮 PSN", value=f"`{psn}`", inline=True)
                     dm_embed.set_footer(text="Different Meets • Join Hub")
-                    dm_view = _TicketRatingView(channel_name=interaction.channel.name, ticket_type="Join Application")
+                    dm_view = _TicketRatingView(channel_name=interaction.channel.name, ticket_type="Join Application", transcript_url=_join_transcript_url)
                     await owner.send(embed=dm_embed, view=dm_view)
             except Exception:
                 pass
@@ -23129,7 +26232,7 @@ class JoinTicketView(discord.ui.View):
 async def post_join_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Staff only.", ephemeral=True)
     channel = interaction.guild.get_channel(JOIN_PANEL_CHANNEL_ID)
@@ -23156,7 +26259,7 @@ async def post_join_panel(interaction: discord.Interaction) -> None:
 async def refresh_join_panel(interaction: discord.Interaction) -> None:
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in interaction.user.roles) \
+    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles) \
             and not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("Staff only.", ephemeral=True)
     channel = interaction.guild.get_channel(JOIN_PANEL_CHANNEL_ID)
@@ -23246,8 +26349,7 @@ def _wh_state_load() -> dict:
 
 def _wh_state_save(data: dict) -> None:
     try:
-        with open(_WH_STATE_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        _atomic_json_save(_WH_STATE_FILE, data)
     except Exception:
         pass
 
@@ -23488,7 +26590,7 @@ class WelcomeHubSelect(discord.ui.Select):
         elif value == "partnership":
             partners = _pp_get_partners()
             await interaction.response.send_message(
-                embed=_pp_build_embed(partners), view=_PartnerHubView(partners), ephemeral=True
+                embed=_pp_build_panel_embed(partners), view=_PartnerHubView(partners), ephemeral=True
             )
 
         elif value == "faq":
@@ -23813,26 +26915,87 @@ async def _cmd_postsocialhub(ctx: commands.Context, channel: discord.TextChannel
 # PARTNER PANEL (DIRECTORY)
 # =========================
 
-_PP_CHANNEL_ID = 1485892421593337926
-_PP_FILE       = os.path.join(DATA_FOLDER, "diff_partner_panel.json")
-_PP_FOOTER     = "Different Meets • Official Partnership System"
+# ════════════════════════════════════════════════════════════════════════════════
+# PARTNERSHIP SYSTEM  (unified partner hub + application + staff review)
+# ════════════════════════════════════════════════════════════════════════════════
 
+# ── Configuration ───────────────────────────────────────────────────────────────
+_PP_CHANNEL_ID          = 1485892421593337926   # public partnerships channel
+_PP_REVIEW_CHANNEL_ID   = 1485250641294131280   # staff-only review channel
+_PP_FILE                = os.path.join(DATA_FOLDER, "diff_partner_panel.json")
+_PP_APPS_FILE           = os.path.join(DATA_FOLDER, "diff_partnerships.json")
+_PP_FOOTER              = "Different Meets • Official Partnership System"
+_PP_PARTNER_ROLE_ID       = 1493765142851096576  # role assigned on acceptance
+_PP_STAFF_PING_ROLE_ID    = 0                   # staff role pinged on new application (0 = skip)
+_PP_TICKET_CATEGORY_ID    = JOIN_TICKET_CATEGORY_ID  # category for partner onboarding tickets
+
+# ── DIFF partner ad — posted in every new partner's onboarding ticket ────────────
+_PP_PARTNER_AD_TEXT = (
+    "🚗💨 **DIFFERENT MEETS**\n\n"
+    "Clean cars. Organized meets. No chaos.\n\n"
+    "• GTA & GT7 Meets\n"
+    "• 3+ Meets Weekly\n"
+    "• Pop-Up Meets Daily\n"
+    "• Active PS5 Community\n"
+    "• Photo Competitions 📸\n\n"
+    "━━━━━━━━━━━━━━━━━━━━\n"
+    "⚠️ Clean Builds Only — No Exceptions\n"
+    "🎤 Voice Chat Required\n\n"
+    "━━━━━━━━━━━━━━━━━━━━\n"
+    "🔥 JOIN NOW OR MISS OUT\n\n"
+    "https://discord.gg/diffmeets\n"
+    "https://discord.gg/vPj8Nk4PdW"
+)
+
+_PP_COLOR         = discord.Color.from_rgb(88, 101, 242)
+_PP_SUCCESS_COLOR = discord.Color.green()
+_PP_DENIED_COLOR  = discord.Color.red()
+_PP_WARN_COLOR    = discord.Color.gold()
+
+_PP_STATUS_BADGES: dict[str, str] = {
+    "Active":        "🟢",
+    "Verified":      "☑️",
+    "Featured":      "⭐",
+    "New":           "🆕",
+    "Event Partner": "🎉",
+    "Inactive":      "🔴",
+}
+
+_PP_RULES_EMBED_DESC = (
+    "**📋 DIFF Partnership Requirements**\n\n"
+    "• Active and well-managed community\n"
+    "• Clean and respectful environment\n"
+    "• Related to car culture, GTA, automotive content, or gaming\n"
+    "• Good engagement — not inactive or ghost servers\n"
+    "• Organized setup with rules and moderation\n\n"
+    "**🚀 What You Get**\n"
+    "• Promotion in the DIFF partnership directory\n"
+    "• Exposure to our active community\n"
+    "• Potential collab & event opportunities\n\n"
+    "**⚠️ Important Notes**\n"
+    "• Not all applications are accepted\n"
+    "• Inactive partnerships may be removed\n"
+    "• Partnerships must remain mutually beneficial"
+)
+
+# ── Default partner data ────────────────────────────────────────────────────────
 _PP_DEFAULT_PARTNERS: list[dict] = [
-    {"name": "MMI Meets",            "short_desc": "PC & Xbox Series S|X meet community.",            "description": "MMI Meets PC & Xbox Series S|X",                                    "invite": "https://discord.gg/mmi",               "platforms": "PC, Xbox Series S|X",          "banner": ""},
-    {"name": "San Andreas Roleplay", "short_desc": "Professional and friendly roleplay community.",    "description": "A professional and friendly roleplay community on Xbox and PlayStation.\n\n**Departments:** Highway Patrol, Sheriff, Fire, EMS, Civilian Ops, Comms\n\n**What They Offer:**\n• Daily roleplays\n• Friendly staff\n• CAD system\n• Realistic uniforms & ranks", "invite": "https://discord.gg/bwzCykt9ZS",        "platforms": "Xbox, PlayStation",             "banner": ""},
-    {"name": "Los Santos MotorSports","short_desc": "Active multi-platform meet community.",            "description": "**Los Santos MotorSports**\n\n• Daily car meets on all platforms\n• Active staff and chats\n• 1500+ members\n• Weekly photo competitions\n• Giveaways\n• Forza, NFS, Snowrunner meets\n• LSMS merch", "invite": "https://discord.gg/Jf42kGD",           "platforms": "All Platforms",                 "banner": ""},
-    {"name": "LS Underground",       "short_desc": "Daily chill car meets and vibes on PlayStation.",  "description": "A very active and engaging community.\n\n• Daily car meets\n• Business lobbies\n• Chill lobbies\n• LFG channels\n• Active staff & giveaways\n• In-house game bot\n• Fully SFW with trained staff", "invite": "https://discord.gg/T5eZpu329K",        "platforms": "PlayStation",                   "banner": ""},
-    {"name": "Auto Minded",          "short_desc": "GTAO car enthusiast hub with events and trading.", "description": "A server for GTAO car enthusiasts and car fans.\n\n**Events:**\n• Car meets\n• Racing\n• Rally events\n• Buy/sell & trading\n• Car competitions\n• Server economy",  "invite": "https://discord.gg/autominded",        "platforms": "Xbox (focus), open to all",     "banner": ""},
-    {"name": "Civil Network",        "short_desc": "Large roleplay network with multiple departments.","description": "**Platforms:** Xbox New Gen, PS Old Gen, PS New Gen, FiveM\n\n**Departments:** Civilian Ops, Fire/EMS, Dispatch, Military Police, FBI, BCSO, LSPD, PBPD, SASP\n\n• Specialized giveaways\n• 24/7 sessions\n• Professional/friendly staff", "invite": "https://discord.gg/civilrp",           "platforms": "Xbox, PlayStation, FiveM",      "banner": "https://share.creavite.co/DKn05AwFAYa5mCl9.gif"},
-    {"name": "RVO",                  "short_desc": "PS5 GTA meet community with daily meets.",         "description": "A chill server to show off your rides and level up your GTA car meet experience.\n\n• Chill community\n• Daily car meets\n• Epic events\n• Media sharing\n• Gaming hub", "invite": "https://discord.gg/rvo",               "platforms": "PS5",                           "banner": ""},
-    {"name": "Chop Shop",            "short_desc": "Large GTAO-focused online gaming community.",      "description": "One of the larger active GCTF Discord servers.\n\n• Active members, traders & staff\n• Booster rewards\n• Server currency\n• Clubs that host car meets and lobby drops\n• Always looking for new partners", "invite": "https://discord.gg/YZMbqER2bv",        "platforms": "Multi-game / GTAO",             "banner": ""},
-    {"name": "Automotive Union",     "short_desc": "Established events community with multiple titles.","description": "Established in 2018.\n\nHosts GTA events every Friday and Sunday (8–9 PM UK).\n\n**Also on:**\n• Wreckfest\n• GT7\n• Forza Horizon\n• Crew Motorfest",               "invite": "https://discord.gg/kaApne5w4x",        "platforms": "GTA + racing titles",           "banner": ""},
-    {"name": "Car Meet Server",      "short_desc": "All-platform car meet and GTAO utility server.",   "description": "• Modded heists (PC)\n• Modded/stock cars\n• Car and photo competitions\n• GTAO inspired bot games",                                                              "invite": "https://discord.gg/zNd2F3sz5U",        "platforms": "All Platforms",                 "banner": ""},
-    {"name": "Fast Funds (GTA)",     "short_desc": "Private selling, sourcing, and heist group.",      "description": "**Fast Funds (GTA)**\n\nPrivate selling, sourcing, and heist group. Started recently and growing.",                                                                   "invite": "https://discord.gg/zxEdwZ9M6s",        "platforms": "GTA",                           "banner": ""},
-    {"name": "Hurricane's Cars & Chill","short_desc": "PS5-based GTA Online car meet server.",         "description": "A PlayStation 5 GTA Online car meet server.\n\n• Daily car meets\n• Photo competitions\n• Weekly giveaways\n• Game nights\n• Car advice/rating channels\n• New members daily\n• Welcoming community", "invite": "https://discord.gg/CkEXt34waa",        "platforms": "PS5",                           "banner": ""},
+    {"name": "MMI Meets",            "short_desc": "PC & Xbox Series S|X meet community.",            "description": "MMI Meets PC & Xbox Series S|X",                                    "invite": "https://discord.gg/mmi",               "platforms": "PC, Xbox Series S|X",          "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "San Andreas Roleplay", "short_desc": "Professional and friendly roleplay community.",    "description": "A professional and friendly roleplay community on Xbox and PlayStation.\n\n**Departments:** Highway Patrol, Sheriff, Fire, EMS, Civilian Ops, Comms\n\n**What They Offer:**\n• Daily roleplays\n• Friendly staff\n• CAD system\n• Realistic uniforms & ranks", "invite": "https://discord.gg/bwzCykt9ZS", "platforms": "Xbox, PlayStation", "banner": "", "status": "Active", "category": "Roleplay"},
+    {"name": "Los Santos MotorSports","short_desc": "Active multi-platform meet community.",            "description": "**Los Santos MotorSports**\n\n• Daily car meets on all platforms\n• Active staff and chats\n• 1500+ members\n• Weekly photo competitions\n• Giveaways\n• Forza, NFS, Snowrunner meets\n• LSMS merch", "invite": "https://discord.gg/Jf42kGD", "platforms": "All Platforms", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "LS Underground",       "short_desc": "Daily chill car meets and vibes on PlayStation.",  "description": "A very active and engaging community.\n\n• Daily car meets\n• Business lobbies\n• Chill lobbies\n• LFG channels\n• Active staff & giveaways\n• In-house game bot\n• Fully SFW with trained staff", "invite": "https://discord.gg/T5eZpu329K", "platforms": "PlayStation", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "Auto Minded",          "short_desc": "GTAO car enthusiast hub with events and trading.", "description": "A server for GTAO car enthusiasts and car fans.\n\n**Events:**\n• Car meets\n• Racing\n• Rally events\n• Buy/sell & trading\n• Car competitions\n• Server economy",  "invite": "https://discord.gg/autominded", "platforms": "Xbox (focus), open to all", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "Civil Network",        "short_desc": "Large roleplay network with multiple departments.","description": "**Platforms:** Xbox New Gen, PS Old Gen, PS New Gen, FiveM\n\n**Departments:** Civilian Ops, Fire/EMS, Dispatch, Military Police, FBI, BCSO, LSPD, PBPD, SASP\n\n• Specialized giveaways\n• 24/7 sessions\n• Professional/friendly staff", "invite": "https://discord.gg/civilrp", "platforms": "Xbox, PlayStation, FiveM", "banner": "https://share.creavite.co/DKn05AwFAYa5mCl9.gif", "status": "Active", "category": "Roleplay"},
+    {"name": "RVO",                  "short_desc": "PS5 GTA meet community with daily meets.",         "description": "A chill server to show off your rides and level up your GTA car meet experience.\n\n• Chill community\n• Daily car meets\n• Epic events\n• Media sharing\n• Gaming hub", "invite": "https://discord.gg/rvo", "platforms": "PS5", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "Chop Shop",            "short_desc": "Large GTAO-focused online gaming community.",      "description": "One of the larger active GCTF Discord servers.\n\n• Active members, traders & staff\n• Booster rewards\n• Server currency\n• Clubs that host car meets and lobby drops\n• Always looking for new partners", "invite": "https://discord.gg/YZMbqER2bv", "platforms": "Multi-game / GTAO", "banner": "", "status": "Active", "category": "Communities"},
+    {"name": "Automotive Union",     "short_desc": "Established events community with multiple titles.","description": "Established in 2018.\n\nHosts GTA events every Friday and Sunday (8–9 PM UK).\n\n**Also on:**\n• Wreckfest\n• GT7\n• Forza Horizon\n• Crew Motorfest",               "invite": "https://discord.gg/kaApne5w4x", "platforms": "GTA + racing titles", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "Car Meet Server",      "short_desc": "All-platform car meet and GTAO utility server.",   "description": "• Modded heists (PC)\n• Modded/stock cars\n• Car and photo competitions\n• GTAO inspired bot games",                                                              "invite": "https://discord.gg/zNd2F3sz5U", "platforms": "All Platforms", "banner": "", "status": "Active", "category": "Car Meets"},
+    {"name": "Fast Funds (GTA)",     "short_desc": "Private selling, sourcing, and heist group.",      "description": "**Fast Funds (GTA)**\n\nPrivate selling, sourcing, and heist group. Started recently and growing.",                                                                   "invite": "https://discord.gg/zxEdwZ9M6s", "platforms": "GTA", "banner": "", "status": "Active", "category": "Communities"},
+    {"name": "Hurricane's Cars & Chill","short_desc": "PS5-based GTA Online car meet server.",         "description": "A PlayStation 5 GTA Online car meet server.\n\n• Daily car meets\n• Photo competitions\n• Weekly giveaways\n• Game nights\n• Car advice/rating channels\n• New members daily\n• Welcoming community", "invite": "https://discord.gg/CkEXt34waa", "platforms": "PS5", "banner": "", "status": "Active", "category": "Car Meets"},
 ]
 
 
+# ── Data helpers ────────────────────────────────────────────────────────────────
 def _pp_load() -> dict:
     data = _load_diff_json(_PP_FILE) or {}
     if "partners" not in data:
@@ -23849,115 +27012,535 @@ def _pp_get_partners() -> list:
     return _pp_load().get("partners", [])
 
 
-def _pp_build_embed(partners: list) -> discord.Embed:
+def _pp_apps_load() -> dict:
+    return _load_diff_json(_PP_APPS_FILE) or {}
+
+
+def _pp_apps_save(data: dict) -> None:
+    _save_diff_json(_PP_APPS_FILE, data)
+
+
+def _pp_is_blacklisted(user_id: int) -> bool:
+    return user_id in (_pp_apps_load().get("blacklist", []))
+
+
+def _pp_extract_app_id(message: discord.Message) -> str | None:
+    try:
+        import re as _re
+        for embed in message.embeds:
+            desc = embed.description or ""
+            m = _re.search(r"`(PARTNER-\d+-\d+)`", desc)
+            if m:
+                return m.group(1)
+            for field in embed.fields:
+                m = _re.search(r"`(PARTNER-\d+-\d+)`", field.value or "")
+                if m:
+                    return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+# ── Embed builders ──────────────────────────────────────────────────────────────
+def _pp_build_panel_embed(partners: list) -> discord.Embed:
+    active = sum(1 for p in partners if p.get("status", "Active") != "Inactive")
     embed = discord.Embed(
         title="🤝 DIFF Partnership Hub",
         description=(
-            "Explore our official partners below.\n\n"
-            "Use the dropdown menu to view each community, their info, and their invite link.\n"
-            "This panel is managed by staff and refreshes cleanly without duplicate posts."
+            "Explore communities that have officially partnered with **Different Meets**.\n\n"
+            "Use the dropdown below to browse partners and get their links.\n"
+            "Want to join our network? Hit **Apply for Partnership** below."
         ),
-        color=discord.Color.blurple(),
+        color=_PP_COLOR,
     )
-    embed.add_field(name="Current Partners", value=str(len(partners)), inline=True)
-    embed.add_field(name="System Status",    value="Active",            inline=True)
-    embed.add_field(
-        name="How It Works",
-        value="Select a partner from the dropdown below to view their information and invite.",
-        inline=False,
-    )
+    embed.add_field(name="Current Partners", value=str(active), inline=True)
+    embed.add_field(name="Status",           value="✅ Active",  inline=True)
     embed.set_footer(text=_PP_FOOTER)
     return embed
 
 
-async def _pp_dropdown_callback(interaction: discord.Interaction, selected: str) -> None:
-    partners = _pp_get_partners()
-    partner = next((p for p in partners if p["name"] == selected), None)
-    if not partner:
-        await interaction.response.send_message("Partner not found. Try refreshing the panel.", ephemeral=True)
-        return
+def _pp_build_partner_card(partner: dict) -> discord.Embed:
+    badge = _PP_STATUS_BADGES.get(partner.get("status", "Active"), "🤝")
+    title = f"{badge} {partner['name']}"
+    if partner.get("category"):
+        title += f"  •  {partner['category']}"
     embed = discord.Embed(
-        title=f"🤝 {partner['name']}",
-        description=partner.get("description", "No description provided."),
-        color=discord.Color.blue(),
+        title=title,
+        description=partner.get("description") or partner.get("short_desc", "No description provided."),
+        color=_PP_COLOR,
     )
     if partner.get("platforms"):
-        embed.add_field(name="Platforms", value=partner["platforms"], inline=False)
-    invite = partner.get("invite", "").strip()
-    if invite:
-        embed.add_field(name="Invite", value=f"[Join Partner]({invite})", inline=False)
+        embed.add_field(name="🎮 Platforms", value=partner["platforms"], inline=True)
+    status = partner.get("status", "Active")
+    embed.add_field(name="📊 Status", value=f"{_PP_STATUS_BADGES.get(status, '🤝')} {status}", inline=True)
     if partner.get("banner"):
         embed.set_image(url=partner["banner"])
     embed.set_footer(text=_PP_FOOTER)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    return embed
+
+
+def _pp_build_application_embed(app: dict, user: discord.User | discord.Member) -> discord.Embed:
+    try:
+        ts = int(datetime.fromisoformat(app.get("submitted_at", datetime.now(timezone.utc).isoformat())).timestamp())
+        ts_str = f"<t:{ts}:R>"
+    except Exception:
+        ts_str = "unknown"
+    embed = discord.Embed(
+        title="📨 New Partnership Application",
+        description=f"**Application ID:** `{app['application_id']}`\n**Submitted:** {ts_str}",
+        color=_PP_WARN_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Applicant",      value=f"{user.mention} (`{app['applicant_name']}`)", inline=False)
+    embed.add_field(name="Community Name", value=app["server_name"],                            inline=True)
+    embed.add_field(name="Invite Link",    value=app["invite_link"],                            inline=True)
+    embed.add_field(name="Platforms",      value=app.get("platforms", "Not specified"),         inline=True)
+    embed.add_field(name="Short Desc",     value=app.get("short_desc", "Not provided")[:512],  inline=False)
+    embed.add_field(name="Why Partner?",   value=app["why_partner"][:1024],                    inline=False)
+    status     = app.get("status", "pending")
+    status_map = {
+        "pending":            "🟡 Pending Review",
+        "accepted":           "✅ Accepted",
+        "denied":             "❌ Denied",
+        "changes_requested":  "🔄 Changes Requested",
+        "blacklisted":        "🚫 Blacklisted",
+    }
+    embed.add_field(name="Status", value=status_map.get(status, status), inline=False)
+    if hasattr(user, "display_avatar") and user.display_avatar:
+        embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+def _pp_build_accepted_dm_embed(app: dict, reviewer: discord.Member | discord.User) -> discord.Embed:
+    embed = discord.Embed(
+        title="✅ Partnership Application Accepted",
+        description=(
+            f"Congratulations! Your partnership application for **{app['server_name']}** has been approved.\n\n"
+            "You're now an official partner of **Different Meets**. "
+            "Our staff will be in touch with next steps."
+        ),
+        color=_PP_SUCCESS_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Community",   value=app["server_name"], inline=True)
+    embed.add_field(name="Reviewed By", value=str(reviewer),      inline=True)
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+def _pp_build_denied_dm_embed(app: dict, reviewer: discord.Member | discord.User, reason: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="❌ Partnership Application Denied",
+        description=(
+            f"Your partnership application for **{app['server_name']}** was not approved at this time.\n\n"
+            "You may address the feedback below and re-apply in the future."
+        ),
+        color=_PP_DENIED_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Community",   value=app["server_name"], inline=True)
+    embed.add_field(name="Reviewed By", value=str(reviewer),      inline=True)
+    embed.add_field(name="Reason",      value=reason[:1024],      inline=False)
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+def _pp_build_changes_dm_embed(app: dict, reviewer: discord.Member | discord.User, message: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="🔄 Changes Requested — Partnership Application",
+        description=(
+            f"A staff member reviewed your application for **{app['server_name']}** "
+            "and is requesting changes before a final decision can be made."
+        ),
+        color=_PP_WARN_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Community",         value=app["server_name"], inline=True)
+    embed.add_field(name="Reviewed By",       value=str(reviewer),      inline=True)
+    embed.add_field(name="Requested Changes", value=message[:1024],     inline=False)
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+def _pp_build_log_embed(
+    action: str,
+    app: dict,
+    reviewer: discord.Member | discord.User,
+    reason: str | None = None,
+) -> discord.Embed:
+    icons  = {"accepted": "✅", "denied": "❌", "changes_requested": "🔄", "blacklisted": "🚫"}
+    colors = {
+        "accepted":          _PP_SUCCESS_COLOR,
+        "denied":            _PP_DENIED_COLOR,
+        "changes_requested": _PP_WARN_COLOR,
+        "blacklisted":       _PP_DENIED_COLOR,
+    }
+    embed = discord.Embed(
+        title=f"{icons.get(action, '📋')} Partnership {action.replace('_', ' ').title()}",
+        color=colors.get(action, _PP_COLOR),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Application ID", value=app["application_id"],        inline=False)
+    embed.add_field(name="Community",      value=app["server_name"],            inline=True)
+    embed.add_field(name="Applicant",      value=f"<@{app['applicant_id']}>",  inline=True)
+    embed.add_field(name="Reviewed By",    value=reviewer.mention,             inline=False)
+    if reason:
+        embed.add_field(name="Notes", value=reason[:1024], inline=False)
+    embed.set_footer(text=_PP_FOOTER)
+    return embed
+
+
+# ── Dropdown UI ─────────────────────────────────────────────────────────────────
+async def _pp_show_partner_card(interaction: discord.Interaction, name: str) -> None:
+    partners = _pp_get_partners()
+    partner  = next((p for p in partners if p["name"] == name), None)
+    if not partner:
+        await interaction.response.send_message(
+            "Partner not found. The panel may need refreshing.", ephemeral=True
+        )
+        return
+    embed  = _pp_build_partner_card(partner)
+    view   = discord.ui.View(timeout=None)
+    invite = partner.get("invite", "").strip()
+    if invite:
+        view.add_item(discord.ui.Button(
+            label="Join Community",
+            emoji="🔗",
+            style=discord.ButtonStyle.link,
+            url=invite,
+        ))
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 class _PartnerDropdown(discord.ui.Select):
-    """Persistent dropdown for the public channel panel."""
+    """Persistent dropdown on the public partner panel."""
     def __init__(self, partners: list) -> None:
         options = [
-            discord.SelectOption(label=p["name"][:100], description=p.get("short_desc", "")[:100], value=p["name"], emoji="🤝")
+            discord.SelectOption(
+                label=p["name"][:100],
+                description=p.get("short_desc", "")[:100],
+                value=p["name"],
+                emoji=_PP_STATUS_BADGES.get(p.get("status", "Active"), "🤝"),
+            )
             for p in partners[:25]
         ]
-        super().__init__(placeholder="Select a partner to view more info...", min_values=1, max_values=1, options=options, custom_id="diff_partner_select")
+        if not options:
+            options = [discord.SelectOption(label="No partners yet", value="__none__", emoji="❌")]
+        super().__init__(
+            placeholder="🤝  Select a partner to view their info…",
+            min_values=1, max_values=1,
+            options=options,
+            custom_id="diff_partner_select",
+            row=0,
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await _pp_dropdown_callback(interaction, self.values[0])
+        if self.values[0] == "__none__":
+            await interaction.response.send_message("No partners are listed yet.", ephemeral=True)
+            return
+        await _pp_show_partner_card(interaction, self.values[0])
 
 
 class _PartnerHubDropdown(discord.ui.Select):
     """Non-persistent dropdown for the Welcome Hub ephemeral popup."""
     def __init__(self, partners: list) -> None:
         options = [
-            discord.SelectOption(label=p["name"][:100], description=p.get("short_desc", "")[:100], value=p["name"], emoji="🤝")
+            discord.SelectOption(
+                label=p["name"][:100],
+                description=p.get("short_desc", "")[:100],
+                value=p["name"],
+                emoji=_PP_STATUS_BADGES.get(p.get("status", "Active"), "🤝"),
+            )
             for p in partners[:25]
         ]
-        super().__init__(placeholder="Select a partner to view more info...", min_values=1, max_values=1, options=options, custom_id="diff_pp_hub_sel")
+        if not options:
+            options = [discord.SelectOption(label="No partners yet", value="__none__", emoji="❌")]
+        super().__init__(
+            placeholder="🤝  Select a partner to view their info…",
+            min_values=1, max_values=1,
+            options=options,
+            custom_id="diff_pp_hub_sel",
+            row=0,
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await _pp_dropdown_callback(interaction, self.values[0])
+        if self.values[0] == "__none__":
+            await interaction.response.send_message("No partners are listed yet.", ephemeral=True)
+            return
+        await _pp_show_partner_card(interaction, self.values[0])
 
 
+# ── Panel views ──────────────────────────────────────────────────────────────────
 class _PartnerPanelView(discord.ui.View):
-    """Persistent view for the public channel panel."""
-    def __init__(self, partners: list) -> None:
+    """Persistent public partner panel — dropdown + Apply + Rules buttons."""
+    def __init__(self, partners: list | None = None) -> None:
         super().__init__(timeout=None)
-        if partners:
-            self.add_item(_PartnerDropdown(partners))
+        if partners is None:
+            partners = _pp_get_partners()
+        self.add_item(_PartnerDropdown(partners))
+
+    @discord.ui.button(
+        label="Apply for Partnership", emoji="📩",
+        style=discord.ButtonStyle.primary,
+        custom_id="pp_apply_btn", row=1,
+    )
+    async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if _pp_is_blacklisted(interaction.user.id):
+            await interaction.response.send_message(
+                "❌ You are not eligible to apply for a DIFF partnership.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(_PPApplicationModal())
+
+    @discord.ui.button(
+        label="Partnership Rules", emoji="📋",
+        style=discord.ButtonStyle.secondary,
+        custom_id="pp_rules_btn", row=1,
+    )
+    async def rules_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        embed = discord.Embed(
+            title="📋 DIFF Partnership Rules & Info",
+            description=_PP_RULES_EMBED_DESC,
+            color=_PP_COLOR,
+        )
+        embed.set_footer(text=_PP_FOOTER)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# Backward-compat alias — on_ready registers _PshipPanelView by name
+_PshipPanelView = _PartnerPanelView
 
 
 class _PartnerHubView(discord.ui.View):
-    """Non-persistent view sent ephemerally from the Welcome Hub button."""
+    """Non-persistent view for the Welcome Hub button."""
     def __init__(self, partners: list) -> None:
         super().__init__(timeout=120)
-        if partners:
-            self.add_item(_PartnerHubDropdown(partners))
+        self.add_item(_PartnerHubDropdown(partners))
 
-    @discord.ui.button(label="Apply for Partnership", emoji="📩", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(
+        label="Apply for Partnership", emoji="📩",
+        style=discord.ButtonStyle.primary, row=1,
+    )
     async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(_PshipApplicationModal())
+        if _pp_is_blacklisted(interaction.user.id):
+            await interaction.response.send_message(
+                "❌ You are not eligible to apply for a DIFF partnership.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(_PPApplicationModal())
+
+    @discord.ui.button(
+        label="Partnership Rules", emoji="📋",
+        style=discord.ButtonStyle.secondary, row=1,
+    )
+    async def rules_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        embed = discord.Embed(
+            title="📋 DIFF Partnership Rules & Info",
+            description=_PP_RULES_EMBED_DESC,
+            color=_PP_COLOR,
+        )
+        embed.set_footer(text=_PP_FOOTER)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class _PshipStaffView(discord.ui.View):
+    """Persistent staff review view for partnership applications."""
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Accept",           emoji="✅", style=discord.ButtonStyle.success,   custom_id="pship_accept",     row=0)
+    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pp_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not read the application ID from this embed.", ephemeral=True)
+            return
+        await _pp_process_accept(interaction, app_id)
+
+    @discord.ui.button(label="Deny",             emoji="❌", style=discord.ButtonStyle.danger,    custom_id="pship_deny",       row=0)
+    async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pp_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not read the application ID from this embed.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_PPDenyModal(app_id))
+
+    @discord.ui.button(label="Request Changes",  emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="pship_changes",    row=0)
+    async def changes_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pp_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not read the application ID from this embed.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_PPRequestChangesModal(app_id))
+
+    @discord.ui.button(label="Blacklist",         emoji="🚫", style=discord.ButtonStyle.danger,    custom_id="pship_blacklist",  row=1)
+    async def blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pp_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not read the application ID from this embed.", ephemeral=True)
+            return
+        await _pp_process_blacklist(interaction, app_id)
+
+    @discord.ui.button(label="View Invite",       emoji="🔗", style=discord.ButtonStyle.secondary, custom_id="pship_viewinvite", row=1)
+    async def invite_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        app_id = _pp_extract_app_id(interaction.message)
+        if not app_id:
+            await interaction.response.send_message("❌ Could not read the application ID.", ephemeral=True)
+            return
+        data = _pp_apps_load()
+        app  = data.get(app_id)
+        if not app:
+            await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"🔗 **{app['server_name']}** invite: {app['invite_link']}", ephemeral=True
+        )
+
+
+# ── Modals ───────────────────────────────────────────────────────────────────────
+class _PPApplicationModal(discord.ui.Modal, title="DIFF Partnership Application"):
+    server_name = discord.ui.TextInput(
+        label="Community / Server Name",
+        placeholder="Enter your community name",
+        required=True, max_length=100,
+    )
+    invite_link = discord.ui.TextInput(
+        label="Invite / Social Link",
+        placeholder="Paste your Discord invite or main link",
+        required=True, max_length=200,
+    )
+    platforms = discord.ui.TextInput(
+        label="Platforms",
+        placeholder="e.g. PS5, Xbox, PC, All Platforms",
+        required=True, max_length=100,
+    )
+    short_desc = discord.ui.TextInput(
+        label="Short Description  (shown in the dropdown)",
+        placeholder="One-line summary of your community — max 100 chars",
+        required=True, max_length=100,
+    )
+    why_partner = discord.ui.TextInput(
+        label="Why do you want to partner with DIFF?",
+        style=discord.TextStyle.paragraph,
+        placeholder="Describe your community and why you'd be a great partner.",
+        required=True, max_length=1000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if _pp_is_blacklisted(interaction.user.id):
+            await interaction.response.send_message("❌ You are not eligible to apply.", ephemeral=True)
+            return
+        import time as _time
+        app_id  = f"PARTNER-{interaction.user.id}-{int(_time.time())}"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        app = {
+            "application_id": app_id,
+            "applicant_id":   interaction.user.id,
+            "applicant_name": str(interaction.user),
+            "server_name":    str(self.server_name).strip(),
+            "invite_link":    str(self.invite_link).strip(),
+            "platforms":      str(self.platforms).strip(),
+            "short_desc":     str(self.short_desc).strip(),
+            "why_partner":    str(self.why_partner).strip(),
+            "status":         "pending",
+            "submitted_at":   now_iso,
+        }
+        data = _pp_apps_load()
+        data[app_id] = app
+        _pp_apps_save(data)
+        review_ch = (
+            interaction.guild.get_channel(_PP_REVIEW_CHANNEL_ID)
+            if interaction.guild and _PP_REVIEW_CHANNEL_ID
+            else None
+        )
+        if not isinstance(review_ch, discord.TextChannel):
+            confirm = discord.Embed(
+                title="✅ Application Submitted",
+                description=(
+                    f"Your application has been received!\n"
+                    f"**Application ID:** `{app_id}`\n\n"
+                    "Staff will review your submission and reach out with a decision."
+                ),
+                color=_PP_SUCCESS_COLOR,
+            )
+            confirm.set_footer(text=_PP_FOOTER)
+            await interaction.response.send_message(embed=confirm, ephemeral=True)
+            return
+        ping_content = (
+            f"<@&{_PP_STAFF_PING_ROLE_ID}> New partnership application received."
+            if _PP_STAFF_PING_ROLE_ID else None
+        )
+        await review_ch.send(
+            content=ping_content,
+            embed=_pp_build_application_embed(app, interaction.user),
+            view=_PshipStaffView(),
+        )
+        confirm = discord.Embed(
+            title="✅ Application Submitted",
+            description=(
+                f"Your partnership application for **{str(self.server_name).strip()}** "
+                f"has been sent to staff for review.\n\n**Application ID:** `{app_id}`"
+            ),
+            color=_PP_SUCCESS_COLOR,
+        )
+        confirm.set_footer(text=_PP_FOOTER)
+        await interaction.response.send_message(embed=confirm, ephemeral=True)
+
+
+class _PPDenyModal(discord.ui.Modal, title="Deny Partnership Application"):
+    reason = discord.ui.TextInput(
+        label="Reason for denial",
+        style=discord.TextStyle.paragraph,
+        placeholder="Explain why this partnership was denied. This will be sent to the applicant.",
+        required=True, max_length=500,
+    )
+
+    def __init__(self, app_id: str) -> None:
+        super().__init__()
+        self.app_id = app_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await _pp_process_deny(interaction, self.app_id, str(self.reason).strip())
+
+
+class _PPRequestChangesModal(discord.ui.Modal, title="Request Changes"):
+    message = discord.ui.TextInput(
+        label="Message to applicant",
+        style=discord.TextStyle.paragraph,
+        placeholder="Describe what needs to change before this application can be reconsidered.",
+        required=True, max_length=1000,
+    )
+
+    def __init__(self, app_id: str) -> None:
+        super().__init__()
+        self.app_id = app_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await _pp_process_request_changes(interaction, self.app_id, str(self.message).strip())
 
 
 class _PartnerAddModal(discord.ui.Modal, title="Add New Partner"):
-    p_name    = discord.ui.TextInput(label="Partner Name",                                                   required=True,  max_length=100)
-    p_invite  = discord.ui.TextInput(label="Invite / Link",                                                  required=True,  max_length=200)
-    p_short   = discord.ui.TextInput(label="Short Description (shown in dropdown)",                          required=True,  max_length=100)
-    p_plat    = discord.ui.TextInput(label="Platforms",  placeholder="e.g. PS5, Xbox, All",                 required=False, max_length=100)
-    p_desc    = discord.ui.TextInput(label="Full Description", style=discord.TextStyle.paragraph,            required=False, max_length=1000)
+    p_name   = discord.ui.TextInput(label="Partner Name",                                               required=True,  max_length=100)
+    p_invite = discord.ui.TextInput(label="Invite / Link",                                              required=True,  max_length=200)
+    p_short  = discord.ui.TextInput(label="Short Description  (shown in dropdown)",                     required=True,  max_length=100)
+    p_plat   = discord.ui.TextInput(label="Platforms",  placeholder="e.g. PS5, Xbox, All",             required=False, max_length=100)
+    p_desc   = discord.ui.TextInput(label="Full Description", style=discord.TextStyle.paragraph,        required=False, max_length=1000)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         data = _pp_load()
         name = str(self.p_name).strip()
         if any(p["name"].lower() == name.lower() for p in data["partners"]):
-            await interaction.response.send_message(f"**{name}** already exists in the partner list.", ephemeral=True)
+            await interaction.response.send_message(f"❌ **{name}** already exists in the partner list.", ephemeral=True)
             return
         data["partners"].append({
-            "name":       name,
-            "short_desc": str(self.p_short).strip(),
-            "description": str(self.p_desc).strip() if self.p_desc.value else str(self.p_short).strip(),
-            "invite":     str(self.p_invite).strip(),
-            "platforms":  str(self.p_plat).strip() if self.p_plat.value else "",
-            "banner":     "",
+            "name":        name,
+            "short_desc":  str(self.p_short).strip(),
+            "description": str(self.p_desc).strip() or str(self.p_short).strip(),
+            "invite":      str(self.p_invite).strip(),
+            "platforms":   str(self.p_plat).strip() if self.p_plat.value else "",
+            "banner":      "",
+            "status":      "New",
+            "category":    "",
         })
         _pp_save(data)
         if interaction.guild:
@@ -23974,8 +27557,400 @@ class _PartnerAddTriggerView(discord.ui.View):
         await interaction.response.send_modal(_PartnerAddModal())
 
 
+class _PartnerEditModal(discord.ui.Modal, title="Edit Partner"):
+    p_invite = discord.ui.TextInput(label="Invite / Link",                                              required=True,  max_length=200)
+    p_short  = discord.ui.TextInput(label="Short Description  (shown in dropdown)",                     required=True,  max_length=100)
+    p_plat   = discord.ui.TextInput(label="Platforms",                                                  required=False, max_length=100)
+    p_desc   = discord.ui.TextInput(label="Full Description", style=discord.TextStyle.paragraph,        required=False, max_length=1000)
+    p_banner = discord.ui.TextInput(label="Banner Image URL  (optional)",                               required=False, max_length=500)
+
+    def __init__(self, partner_name: str) -> None:
+        super().__init__()
+        self.partner_name = partner_name
+        p = next((x for x in _pp_get_partners() if x["name"].lower() == partner_name.lower()), None)
+        if p:
+            self.p_invite.default = p.get("invite", "")
+            self.p_short.default  = p.get("short_desc", "")
+            self.p_plat.default   = p.get("platforms", "")
+            self.p_desc.default   = p.get("description", "")[:4000]
+            self.p_banner.default = p.get("banner", "")
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        data = _pp_load()
+        idx  = next(
+            (i for i, p in enumerate(data["partners"]) if p["name"].lower() == self.partner_name.lower()),
+            None,
+        )
+        if idx is None:
+            await interaction.response.send_message(f"❌ Partner **{self.partner_name}** not found.", ephemeral=True)
+            return
+        data["partners"][idx].update({
+            "invite":      str(self.p_invite).strip(),
+            "short_desc":  str(self.p_short).strip(),
+            "platforms":   str(self.p_plat).strip() if self.p_plat.value else data["partners"][idx].get("platforms", ""),
+            "description": str(self.p_desc).strip()   or data["partners"][idx].get("description", ""),
+            "banner":      str(self.p_banner).strip()  if self.p_banner.value else data["partners"][idx].get("banner", ""),
+        })
+        _pp_save(data)
+        if interaction.guild:
+            await _pp_post_or_refresh(interaction.guild)
+        await interaction.response.send_message(
+            f"✅ **{self.partner_name}** updated and panel refreshed.", ephemeral=True
+        )
+
+
+class _PartnerEditTriggerView(discord.ui.View):
+    def __init__(self, partner_name: str) -> None:
+        super().__init__(timeout=60)
+        self.partner_name = partner_name
+
+    @discord.ui.button(label="Edit Partner", emoji="✏️", style=discord.ButtonStyle.primary)
+    async def edit_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(_PartnerEditModal(self.partner_name))
+
+
+# ── Partner onboarding ticket ───────────────────────────────────────────────────
+class _PPPartnerTicketCloseView(discord.ui.View):
+    """Persistent close button inside a partner onboarding ticket."""
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Close Ticket", emoji="🔒",
+        style=discord.ButtonStyle.danger,
+        custom_id="pp_ticket_close",
+    )
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        is_staff = (
+            interaction.user.guild_permissions.manage_guild
+            or any(r.id in _JOIN_STAFF_ROLE_IDS for r in interaction.user.roles)
+        )
+        if not is_staff:
+            await interaction.response.send_message(
+                "❌ Only staff can close this ticket.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            "🔒 Saving transcript and closing ticket…", ephemeral=False
+        )
+        channel = interaction.channel
+        guild   = interaction.guild
+
+        # ── Generate + post transcript ────────────────────────────────────────
+        transcript_url: str | None = None
+        try:
+            transcript_file = await _supp_export_transcript(channel)
+            if transcript_file and guild:
+                transcript_url = await _post_transcript_to_channel(
+                    guild,
+                    transcript_file,
+                    channel_name=channel.name,
+                    ticket_type="Partner Ticket",
+                    outcome=f"Closed by {interaction.user}",
+                )
+        except Exception:
+            pass
+
+        # ── Closing embed (with optional transcript link) ─────────────────────
+        closing = discord.Embed(
+            title="🔒 Partner Ticket Closed",
+            description=f"Closed by {interaction.user.mention}.",
+            color=_PP_DENIED_COLOR,
+            timestamp=datetime.now(timezone.utc),
+        )
+        closing.set_footer(text=_PP_FOOTER)
+        close_view: discord.ui.View | None = None
+        if transcript_url:
+            close_view = discord.ui.View(timeout=None)
+            close_view.add_item(discord.ui.Button(
+                label="View Transcript",
+                emoji="📋",
+                style=discord.ButtonStyle.link,
+                url=transcript_url,
+            ))
+        await channel.send(embed=closing, view=close_view)
+        await asyncio.sleep(5)
+        try:
+            await channel.delete(reason=f"Partner ticket closed by {interaction.user}")
+        except discord.Forbidden:
+            await channel.send("❌ Missing permissions to delete this channel.")
+        except Exception:
+            pass
+
+
+async def _pp_create_partner_ticket(
+    guild: discord.Guild,
+    app: dict,
+    applicant: discord.Member | None,
+    reviewer: discord.Member | discord.User,
+) -> discord.TextChannel | None:
+    """Create a private onboarding ticket when a partnership is accepted."""
+    category = guild.get_channel(_PP_TICKET_CATEGORY_ID)
+    if not isinstance(category, discord.CategoryChannel):
+        try:
+            category = await guild.fetch_channel(_PP_TICKET_CATEGORY_ID)
+        except Exception:
+            category = None
+    if not isinstance(category, discord.CategoryChannel):
+        return None
+
+    safe_name = "".join(
+        c if c.isalnum() or c in "-_" else "-"
+        for c in app["server_name"].lower().replace(" ", "-")
+    )[:80]
+    channel_name = f"partner-{safe_name}"
+
+    overwrites: dict = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            read_message_history=True, manage_channels=True,
+            manage_messages=True, attach_files=True, embed_links=True,
+        ),
+    }
+    if applicant:
+        overwrites[applicant] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            read_message_history=True, attach_files=True, embed_links=True,
+        )
+    for role_id in _JOIN_STAFF_ROLE_IDS:
+        role = guild.get_role(role_id)
+        if role:
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True,
+                read_message_history=True, manage_messages=True,
+                attach_files=True, embed_links=True,
+            )
+
+    try:
+        channel = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites,
+            topic=f"PARTNER_TICKET | APP:{app['application_id']} | USER:{app['applicant_id']}",
+            reason=f"Partner onboarding ticket for {app['server_name']}",
+        )
+    except Exception as e:
+        print(f"[PartnerTicket] Failed to create channel: {e}")
+        return None
+
+    # ── Welcome embed ──────────────────────────────────────────────────────────
+    welcome = discord.Embed(
+        title=f"🎉 Welcome, {app['server_name']}!",
+        description=(
+            f"Congratulations — your partnership with **Different Meets** has been approved by {reviewer.mention}.\n\n"
+            "This ticket is your **onboarding space**. Staff will guide you through the next steps here.\n\n"
+            "**What happens next:**\n"
+            "• Post the DIFF partner ad (below) in your server's partnership or advertisement channel\n"
+            "• Staff will verify it's been posted\n"
+            "• Once done, this ticket will be closed"
+        ),
+        color=_PP_SUCCESS_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    welcome.add_field(name="Community",    value=app["server_name"],  inline=True)
+    welcome.add_field(name="Invite",       value=app["invite_link"],  inline=True)
+    welcome.add_field(name="Reviewed By",  value=reviewer.mention,   inline=False)
+    welcome.set_footer(text=_PP_FOOTER)
+    if DIFF_LOGO_URL:
+        welcome.set_thumbnail(url=DIFF_LOGO_URL)
+
+    mention = applicant.mention if applicant else f"<@{app['applicant_id']}>"
+    await channel.send(content=mention, embed=welcome)
+
+    # ── Partner ad block ───────────────────────────────────────────────────────
+    ad_embed = discord.Embed(
+        title="📋 DIFF Partner Ad — Post This in Your Server",
+        description=_PP_PARTNER_AD_TEXT,
+        color=_PP_COLOR,
+    )
+    ad_embed.set_footer(text=_PP_FOOTER)
+    if DIFF_BANNER_URL:
+        ad_embed.set_image(url=DIFF_BANNER_URL)
+    await channel.send(embed=ad_embed, view=_PPPartnerTicketCloseView())
+
+    return channel
+
+
+# ── Process functions ────────────────────────────────────────────────────────────
+async def _pp_process_accept(interaction: discord.Interaction, app_id: str) -> None:
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "❌ You need Manage Server permission to review applications.", ephemeral=True
+        )
+        return
+    data = _pp_apps_load()
+    app  = data.get(app_id)
+    if not app:
+        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+        return
+    if app.get("status") != "pending":
+        await interaction.response.send_message(
+            f"⚠️ This application is already **{app.get('status', '?')}** and cannot be re-actioned.", ephemeral=True
+        )
+        return
+    app["status"]        = "accepted"
+    app["reviewer_id"]   = interaction.user.id
+    app["reviewer_name"] = str(interaction.user)
+    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
+    data[app_id] = app
+    _pp_apps_save(data)
+    guild     = interaction.guild
+    applicant = guild.get_member(app["applicant_id"]) if guild else None
+    if guild and _PP_PARTNER_ROLE_ID:
+        role = guild.get_role(_PP_PARTNER_ROLE_ID)
+        if role and applicant:
+            try:
+                await applicant.add_roles(role, reason="Partnership accepted")
+            except discord.Forbidden:
+                pass
+    # Auto-add accepted partner to public list
+    pp_data = _pp_load()
+    if not any(p["name"].lower() == app["server_name"].lower() for p in pp_data["partners"]):
+        pp_data["partners"].append({
+            "name":        app["server_name"],
+            "short_desc":  app.get("short_desc", app.get("why_partner", "")[:100]),
+            "description": app.get("why_partner", ""),
+            "invite":      app["invite_link"],
+            "platforms":   app.get("platforms", ""),
+            "banner":      "",
+            "status":      "New",
+            "category":    "",
+        })
+        _pp_save(pp_data)
+        if guild:
+            await _pp_post_or_refresh(guild)
+    updated_embed = _pp_build_application_embed(app, applicant or interaction.user)
+    await interaction.message.edit(embed=updated_embed, view=None)
+    if applicant:
+        try:
+            await applicant.send(embed=_pp_build_accepted_dm_embed(app, interaction.user))
+        except discord.Forbidden:
+            pass
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        await log_ch.send(embed=_pp_build_log_embed("accepted", app, interaction.user))
+    # Create onboarding ticket
+    ticket_ch = None
+    if guild:
+        ticket_ch = await _pp_create_partner_ticket(guild, app, applicant, interaction.user)
+    ticket_note = f" A ticket has been created: {ticket_ch.mention}" if ticket_ch else ""
+    await interaction.response.send_message(
+        f"✅ Partnership for **{app['server_name']}** accepted and they have been added to the partner list.{ticket_note}",
+        ephemeral=True,
+    )
+
+
+async def _pp_process_deny(interaction: discord.Interaction, app_id: str, reason: str) -> None:
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "❌ You need Manage Server permission to review applications.", ephemeral=True
+        )
+        return
+    data = _pp_apps_load()
+    app  = data.get(app_id)
+    if not app:
+        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+        return
+    if app.get("status") != "pending":
+        await interaction.response.send_message(
+            f"⚠️ This application is already **{app.get('status', '?')}**.", ephemeral=True
+        )
+        return
+    app["status"]        = "denied"
+    app["reviewer_id"]   = interaction.user.id
+    app["reviewer_name"] = str(interaction.user)
+    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
+    data[app_id] = app
+    _pp_apps_save(data)
+    guild     = interaction.guild
+    applicant = guild.get_member(app["applicant_id"]) if guild else None
+    updated_embed = _pp_build_application_embed(app, applicant or interaction.user)
+    await interaction.message.edit(embed=updated_embed, view=None)
+    if applicant:
+        try:
+            await applicant.send(embed=_pp_build_denied_dm_embed(app, interaction.user, reason))
+        except discord.Forbidden:
+            pass
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        await log_ch.send(embed=_pp_build_log_embed("denied", app, interaction.user, reason=reason))
+    await interaction.response.send_message(
+        f"❌ Partnership for **{app['server_name']}** denied.", ephemeral=True
+    )
+
+
+async def _pp_process_request_changes(
+    interaction: discord.Interaction, app_id: str, message: str
+) -> None:
+    if not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message(
+            "❌ You need Manage Server permission to review applications.", ephemeral=True
+        )
+        return
+    data = _pp_apps_load()
+    app  = data.get(app_id)
+    if not app:
+        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+        return
+    app["status"]            = "changes_requested"
+    app["reviewer_id"]       = interaction.user.id
+    app["reviewer_name"]     = str(interaction.user)
+    app["changes_requested"] = message
+    data[app_id] = app
+    _pp_apps_save(data)
+    guild     = interaction.guild
+    applicant = guild.get_member(app["applicant_id"]) if guild else None
+    updated_embed = _pp_build_application_embed(app, applicant or interaction.user)
+    await interaction.message.edit(embed=updated_embed, view=None)
+    if applicant:
+        try:
+            await applicant.send(embed=_pp_build_changes_dm_embed(app, interaction.user, message))
+        except discord.Forbidden:
+            pass
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        await log_ch.send(embed=_pp_build_log_embed("changes_requested", app, interaction.user, reason=message))
+    await interaction.response.send_message(
+        f"🔄 Changes requested from **{app['server_name']}**. Applicant has been notified.", ephemeral=True
+    )
+
+
+async def _pp_process_blacklist(interaction: discord.Interaction, app_id: str) -> None:
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "❌ Administrator permission required to blacklist.", ephemeral=True
+        )
+        return
+    data = _pp_apps_load()
+    app  = data.get(app_id)
+    if not app:
+        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+        return
+    blacklist: list = data.setdefault("blacklist", [])
+    user_id = app["applicant_id"]
+    if user_id not in blacklist:
+        blacklist.append(user_id)
+    app["status"]        = "blacklisted"
+    app["reviewer_id"]   = interaction.user.id
+    app["reviewer_name"] = str(interaction.user)
+    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
+    data[app_id] = app
+    _pp_apps_save(data)
+    guild     = interaction.guild
+    applicant = guild.get_member(user_id) if guild else None
+    updated_embed = _pp_build_application_embed(app, applicant or interaction.user)
+    await interaction.message.edit(embed=updated_embed, view=None)
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+    if isinstance(log_ch, discord.TextChannel):
+        await log_ch.send(embed=_pp_build_log_embed("blacklisted", app, interaction.user))
+    await interaction.response.send_message(
+        f"🚫 <@{user_id}> has been blacklisted from submitting partnership applications.", ephemeral=True
+    )
+
+
+# ── Panel management helpers ──────────────────────────────────────────────────────
 async def _pp_scan_existing(channel: discord.TextChannel) -> discord.Message | None:
-    """Return the most recent hub panel message posted by this bot in the channel."""
     try:
         async for msg in channel.history(limit=50):
             if msg.author.id == channel.guild.me.id and msg.embeds:
@@ -23987,7 +27962,6 @@ async def _pp_scan_existing(channel: discord.TextChannel) -> discord.Message | N
 
 
 async def _pp_delete_duplicates(channel: discord.TextChannel, keep_id: int) -> None:
-    """Delete all hub panel messages in the channel except the one we want to keep."""
     try:
         async for old_msg in channel.history(limit=50):
             if (
@@ -24014,12 +27988,10 @@ async def _pp_post_or_refresh(guild: discord.Guild) -> None:
     if not isinstance(channel, discord.TextChannel):
         return
     partners = _pp_get_partners()
-    embed    = _pp_build_embed(partners)
+    embed    = _pp_build_panel_embed(partners)
     view     = _PartnerPanelView(partners)
     data     = _pp_load()
     msg_id   = data.get("panel_message_id")
-
-    # Try the stored message ID first
     if msg_id:
         try:
             msg = await channel.fetch_message(int(msg_id))
@@ -24031,8 +28003,6 @@ async def _pp_post_or_refresh(guild: discord.Guild) -> None:
             _pp_save(data)
         except Exception:
             return
-
-    # Stored ID missing or deleted — scan channel history to find any existing panel
     existing = await _pp_scan_existing(channel)
     if existing:
         try:
@@ -24043,14 +28013,13 @@ async def _pp_post_or_refresh(guild: discord.Guild) -> None:
             return
         except Exception:
             pass
-
-    # Truly no existing panel — post fresh
     msg = await channel.send(embed=embed, view=view)
     data["panel_message_id"] = msg.id
     _pp_save(data)
     await _pp_delete_duplicates(channel, msg.id)
 
 
+# ── Staff / Admin commands ────────────────────────────────────────────────────────
 @bot.command(name="postpartnerpanel")
 async def _cmd_postpartnerpanel(ctx: commands.Context):
     if not ctx.author.guild_permissions.administrator:
@@ -24063,12 +28032,84 @@ async def _cmd_postpartnerpanel(ctx: commands.Context):
     await _pp_post_or_refresh(ctx.guild)
 
 
-@bot.command(name="partneradd")
-async def _cmd_partneradd(ctx: commands.Context):
+@bot.command(name="postmodrecruitment", aliases=["modrecruit", "modapps"])
+async def _cmd_postmodrecruitment(ctx: commands.Context):
+    """Post the moderator recruitment embed in the current channel. Leadership only."""
+    if not any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID,
+                        SENIOR_ADMIN_ROLE_ID, ADMINISTRATOR_ROLE_ID} for r in ctx.author.roles):
+        return await ctx.send("Leadership only.", delete_after=6)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    embed = discord.Embed(
+        title="📢 DIFF Meets — Moderator Applications Open",
+        description=(
+            "We're expanding our moderation team and looking for dedicated members "
+            "to help keep the DIFF community running at its best.\n\n"
+            "All new moderators start as **Junior Moderator** and move up through the "
+            "ranks based on activity, performance, and trust.\n\n"
+            "🔞 **You must be 18 or older to apply.**"
+        ),
+        color=discord.Color.from_rgb(88, 101, 242),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    embed.add_field(
+        name="✅ What We're Looking For",
+        value=(
+            "• Active in the server and familiar with how DIFF operates\n"
+            "• Mature, level-headed, and fair under pressure\n"
+            "• Consistent — not here one day and gone the next\n"
+            "• Able to handle situations calmly and without bias"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🛠️ What You'd Be Doing",
+        value=(
+            "• Keeping channels clean and on-topic\n"
+            "• Enforcing server rules and handling reports\n"
+            "• Supporting members and staff when needed\n"
+            "• Helping maintain the standard DIFF is known for"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📈 Mod Progression",
+        value=(
+            "**Junior Moderator** → **Moderator** → **Lead Moderator** → **Administrator** → **Senior Admin**\n"
+            "You earn your way up through dedication and consistency — not just time."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📋 How to Apply",
+        value=(
+            "Open a ticket in the server and select **Moderator Application**.\n"
+            "Answer honestly — we read every submission carefully.\n\n"
+            "*Members with an active warning history or low server activity will not be considered.*"
+        ),
+        inline=False,
+    )
+
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text="Different Meets • Moderation Team")
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="addpartner")
+async def _cmd_addpartner(ctx: commands.Context):
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("Admins only.", delete_after=6)
         return
-    msg = await ctx.send("Click below to fill in the new partner details:", view=_PartnerAddTriggerView())
+    msg = await ctx.send("Click below to fill in the new partner's details:", view=_PartnerAddTriggerView())
     try:
         await ctx.message.delete()
     except Exception:
@@ -24080,20 +28121,74 @@ async def _cmd_partneradd(ctx: commands.Context):
         pass
 
 
-@bot.command(name="partnerremove")
-async def _cmd_partnerremove(ctx: commands.Context, *, name: str):
+@bot.command(name="editpartner")
+async def _cmd_editpartner(ctx: commands.Context, *, name: str):
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("Admins only.", delete_after=6)
         return
-    data = _pp_load()
+    partners = _pp_get_partners()
+    clean = _normalize_quotes(name.strip()).lower()
+    match = next((p["name"] for p in partners if _normalize_quotes(p["name"]).lower() == clean), None)
+    if not match:
+        await ctx.send(
+            f"❌ Partner **{name}** not found. Use `!partnerslist` to see exact names.",
+            delete_after=10,
+        )
+        return
+    msg = await ctx.send(f"Click below to edit **{match}**:", view=_PartnerEditTriggerView(match))
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await asyncio.sleep(62)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+
+def _normalize_quotes(s: str) -> str:
+    return s.replace("\u2018", "'").replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
+
+@bot.command(name="removepartner")
+async def _cmd_removepartner(ctx: commands.Context, *, name: str):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    data   = _pp_load()
     before = len(data["partners"])
-    data["partners"] = [p for p in data["partners"] if p["name"].lower() != name.strip().lower()]
+    clean  = _normalize_quotes(name.strip()).lower()
+    data["partners"] = [p for p in data["partners"] if _normalize_quotes(p["name"]).lower() != clean]
     if len(data["partners"]) == before:
         await ctx.send(f"❌ Partner **{name}** not found.", delete_after=8)
         return
     _pp_save(data)
     await _pp_post_or_refresh(ctx.guild)
-    await ctx.send(f"✅ Removed **{name}** and refreshed the panel.", delete_after=8)
+    await ctx.send(f"✅ **{name}** removed and panel refreshed.", delete_after=8)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
+@bot.command(name="partnerfeature")
+async def _cmd_partnerfeature(ctx: commands.Context, *, name: str):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    data = _pp_load()
+    idx  = next(
+        (i for i, p in enumerate(data["partners"]) if _normalize_quotes(p["name"]).lower() == _normalize_quotes(name.strip()).lower()), None
+    )
+    if idx is None:
+        await ctx.send(f"❌ Partner **{name}** not found.", delete_after=8)
+        return
+    current    = data["partners"][idx].get("status", "Active")
+    new_status = "Active" if current == "Featured" else "Featured"
+    data["partners"][idx]["status"] = new_status
+    _pp_save(data)
+    await _pp_post_or_refresh(ctx.guild)
+    await ctx.send(f"✅ **{name}** is now **{new_status}** — panel refreshed.", delete_after=8)
     try:
         await ctx.message.delete()
     except Exception:
@@ -24109,375 +28204,95 @@ async def _cmd_partnerslist(ctx: commands.Context):
     if not partners:
         await ctx.send("No partners on file.", delete_after=8)
         return
+    lines = []
+    for i, p in enumerate(partners[:25], 1):
+        badge = _PP_STATUS_BADGES.get(p.get("status", "Active"), "🤝")
+        lines.append(f"`{i:>2}.` {badge} **{p['name']}** — {p.get('short_desc', '')[:60]}")
     embed = discord.Embed(
-        title="🤝 Partner List",
-        description="\n".join(f"• **{p['name']}** — {p.get('short_desc', '')}" for p in partners[:25]),
-        color=discord.Color.blurple(),
+        title=f"🤝 Partner List  ({len(partners)})",
+        description="\n".join(lines),
+        color=_PP_COLOR,
     )
-    embed.set_footer(text=f"Total: {len(partners)}")
+    embed.set_footer(text=_PP_FOOTER)
     await ctx.send(embed=embed)
 
 
-# =========================
-# PARTNERSHIP SYSTEM
-# =========================
-
-_PSHIP_PANEL_CHANNEL_ID    = 0  # channel where the public panel is posted
-_PSHIP_REVIEW_CHANNEL_ID   = 0  # staff-only review channel
-_PSHIP_ACCEPTED_CHANNEL_ID = 0  # public channel for accepted partner announcements (0 = skip)
-_PSHIP_PARTNER_ROLE_ID     = 0  # role assigned on acceptance (0 = skip)
-_PSHIP_STAFF_PING_ROLE_ID  = 0  # staff role pinged on new application (0 = skip)
-_PSHIP_FILE                = os.path.join(DATA_FOLDER, "diff_partnerships.json")
-
-_PSHIP_EMBED_COLOR   = discord.Color.from_rgb(88, 101, 242)
-_PSHIP_SUCCESS_COLOR = discord.Color.green()
-_PSHIP_DENIED_COLOR  = discord.Color.red()
-_PSHIP_WARN_COLOR    = discord.Color.gold()
-_PSHIP_FOOTER        = "Different Meets • Partnership System"
-
-
-def _pship_load() -> dict:
-    return _load_diff_json(_PSHIP_FILE) or {}
-
-
-def _pship_save(data: dict) -> None:
-    _save_diff_json(_PSHIP_FILE, data)
-
-
-def _pship_extract_app_id(message: discord.Message) -> str | None:
+@bot.command(name="setpartnerchannel")
+async def _cmd_setpartnerchannel(ctx: commands.Context, channel: discord.TextChannel):
+    global _PP_REVIEW_CHANNEL_ID
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    _PP_REVIEW_CHANNEL_ID = channel.id
+    await ctx.send(
+        f"✅ Partnership review channel set to {channel.mention} (runtime only).\n"
+        f"To make it permanent, set `_PP_REVIEW_CHANNEL_ID = {channel.id}` in the config.",
+        delete_after=20,
+    )
     try:
-        desc = message.embeds[0].description or ""
-        import re as _re
-        m = _re.search(r"`(PARTNER-\d+-\d+)`", desc)
-        return m.group(1) if m else None
+        await ctx.message.delete()
     except Exception:
-        return None
+        pass
 
 
-def _pship_build_info_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="🤝 DIFF Partnership Program",
-        description=(
-            "Interested in partnering with **Different Meets**?\n"
-            "We work with communities that match our standards of **activity, professionalism, and clean community culture**."
-        ),
-        color=_PSHIP_EMBED_COLOR,
-    )
-    embed.add_field(
-        name="📌 Partnership Requirements",
-        value=(
-            "• Active and well-managed community\n"
-            "• Clean and respectful environment\n"
-            "• Related to car culture, GTA, automotive content, or gaming\n"
-            "• Good engagement and not inactive\n"
-            "• Organized setup with rules and moderation"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🚀 What You Get",
-        value=(
-            "• Promotion in the DIFF partnership area\n"
-            "• Exposure to our community\n"
-            "• Potential social media / event support\n"
-            "• Future collab opportunities"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📋 How To Apply",
-        value=(
-            "Press **Apply for Partnership** below and complete the application form.\n"
-            "A staff member will review your submission and respond once a decision is made."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="⚠️ Important Notes",
-        value=(
-            "• Not all applications are accepted\n"
-            "• Inactive or poor-quality partnerships may be removed\n"
-            "• Partnerships must stay mutually beneficial"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-def _pship_build_panel_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="🤝 DIFF Partnership Center",
-        description=(
-            "Use the buttons below to learn how DIFF partnerships work or submit a partnership request.\n\n"
-            "We look for communities that are **active, respectful, organized, and aligned with DIFF standards**."
-        ),
-        color=_PSHIP_EMBED_COLOR,
-    )
-    embed.add_field(
-        name="Available Options",
-        value=(
-            "**📖 Partnership Info** — Read requirements and expectations\n"
-            "**📩 Apply for Partnership** — Submit your community for staff review"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-def _pship_build_application_embed(app: dict, user: discord.User | discord.Member) -> discord.Embed:
-    embed = discord.Embed(
-        title="📨 New Partnership Application",
-        description=f"Application ID: `{app['application_id']}`",
-        color=_PSHIP_WARN_COLOR,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Applicant", value=f"{user.mention} (`{app['applicant_name']}`)", inline=False)
-    embed.add_field(name="Community Name", value=app["server_name"], inline=False)
-    embed.add_field(name="Invite Link", value=app["invite_link"], inline=False)
-    embed.add_field(name="Community Type", value=app["community_type"], inline=True)
-    embed.add_field(name="Member Count", value=app["member_count"], inline=True)
-    embed.add_field(name="Why They Want To Partner", value=app["why_partner"][:1024], inline=False)
-    embed.add_field(name="Extra Info", value=(app["extra_info"][:1024] if app.get("extra_info") else "None provided"), inline=False)
-    embed.add_field(name="Status", value="🟡 Pending Review", inline=False)
-    if hasattr(user, "display_avatar") and user.display_avatar:
-        embed.set_thumbnail(url=user.display_avatar.url)
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-def _pship_build_accepted_embed(app: dict, reviewer: discord.Member | discord.User) -> discord.Embed:
-    embed = discord.Embed(
-        title="✅ Partnership Accepted",
-        description=(
-            f"The partnership request for **{app['server_name']}** has been approved.\n\n"
-            "Welcome to the DIFF partnership network."
-        ),
-        color=_PSHIP_SUCCESS_COLOR,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Community",    value=app["server_name"], inline=True)
-    embed.add_field(name="Invite Link",  value=app["invite_link"], inline=True)
-    embed.add_field(name="Reviewed By",  value=reviewer.mention,   inline=False)
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-def _pship_build_denied_embed(app: dict, reviewer: discord.Member | discord.User, reason: str) -> discord.Embed:
-    embed = discord.Embed(
-        title="❌ Partnership Denied",
-        description=f"The partnership request for **{app['server_name']}** was not approved.",
-        color=_PSHIP_DENIED_COLOR,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Community",   value=app["server_name"], inline=True)
-    embed.add_field(name="Reviewed By", value=reviewer.mention,   inline=True)
-    embed.add_field(name="Reason",      value=reason[:1024],      inline=False)
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-def _pship_build_log_embed(action: str, app: dict, reviewer: discord.Member | discord.User, reason: str | None = None) -> discord.Embed:
-    color = _PSHIP_SUCCESS_COLOR if action == "accepted" else _PSHIP_DENIED_COLOR
-    icon  = "✅" if action == "accepted" else "❌"
-    embed = discord.Embed(
-        title=f"{icon} Partnership {action.title()}",
-        color=color,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="Application ID", value=app["application_id"], inline=False)
-    embed.add_field(name="Applicant",      value=f"<@{app['applicant_id']}>", inline=True)
-    embed.add_field(name="Community",      value=app["server_name"],          inline=True)
-    embed.add_field(name="Reviewed By",    value=reviewer.mention,            inline=False)
-    if reason:
-        embed.add_field(name="Reason", value=reason[:1024], inline=False)
-    embed.set_footer(text=_PSHIP_FOOTER)
-    return embed
-
-
-async def _pship_process_accept(interaction: discord.Interaction, app_id: str) -> None:
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("❌ You don't have permission to review applications.", ephemeral=True)
+@bot.command(name="partnershiplist")
+async def _cmd_partnershiplist(ctx: commands.Context):
+    if not any(r.id in _JOIN_STAFF_ROLE_IDS for r in ctx.author.roles):
+        await ctx.send("Staff only.", delete_after=6)
         return
-    data = _pship_load()
-    app = data.get(app_id)
-    if not app:
-        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
+    data = _pp_apps_load()
+    apps = {k: v for k, v in data.items() if k.startswith("PARTNER-")}
+    if not apps:
+        await ctx.send("No partnership applications on file.", delete_after=10)
         return
-    if app.get("status") != "pending":
-        await interaction.response.send_message("⚠️ This application has already been reviewed.", ephemeral=True)
-        return
-    app["status"]        = "accepted"
-    app["reviewer_id"]   = interaction.user.id
-    app["reviewer_name"] = str(interaction.user)
-    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
-    data[app_id] = app
-    _pship_save(data)
-    guild = interaction.guild
-    applicant = guild.get_member(app["applicant_id"]) if guild else None
-    if applicant and _PSHIP_PARTNER_ROLE_ID:
-        role = guild.get_role(_PSHIP_PARTNER_ROLE_ID)
-        if role:
-            try:
-                await applicant.add_roles(role, reason="Partnership accepted")
-            except discord.Forbidden:
-                pass
-    updated = _pship_build_application_embed(app, applicant or interaction.user)
-    updated.color = _PSHIP_SUCCESS_COLOR
-    updated.set_field_at(len(updated.fields) - 1, name="Status", value=f"✅ Accepted by {interaction.user.mention}", inline=False)
-    await interaction.message.edit(embed=updated, view=None)
-    if applicant:
-        try:
-            await applicant.send(embed=_pship_build_accepted_embed(app, interaction.user))
-        except discord.Forbidden:
-            pass
-    if _PSHIP_ACCEPTED_CHANNEL_ID:
-        acc_ch = guild.get_channel(_PSHIP_ACCEPTED_CHANNEL_ID) if guild else None
-        if isinstance(acc_ch, discord.TextChannel):
-            await acc_ch.send(embed=_pship_build_accepted_embed(app, interaction.user))
-    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
-    if isinstance(log_ch, discord.TextChannel):
-        await log_ch.send(embed=_pship_build_log_embed("accepted", app, interaction.user))
-    await interaction.response.send_message("✅ Partnership accepted.", ephemeral=True)
-
-
-async def _pship_process_deny(interaction: discord.Interaction, app_id: str, reason: str) -> None:
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("❌ You don't have permission to review applications.", ephemeral=True)
-        return
-    data = _pship_load()
-    app = data.get(app_id)
-    if not app:
-        await interaction.response.send_message("❌ Application not found.", ephemeral=True)
-        return
-    if app.get("status") != "pending":
-        await interaction.response.send_message("⚠️ This application has already been reviewed.", ephemeral=True)
-        return
-    app["status"]        = "denied"
-    app["reviewer_id"]   = interaction.user.id
-    app["reviewer_name"] = str(interaction.user)
-    app["decided_at"]    = datetime.now(timezone.utc).isoformat()
-    data[app_id] = app
-    _pship_save(data)
-    guild = interaction.guild
-    applicant = guild.get_member(app["applicant_id"]) if guild else None
-    updated = _pship_build_application_embed(app, applicant or interaction.user)
-    updated.color = _PSHIP_DENIED_COLOR
-    updated.set_field_at(len(updated.fields) - 1, name="Status", value=f"❌ Denied by {interaction.user.mention}", inline=False)
-    await interaction.message.edit(embed=updated, view=None)
-    if applicant:
-        try:
-            await applicant.send(embed=_pship_build_denied_embed(app, interaction.user, reason))
-        except discord.Forbidden:
-            pass
-    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
-    if isinstance(log_ch, discord.TextChannel):
-        await log_ch.send(embed=_pship_build_log_embed("denied", app, interaction.user, reason=reason))
-    await interaction.response.send_message("❌ Partnership denied.", ephemeral=True)
-
-
-class _PshipDenyModal(discord.ui.Modal, title="Deny Partnership Application"):
-    reason = discord.ui.TextInput(
-        label="Reason for denial",
-        style=discord.TextStyle.paragraph,
-        placeholder="Explain why this partnership was denied.",
-        required=True,
-        max_length=500,
-    )
-
-    def __init__(self, app_id: str) -> None:
-        super().__init__()
-        self.app_id = app_id
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await _pship_process_deny(interaction, self.app_id, str(self.reason))
-
-
-class _PshipStaffView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅", custom_id="pship_accept")
-    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        app_id = _pship_extract_app_id(interaction.message)
-        if not app_id:
-            await interaction.response.send_message("❌ Could not find application ID.", ephemeral=True)
-            return
-        await _pship_process_accept(interaction, app_id)
-
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌", custom_id="pship_deny")
-    async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        app_id = _pship_extract_app_id(interaction.message)
-        if not app_id:
-            await interaction.response.send_message("❌ Could not find application ID.", ephemeral=True)
-            return
-        await interaction.response.send_modal(_PshipDenyModal(app_id))
-
-
-class _PshipApplicationModal(discord.ui.Modal, title="DIFF Partnership Application"):
-    server_name    = discord.ui.TextInput(label="Community / Server Name",        placeholder="Enter your community name",                      required=True,  max_length=100)
-    invite_link    = discord.ui.TextInput(label="Invite Link / Social Link",       placeholder="Paste your Discord invite or main link",          required=True,  max_length=200)
-    community_type = discord.ui.TextInput(label="Community Type",                  placeholder="GTA, Car Community, Gaming, Automotive, etc.",    required=True,  max_length=100)
-    member_count   = discord.ui.TextInput(label="Approximate Member Count",        placeholder="Example: 250",                                    required=True,  max_length=20)
-    why_partner    = discord.ui.TextInput(label="Why do you want to partner?",     style=discord.TextStyle.paragraph,
-                                          placeholder="Tell us why this partnership makes sense.",                required=True,  max_length=1000)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        app_id = f"PARTNER-{interaction.user.id}-{int(datetime.now(timezone.utc).timestamp())}"
-        app = {
-            "application_id": app_id,
-            "applicant_id":   interaction.user.id,
-            "applicant_name": str(interaction.user),
-            "server_name":    str(self.server_name),
-            "invite_link":    str(self.invite_link),
-            "community_type": str(self.community_type),
-            "member_count":   str(self.member_count),
-            "why_partner":    str(self.why_partner),
-            "extra_info":     "",
-            "status":         "pending",
-        }
-        data = _pship_load()
-        data[app_id] = app
-        _pship_save(data)
-        review_ch = interaction.guild.get_channel(_PSHIP_REVIEW_CHANNEL_ID) if interaction.guild else None
-        if not isinstance(review_ch, discord.TextChannel):
-            await interaction.response.send_message(
-                "✅ Application received! Staff will review it shortly.\n"
-                f"Your Application ID: `{app_id}`",
-                ephemeral=True,
-            )
-            return
-        content = f"<@&{_PSHIP_STAFF_PING_ROLE_ID}> New partnership application submitted." if _PSHIP_STAFF_PING_ROLE_ID else None
-        await review_ch.send(
-            content=content,
-            embed=_pship_build_application_embed(app, interaction.user),
-            view=_PshipStaffView(),
+    icons = {
+        "pending":           "🟡",
+        "accepted":          "✅",
+        "denied":            "❌",
+        "changes_requested": "🔄",
+        "blacklisted":       "🚫",
+    }
+    lines = []
+    for app_id, app in list(apps.items())[-25:]:
+        icon = icons.get(app.get("status", "pending"), "❔")
+        lines.append(
+            f"{icon} `{app_id}` — **{app.get('server_name', '?')}** by <@{app.get('applicant_id', 0)}>"
         )
-        confirm = discord.Embed(
-            title="✅ Application Submitted",
-            description=f"Your application has been sent to staff for review.\nApplication ID: `{app_id}`",
-            color=_PSHIP_SUCCESS_COLOR,
-        )
-        confirm.set_footer(text=_PSHIP_FOOTER)
-        await interaction.response.send_message(embed=confirm, ephemeral=True)
+    embed = discord.Embed(
+        title="📋 Partnership Applications",
+        description="\n".join(lines),
+        color=_PP_COLOR,
+    )
+    embed.set_footer(text=f"{_PP_FOOTER} • Showing last {len(lines)}")
+    await ctx.send(embed=embed)
 
 
-class _PshipPanelView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
+@bot.command(name="refreshpartners")
+async def _cmd_refreshpartners(ctx: commands.Context):
+    if not any(r.id in _JOIN_STAFF_ROLE_IDS for r in ctx.author.roles):
+        await ctx.send("Staff only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await _pp_post_or_refresh(ctx.guild)
+    await ctx.send("✅ Partner panel refreshed.", delete_after=6)
 
-    @discord.ui.button(label="Partnership Info", style=discord.ButtonStyle.secondary, emoji="📖", custom_id="pship_info")
-    async def info_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_message(embed=_pship_build_info_embed(), ephemeral=True)
 
-    @discord.ui.button(label="Apply for Partnership", style=discord.ButtonStyle.primary, emoji="📩", custom_id="pship_apply")
-    async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(_PshipApplicationModal())
+# ── Legacy command aliases (backward compat) ──────────────────────────────────────
+@bot.command(name="partneradd")
+async def _cmd_partneradd_legacy(ctx: commands.Context):
+    await _cmd_addpartner(ctx)
+
+
+@bot.command(name="partnerremove")
+async def _cmd_partnerremove_legacy(ctx: commands.Context, *, name: str):
+    await _cmd_removepartner(ctx, name=name)
 
 
 @bot.command(name="postpartnershippanel")
-async def _cmd_postpartnershippanel(ctx: commands.Context, channel: discord.TextChannel = None):
+async def _cmd_postpartnershippanel_legacy(ctx: commands.Context, channel: discord.TextChannel = None):
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("Admins only.", delete_after=6)
         return
@@ -24486,32 +28301,10 @@ async def _cmd_postpartnershippanel(ctx: commands.Context, channel: discord.Text
         await ctx.message.delete()
     except Exception:
         pass
-    await target.send(embed=_pship_build_panel_embed(), view=_PshipPanelView())
+    partners = _pp_get_partners()
+    await target.send(embed=_pp_build_panel_embed(partners), view=_PartnerPanelView(partners))
 
 
-@bot.command(name="partnershiplist")
-async def _cmd_partnershiplist(ctx: commands.Context):
-    if not any(r.id in _JOIN_STAFF_ROLE_IDS for r in ctx.author.roles):
-        await ctx.send("Staff only.", delete_after=6)
-        return
-    data = _pship_load()
-    if not data:
-        await ctx.send("No partnership applications on file.", delete_after=10)
-        return
-    lines = []
-    for app_id, app in data.items():
-        status_icon = {"pending": "🟡", "accepted": "✅", "denied": "❌"}.get(app.get("status", "pending"), "❔")
-        lines.append(f"{status_icon} `{app_id}` — **{app.get('server_name', '?')}** by <@{app.get('applicant_id', 0)}>")
-    embed = discord.Embed(
-        title="📋 Partnership Applications",
-        description="\n".join(lines[:25]),
-        color=_PSHIP_EMBED_COLOR,
-    )
-    embed.set_footer(text=_PSHIP_FOOTER)
-    await ctx.send(embed=embed)
-
-
-# =========================
 # RSVP + ATTENDANCE + SMART PING
 # =========================
 
@@ -25177,16 +28970,28 @@ if not TOKEN:
 
 keep_alive()
 
+
+def _crash_log(reason: str) -> None:
+    """Append crash reason to discord.log so it survives the restart."""
+    try:
+        with open("discord.log", "a", encoding="utf-8") as _f:
+            _f.write(f"[CRASH @ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}] {reason}\n")
+    except Exception:
+        pass
+
 async def run_bot():
     try:
-        await bot.start(TOKEN)
+        await bot.start(TOKEN, reconnect=True)
     except discord.errors.HTTPException as e:
-        if e.status == 429:
-            print(f"[Rate limited by Discord] Retrying in 10s...")
-        else:
-            print(f"[HTTP error] {e} — retrying in 10s")
+        msg = f"[Rate limited] Retrying..." if e.status == 429 else f"[HTTP error] {e}"
+        print(msg)
+        _crash_log(msg)
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
-        print(f"[Connection error] {e} — retrying in 10s")
+        msg = f"[Crash] {type(e).__name__}: {e}"
+        print(msg)
+        _crash_log(msg)
     finally:
         try:
             if not bot.is_closed():
@@ -25245,8 +29050,7 @@ async def pihealth(interaction: discord.Interaction):
 # ── Roll Call Finalize Reminder ────────────────────────────────────────────────
 _rc_reminded: set = set()  # (guild_id, meet_number) pairs already reminded this session
 
-@tasks.loop(minutes=30)
-async def _rc_finalize_reminder_loop():
+async def __rc_finalize_reminder_loop_logic():
     try:
         guild = bot.get_guild(GUILD_ID)
         if not guild:
@@ -25279,6 +29083,16 @@ async def _rc_finalize_reminder_loop():
     except Exception as _e:
         print(f"[RcReminder] Error: {_e}")
 
+@tasks.loop(minutes=30)
+async def _rc_finalize_reminder_loop():
+    _loop_success('_rc_finalize_reminder_loop')
+    try:
+        await run_with_timeout('_rc_finalize_reminder_loop', __rc_finalize_reminder_loop_logic(), timeout=120)
+    except Exception as _lte:
+        await _handle_loop_error('_rc_finalize_reminder_loop', _lte, _rc_finalize_reminder_loop)
+@_rc_finalize_reminder_loop.error
+async def __rc_finalize_reminder_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('_rc_finalize_reminder_loop', error, _rc_finalize_reminder_loop)
 @_rc_finalize_reminder_loop.before_loop
 async def _before_rc_reminder():
     await bot.wait_until_ready()
@@ -25506,8 +29320,7 @@ async def _psn_refresh_board(guild: discord.Guild) -> None:
         print(f"[PSN] Board post failed: {_e}")
 
 
-@tasks.loop(minutes=5)
-async def _psn_board_refresh_loop():
+async def __psn_board_refresh_loop_logic():
     guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
     if guild:
         try:
@@ -25515,6 +29328,16 @@ async def _psn_board_refresh_loop():
         except Exception as _e:
             print(f"[PSN] Loop error: {_e}")
 
+@tasks.loop(minutes=5)
+async def _psn_board_refresh_loop():
+    _loop_success('_psn_board_refresh_loop')
+    try:
+        await run_with_timeout('_psn_board_refresh_loop', __psn_board_refresh_loop_logic(), timeout=60)
+    except Exception as _lte:
+        await _handle_loop_error('_psn_board_refresh_loop', _lte, _psn_board_refresh_loop)
+@_psn_board_refresh_loop.error
+async def __psn_board_refresh_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('_psn_board_refresh_loop', error, _psn_board_refresh_loop)
 @_psn_board_refresh_loop.before_loop
 async def _before_psn_board():
     await bot.wait_until_ready()
@@ -25527,7 +29350,7 @@ async def _cmd_setpsn(ctx: commands.Context, *args):
     """!setpsn <PSN>  or  !setpsn @user <PSN>  — register a PSN username for the board."""
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     is_host  = any(r.id == HOST_ROLE_ID for r in ctx.author.roles)
 
     # Staff can set for another member: !setpsn @user PSN
@@ -25566,7 +29389,7 @@ async def _cmd_removepsn(ctx: commands.Context, member: discord.Member = None):
     """!removepsn — remove your own PSN mapping (staff can pass @user)."""
     if not isinstance(ctx.author, discord.Member):
         return
-    is_staff = any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+    is_staff = any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
 
     if member and not is_staff:
         return await ctx.send("Staff only for removing others.", delete_after=8)
@@ -25592,7 +29415,7 @@ async def _cmd_psnboard(ctx: commands.Context):
     """!psnboard — post a fresh PSN board (staff only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         return await ctx.send("Staff only.", delete_after=6)
@@ -25615,7 +29438,7 @@ async def _cmd_refresh_psn_board(ctx: commands.Context):
     """!refreshpsnboard — force-refresh the existing PSN board embed."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         return await ctx.send("Staff only.", delete_after=6)
@@ -25638,7 +29461,7 @@ async def _cmd_psn_list(ctx: commands.Context):
     """!psnlist — show all registered host PSN accounts (staff/host only)."""
     is_ok = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_ok:
         return await ctx.send("Staff/host only.", delete_after=6)
@@ -25898,8 +29721,7 @@ async def _mgmt_send_weekly_report(guild: discord.Guild) -> None:
     await ch.send(embed=embed)
 
 
-@tasks.loop(minutes=15)
-async def _mgmt_daily_briefing_loop():
+async def __mgmt_daily_briefing_loop_logic():
     try:
         from zoneinfo import ZoneInfo
         now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -25920,9 +29742,18 @@ async def _mgmt_daily_briefing_loop():
         except Exception as _e:
             print(f"[MgmtBriefing] {_e}")
 
-
 @tasks.loop(minutes=15)
-async def _mgmt_weekly_report_loop():
+async def _mgmt_daily_briefing_loop():
+    _loop_success('_mgmt_daily_briefing_loop')
+    try:
+        await run_with_timeout('_mgmt_daily_briefing_loop', __mgmt_daily_briefing_loop_logic(), timeout=120)
+    except Exception as _lte:
+        await _handle_loop_error('_mgmt_daily_briefing_loop', _lte, _mgmt_daily_briefing_loop)
+@_mgmt_daily_briefing_loop.error
+async def __mgmt_daily_briefing_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('_mgmt_daily_briefing_loop', error, _mgmt_daily_briefing_loop)
+
+async def __mgmt_weekly_report_loop_logic():
     try:
         from zoneinfo import ZoneInfo
         now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -25943,9 +29774,18 @@ async def _mgmt_weekly_report_loop():
         except Exception as _e:
             print(f"[MgmtWeekly] {_e}")
 
+@tasks.loop(minutes=15)
+async def _mgmt_weekly_report_loop():
+    _loop_success('_mgmt_weekly_report_loop')
+    try:
+        await run_with_timeout('_mgmt_weekly_report_loop', __mgmt_weekly_report_loop_logic(), timeout=120)
+    except Exception as _lte:
+        await _handle_loop_error('_mgmt_weekly_report_loop', _lte, _mgmt_weekly_report_loop)
+@_mgmt_weekly_report_loop.error
+async def __mgmt_weekly_report_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('_mgmt_weekly_report_loop', error, _mgmt_weekly_report_loop)
 
-@tasks.loop(minutes=30)
-async def _mgmt_alert_loop():
+async def __mgmt_alert_loop_logic():
     guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
     if not guild:
         return
@@ -26047,7 +29887,16 @@ async def _mgmt_alert_loop():
 
     _mgmt_alert_save(alerts)
 
-
+@tasks.loop(minutes=30)
+async def _mgmt_alert_loop():
+    _loop_success('_mgmt_alert_loop')
+    try:
+        await run_with_timeout('_mgmt_alert_loop', __mgmt_alert_loop_logic(), timeout=180)
+    except Exception as _lte:
+        await _handle_loop_error('_mgmt_alert_loop', _lte, _mgmt_alert_loop)
+@_mgmt_alert_loop.error
+async def __mgmt_alert_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error('_mgmt_alert_loop', error, _mgmt_alert_loop)
 @_mgmt_daily_briefing_loop.before_loop
 async def _before_mgmt_daily():
     await bot.wait_until_ready()
@@ -26066,7 +29915,7 @@ async def _cmd_management_report(ctx: commands.Context):
     """Post a current management snapshot (leaders/managers only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -26084,7 +29933,7 @@ async def _cmd_weekly_report(ctx: commands.Context):
     """Post the weekly server report (leaders/managers only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -26102,7 +29951,7 @@ async def _cmd_pending_joins(ctx: commands.Context):
     """List all open join tickets with age indicators (staff only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID, HOST_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -26146,7 +29995,7 @@ async def _cmd_host_status(ctx: commands.Context):
     """Show all hosts, availability status, and meet count (leaders/managers only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -26209,7 +30058,7 @@ async def _cmd_join_stats(ctx: commands.Context):
     """Show join application statistics (staff only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -26297,7 +30146,7 @@ async def _cmd_app_leaderboard(ctx: commands.Context):
     """Show who has reviewed the most join applications (staff only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -26346,7 +30195,7 @@ async def _cmd_cooldown_list(ctx: commands.Context):
     """Show all users currently on a reapply cooldown (staff only)."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
-        and any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in ctx.author.roles)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
     )
     if not is_staff:
         await ctx.send("Staff only.", delete_after=6)
@@ -26390,11 +30239,26 @@ async def _cmd_cooldown_list(ctx: commands.Context):
 
 
 # ── Stale Join Ticket Alert Task ───────────────────────────────────────────────
-_STALE_JOIN_HOURS = 24
+_STALE_JOIN_HOURS = 8
+_STALE_JOIN_MSG_FILE = os.path.join("diff_data", "diff_stale_join_msg.json")
 
-@tasks.loop(minutes=30)
-async def _stale_join_alert_task():
-    """Alert staff every 30 min if a join ticket has been open > 24h without a decision."""
+def _stale_join_msg_load() -> int | None:
+    try:
+        with open(_STALE_JOIN_MSG_FILE) as f:
+            return json.load(f).get("message_id")
+    except Exception:
+        return None
+
+def _stale_join_msg_save(message_id: int | None):
+    try:
+        with open(_STALE_JOIN_MSG_FILE, "w") as f:
+            json.dump({"message_id": message_id}, f)
+    except Exception:
+        pass
+
+async def __stale_join_alert_task_logic():
+    """Alert staff when join tickets have been open > 24h. Edits existing alert instead of spamming."""
+    # stale alert re-enabled — edits in place, not spammy
     await bot.wait_until_ready()
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -26420,15 +30284,24 @@ async def _stale_join_alert_task():
         if age_h >= _STALE_JOIN_HOURS:
             stale.append((ch_id_str, entry, age_h))
 
+    # If no stale tickets, delete any existing alert and clear saved ID
     if not stale:
+        saved_id = _stale_join_msg_load()
+        if saved_id:
+            try:
+                old_msg = await mgmt_ch.fetch_message(saved_id)
+                await old_msg.delete()
+            except Exception:
+                pass
+            _stale_join_msg_save(None)
         return
 
     lines = []
     for ch_id_str, entry, age_h in sorted(stale, key=lambda x: -x[2]):
-        psn  = entry.get("psn", "unknown")
-        uid  = entry.get("user_id")
-        name = entry.get("channel_name", ch_id_str)
-        h    = int(age_h)
+        psn      = entry.get("psn", "unknown")
+        uid      = entry.get("user_id")
+        name     = entry.get("channel_name", ch_id_str)
+        h        = int(age_h)
         user_str = f"<@{uid}>" if uid else "Unknown"
         lines.append(f"• **#{name}** — {user_str} (PSN: {psn}) — open **{h}h**")
 
@@ -26438,19 +30311,43 @@ async def _stale_join_alert_task():
         color=discord.Color.orange(),
         timestamp=now,
     )
-    embed.set_footer(text="DIFF Management • Stale Alert")
+    embed.set_footer(text="DIFF Management • Stale Alert  •  Last checked: " + now.strftime("%I:%M %p UTC"))
+
+    # Try to edit the existing alert message instead of posting a new one
+    saved_id = _stale_join_msg_load()
+    if saved_id:
+        try:
+            old_msg = await mgmt_ch.fetch_message(saved_id)
+            await old_msg.edit(embed=embed)
+            return
+        except discord.NotFound:
+            _stale_join_msg_save(None)
+        except Exception:
+            pass
+
+    # No existing message — post a fresh one and save its ID
     try:
-        await mgmt_ch.send(embed=embed)
+        new_msg = await mgmt_ch.send(embed=embed)
+        _stale_join_msg_save(new_msg.id)
     except Exception:
         pass
 
-
+@tasks.loop(minutes=30)
+async def _stale_join_alert_task():
+    _loop_success('_stale_join_alert_task')
+    try:
+        await run_with_timeout('_stale_join_alert_task', __stale_join_alert_task_logic(), timeout=180)
+    except Exception as _lte:
+        await _handle_loop_error('_stale_join_alert_task', _lte, _stale_join_alert_task)
+@_stale_join_alert_task.error
+async def __stale_join_alert_task_on_error(error: Exception) -> None:
+    await _handle_loop_error('_stale_join_alert_task', error, _stale_join_alert_task)
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: !bulkwarn / !bulkmute
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _is_staff_member(member: discord.Member) -> bool:
-    return any(r.id in {LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID} for r in member.roles)
+    return any(r.id in _LEADERSHIP_ROLE_IDS for r in member.roles)
 
 
 @bot.command(name="bulkwarn")
@@ -26706,9 +30603,8 @@ def _ann_save(d: dict) -> None:
         json.dump(d, f, indent=2)
 
 
-@tasks.loop(hours=24)
-async def _anniversary_check_task():
-    """Daily check for server anniversaries — DMs member + logs to staff."""
+async def __anniversary_check_task_logic():
+    """Daily check for server anniversaries — logs to staff, spaced out to avoid Pi load spikes."""
     await bot.wait_until_ready()
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -26719,7 +30615,12 @@ async def _anniversary_check_task():
     ann    = _ann_load()
     log_ch = guild.get_channel(_ANNIVERSARY_CHANNEL_ID)
 
-    for member in guild.members:
+    # Collect anniversaries first without sending anything
+    pending: list[tuple[discord.Member, int]] = []
+    for i, member in enumerate(guild.members):
+        # Yield to the event loop every 50 members so gateway events aren't blocked
+        if i % 50 == 0:
+            await asyncio.sleep(0)
         if member.bot or member.joined_at is None:
             continue
         joined = member.joined_at.date()
@@ -26728,17 +30629,21 @@ async def _anniversary_check_task():
         years = today.year - joined.year
         if years <= 0:
             continue
-
         last_key = str(member.id)
         if ann.get(last_key) == today.year:
             continue
+        pending.append((member, years))
 
+    # Process each anniversary with a generous gap between sends
+    for member, years in pending:
+        last_key = str(member.id)
         ann[last_key] = today.year
         _ann_save(ann)
 
-        ordinal_year = _ordinal(years)
-
         await update_member_reputation(guild, member, 1, f"Server anniversary — {years} year(s)", given_by=None)
+
+        # Wait after the rep update before sending the log embed
+        await asyncio.sleep(3)
 
         if isinstance(log_ch, discord.TextChannel):
             log_e = discord.Embed(
@@ -26754,9 +30659,19 @@ async def _anniversary_check_task():
             except Exception:
                 pass
 
-        await asyncio.sleep(5)
+        # Longer gap between each anniversary member to avoid burst load
+        await asyncio.sleep(15)
 
-
+@tasks.loop(hours=24)
+async def _anniversary_check_task():
+    _loop_success('_anniversary_check_task')
+    try:
+        await run_with_timeout('_anniversary_check_task', __anniversary_check_task_logic(), timeout=900)
+    except Exception as _lte:
+        await _handle_loop_error('_anniversary_check_task', _lte, _anniversary_check_task)
+@_anniversary_check_task.error
+async def __anniversary_check_task_on_error(error: Exception) -> None:
+    await _handle_loop_error('_anniversary_check_task', error, _anniversary_check_task)
 @_anniversary_check_task.before_loop
 async def _before_anniversary_check():
     await bot.wait_until_ready()
@@ -26765,13 +30680,33 @@ async def _before_anniversary_check():
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: Weekly host availability DM summary
 # ═══════════════════════════════════════════════════════════════════════════════
+_HOST_DIGEST_SENT_FILE       = os.path.join(DATA_FOLDER, "diff_host_digest_sent.json")
+_RETENTION_REPORT_SENT_FILE  = os.path.join(DATA_FOLDER, "diff_retention_report_sent.json")
 
-@tasks.loop(hours=24)
-async def _host_avail_weekly_dm_task():
+def _host_digest_already_sent_today() -> bool:
+    """Return True if the digest was already sent today (prevents double-send on restart)."""
+    try:
+        if os.path.exists(_HOST_DIGEST_SENT_FILE):
+            with open(_HOST_DIGEST_SENT_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("last_sent") == datetime.now(timezone.utc).date().isoformat()
+    except Exception:
+        pass
+    return False
+
+def _host_digest_mark_sent() -> None:
+    with open(_HOST_DIGEST_SENT_FILE, "w", encoding="utf-8") as f:
+        json.dump({"last_sent": datetime.now(timezone.utc).date().isoformat()}, f)
+
+async def __host_avail_weekly_dm_task_logic():
     """Every Monday, DM leaders/managers with a host RSVP availability summary."""
     await bot.wait_until_ready()
     now = datetime.now(timezone.utc)
     if now.weekday() != 0:
+        return
+
+    # Prevent double-send when bot restarts on the same Monday
+    if _host_digest_already_sent_today():
         return
 
     guild = bot.get_guild(GUILD_ID)
@@ -26780,11 +30715,13 @@ async def _host_avail_weekly_dm_task():
 
     rsvp_data = _hrsvp_load()
     lines = []
+    total_responses = 0
     for day in _HRSVP_DAYS:
         slot   = rsvp_data.get(day, {})
         yes    = slot.get("yes", [])
         no     = slot.get("no", [])
         maybe  = slot.get("maybe", [])
+        total_responses += len(yes) + len(no) + len(maybe)
 
         yes_names = []
         for entry in yes:
@@ -26804,6 +30741,11 @@ async def _host_avail_weekly_dm_task():
             f"  ❌ Unavailable ({len(no)}): {', '.join(no_names) or '—'}"
         )
 
+    # Skip the DM entirely if no hosts have responded yet
+    if total_responses == 0:
+        _host_digest_mark_sent()
+        return
+
     dm_embed = discord.Embed(
         title="📅 Weekly Host Availability Summary",
         description="\n\n".join(lines) or "No availability data.",
@@ -26811,6 +30753,8 @@ async def _host_avail_weekly_dm_task():
         timestamp=datetime.now(timezone.utc),
     )
     dm_embed.set_footer(text="DIFF Meets • Weekly Host Digest")
+
+    _host_digest_mark_sent()
 
     for role_id in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID):
         role = guild.get_role(role_id)
@@ -26824,7 +30768,16 @@ async def _host_avail_weekly_dm_task():
             except Exception:
                 pass
 
-
+@tasks.loop(hours=24)
+async def _host_avail_weekly_dm_task():
+    _loop_success('_host_avail_weekly_dm_task')
+    try:
+        await run_with_timeout('_host_avail_weekly_dm_task', __host_avail_weekly_dm_task_logic(), timeout=180)
+    except Exception as _lte:
+        await _handle_loop_error('_host_avail_weekly_dm_task', _lte, _host_avail_weekly_dm_task)
+@_host_avail_weekly_dm_task.error
+async def __host_avail_weekly_dm_task_on_error(error: Exception) -> None:
+    await _handle_loop_error('_host_avail_weekly_dm_task', error, _host_avail_weekly_dm_task)
 @_host_avail_weekly_dm_task.before_loop
 async def _before_host_avail_weekly_dm():
     await bot.wait_until_ready()
@@ -26895,8 +30848,1165 @@ async def _cmd_send_weekly_host_dm(ctx: commands.Context):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# LEAVE SURVEY — Staff-triggered follow-up DM to former members
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SURVEY_OPTIONS = [
+    ("Server felt inactive",          "survey_inactive"),
+    ("Didn't understand how to join", "survey_confused"),
+    ("Didn't like the rules",         "survey_rules"),
+    ("No longer interested in meets", "survey_not_interested"),
+    ("Joined by mistake",             "survey_mistake"),
+    ("Other reason",                  "survey_other"),
+]
+
+
+class LeaveSurveyView(discord.ui.View):
+    """Button view sent to former members asking why they left."""
+    def __init__(self, user_id: int, username: str):
+        super().__init__(timeout=None)
+        self.user_id  = user_id
+        self.username = username
+        for label, cid in _SURVEY_OPTIONS:
+            btn = discord.ui.Button(
+                label=label,
+                custom_id=f"{cid}:{user_id}",
+                style=discord.ButtonStyle.secondary,
+            )
+            btn.callback = self._make_callback(label)
+            self.add_item(btn)
+
+    def _make_callback(self, label: str):
+        async def _cb(interaction: discord.Interaction):
+            try:
+                with _activity_db() as conn:
+                    conn.execute(
+                        "INSERT INTO leave_surveys (user_id, username, response, responded_at) VALUES (?,?,?,?)",
+                        (self.user_id, self.username, label, time.time()),
+                    )
+                await interaction.response.edit_message(
+                    content="✅ Thanks for the feedback — we appreciate it.",
+                    view=None,
+                )
+            except Exception as _e:
+                _bot_log.error("[LeaveSurvey] %s", _e, exc_info=True)
+                try:
+                    await interaction.response.send_message("Something went wrong. Thank you anyway.", ephemeral=True)
+                except Exception:
+                    pass
+        return _cb
+
+
+@bot.command(name="leavedm", aliases=["surveydm"])
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
+async def _cmd_leave_dm(ctx: commands.Context, user_id: str):
+    """Send a leave survey DM to a former member by user ID. Staff only."""
+    try:
+        uid = int(user_id)
+    except ValueError:
+        return await ctx.send("❌ Provide a valid user ID.", delete_after=8)
+    try:
+        user = await bot.fetch_user(uid)
+    except discord.NotFound:
+        return await ctx.send("❌ User not found.", delete_after=8)
+
+    embed = discord.Embed(
+        title="Hey — quick question 👋",
+        description=(
+            "You recently left **Different Meets**.\n\n"
+            "We're always trying to improve — mind telling us why you left? "
+            "It takes one click and helps the community a lot. 🙏"
+        ),
+        color=discord.Color.from_rgb(30, 100, 200),
+    )
+    embed.set_footer(text="Different Meets • Exit Feedback")
+    view = LeaveSurveyView(user_id=uid, username=str(user))
+    try:
+        await user.send(embed=embed, view=view)
+        await ctx.send(f"✅ Leave survey DM sent to **{user}**.", delete_after=10)
+    except discord.Forbidden:
+        _bot_log.info("[LeaveSurvey] Could not DM %s — DMs closed.", user)
+        await ctx.send(f"⚠️ Could not DM **{user}** — their DMs are closed.", delete_after=10)
+    except discord.HTTPException as _e:
+        await ctx.send(f"❌ DM failed: {_e}", delete_after=10)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RETENTION LOOPS — Unverified reminder & Inactivity daily report
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _unverified_dm_reminder_logic() -> None:
+    """DM members who joined 24h+ ago and are still unverified (one reminder per member)."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    verified_role   = guild.get_role(VERIFIED_ROLE_ID)
+    unverified_role = guild.get_role(UNVERIFIED_ROLE_ID)
+    if not verified_role:
+        return
+    now = time.time()
+    cutoff_24h = now - 86400
+
+    with _activity_db() as conn:
+        rows = conn.execute(
+            """SELECT user_id FROM member_activity
+               WHERE join_ts IS NOT NULL
+                 AND join_ts < ?
+                 AND unverified_dm_sent = 0""",
+            (cutoff_24h,),
+        ).fetchall()
+
+    for row in rows:
+        uid = row["user_id"]
+        member = guild.get_member(uid)
+        if not member:
+            # Mark as sent so we don't keep looping on members who left
+            with _activity_db() as conn:
+                conn.execute("UPDATE member_activity SET unverified_dm_sent = 1 WHERE user_id = ?", (uid,))
+            continue
+        if verified_role in member.roles:
+            # Already verified — mark and skip
+            with _activity_db() as conn:
+                conn.execute("UPDATE member_activity SET unverified_dm_sent = 1 WHERE user_id = ?", (uid,))
+            continue
+        try:
+            embed = discord.Embed(
+                title="👋 Still need to verify?",
+                description=(
+                    "Hey! You joined **Different Meets** over 24 hours ago but haven't verified yet.\n\n"
+                    "Verification unlocks the full server — meets, crew apps, and more.\n\n"
+                    "Head to the verification channel and follow the steps. Takes less than a minute! 🚗"
+                ),
+                color=discord.Color.from_rgb(255, 165, 0),
+            )
+            embed.set_thumbnail(url=guild.icon.url if guild.icon else discord.Embed.Empty)
+            embed.set_footer(text="Different Meets • This is a one-time reminder")
+            await member.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        finally:
+            with _activity_db() as conn:
+                conn.execute("UPDATE member_activity SET unverified_dm_sent = 1 WHERE user_id = ?", (uid,))
+        await asyncio.sleep(1.5)
+
+
+def _retention_report_already_sent_today() -> bool:
+    try:
+        if os.path.exists(_RETENTION_REPORT_SENT_FILE):
+            with open(_RETENTION_REPORT_SENT_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("last_sent") == datetime.now(timezone.utc).date().isoformat()
+    except Exception:
+        pass
+    return False
+
+def _retention_report_mark_sent() -> None:
+    try:
+        os.makedirs(DATA_FOLDER, exist_ok=True)
+        with open(_RETENTION_REPORT_SENT_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_sent": datetime.now(timezone.utc).date().isoformat()}, f)
+    except Exception as _e:
+        print(f"[Retention] Failed to save sent marker: {_e}")
+
+async def _inactivity_daily_report_logic() -> None:
+    """Post a daily inactivity summary to staff logs (no mass DMs — staff decide action)."""
+    if _retention_report_already_sent_today():
+        return
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return
+
+    stats = _memberstats_query()
+    now = time.time()
+
+    # Build lists of inactive members (name+id) up to 10 each for readability
+    inactive_3d_names, inactive_7d_names = [], []
+    with _activity_db() as conn:
+        for row in conn.execute(
+            """SELECT user_id FROM member_activity
+               WHERE (last_message IS NULL OR last_message < ?)
+                 AND join_ts IS NOT NULL AND join_ts < ?
+               LIMIT 15""",
+            (now - 3 * 86400, now - 3 * 86400),
+        ).fetchall():
+            m = guild.get_member(row["user_id"])
+            if m:
+                inactive_3d_names.append(f"{m.mention} (`{m.display_name}`)")
+        for row in conn.execute(
+            """SELECT user_id FROM member_activity
+               WHERE (last_message IS NULL OR last_message < ?)
+                 AND join_ts IS NOT NULL AND join_ts < ?
+               LIMIT 10""",
+            (now - 7 * 86400, now - 7 * 86400),
+        ).fetchall():
+            m = guild.get_member(row["user_id"])
+            if m:
+                inactive_7d_names.append(f"{m.mention} (`{m.display_name}`)")
+
+    embed = discord.Embed(
+        title="📊 Daily Retention Report",
+        color=discord.Color.from_rgb(30, 100, 180),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="📈 Leave Stats (All Time)",
+        value=(
+            f"Total leaves tracked: **{stats['total_leaves']}**\n"
+            f"Leaves (last 7d): **{stats['recent_7d']}**\n"
+            f"Avg time before leaving: **{stats['avg_days']}d**\n"
+            f"Left while unverified: **{100 - stats['verified_pct']:.1f}%**\n"
+            f"Left without attending a meet: **{100 - stats['meet_pct']:.1f}%**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🟡 Inactive 3+ Days",
+        value=", ".join(inactive_3d_names[:8]) or "None" if inactive_3d_names else "None",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔴 Inactive 7+ Days (flag for review)",
+        value=", ".join(inactive_7d_names[:8]) or "None" if inactive_7d_names else "None",
+        inline=False,
+    )
+    if stats["unverified_24h"]:
+        embed.add_field(
+            name="⚠️ Unverified 24h+ (reminder sent or pending)",
+            value=str(stats["unverified_24h"]),
+            inline=True,
+        )
+    embed.set_footer(text="Different Meets • Retention System — staff action only, no auto-kicks")
+    _retention_report_mark_sent()
+    await ch.send(embed=embed)
+
+
+@tasks.loop(minutes=30)
+async def _unverified_dm_reminder_loop():
+    _loop_success("_unverified_dm_reminder_loop")
+    try:
+        await run_with_timeout(
+            "_unverified_dm_reminder_loop",
+            _unverified_dm_reminder_logic(),
+            timeout=120,
+        )
+    except Exception as _lte:
+        await _handle_loop_error("_unverified_dm_reminder_loop", _lte, _unverified_dm_reminder_loop)
+
+@_unverified_dm_reminder_loop.before_loop
+async def _before_unverified_dm_reminder_loop():
+    await bot.wait_until_ready()
+
+@_unverified_dm_reminder_loop.error
+async def _unverified_dm_reminder_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error("_unverified_dm_reminder_loop", error, _unverified_dm_reminder_loop)
+
+
+async def _re_engagement_logic() -> None:
+    """DM members inactive 7+ days with a re-engagement nudge.
+    Cooldown: once per 30 days per member. Max 10 DMs per run."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    now       = time.time()
+    cutoff_7d = now - 7 * 86400
+    cooldown  = 30 * 86400   # 30 days between re-engagement DMs
+    sent      = 0
+
+    with _activity_db() as conn:
+        rows = conn.execute(
+            """SELECT user_id FROM member_activity
+               WHERE join_ts IS NOT NULL AND join_ts < ?
+                 AND (last_message IS NULL OR last_message < ?)
+                 AND (re_engagement_dm_sent = 0
+                      OR re_engagement_dm_sent < ?)
+               LIMIT 10""",
+            (cutoff_7d, cutoff_7d, now - cooldown),
+        ).fetchall()
+
+    for row in rows:
+        uid    = row["user_id"]
+        member = guild.get_member(uid)
+        if not member or member.bot:
+            continue
+        try:
+            embed = discord.Embed(
+                title="You still tryna roll with DIFF? 🚗",
+                description=(
+                    "We noticed you've been quiet lately.\n\n"
+                    "**Different Meets** has got meets coming up — don't miss out on the next one.\n\n"
+                    "Hop back in, check the schedule, and pull up. The crew's waiting. 🔥"
+                ),
+                color=discord.Color.from_rgb(30, 100, 200),
+            )
+            embed.set_footer(text="Different Meets • You can ignore this if you're still around!")
+            if guild.icon:
+                embed.set_thumbnail(url=guild.icon.url)
+            await member.send(embed=embed)
+            with _activity_db() as conn:
+                conn.execute(
+                    "UPDATE member_activity SET re_engagement_dm_sent = ? WHERE user_id = ?",
+                    (now, uid),
+                )
+            sent += 1
+        except (discord.Forbidden, discord.HTTPException):
+            with _activity_db() as conn:
+                conn.execute(
+                    "UPDATE member_activity SET re_engagement_dm_sent = ? WHERE user_id = ?",
+                    (now, uid),
+                )
+        await asyncio.sleep(2)
+
+    if sent:
+        _bot_log.info("[ReEngagement] Sent %d re-engagement DM(s).", sent)
+
+
+@tasks.loop(hours=12)
+async def _re_engagement_loop():
+    _loop_success("_re_engagement_loop")
+    try:
+        await run_with_timeout("_re_engagement_loop", _re_engagement_logic(), timeout=180)
+    except Exception as _lte:
+        await _handle_loop_error("_re_engagement_loop", _lte, _re_engagement_loop)
+
+@_re_engagement_loop.before_loop
+async def _before_re_engagement_loop():
+    await bot.wait_until_ready()
+
+@_re_engagement_loop.error
+async def _re_engagement_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error("_re_engagement_loop", error, _re_engagement_loop)
+
+
+@tasks.loop(hours=24)
+async def _inactivity_daily_report_loop():
+    _loop_success("_inactivity_daily_report_loop")
+    try:
+        await run_with_timeout(
+            "_inactivity_daily_report_loop",
+            _inactivity_daily_report_logic(),
+            timeout=120,
+        )
+    except Exception as _lte:
+        await _handle_loop_error("_inactivity_daily_report_loop", _lte, _inactivity_daily_report_loop)
+
+@_inactivity_daily_report_loop.before_loop
+async def _before_inactivity_daily_report_loop():
+    await bot.wait_until_ready()
+
+@_inactivity_daily_report_loop.error
+async def _inactivity_daily_report_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error("_inactivity_daily_report_loop", error, _inactivity_daily_report_loop)
+
+
+async def _health_score_batch_update_logic() -> None:
+    """Recalculate health scores for all tracked guild members. Runs every 4h."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    vr = guild.get_role(VERIFIED_ROLE_ID)
+    _app_role_names = {"applied", "applicant", "interviewing", "pending", "ps5 member"}
+    updated = 0
+    with _activity_db() as conn:
+        rows = conn.execute("SELECT user_id FROM member_activity").fetchall()
+    for row in rows:
+        member = guild.get_member(row["user_id"])
+        if not member or member.bot:
+            continue
+        try:
+            act_row     = _activity_get(member.id)
+            is_verified = vr in member.roles if vr else False
+            is_applied  = any(r.name.lower() in _app_role_names for r in member.roles)
+            result      = _calc_health_score(act_row, is_verified, is_applied)
+            _save_health_score(member.id, result["score"], result["tier"])
+            updated += 1
+        except Exception as _e:
+            _bot_log.error("[HealthBatch] %s: %s", member, _e)
+        await asyncio.sleep(0.05)   # keep rate-limit safe
+    _bot_log.info("[HealthBatch] Updated %d member scores.", updated)
+
+
+@tasks.loop(hours=4)
+async def _health_score_update_loop():
+    _loop_success("_health_score_update_loop")
+    try:
+        await run_with_timeout("_health_score_update_loop", _health_score_batch_update_logic(), timeout=300)
+    except Exception as _lte:
+        await _handle_loop_error("_health_score_update_loop", _lte, _health_score_update_loop)
+
+@_health_score_update_loop.before_loop
+async def _before_health_score_update_loop():
+    await bot.wait_until_ready()
+
+@_health_score_update_loop.error
+async def _health_score_update_loop_on_error(error: Exception) -> None:
+    await _handle_loop_error("_health_score_update_loop", error, _health_score_update_loop)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE: !diffhelp — command help panel
 # ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="loopstatus", aliases=["loops", "loophealth"])
+async def _cmd_loop_status(ctx: commands.Context):
+    """Show health status of all background loops. Server Operations+ only."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    import time as _t
+
+    LOOP_NAMES = [
+        "_host_weekly_reminder_loop",
+        "hierarchy_attendance_loop",
+        "host_board_auto_refresh_loop",
+        "gta_weather_refresh_loop",
+        "_rc_ensure_loop",
+        "_rotating_presence_loop",
+        "_join_auto_bump_loop",
+        "color_schedule_loop",
+        "ticket_scan_loop",
+        "color_ops_refresh_loop",
+        "_ticket_inactivity_monitor",
+        "_rc_finalize_reminder_loop",
+        "_psn_board_refresh_loop",
+        "_mgmt_daily_briefing_loop",
+        "_mgmt_weekly_report_loop",
+        "_mgmt_alert_loop",
+        "_stale_join_alert_task",
+        "_anniversary_check_task",
+        "_host_avail_weekly_dm_task",
+    ]
+
+    now = _t.time()
+    lines = []
+    overall_ok = True
+
+    for name in LOOP_NAMES:
+        fails      = _loop_fail_counts.get(name, 0)
+        last_ts    = _loop_last_run.get(name)
+        alerted    = _loop_alerted.get(name, False)
+
+        if fails == 0:
+            status = "✅"
+        elif fails < _LOOP_ALERT_THRESHOLD:
+            status = "⚠️"
+            overall_ok = False
+        else:
+            status = "❌"
+            overall_ok = False
+
+        if last_ts:
+            age_s = int(now - last_ts)
+            if age_s < 120:
+                last_str = f"{age_s}s ago"
+            elif age_s < 3600:
+                last_str = f"{age_s // 60}m ago"
+            else:
+                last_str = f"{age_s // 3600}h ago"
+        else:
+            last_str = "never"
+
+        alert_tag = " 🔔" if alerted else ""
+        fail_tag  = f" ({fails} fail{'s' if fails != 1 else ''})" if fails else ""
+        lines.append(f"{status} `{name}`{fail_tag}{alert_tag} — last tick: {last_str}")
+
+    colour = discord.Color.green() if overall_ok else discord.Color.red()
+    embed = discord.Embed(
+        title="🔁 Background Loop Health",
+        description="\n".join(lines),
+        color=colour,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"✅ Healthy  ⚠️ Unstable (1–4 fails)  ❌ Failing (5+ fails)  🔔 Staff alerted")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="bothealth")
+@commands.is_owner()
+async def _cmd_bot_health(ctx: commands.Context):
+    """Full bot health dashboard — loop status, global failsafe, and uptime. Owner only."""
+    LOOP_NAMES = [
+        "_host_weekly_reminder_loop",
+        "hierarchy_attendance_loop",
+        "host_board_auto_refresh_loop",
+        "gta_weather_refresh_loop",
+        "_rc_ensure_loop",
+        "_rotating_presence_loop",
+        "_join_auto_bump_loop",
+        "color_schedule_loop",
+        "ticket_scan_loop",
+        "color_ops_refresh_loop",
+        "_ticket_inactivity_monitor",
+        "_rc_finalize_reminder_loop",
+        "_psn_board_refresh_loop",
+        "_mgmt_daily_briefing_loop",
+        "_mgmt_weekly_report_loop",
+        "_mgmt_alert_loop",
+        "_stale_join_alert_task",
+        "_anniversary_check_task",
+        "_host_avail_weekly_dm_task",
+    ]
+
+    now = time.time()
+
+    # ── Per-loop stats ──────────────────────────────────────────────
+    healthy = unstable = failing = alerted_count = 0
+    loop_lines = []
+
+    for name in LOOP_NAMES:
+        fails   = _loop_fail_counts.get(name, 0)
+        last_ts = _loop_last_run.get(name)
+        alerted = _loop_alerted.get(name, False)
+
+        if fails == 0:
+            icon = "✅"
+            healthy += 1
+        elif fails < _LOOP_ALERT_THRESHOLD:
+            icon = "⚠️"
+            unstable += 1
+        else:
+            icon = "❌"
+            failing += 1
+
+        if alerted:
+            alerted_count += 1
+
+        if last_ts:
+            age = int(now - last_ts)
+            if age < 120:
+                last_str = f"{age}s ago"
+            elif age < 3600:
+                last_str = f"{age // 60}m ago"
+            else:
+                last_str = f"{age // 3600}h {(age % 3600) // 60}m ago"
+        else:
+            last_str = "never"
+
+        badge = " 🔔" if alerted else ""
+        fail_str = f" · {fails} fail{'s' if fails != 1 else ''}" if fails else ""
+        loop_lines.append(f"{icon} `{name}`{fail_str}{badge}\n↳ last tick: {last_str}")
+
+    # ── Global failsafe window ──────────────────────────────────────
+    recent = [(n, t) for (n, t) in _system_failure_window if now - t <= _SYSTEM_TIME_WINDOW]
+    unique_recent = {n for (n, _t) in recent}
+    failsafe_pct  = len(unique_recent) / _SYSTEM_FAILURE_THRESHOLD
+    if len(unique_recent) == 0:
+        failsafe_icon = "✅"
+        failsafe_str  = "No recent cross-loop failures"
+    elif failsafe_pct < 0.6:
+        failsafe_icon = "⚠️"
+        failsafe_str  = (
+            f"{len(unique_recent)}/{_SYSTEM_FAILURE_THRESHOLD} unique loops failed "
+            f"in last {_SYSTEM_TIME_WINDOW}s"
+        )
+    else:
+        failsafe_icon = "🔴"
+        failsafe_str  = (
+            f"**{len(unique_recent)}/{_SYSTEM_FAILURE_THRESHOLD}** unique loops failed "
+            f"in last {_SYSTEM_TIME_WINDOW}s — near restart threshold!"
+        )
+
+    # ── Uptime ─────────────────────────────────────────────────────
+    uptime_s = int(now - _bot_start_time)
+    h, rem   = divmod(uptime_s, 3600)
+    m, s     = divmod(rem, 60)
+    uptime_str = f"{h}h {m}m {s}s"
+
+    # ── Build embed ─────────────────────────────────────────────────
+    total = len(LOOP_NAMES)
+    if failing:
+        colour = discord.Color.red()
+        overall = "❌ Degraded"
+    elif unstable or len(unique_recent) > 0:
+        colour = discord.Color.orange()
+        overall = "⚠️ Unstable"
+    else:
+        colour = discord.Color.green()
+        overall = "✅ All Systems Healthy"
+
+    embed = discord.Embed(
+        title=f"🩺 Bot Health Dashboard — {overall}",
+        color=colour,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="📊 Loop Summary",
+        value=(
+            f"**Total:** {total}  |  ✅ {healthy}  ⚠️ {unstable}  ❌ {failing}\n"
+            f"**Staff alerted on:** {alerted_count} loop(s)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name=f"{failsafe_icon} Global Failsafe Window ({_SYSTEM_TIME_WINDOW}s)",
+        value=failsafe_str,
+        inline=False,
+    )
+
+    # Split per-loop lines across fields (Discord 1024-char field limit)
+    chunk, chunks = [], []
+    for line in loop_lines:
+        chunk.append(line)
+        if len("\n".join(chunk)) > 900:
+            chunks.append("\n".join(chunk[:-1]))
+            chunk = [line]
+    if chunk:
+        chunks.append("\n".join(chunk))
+
+    for i, block in enumerate(chunks):
+        embed.add_field(
+            name=f"🔁 Loop Detail {'(cont.)' if i else ''}",
+            value=block,
+            inline=False,
+        )
+
+    embed.set_footer(text=f"Uptime: {uptime_str}  |  ✅ Healthy  ⚠️ Unstable (1–4)  ❌ Failing (5+)  🔔 Staff alerted")
+    await ctx.send(embed=embed)
+
+
+# ─── !retentionstats ──────────────────────────────────────────────────────────
+@bot.command(name="retentionstats", aliases=["retstats"])
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
+async def _cmd_retention_stats(ctx: commands.Context):
+    """Detailed retention analytics — drop-off stages, reason tags, survey results. Staff only."""
+    async with ctx.typing():
+        with _activity_db() as conn:
+            # Drop-off stage breakdown
+            stages = conn.execute(
+                """SELECT drop_off_stage, COUNT(*) as cnt
+                   FROM member_leaves
+                   WHERE drop_off_stage IS NOT NULL AND drop_off_stage != ''
+                   GROUP BY drop_off_stage ORDER BY cnt DESC"""
+            ).fetchall()
+            # Top reason tags
+            all_tags = conn.execute(
+                "SELECT reason_tags FROM member_leaves WHERE reason_tags IS NOT NULL AND reason_tags != ''"
+            ).fetchall()
+            tag_counts: dict[str, int] = {}
+            for row in all_tags:
+                for tag in row["reason_tags"].split(", "):
+                    tag = tag.strip()
+                    if tag:
+                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
+            top_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:6]
+            # Survey responses
+            survey_rows = conn.execute(
+                """SELECT response, COUNT(*) as cnt
+                   FROM leave_surveys
+                   GROUP BY response ORDER BY cnt DESC"""
+            ).fetchall()
+            total_surveys = conn.execute("SELECT COUNT(*) FROM leave_surveys").fetchone()[0]
+            # Risk level breakdown
+            high_risk    = conn.execute("SELECT COUNT(*) FROM member_leaves WHERE was_verified = 0").fetchone()[0]
+            medium_risk  = conn.execute("SELECT COUNT(*) FROM member_leaves WHERE was_verified = 1 AND had_meet_role = 0").fetchone()[0]
+            low_risk     = conn.execute("SELECT COUNT(*) FROM member_leaves WHERE was_verified = 1 AND had_meet_role = 1").fetchone()[0]
+
+    embed = discord.Embed(
+        title="📊 Retention Analytics — Detailed",
+        color=discord.Color.from_rgb(30, 100, 200),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    # Drop-off stages
+    stage_lines = "\n".join(f"📍 **{r['drop_off_stage']}** — {r['cnt']}" for r in stages) or "No data yet"
+    embed.add_field(name="📍 Drop-Off Stages (Leavers)", value=stage_lines, inline=False)
+
+    # Risk breakdown
+    embed.add_field(
+        name="🎯 Risk Breakdown (All Leavers)",
+        value=(
+            f"🔴 High Risk (never verified): **{high_risk}**\n"
+            f"🟡 Medium (verified, no meet): **{medium_risk}**\n"
+            f"🟢 Low (verified + attended): **{low_risk}**"
+        ),
+        inline=False,
+    )
+
+    # Top reason tags
+    tag_lines = "\n".join(f"`{tag}` — {cnt}" for tag, cnt in top_tags) or "No data yet"
+    embed.add_field(name="🏷️ Top Leave Reason Tags", value=tag_lines, inline=False)
+
+    # Survey responses
+    if survey_rows:
+        sv_lines = "\n".join(f"`{r['response']}` — {r['cnt']}" for r in survey_rows)
+        embed.add_field(name=f"📝 Survey Responses ({total_surveys} total)", value=sv_lines, inline=False)
+    else:
+        embed.add_field(name="📝 Survey Responses", value="No surveys completed yet.\nUse `!leavedm <user_id>` to send one.", inline=False)
+
+    embed.set_footer(text="Different Meets • Retention System  |  Use !memberjourney <user> for individual data")
+    await ctx.send(embed=embed)
+
+
+# ─── !memberjourney ───────────────────────────────────────────────────────────
+@bot.command(name="memberjourney", aliases=["journey"])
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
+async def _cmd_member_journey(ctx: commands.Context, target: discord.Member | None = None):
+    """Show the full tracked journey for a member. Staff only. Usage: !memberjourney @user"""
+    if not target:
+        return await ctx.send("❌ Provide a member. Usage: `!memberjourney @user`", delete_after=8)
+
+    row = _activity_get(target.id)
+    now = time.time()
+
+    def _fmt_ts(ts) -> str:
+        if not ts:
+            return "Not tracked"
+        return f"<t:{int(ts)}:F>"
+
+    def _age(ts) -> str:
+        if not ts:
+            return ""
+        age = int(now - ts)
+        if age < 3600:   return f"({age // 60}m ago)"
+        if age < 86400:  return f"({age // 3600}h ago)"
+        return f"({age // 86400}d ago)"
+
+    # Current funnel stage
+    vr = ctx.guild.get_role(VERIFIED_ROLE_ID)      if ctx.guild else None
+    mr = ctx.guild.get_role(MEET_ATTENDER_ROLE_ID) if ctx.guild else None
+    is_verified = vr in target.roles if vr else False
+    has_meet    = mr in target.roles if mr else False
+    meet_count  = int(row["meet_attendance_count"] or 0) if row else 0
+    stage       = _detect_drop_off_stage(is_verified, has_meet, meet_count)
+
+    # At-risk check
+    last_msg_ts = row["last_message"] if row else None
+    is_inactive = last_msg_ts and (now - last_msg_ts) > 7 * 86400
+    is_unverified_long = (row["join_ts"] and (now - row["join_ts"]) > 86400 and not is_verified) if row else False
+
+    embed = discord.Embed(
+        title=f"🗺️ Member Journey — {target.display_name}",
+        color=discord.Color.from_rgb(30, 100, 200),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+
+    embed.add_field(
+        name="📍 Current Stage",
+        value=f"**{stage}**" + (" ⚠️ At Risk" if is_inactive or is_unverified_long else ""),
+        inline=False,
+    )
+
+    if row:
+        embed.add_field(
+            name="📅 Timestamps",
+            value=(
+                f"Joined: {_fmt_ts(row['join_ts'])} {_age(row['join_ts'])}\n"
+                f"Verified: {_fmt_ts(row['verification_ts'])}\n"
+                f"Last Message: {_fmt_ts(row['last_message'])} {_age(row['last_message'])}\n"
+                f"Last VC: {_fmt_ts(row['last_vc'])} {_age(row['last_vc'])}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📊 Stats",
+            value=(
+                f"Meet attendance: **{meet_count}**\n"
+                f"Reminder DMs sent: **{row['reminder_dm_count'] or 0}**\n"
+                f"Re-engagement DM: {'✅ Sent' if row['re_engagement_dm_sent'] else '❌ Not yet'}\n"
+                f"Unverified DM: {'✅ Sent' if row['unverified_dm_sent'] else '❌ Not yet'}"
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="⚠️ Note", value="No activity data tracked yet for this member.", inline=False)
+
+    # Check leave history (in case they rejoined)
+    with _activity_db() as conn:
+        leave_rows = conn.execute(
+            "SELECT * FROM member_leaves WHERE user_id = ? ORDER BY leave_ts DESC LIMIT 3",
+            (target.id,),
+        ).fetchall()
+    if leave_rows:
+        leave_lines = []
+        for lr in leave_rows:
+            leave_lines.append(
+                f"Left <t:{int(lr['leave_ts'])}:D> after **{lr['days_in_server'] or '?'}d** "
+                f"— {lr['drop_off_stage'] or 'Unknown'} — `{lr['reason_tags'] or 'Unknown'}`"
+            )
+        embed.add_field(name="🚪 Leave History", value="\n".join(leave_lines), inline=False)
+
+    embed.set_footer(text="Different Meets • Member Journey Tracker")
+    await ctx.send(embed=embed)
+
+
+# ─── !atriskmembers ───────────────────────────────────────────────────────────
+@bot.command(name="atriskmembers", aliases=["atrisk", "riskcheck"])
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
+async def _cmd_at_risk_members(ctx: commands.Context):
+    """Show members currently flagged as at-risk of leaving. Staff only."""
+    guild = ctx.guild
+    if not guild:
+        return
+    now = time.time()
+    vr  = guild.get_role(VERIFIED_ROLE_ID)
+
+    at_risk_lines: list[str] = []
+    async with ctx.typing():
+        with _activity_db() as conn:
+            rows = conn.execute(
+                """SELECT user_id, join_ts, last_message, last_vc, unverified_dm_sent
+                   FROM member_activity
+                   WHERE join_ts IS NOT NULL
+                   ORDER BY join_ts DESC
+                   LIMIT 500"""
+            ).fetchall()
+
+        for row in rows:
+            uid    = row["user_id"]
+            member = guild.get_member(uid)
+            if not member or member.bot:
+                continue
+
+            is_verified   = vr in member.roles if vr else False
+            join_age      = now - row["join_ts"]
+            last_msg_age  = (now - row["last_message"]) if row["last_message"] else None
+            risks = []
+
+            # Unverified 24h+
+            if not is_verified and join_age > 86400:
+                risks.append("❌ Not Verified")
+            # Unverified 72h+ → "At Risk" tag
+            if not is_verified and join_age > 3 * 86400:
+                risks.append("🔴 At Risk (72h unverified)")
+            # Inactive 3-7 days
+            if last_msg_age and 3 * 86400 < last_msg_age <= 7 * 86400:
+                risks.append("🟡 Inactive 3d+")
+            # Inactive 7d+
+            if last_msg_age and last_msg_age > 7 * 86400:
+                risks.append("🔴 Inactive 7d+")
+            # Never sent a message
+            if not row["last_message"] and join_age > 86400:
+                risks.append("👻 Ghost Member")
+
+            if risks:
+                at_risk_lines.append(
+                    f"{member.mention} — " + " · ".join(risks)
+                )
+            if len(at_risk_lines) >= 20:
+                break
+
+    if not at_risk_lines:
+        embed = discord.Embed(
+            title="✅ No At-Risk Members",
+            description="All tracked members appear active or recently joined.",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+    else:
+        embed = discord.Embed(
+            title=f"⚠️ At-Risk Members ({len(at_risk_lines)} shown)",
+            description="\n".join(at_risk_lines[:20]),
+            color=discord.Color.from_rgb(210, 100, 0),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="Actions",
+            value=(
+                "• `!leavedm <user_id>` — send a survey DM after they leave\n"
+                "• `!memberjourney @user` — see their full tracked history\n"
+                "• Re-engagement DM auto-fires after 7d inactivity (12h loop)"
+            ),
+            inline=False,
+        )
+    embed.set_footer(text="Different Meets • Retention System")
+    await ctx.send(embed=embed)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HEALTH SCORE COMMANDS (prefix only — !healthscore, !healthleaderboard, etc.)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="healthscore", aliases=["score", "hs"])
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
+async def _cmd_health_score(ctx: commands.Context, target: discord.Member | None = None):
+    """Show full health score breakdown for a member. Usage: !healthscore @user"""
+    member = target or ctx.author
+    async with ctx.typing():
+        result = await _update_health_score_for(member)
+    if not result:
+        return await ctx.send("❌ Could not calculate health score.", delete_after=8)
+
+    bar_filled = round(result["score"] / 10)
+    bar = "█" * bar_filled + "░" * (10 - bar_filled)
+
+    embed = discord.Embed(
+        title=f"{result['tier_icon']} Health Score — {member.display_name}",
+        color=result["tier_color"],
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(
+        name="📊 Overview",
+        value=(
+            f"**Score:** `{bar}` **{result['score']}/100**\n"
+            f"**Tier:** {result['tier_icon']} {result['tier']}\n"
+            f"**Trend:** {result['trend']}"
+            + (f"  (was **{result['prev_score']}**)" if result["prev_score"] is not None else "")
+        ),
+        inline=False,
+    )
+    if result["pos"]:
+        embed.add_field(
+            name="✅ Positive Factors",
+            value="\n".join(result["pos"]),
+            inline=False,
+        )
+    if result["neg"]:
+        embed.add_field(
+            name="⚠️ Negative Factors",
+            value="\n".join(result["neg"]),
+            inline=False,
+        )
+    embed.add_field(
+        name="💡 Recommendations",
+        value=result["rec"],
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Health Score System  |  Scores update every 4h")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="healthleaderboard", aliases=["healthtop", "scoreboard"])
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
+async def _cmd_health_leaderboard(ctx: commands.Context):
+    """Show the top 15 healthiest members by score. Staff only."""
+    guild = ctx.guild
+    if not guild:
+        return
+    async with ctx.typing():
+        with _activity_db() as conn:
+            rows = conn.execute(
+                """SELECT user_id, last_health_score, health_tier
+                   FROM member_activity
+                   WHERE last_health_score IS NOT NULL
+                   ORDER BY last_health_score DESC
+                   LIMIT 20"""
+            ).fetchall()
+
+    lines = []
+    rank  = 1
+    for row in rows:
+        member = guild.get_member(row["user_id"])
+        if not member:
+            continue
+        tier_icon = next(
+            (icon for _, name, icon, _ in _HEALTH_TIERS if name == row["health_tier"]),
+            "❓"
+        )
+        bar_filled = round((row["last_health_score"] or 0) / 10)
+        bar = "█" * bar_filled + "░" * (10 - bar_filled)
+        lines.append(
+            f"`#{rank:02}` {tier_icon} **{member.display_name}** "
+            f"— `{bar}` **{row['last_health_score']}**"
+        )
+        rank += 1
+        if rank > 15:
+            break
+
+    embed = discord.Embed(
+        title="🏆 Member Health Leaderboard",
+        description="\n".join(lines) or "No score data yet — wait for the 4h batch loop.",
+        color=discord.Color.from_rgb(30, 160, 60),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Different Meets • Top members by Health Score")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="healthstats", aliases=["tierstats", "scorestats"])
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
+async def _cmd_health_stats(ctx: commands.Context):
+    """Show server-wide health tier breakdown. Staff only."""
+    async with ctx.typing():
+        with _activity_db() as conn:
+            total     = conn.execute("SELECT COUNT(*) FROM member_activity WHERE last_health_score IS NOT NULL").fetchone()[0]
+            strong    = conn.execute("SELECT COUNT(*) FROM member_activity WHERE health_tier = 'Strong'").fetchone()[0]
+            active    = conn.execute("SELECT COUNT(*) FROM member_activity WHERE health_tier = 'Active'").fetchone()[0]
+            at_risk   = conn.execute("SELECT COUNT(*) FROM member_activity WHERE health_tier = 'At Risk'").fetchone()[0]
+            ghost     = conn.execute("SELECT COUNT(*) FROM member_activity WHERE health_tier = 'Ghost'").fetchone()[0]
+            avg_score = conn.execute("SELECT ROUND(AVG(last_health_score),1) FROM member_activity WHERE last_health_score IS NOT NULL").fetchone()[0]
+            trending_up   = conn.execute("SELECT COUNT(*) FROM member_activity WHERE last_health_score > prev_health_score + 5").fetchone()[0]
+            trending_down = conn.execute("SELECT COUNT(*) FROM member_activity WHERE last_health_score < prev_health_score - 5").fetchone()[0]
+
+    def _pct(n):
+        return f"{round(n / total * 100)}%" if total else "0%"
+
+    embed = discord.Embed(
+        title="📊 Server Health Score Stats",
+        color=discord.Color.from_rgb(30, 100, 200),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.add_field(
+        name="🎯 Tier Breakdown",
+        value=(
+            f"💚 **Strong** (80–100): **{strong}** ({_pct(strong)})\n"
+            f"🔵 **Active** (60–79):  **{active}** ({_pct(active)})\n"
+            f"🟡 **At Risk** (40–59): **{at_risk}** ({_pct(at_risk)})\n"
+            f"🔴 **Ghost** (0–39):    **{ghost}** ({_pct(ghost)})\n"
+            f"\nTracked members: **{total}** | Avg score: **{avg_score or 'N/A'}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📈 Score Trends",
+        value=(
+            f"📈 Rising: **{trending_up}** members\n"
+            f"📉 Falling: **{trending_down}** members\n"
+            f"➡️ Stable: **{max(0, total - trending_up - trending_down)}** members"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Health Score System  |  Recalculates every 4h")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="ghostmembers", aliases=["ghosts", "deadweight"])
+@commands.has_any_role("Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator")
+async def _cmd_ghost_members(ctx: commands.Context):
+    """Show Ghost-tier members (score 0–39) who are unlikely to engage. Staff only."""
+    guild = ctx.guild
+    if not guild:
+        return
+    async with ctx.typing():
+        with _activity_db() as conn:
+            rows = conn.execute(
+                """SELECT user_id, last_health_score, join_ts, last_message
+                   FROM member_activity
+                   WHERE health_tier = 'Ghost' OR last_health_score < 40
+                   ORDER BY last_health_score ASC
+                   LIMIT 25"""
+            ).fetchall()
+
+    now   = time.time()
+    lines = []
+    for row in rows:
+        member = guild.get_member(row["user_id"])
+        if not member or member.bot:
+            continue
+        score   = row["last_health_score"] or 0
+        join_d  = f"{int((now - row['join_ts']) / 86400)}d" if row["join_ts"] else "?"
+        last_m  = f"{int((now - row['last_message']) / 86400)}d" if row["last_message"] else "never"
+        lines.append(
+            f"🔴 **{member.display_name}** — score **{score}** "
+            f"| joined {join_d} ago | last msg {last_m} ago"
+        )
+        if len(lines) >= 15:
+            break
+
+    if not lines:
+        embed = discord.Embed(
+            title="✅ No Ghost Members",
+            description="No members in the Ghost tier right now.",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+    else:
+        embed = discord.Embed(
+            title=f"👻 Ghost Members ({len(lines)} shown)",
+            description="\n".join(lines),
+            color=discord.Color.from_rgb(200, 30, 30),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="Quick Actions",
+            value=(
+                "• `!healthscore @user` — full breakdown\n"
+                "• `!leavedm <id>` — send survey after they leave\n"
+                "• `!memberjourney @user` — see their journey"
+            ),
+            inline=False,
+        )
+    embed.set_footer(text="Different Meets • Health Score — Ghost Tier (0–39)")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="memberstats", aliases=["retention", "leavestats"])
+@commands.has_any_role(
+    "Founder", "Executive", "Server Operations", "Senior Admin", "Administrator", "Lead Moderator", "Moderator", "Junior Moderator",
+)
+async def _cmd_member_stats(ctx: commands.Context):
+    """Staff insights panel — join/leave analytics, inactivity, funnel drop-off."""
+    async with ctx.typing():
+        try:
+            stats = _memberstats_query()
+        except Exception as _e:
+            _bot_log.error("[MemberStats] %s", _e, exc_info=True)
+            return await ctx.send("❌ Failed to query the activity database.", delete_after=10)
+
+    guild = ctx.guild
+
+    # Funnel: % who verified, % who attended
+    with _activity_db() as conn:
+        total_tracked = stats["total_tracked"]
+
+    verified_in_server = 0
+    meet_in_server     = 0
+    if guild:
+        vr = guild.get_role(VERIFIED_ROLE_ID)
+        mr = guild.get_role(MEET_ATTENDER_ROLE_ID)
+        if vr:
+            verified_in_server = len(vr.members)
+        if mr:
+            meet_in_server = len(mr.members)
+    total_members = guild.member_count if guild else 0
+
+    embed = discord.Embed(
+        title="📊 Member Retention & Insights",
+        color=discord.Color.from_rgb(30, 100, 200),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    embed.add_field(
+        name="🚪 Leave Analytics (All Time)",
+        value=(
+            f"Total tracked leaves: **{stats['total_leaves']}**\n"
+            f"Leaves this week: **{stats['recent_7d']}**\n"
+            f"Avg time before leaving: **{stats['avg_days']} days**\n"
+            f"Left while unverified: **{100 - float(stats['verified_pct']):.1f}%** of leavers\n"
+            f"Left without attending a meet: **{100 - float(stats['meet_pct']):.1f}%** of leavers"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🏁 Funnel (Current Members)",
+        value=(
+            f"Total members: **{total_members}**\n"
+            f"Step 1 — Verified: **{verified_in_server}** "
+            f"({round(verified_in_server / total_members * 100) if total_members else 0}%)\n"
+            f"Step 2 — Attended a meet: **{meet_in_server}** "
+            f"({round(meet_in_server / total_members * 100) if total_members else 0}%)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🟡 Inactivity (Tracked Members)",
+        value=(
+            f"Inactive 3+ days: **{stats['inactive_3d']}**\n"
+            f"Inactive 7+ days: **{stats['inactive_7d']}** ← flag for review\n"
+            f"Unverified 24h+ (pending/sent reminder): **{stats['unverified_24h']}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📋 Most Common Drop-Off Points",
+        value=(
+            "1. Left without verifying\n"
+            "2. Left after verifying but before attending a meet\n"
+            "3. Went inactive after first meet"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Retention System  |  Run !bothealth for loop health")
+    await ctx.send(embed=embed)
+
 
 @bot.command(name="diffhelp", aliases=["commands", "bothelp"])
 @commands.cooldown(1, 30, commands.BucketType.user)
@@ -26996,8 +32106,6 @@ async def _cmd_diff_help(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
-
-
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
 _log_handler = _RotatingFileHandler(
     filename='discord.log', encoding='utf-8',
@@ -27005,14 +32113,13 @@ _log_handler = _RotatingFileHandler(
 )
 _log_handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
 _discord_logger = logging.getLogger('discord')
-_discord_logger.setLevel(logging.DEBUG)
+_discord_logger.setLevel(logging.WARNING)
 _discord_logger.addHandler(_log_handler)
 with open('discord.log', 'a', encoding='utf-8') as _lf:
     _lf.write(f"\n{'='*60}\n[BOT STARTED] {datetime.now(_EST_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}\n{'='*60}\n")
 
 asyncio.run(run_bot())
 
-print(f"[Restarting process in 10s...]")
-import time
-time.sleep(10)
+print(f"[Restarting process in 3s...]")
+time.sleep(3)
 os.execv(sys.executable, [sys.executable] + sys.argv)
