@@ -20,7 +20,7 @@ _EST_TZ = ZoneInfo("America/New_York")
 import subprocess
 from dotenv import load_dotenv
 import discord
-from discord import app_commandsall
+from discord import app_commands
 from discord.ext import commands, tasks
 
 try: 
