@@ -11637,7 +11637,7 @@ async def cmd_exportstats(ctx: commands.Context):
     )
 
 
-@bot.command(name="hostsummary")
+@bot.command(name="hostweekreport")
 async def cmd_hostsummary(ctx: commands.Context):
     """Leadership-only: weekly summary of all host activity."""
     if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
