@@ -345,9 +345,6 @@ class _StaffSelect(discord.ui.Select):
 
         v = self.values[0]
 
-        if v in ("fin1", "fin2", "fin3"):
-            return await interaction.response.send_modal(_FinalizeModal(int(v[-1])))
-
         if v == "attendance":
             await interaction.response.defer(ephemeral=True)
             try:

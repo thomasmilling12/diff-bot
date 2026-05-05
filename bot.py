@@ -12729,12 +12729,17 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
 def _rc_build_admin_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🛠️ DIFF Roll Call — Staff Tools",
-        description="After each meet ends, click the button below to finalize attendance and detect no-shows.",
+        description="Use the menu below to manage the roll call panel, view attendance, or sync from the host schedule.",
         color=discord.Color.dark_teal(),
     )
     embed.add_field(
-        name="How it works",
-        value="Click **Finalize Meet #**, paste or mention the users who actually attended. The system will update stats and flag no-shows automatically.",
+        name="Available Actions",
+        value=(
+            "📊 **View Attendance** — see full RSVP breakdown\n"
+            "🗓️ **Sync from Schedule** — update meet dates, times, classes & hosts\n"
+            "🔃 **Refresh Panel** — re-render with latest response counts\n"
+            "🗑️ **Reset Roll Call** — wipe all responses and post a fresh panel"
+        ),
         inline=False,
     )
     return embed
