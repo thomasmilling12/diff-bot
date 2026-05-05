@@ -3289,6 +3289,16 @@ def _hrsvp_build_embed() -> discord.Embed:
     data = _hrsvp_load()
     _DIV = "─" * 30
 
+    # ── Week range + reset countdown ─────────────────────────
+    from datetime import timedelta as _td
+    _now_et = datetime.now(_EST_TZ)
+    _monday = _now_et - _td(days=_now_et.weekday())
+    _sunday = _monday + _td(days=6)
+    _week_str = f"{_monday.strftime('%b %d')} – {_sunday.strftime('%b %d, %Y')}"
+    _next_monday = (_monday + _td(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    _reset_ts = int(_next_monday.timestamp())
+    _now_ts   = int(_now_et.timestamp())
+
     # ── Response summary counts ───────────────────────────────
     all_responded_uids: set = set()
     for day in _HRSVP_DAYS:
@@ -3304,6 +3314,7 @@ def _hrsvp_build_embed() -> discord.Embed:
     embed = discord.Embed(
         title="📋 DIFF Host Availability — Meet Schedule",
         description=(
+            f"📅 **Week of {_week_str}**  •  🔄 Resets <t:{_reset_ts}:R>\n\n"
             f"**Hosts, mark your availability for each meet slot below.**\n\n"
             f"📊 {slot_bar}  **{slots_with_host}/{slots_needed} slots have a confirmed host**\n"
             f"👥 **{total_responders} host{'s' if total_responders != 1 else ''}** have responded so far\n\n"
@@ -3369,7 +3380,7 @@ def _hrsvp_build_embed() -> discord.Embed:
 
         embed.add_field(name=day, value="\n".join(lines) or "*No responses yet*", inline=False)
 
-    embed.set_footer(text="Different Meets • Host Availability  •  Times shown in your local timezone")
+    embed.set_footer(text=f"Different Meets • Host Availability  •  Updated <t:{_now_ts}:R>  •  Times shown in your local timezone")
     return embed
 
 
@@ -12188,6 +12199,16 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
     meets_by_num = {row["meet_number"]: row for row in meets}
     counts       = _rc_db.get_all_counts(guild.id)
 
+    # ── Week range + reset countdown ─────────────────────────
+    from datetime import timedelta as _td
+    _now_et  = datetime.now(_EST_TZ)
+    _monday  = _now_et - _td(days=_now_et.weekday())
+    _sunday  = _monday + _td(days=6)
+    _week_str = f"{_monday.strftime('%b %d')} – {_sunday.strftime('%b %d, %Y')}"
+    _next_monday = (_monday + _td(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    _reset_ts = int(_next_monday.timestamp())
+    _now_ts   = int(_now_et.timestamp())
+
     finalized_count = sum(1 for n in (1, 2, 3)
                           if meets_by_num.get(n) and meets_by_num[n]["is_finalized"])
     all_finalized = finalized_count == 3
@@ -12197,9 +12218,11 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
              else 0x5865F2)
 
     description = (
+        f"📅 **Week of {_week_str}**\n\n"
         "**All meets this week have been finalized!** 🎉\n"
         "Attendance has been recorded — see you on the track."
         if all_finalized else
+        f"📅 **Week of {_week_str}**  •  🔄 Resets <t:{_reset_ts}:R>\n\n"
         "Mark your attendance for each meet below.\n"
         "*No-shows are tracked — respond even if you can't make it.*"
     )
@@ -12274,7 +12297,7 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
             value="🧥 Wear your crew jacket  •  🎙️ Join voice if required  •  ⚠️ No-shows are tracked",
             inline=False,
         )
-    embed.set_footer(text="DIFF • Auto Roll Call System  •  Use 📊 My RSVP to see your responses")
+    embed.set_footer(text=f"DIFF • Auto Roll Call System  •  Updated <t:{_now_ts}:R>  •  Use 📊 My RSVP to see your responses")
     return embed
 
 
