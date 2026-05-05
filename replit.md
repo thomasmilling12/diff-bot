@@ -46,10 +46,10 @@
 ## Feature Systems
 - Host activity tracking & hierarchy
 - Announcements & roll calls
-- Warnings & appeals
+- Warnings & appeals (with `!deletewarn` for false-positive removal)
 - Crew recruitment
 - Reputation system
-- Meet attendance
+- Meet attendance + no-show dispute button (DM crew on finalization)
 - Ticket workflow
 - Moderation
 - Marketplace
@@ -59,6 +59,27 @@
 - Loop health system (`!bothealth`, `!loopstatus`) — 19 loops, all with `run_with_timeout` + error recovery
 - **Member Retention System** — join/message/VC timestamps, leave analytics, drop-off stage detection, unverified DM reminders, re-engagement DMs, inactivity daily report
 - **Member Health Score System** — 0–100 score per member, 4 tiers (Strong/Active/At Risk/Ghost), 4h batch recalc loop, per-member breakdown, trend tracking, history table
+- **HP Session Cleanup** — hourly stale-session auto-close (24h+) with staff alert; daily 3 AM archive of sessions 60d+ old
+
+## Extra Commands Added (batch 3)
+| Command | Access | Description |
+|---|---|---|
+| `!deletewarn @user <id>` | Leadership | Remove a specific warning by ID |
+| `!clearnotes @user` | Leadership | Wipe all leadership notes for a host |
+| `!remindhost @user` | Leadership | DM a host their current week slot details |
+| `!exportstats` | Leadership | Export all host_stats as a dated CSV file |
+| `!hostsummary` | Leadership | Weekly host activity digest (sessions, scores, warnings) |
+| `!weeklydigest` | Leadership | Full weekly digest posted to staff logs (RC + HP + warnings) |
+| `!mystats` | Host + Crew | Self-lookup: HP score, streak, RC record, active warnings |
+
+## Data Files
+| File | Purpose |
+|---|---|
+| `diff_data/diff_host_performance.json` | HP sessions + host_stats |
+| `diff_data/diff_warnings.json` | Formal warnings per member |
+| `diff_data/diff_host_notes.json` | Leadership notes per host |
+| `diff_data/diff_rc_streaks.json` | RC attendance streaks |
+| `diff_data/diff_hp_session_archive.json` | Archived HP sessions (60d+) |
 
 ## Health Score System
 
