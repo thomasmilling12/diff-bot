@@ -1,5 +1,6 @@
  
 import asyncio
+import colorsys
 import hashlib
 import io
 import json
@@ -18701,7 +18702,37 @@ async def _cmd_pull_gta_colors(ctx: commands.Context, count: int = 4):
         await thinking.edit(content="❌ Not enough colors available from gtacolors.com.")
         return
 
-    picks = random.sample(pool, count)
+    # Pick colors from different hue families so the vote has visual variety
+    def _hue_bucket(hex_str: str) -> int:
+        h = hex_str.lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        try:
+            r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
+            hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
+            if sat < 0.12 or val < 0.12:
+                return 8  # neutrals / blacks / whites
+            return int(hue * 8) % 8  # 8 colour families: red/orange/yellow/green/cyan/blue/violet/pink
+        except Exception:
+            return random.randint(0, 8)
+
+    random.shuffle(pool)
+    buckets: dict[int, list] = {}
+    for c in pool:
+        b = _hue_bucket(c.get("hex", ""))
+        buckets.setdefault(b, []).append(c)
+
+    # Round-robin across buckets so picks are as diverse as possible
+    picks: list = []
+    bucket_keys = list(buckets.keys())
+    random.shuffle(bucket_keys)
+    i = 0
+    while len(picks) < count and any(buckets[k] for k in bucket_keys):
+        key = bucket_keys[i % len(bucket_keys)]
+        if buckets[key]:
+            picks.append(buckets[key].pop(0))
+        i += 1
+
     now_str = _cs_utc_now()
 
     injected = []
