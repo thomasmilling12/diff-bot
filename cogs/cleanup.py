@@ -142,7 +142,7 @@ class CleanupCog(commands.Cog, name="Cleanup"):
 
     # ── Core scan ────────────────────────────────────────────────────────────
     async def _scan_logic(self) -> dict:
-        """Full member scan. Returns counts dict."""
+        """Full member scan. Posts one summary embed at the end — no per-member spam."""
         guild = self.bot.get_guild(GUILD_ID)
         if not guild:
             return {}
@@ -154,6 +154,12 @@ class CleanupCog(commands.Cog, name="Cleanup"):
             scanned=0, flagged_at_risk=0, flagged_ghost=0,
             reminders_sent=0, escalated=0, recovered=0, skipped=0,
         )
+
+        # Collect events — post summaries AFTER the loop instead of one embed per member
+        recovered_names:  list[str] = []
+        escalated_rows:   list[tuple] = []   # (name, score, tier, days_inact, verified, meets, reason)
+        newly_flagged:    list[tuple] = []   # (name, flag_type, score, days_inact, reason)
+        dms_sent_names:   list[str]  = []
 
         for member in guild.members:
             if member.bot:
@@ -175,17 +181,7 @@ class CleanupCog(commands.Cog, name="Cleanup"):
                     mark_recovered(member.id)
                     log_recovery_event(member.id, "message")
                     cnts["recovered"] += 1
-                    e = discord.Embed(
-                        title="✅ Member Recovered",
-                        description=(
-                            f"**{member.display_name}** (`{member.id}`) became active "
-                            "and has been removed from the cleanup queue."
-                        ),
-                        color=_C_GREEN,
-                        timestamp=datetime.now(timezone.utc),
-                    )
-                    e.set_footer(text="Different Meets • Auto Cleanup — Recovery")
-                    await self._log_staff(e)
+                    recovered_names.append(member.display_name)
                     continue
 
             # ── Build member metrics ──────────────────────────────────────
@@ -245,22 +241,10 @@ class CleanupCog(commands.Cog, name="Cleanup"):
                     score or 0, tier, days_inact, verified, meets,
                 )
                 cnts["escalated"] += 1
-                e = discord.Embed(
-                    title="⚠️ Moved to Cleanup Review",
-                    color=_C_RED,
-                    timestamp=datetime.now(timezone.utc),
-                )
-                e.set_thumbnail(url=member.display_avatar.url)
-                e.add_field(name="Member",   value=f"{member.mention} (`{member.id}`)", inline=True)
-                e.add_field(name="Score",    value=str(score or "N/A"),                 inline=True)
-                e.add_field(name="Tier",     value=tier,                                inline=True)
-                e.add_field(name="Inactive", value=f"{days_inact}d",                    inline=True)
-                e.add_field(name="Verified", value="✅" if verified else "❌",           inline=True)
-                e.add_field(name="Meets",    value=str(meets),                          inline=True)
-                e.add_field(name="Reason",   value=reason_str,                          inline=False)
-                e.set_footer(text="Different Meets • Auto Cleanup — use !cleanupqueue to review")
-                await self._log_staff(e)
-                await asyncio.sleep(0.5)
+                escalated_rows.append((
+                    member.display_name, score, tier,
+                    days_inact, verified, meets, reason_str,
+                ))
                 continue
 
             # ── Send DM reminder ──────────────────────────────────────────
@@ -269,37 +253,100 @@ class CleanupCog(commands.Cog, name="Cleanup"):
                 if sent:
                     record_reminder_sent(member.id)
                     cnts["reminders_sent"] += 1
-                    e = discord.Embed(
-                        title="📩 Re-engagement DM Sent",
-                        description=(
-                            f"Sent check-in DM to **{member.display_name}** (`{member.id}`)."
-                        ),
-                        color=_C_BLUE,
-                        timestamp=datetime.now(timezone.utc),
-                    )
-                    e.add_field(name="Flag",     value=flag_type,        inline=True)
-                    e.add_field(name="Inactive", value=f"{days_inact}d", inline=True)
-                    e.set_footer(text="Different Meets • Auto Cleanup")
-                    await self._log_staff(e)
-                await asyncio.sleep(1.5)
+                    dms_sent_names.append(member.display_name)
+                await asyncio.sleep(1.0)
 
-            # ── Log new flags to staff ────────────────────────────────────
+            # ── Collect new flags (don't post yet) ────────────────────────
             if not flag:
-                icon = "👻" if flag_type == FLAG_GHOST else "🟡"
-                e = discord.Embed(
-                    title=f"{icon} Member Flagged — {flag_type}",
-                    color=_C_RED if flag_type == FLAG_GHOST else _C_YELLOW,
-                    timestamp=datetime.now(timezone.utc),
-                )
-                e.set_thumbnail(url=member.display_avatar.url)
-                e.add_field(name="Member",   value=f"{member.mention} (`{member.id}`)", inline=True)
-                e.add_field(name="Score",    value=str(score or "N/A"),                 inline=True)
-                e.add_field(name="Inactive", value=f"{days_inact}d",                    inline=True)
-                e.add_field(name="Reason",   value=reason_str,                          inline=False)
-                e.set_footer(text="Different Meets • Auto Cleanup")
-                await self._log_staff(e)
+                newly_flagged.append((
+                    member.display_name, flag_type,
+                    score, days_inact, reason_str,
+                ))
 
-            await asyncio.sleep(0.1)
+        # ── Post summary embeds (one per category) ────────────────────────────
+        ts = datetime.now(timezone.utc)
+
+        # 1. Escalated to Cleanup Review
+        if escalated_rows:
+            _MAX_SHOWN = 20
+            shown   = escalated_rows[:_MAX_SHOWN]
+            overflow = len(escalated_rows) - _MAX_SHOWN
+            lines = []
+            for name, sc, ti, di, ve, me, rs in shown:
+                ver_icon = "✅" if ve else "❌"
+                lines.append(
+                    f"• **{discord.utils.escape_markdown(name)}** — "
+                    f"Score {sc or 'N/A'} · {ti} · inactive {di}d · verified {ver_icon}"
+                )
+            if overflow > 0:
+                lines.append(f"*…and {overflow} more. Use `!cleanupqueue` to see all.*")
+            e = discord.Embed(
+                title=f"⚠️ Cleanup Review — {len(escalated_rows)} member(s) escalated",
+                description="\n".join(lines),
+                color=_C_RED,
+                timestamp=ts,
+            )
+            e.set_footer(text="Different Meets • Auto Cleanup — use !cleanupqueue to review")
+            await self._log_staff(e)
+
+        # 2. Newly flagged
+        if newly_flagged:
+            _MAX_SHOWN = 20
+            shown   = newly_flagged[:_MAX_SHOWN]
+            overflow = len(newly_flagged) - _MAX_SHOWN
+            ghost_lines    = []
+            at_risk_lines  = []
+            for name, ft, sc, di, rs in shown:
+                line = f"• **{discord.utils.escape_markdown(name)}** — Score {sc or 'N/A'} · inactive {di}d"
+                if ft == FLAG_GHOST:
+                    ghost_lines.append(line)
+                else:
+                    at_risk_lines.append(line)
+            if overflow > 0:
+                at_risk_lines.append(f"*…and {overflow} more.*")
+            e = discord.Embed(
+                title=f"🚩 Newly Flagged — {len(newly_flagged)} member(s)",
+                color=_C_YELLOW,
+                timestamp=ts,
+            )
+            if ghost_lines:
+                e.add_field(name=f"👻 Ghost ({len(ghost_lines)})", value="\n".join(ghost_lines), inline=False)
+            if at_risk_lines:
+                e.add_field(name=f"🟡 At Risk ({len(at_risk_lines)})", value="\n".join(at_risk_lines), inline=False)
+            e.set_footer(text="Different Meets • Auto Cleanup")
+            await self._log_staff(e)
+
+        # 3. Recoveries + DMs — one compact embed
+        if recovered_names or dms_sent_names:
+            e = discord.Embed(
+                title="📋 Scan Activity",
+                color=_C_GREEN,
+                timestamp=ts,
+            )
+            if recovered_names:
+                sample = ", ".join(f"**{discord.utils.escape_markdown(n)}**" for n in recovered_names[:10])
+                extra  = f" *(+{len(recovered_names)-10} more)*" if len(recovered_names) > 10 else ""
+                e.add_field(
+                    name=f"✅ Recovered ({len(recovered_names)})",
+                    value=sample + extra,
+                    inline=False,
+                )
+            if dms_sent_names:
+                sample = ", ".join(f"**{discord.utils.escape_markdown(n)}**" for n in dms_sent_names[:10])
+                extra  = f" *(+{len(dms_sent_names)-10} more)*" if len(dms_sent_names) > 10 else ""
+                e.add_field(
+                    name=f"📩 Re-engagement DMs ({len(dms_sent_names)})",
+                    value=sample + extra,
+                    inline=False,
+                )
+            e.set_footer(text="Different Meets • Auto Cleanup")
+            await self._log_staff(e)
+
+        # 4. If nothing happened at all, post a silent heartbeat (no embed)
+        log.info(
+            "[CleanupScan] escalated=%d newly_flagged=%d recovered=%d dms=%d",
+            len(escalated_rows), len(newly_flagged), len(recovered_names), len(dms_sent_names),
+        )
 
         return cnts
 
