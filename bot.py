@@ -33605,6 +33605,96 @@ async def _cmd_member_stats(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="reindex_colors", aliases=["colorfix", "fixcolors"])
+async def cmd_reindex_colors(ctx: commands.Context):
+    """Leadership-only: scan the color submissions channel and repair any missing JSON entries."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Server Operations+ only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    status_msg = await ctx.send("🔍 Scanning color submissions channel…")
+    channel = bot.get_channel(COLOR_SUBMISSION_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(COLOR_SUBMISSION_CHANNEL_ID)
+        except Exception:
+            return await status_msg.edit(content="❌ Could not fetch the color submissions channel.")
+
+    data       = _cs_load()
+    found      = 0
+    repaired   = 0
+    skipped    = 0
+
+    try:
+        async for msg in channel.history(limit=200):
+            if msg.author.id != bot.user.id:
+                continue
+            if not msg.embeds:
+                continue
+            embed = msg.embeds[0]
+            # Identify a submission message by its buttons
+            has_approve = any(
+                getattr(child, "custom_id", "") in (
+                    "diff_approve_color_button_v3", "diff_lock_submission_button_v3"
+                )
+                for row in msg.components for child in row.children
+            )
+            if not has_approve:
+                continue
+            found += 1
+            msg_id_str = str(msg.id)
+            if msg_id_str in data["submissions"]:
+                skipped += 1
+                continue
+            # Extract fields from embed
+            fields = {f.name: f.value for f in embed.fields}
+            color_name_val = fields.get("🎨 Color Name", "Unknown Color").strip()
+            hex_val        = fields.get("🖌️ HEX Code", "#000000").strip().strip("`")
+            status_raw     = fields.get("📋 Status", "⏳ Pending Review")
+            if "Approved" in status_raw or "approved" in status_raw:
+                status_str = "approved"
+            elif "Locked" in status_raw or "locked" in status_raw:
+                status_str = "locked"
+            else:
+                status_str = "pending"
+            image_url      = embed.image.url if embed.image else ""
+            author_name    = embed.author.name if embed.author else "Unknown"
+            submitted_at   = msg.created_at.isoformat()
+
+            data["submissions"][msg_id_str] = {
+                "message_id":        msg_id_str,
+                "channel_id":        str(channel.id),
+                "author_id":         "0",
+                "author_name":       author_name,
+                "color_name":        color_name_val,
+                "hex_code":          hex_val,
+                "image_url":         image_url,
+                "status":            status_str,
+                "submitted_at":      submitted_at,
+                "selected_for_vote": False,
+                "locked_at":         "",
+                "approved_at":       "",
+                "won_at":            "",
+            }
+            repaired += 1
+    except Exception as e:
+        return await status_msg.edit(content=f"❌ Scan error: {e}")
+
+    if repaired:
+        _cs_save(data)
+
+    await status_msg.edit(content=(
+        f"✅ Color submission scan complete.\n"
+        f"**{found}** submission message(s) found · "
+        f"**{repaired}** repaired · "
+        f"**{skipped}** already in system.\n"
+        f"{'Approve and Lock buttons should now work on all repaired submissions.' if repaired else 'No repairs needed.'}"
+    ))
+
+
 @bot.command(name="diffhelp", aliases=["commands", "bothelp"])
 @commands.cooldown(1, 30, commands.BucketType.user)
 async def _cmd_diff_help(ctx: commands.Context):
