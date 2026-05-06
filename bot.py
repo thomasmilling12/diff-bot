@@ -28572,20 +28572,8 @@ _PP_RULES_EMBED_DESC = (
 )
 
 # ── Default partner data ────────────────────────────────────────────────────────
-_PP_DEFAULT_PARTNERS: list[dict] = [
-    {"name": "MMI Meets",            "short_desc": "PC & Xbox Series S|X meet community.",            "description": "MMI Meets PC & Xbox Series S|X",                                    "invite": "https://discord.gg/mmi",               "platforms": "PC, Xbox Series S|X",          "banner": "", "status": "Active", "category": "Car Meets"},
-    {"name": "San Andreas Roleplay", "short_desc": "Professional and friendly roleplay community.",    "description": "A professional and friendly roleplay community on Xbox and PlayStation.\n\n**Departments:** Highway Patrol, Sheriff, Fire, EMS, Civilian Ops, Comms\n\n**What They Offer:**\n• Daily roleplays\n• Friendly staff\n• CAD system\n• Realistic uniforms & ranks", "invite": "https://discord.gg/bwzCykt9ZS", "platforms": "Xbox, PlayStation", "banner": "", "status": "Active", "category": "Roleplay"},
-    {"name": "Los Santos MotorSports","short_desc": "Active multi-platform meet community.",            "description": "**Los Santos MotorSports**\n\n• Daily car meets on all platforms\n• Active staff and chats\n• 1500+ members\n• Weekly photo competitions\n• Giveaways\n• Forza, NFS, Snowrunner meets\n• LSMS merch", "invite": "https://discord.gg/Jf42kGD", "platforms": "All Platforms", "banner": "", "status": "Active", "category": "Car Meets"},
-    {"name": "LS Underground",       "short_desc": "Daily chill car meets and vibes on PlayStation.",  "description": "A very active and engaging community.\n\n• Daily car meets\n• Business lobbies\n• Chill lobbies\n• LFG channels\n• Active staff & giveaways\n• In-house game bot\n• Fully SFW with trained staff", "invite": "https://discord.gg/T5eZpu329K", "platforms": "PlayStation", "banner": "", "status": "Active", "category": "Car Meets"},
-    {"name": "Auto Minded",          "short_desc": "GTAO car enthusiast hub with events and trading.", "description": "A server for GTAO car enthusiasts and car fans.\n\n**Events:**\n• Car meets\n• Racing\n• Rally events\n• Buy/sell & trading\n• Car competitions\n• Server economy",  "invite": "https://discord.gg/autominded", "platforms": "Xbox (focus), open to all", "banner": "", "status": "Active", "category": "Car Meets"},
-    {"name": "Civil Network",        "short_desc": "Large roleplay network with multiple departments.","description": "**Platforms:** Xbox New Gen, PS Old Gen, PS New Gen, FiveM\n\n**Departments:** Civilian Ops, Fire/EMS, Dispatch, Military Police, FBI, BCSO, LSPD, PBPD, SASP\n\n• Specialized giveaways\n• 24/7 sessions\n• Professional/friendly staff", "invite": "https://discord.gg/civilrp", "platforms": "Xbox, PlayStation, FiveM", "banner": "https://share.creavite.co/DKn05AwFAYa5mCl9.gif", "status": "Active", "category": "Roleplay"},
-    {"name": "RVO",                  "short_desc": "PS5 GTA meet community with daily meets.",         "description": "A chill server to show off your rides and level up your GTA car meet experience.\n\n• Chill community\n• Daily car meets\n• Epic events\n• Media sharing\n• Gaming hub", "invite": "https://discord.gg/rvo", "platforms": "PS5", "banner": "", "status": "Active", "category": "Car Meets"},
-    {"name": "Chop Shop",            "short_desc": "Large GTAO-focused online gaming community.",      "description": "One of the larger active GCTF Discord servers.\n\n• Active members, traders & staff\n• Booster rewards\n• Server currency\n• Clubs that host car meets and lobby drops\n• Always looking for new partners", "invite": "https://discord.gg/YZMbqER2bv", "platforms": "Multi-game / GTAO", "banner": "", "status": "Active", "category": "Communities"},
-    {"name": "Automotive Union",     "short_desc": "Established events community with multiple titles.","description": "Established in 2018.\n\nHosts GTA events every Friday and Sunday (8–9 PM UK).\n\n**Also on:**\n• Wreckfest\n• GT7\n• Forza Horizon\n• Crew Motorfest",               "invite": "https://discord.gg/kaApne5w4x", "platforms": "GTA + racing titles", "banner": "", "status": "Active", "category": "Car Meets"},
-    {"name": "Car Meet Server",      "short_desc": "All-platform car meet and GTAO utility server.",   "description": "• Modded heists (PC)\n• Modded/stock cars\n• Car and photo competitions\n• GTAO inspired bot games",                                                              "invite": "https://discord.gg/zNd2F3sz5U", "platforms": "All Platforms", "banner": "", "status": "Active", "category": "Car Meets"},
-    {"name": "Fast Funds (GTA)",     "short_desc": "Private selling, sourcing, and heist group.",      "description": "**Fast Funds (GTA)**\n\nPrivate selling, sourcing, and heist group. Started recently and growing.",                                                                   "invite": "https://discord.gg/zxEdwZ9M6s", "platforms": "GTA", "banner": "", "status": "Active", "category": "Communities"},
-    {"name": "Hurricane's Cars & Chill","short_desc": "PS5-based GTA Online car meet server.",         "description": "A PlayStation 5 GTA Online car meet server.\n\n• Daily car meets\n• Photo competitions\n• Weekly giveaways\n• Game nights\n• Car advice/rating channels\n• New members daily\n• Welcoming community", "invite": "https://discord.gg/CkEXt34waa", "platforms": "PS5", "banner": "", "status": "Active", "category": "Car Meets"},
-]
+# Default partners intentionally empty — use !addpartner to build the list
+_PP_DEFAULT_PARTNERS: list[dict] = []
 
 
 # ── Data helpers ────────────────────────────────────────────────────────────────
@@ -29695,6 +29683,24 @@ async def _cmd_postmodrecruitment(ctx: commands.Context):
     embed.set_footer(text="Different Meets • Moderation Team")
 
     await ctx.send(embed=embed)
+
+
+@bot.command(name="clearpartners")
+async def _cmd_clearpartners(ctx: commands.Context):
+    """Admin only: wipe all partners from the bot.py panel and refresh."""
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Admins only.", delete_after=6)
+        return
+    data = _pp_load()
+    count = len(data.get("partners", []))
+    data["partners"] = []
+    _pp_save(data)
+    await _pp_post_or_refresh(ctx.guild)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await ctx.send(f"✅ Cleared **{count}** partner(s). Panel refreshed — use `!addpartner` to rebuild.", delete_after=15)
 
 
 @bot.command(name="addpartner")
