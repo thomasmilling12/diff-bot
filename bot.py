@@ -18650,6 +18650,108 @@ async def force_color_winner(interaction: discord.Interaction):
         await interaction.followup.send("No active vote to close.", ephemeral=True)
 
 
+@bot.command(name="pullgtacolors", aliases=["gtacolors", "autocolor", "pickcolors"])
+async def _cmd_pull_gta_colors(ctx: commands.Context, count: int = 4):
+    """Leadership only: pull random colors from gtacolors.com and start the weekly vote."""
+    if not isinstance(ctx.author, discord.Member) or not _cs_is_color_admin(ctx.author):
+        await ctx.send("Leadership only.", delete_after=6)
+        return
+    count = max(1, min(count, 8))
+
+    thinking = await ctx.send("🎨 Fetching colors from gtacolors.com…")
+
+    if aiohttp is None:
+        await thinking.edit(content="❌ aiohttp is not available — cannot fetch colors.")
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://gtacolors.com/include/colors",
+                timeout=aiohttp.ClientTimeout(total=15),
+                headers={"User-Agent": "DIFF-Bot/2.0"},
+            ) as resp:
+                if resp.status != 200:
+                    await thinking.edit(content=f"❌ gtacolors.com returned HTTP {resp.status}.")
+                    return
+                all_colors = await resp.json(content_type=None)
+    except Exception as e:
+        await thinking.edit(content=f"❌ Failed to fetch from gtacolors.com: {e}")
+        return
+
+    data = _cs_load()
+
+    # Avoid re-using hexes already in the submission pool
+    used_hexes = {
+        s.get("hex_code", "").upper().lstrip("#")
+        for s in data["submissions"].values()
+    }
+
+    pool = [
+        c for c in all_colors
+        if c.get("image_url") and c.get("hex", "").upper().lstrip("#") not in used_hexes
+    ]
+    if len(pool) < count:
+        pool = [c for c in all_colors if c.get("image_url")]
+
+    if len(pool) < count:
+        await thinking.edit(content="❌ Not enough colors available from gtacolors.com.")
+        return
+
+    picks = random.sample(pool, count)
+    now_str = _cs_utc_now()
+
+    injected = []
+    for c in picks:
+        fake_id = f"gtac_{c['ID']}"
+        hex_val = f"#{c['hex'].upper().lstrip('#')}"
+        image_url = f"https://gtacolors.com/{c['image_url']}.jpg"
+        data["submissions"][fake_id] = {
+            "message_id": fake_id,
+            "channel_id": "0",
+            "author_id": str(c["ID"]),
+            "author_name": f"{c['manufacturer']} (Auto-Pick)",
+            "color_name": c["color"],
+            "hex_code": hex_val,
+            "image_url": image_url,
+            "status": "pending",
+            "submitted_at": now_str,
+            "selected_for_vote": False,
+            "locked_at": "", "approved_at": "", "won_at": "",
+            "source": "gtacolors.com",
+        }
+        injected.append(f"**{c['color']}** `{hex_val}` — {c['manufacturer']}")
+    _cs_save(data)
+
+    # If a vote is already open, just report what was added
+    current_vote = data.get("current_vote")
+    if current_vote and not current_vote.get("closed", False):
+        lines = "\n".join(f"• {x}" for x in injected)
+        await thinking.edit(content=(
+            f"✅ Injected **{len(picks)}** color(s) into the pool — but a vote is already active.\n"
+            f"{lines}\n\n"
+            "Close the current vote first, then use `/force-color-vote`."
+        ))
+        return
+
+    success = await _cs_try_post_weekly_vote(ctx.guild)
+    lines = "\n".join(f"• {x}" for x in injected)
+    if success:
+        await thinking.edit(content=(
+            f"✅ Pulled **{len(picks)}** colors from gtacolors.com and posted the weekly vote!\n{lines}"
+        ))
+    else:
+        await thinking.edit(content=(
+            f"✅ Injected **{len(picks)}** color(s) — but couldn't auto-start the vote "
+            f"(need 4 unique submissions). Use `/force-color-vote` to trigger manually.\n{lines}"
+        ))
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
 # =========================
 # COLOR TEAM PANEL
 # =========================
