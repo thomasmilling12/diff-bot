@@ -18308,7 +18308,12 @@ async def _cs_try_close_vote(guild: discord.Guild) -> bool:
     current_vote["closed_at"] = _cs_utc_now()
     current_vote["winner_submission_id"] = winner["message_id"]
     data["history"].append({
-        "closed_at": current_vote["closed_at"], "winner_name": winner["color_name"], "votes": reaction_totals,
+        "closed_at": current_vote["closed_at"],
+        "winner_name": winner["color_name"],
+        "hex_code": winner.get("hex_code", ""),
+        "image_url": winner.get("image_url", ""),
+        "author_name": winner.get("author_name", ""),
+        "votes": reaction_totals,
     })
     try:
         await vote_msg.edit(content=(vote_msg.content or "") + f"\n\n🔒 **Voting Closed**\n🏆 Winner: **{winner['color_name']}**")
@@ -18321,6 +18326,256 @@ async def _cs_try_close_vote(guild: discord.Guild) -> bool:
     return True
 
 
+# ── gtacolors.com helpers ────────────────────────────────────────────────────
+
+def _cs_diverse_picks(pool: list, count: int) -> list:
+    """Pick `count` colors from `pool` spread across distinct hue families."""
+    def _hue_bucket(hex_str: str) -> int:
+        h = hex_str.lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        try:
+            r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
+            hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
+            if sat < 0.12 or val < 0.12:
+                return 8
+            return int(hue * 8) % 8
+        except Exception:
+            return random.randint(0, 8)
+
+    random.shuffle(pool)
+    buckets: dict = {}
+    for c in pool:
+        buckets.setdefault(_hue_bucket(c.get("hex", "")), []).append(c)
+    picks: list = []
+    keys = list(buckets.keys())
+    random.shuffle(keys)
+    i = 0
+    while len(picks) < count and any(buckets[k] for k in keys):
+        key = keys[i % len(keys)]
+        if buckets[key]:
+            picks.append(buckets[key].pop(0))
+        i += 1
+    return picks
+
+
+async def _cs_fetch_gta_color_pool() -> list:
+    """Fetch full color list from gtacolors.com. Returns [] on failure."""
+    if aiohttp is None:
+        return []
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://gtacolors.com/include/colors",
+                timeout=aiohttp.ClientTimeout(total=15),
+                headers={"User-Agent": "DIFF-Bot/2.0"},
+            ) as resp:
+                if resp.status != 200:
+                    return []
+                return await resp.json(content_type=None)
+    except Exception:
+        return []
+
+
+async def _cs_auto_pull_gta_colors(count: int = 4) -> list:
+    """Fetch, pick diverse colors, inject as pending submissions. Returns list of injected picks."""
+    all_colors = await _cs_fetch_gta_color_pool()
+    if not all_colors:
+        return []
+    data = _cs_load()
+    used_hexes = {s.get("hex_code", "").upper().lstrip("#") for s in data["submissions"].values()}
+    pool = [c for c in all_colors if c.get("image_url") and c.get("hex", "").upper().lstrip("#") not in used_hexes]
+    if len(pool) < count:
+        pool = [c for c in all_colors if c.get("image_url")]
+    if len(pool) < count:
+        return []
+    picks = _cs_diverse_picks(pool, count)
+    now_str = _cs_utc_now()
+    for c in picks:
+        fake_id = f"gtac_{c['ID']}"
+        hex_val = f"#{c['hex'].upper().lstrip('#')}"
+        data["submissions"][fake_id] = {
+            "message_id": fake_id, "channel_id": "0",
+            "author_id": str(c["ID"]), "author_name": f"{c['manufacturer']} (Auto-Pick)",
+            "color_name": c["color"], "hex_code": hex_val,
+            "image_url": f"https://gtacolors.com/{c['image_url']}.jpg",
+            "status": "pending", "submitted_at": now_str,
+            "selected_for_vote": False, "locked_at": "", "approved_at": "", "won_at": "",
+            "source": "gtacolors.com",
+        }
+    _cs_save(data)
+    return picks
+
+
+def _cs_build_preview_embeds(picks: list) -> list:
+    """Build one embed per color for the preview message."""
+    embeds = []
+    for i, c in enumerate(picks, 1):
+        hex_val = f"#{c['hex'].upper().lstrip('#')}"
+        try:
+            clr = discord.Color.from_str(hex_val)
+        except Exception:
+            clr = discord.Color.blurple()
+        e = discord.Embed(title=f"{i}. {c['color']}", description=f"`{hex_val}` — {c['manufacturer']}", color=clr)
+        e.set_image(url=f"https://gtacolors.com/{c['image_url']}.jpg")
+        embeds.append(e)
+    return embeds
+
+
+class GtaColorPreviewView(discord.ui.View):
+    def __init__(self, picks: list, all_colors: list, invoker_id: int, guild: discord.Guild):
+        super().__init__(timeout=180)
+        self.picks = picks
+        self.all_colors = all_colors
+        self.invoker_id = invoker_id
+        self.guild = guild
+
+    @discord.ui.button(label="✅ Confirm & Post Vote", style=discord.ButtonStyle.success, custom_id="gtac_confirm")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invoker_id:
+            return await interaction.response.send_message("Only the person who ran the command can confirm.", ephemeral=True)
+        await interaction.response.defer()
+        self.stop()
+        data = _cs_load()
+        now_str = _cs_utc_now()
+        for c in self.picks:
+            fake_id = f"gtac_{c['ID']}"
+            hex_val = f"#{c['hex'].upper().lstrip('#')}"
+            data["submissions"][fake_id] = {
+                "message_id": fake_id, "channel_id": "0",
+                "author_id": str(c["ID"]), "author_name": f"{c['manufacturer']} (Auto-Pick)",
+                "color_name": c["color"], "hex_code": hex_val,
+                "image_url": f"https://gtacolors.com/{c['image_url']}.jpg",
+                "status": "pending", "submitted_at": now_str,
+                "selected_for_vote": False, "locked_at": "", "approved_at": "", "won_at": "",
+                "source": "gtacolors.com",
+            }
+        _cs_save(data)
+        current_vote = data.get("current_vote")
+        if current_vote and not current_vote.get("closed", False):
+            await interaction.edit_original_response(
+                content="⚠️ A vote is already active — close it first with `/force-color-winner`.", embeds=[], view=None)
+            return
+        success = await _cs_try_post_weekly_vote(self.guild)
+        if success:
+            await interaction.edit_original_response(content="✅ Vote posted to the crew!", embeds=[], view=None)
+        else:
+            await interaction.edit_original_response(
+                content="✅ Colors injected — use `/force-color-vote` to start the vote.", embeds=[], view=None)
+
+    @discord.ui.button(label="🔄 Reroll", style=discord.ButtonStyle.secondary, custom_id="gtac_reroll")
+    async def reroll(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invoker_id:
+            return await interaction.response.send_message("Only the person who ran the command can reroll.", ephemeral=True)
+        await interaction.response.defer()
+        data = _cs_load()
+        used_hexes = {s.get("hex_code", "").upper().lstrip("#") for s in data["submissions"].values()}
+        pool = [c for c in self.all_colors if c.get("image_url") and c.get("hex", "").upper().lstrip("#") not in used_hexes]
+        if len(pool) < 4:
+            pool = [c for c in self.all_colors if c.get("image_url")]
+        self.picks = _cs_diverse_picks(pool, 4)
+        embeds = _cs_build_preview_embeds(self.picks)
+        await interaction.edit_original_response(
+            content="🎨 **Rerolled — confirm or reroll again:**", embeds=embeds, view=self)
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, custom_id="gtac_cancel")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.invoker_id:
+            return await interaction.response.send_message("Only the person who ran the command can cancel.", ephemeral=True)
+        self.stop()
+        await interaction.response.edit_message(content="❌ Cancelled.", embeds=[], view=None)
+
+
+async def _cs_post_monday_digest(guild: discord.Guild) -> None:
+    """Post the automated Monday morning staff digest to staff-logs."""
+    now = datetime.now(_EST_TZ)
+    week_ago_ts = (now - timedelta(days=7)).timestamp()
+    logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(logs_ch, discord.TextChannel):
+        return
+
+    # New members this week
+    new_members = 0
+    tier_counts = {"Strong": 0, "Active": 0, "At Risk": 0, "Ghost": 0}
+    ghost_names: list[str] = []
+    try:
+        with _activity_db() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM member_activity").fetchall()
+            for row in rows:
+                if (row["join_ts"] or 0) >= week_ago_ts:
+                    new_members += 1
+                tier = row["health_tier"] or ""
+                if tier in tier_counts:
+                    tier_counts[tier] += 1
+                    if tier == "Ghost":
+                        m = guild.get_member(row["user_id"])
+                        if m:
+                            ghost_names.append(m.display_name)
+    except Exception:
+        pass
+
+    # Members who left this week
+    left_this_week = 0
+    try:
+        with _activity_db() as conn:
+            conn.row_factory = sqlite3.Row
+            left_rows = conn.execute(
+                "SELECT * FROM member_leaves WHERE leave_ts >= ?", (week_ago_ts,)
+            ).fetchall()
+            left_this_week = len(left_rows)
+    except Exception:
+        pass
+
+    # Last color winner
+    cs_data = _cs_load()
+    history = cs_data.get("history", [])
+    last_winner_text = "No winner recorded yet."
+    if history:
+        last = history[-1]
+        hex_str = last.get("hex_code", "")
+        last_winner_text = f"**{last['winner_name']}**"
+        if hex_str:
+            last_winner_text += f" `{hex_str}`"
+        closed = last.get("closed_at", "")
+        if closed:
+            try:
+                dt = datetime.fromisoformat(closed).astimezone(_EST_TZ)
+                last_winner_text += f"\nClosed {dt.strftime('%b %d at %I:%M %p ET')}"
+            except Exception:
+                pass
+
+    embed = discord.Embed(
+        title=f"📋 DIFF Auto Digest — {now.strftime('%A, %b %d %Y')}",
+        color=0x2F3136,
+        timestamp=now,
+    )
+    embed.add_field(
+        name="👥 Members This Week",
+        value=f"Joined: **{new_members}**\nLeft: **{left_this_week}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="🏥 Health Tiers",
+        value=(
+            f"💚 Strong: **{tier_counts['Strong']}**\n"
+            f"🔵 Active: **{tier_counts['Active']}**\n"
+            f"🟡 At Risk: **{tier_counts['At Risk']}**\n"
+            f"🔴 Ghost: **{tier_counts['Ghost']}**"
+        ),
+        inline=True,
+    )
+    if ghost_names:
+        embed.add_field(
+            name=f"🔴 Ghost Members ({len(ghost_names)})",
+            value="\n".join(f"• {n}" for n in ghost_names[:15]) + ("…" if len(ghost_names) > 15 else ""),
+            inline=False,
+        )
+    embed.add_field(name="🎨 Last Crew Color Winner", value=last_winner_text, inline=False)
+    embed.set_footer(text="Different Meets • Auto Monday Digest")
+    await logs_ch.send(embed=embed)
+
+
 async def _color_schedule_loop_logic():
     now = datetime.now(COLOR_TZ)
     current_date = now.date().isoformat()
@@ -18328,12 +18583,34 @@ async def _color_schedule_loop_logic():
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
         return
+
+    # Monday 9 AM — auto staff digest
+    if (now.weekday() == 0 and now.hour == 9 and 0 <= now.minute <= 4
+            and data["schedule"].get("last_auto_digest_date") != current_date):
+        try:
+            await _cs_post_monday_digest(guild)
+        except Exception as _de:
+            print(f"[AutoDigest] Failed: {_de}")
+        data = _cs_load()
+        data["schedule"]["last_auto_digest_date"] = current_date
+        _cs_save(data)
+
     if (now.weekday() == 1 and now.hour == COLOR_SCHEDULE_HOUR and 0 <= now.minute <= 4
             and data["schedule"].get("last_vote_post_date") != current_date):
         if await _cs_try_post_weekly_vote(guild):
             data = _cs_load()
             data["schedule"]["last_vote_post_date"] = current_date
             _cs_save(data)
+        else:
+            # Not enough submissions — auto-pull from gtacolors.com and retry
+            try:
+                await _cs_auto_pull_gta_colors(count=4)
+                if await _cs_try_post_weekly_vote(guild):
+                    data = _cs_load()
+                    data["schedule"]["last_vote_post_date"] = current_date
+                    _cs_save(data)
+            except Exception as _ae:
+                print(f"[AutoColor] Auto-pull failed: {_ae}")
     if (now.weekday() == 0 and now.hour == COLOR_SCHEDULE_HOUR and 0 <= now.minute <= 4
             and data["schedule"].get("last_winner_post_date") != current_date):
         if await _cs_try_close_vote(guild):
@@ -18656,134 +18933,90 @@ async def force_color_winner(interaction: discord.Interaction):
 
 @bot.command(name="pullgtacolors", aliases=["gtacolors", "autocolor", "pickcolors"])
 async def _cmd_pull_gta_colors(ctx: commands.Context, count: int = 4):
-    """Leadership only: pull random colors from gtacolors.com and start the weekly vote."""
+    """Leadership only: preview 4 diverse colors from gtacolors.com, then confirm or reroll before posting."""
     if not isinstance(ctx.author, discord.Member) or not _cs_is_color_admin(ctx.author):
         await ctx.send("Leadership only.", delete_after=6)
         return
     count = max(1, min(count, 8))
-
-    thinking = await ctx.send("🎨 Fetching colors from gtacolors.com…")
-
-    if aiohttp is None:
-        await thinking.edit(content="❌ aiohttp is not available — cannot fetch colors.")
-        return
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://gtacolors.com/include/colors",
-                timeout=aiohttp.ClientTimeout(total=15),
-                headers={"User-Agent": "DIFF-Bot/2.0"},
-            ) as resp:
-                if resp.status != 200:
-                    await thinking.edit(content=f"❌ gtacolors.com returned HTTP {resp.status}.")
-                    return
-                all_colors = await resp.json(content_type=None)
-    except Exception as e:
-        await thinking.edit(content=f"❌ Failed to fetch from gtacolors.com: {e}")
-        return
-
-    data = _cs_load()
-
-    # Avoid re-using hexes already in the submission pool
-    used_hexes = {
-        s.get("hex_code", "").upper().lstrip("#")
-        for s in data["submissions"].values()
-    }
-
-    pool = [
-        c for c in all_colors
-        if c.get("image_url") and c.get("hex", "").upper().lstrip("#") not in used_hexes
-    ]
-    if len(pool) < count:
-        pool = [c for c in all_colors if c.get("image_url")]
-
-    if len(pool) < count:
-        await thinking.edit(content="❌ Not enough colors available from gtacolors.com.")
-        return
-
-    # Pick colors from different hue families so the vote has visual variety
-    def _hue_bucket(hex_str: str) -> int:
-        h = hex_str.lstrip("#")
-        if len(h) == 3:
-            h = "".join(c * 2 for c in h)
-        try:
-            r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
-            hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
-            if sat < 0.12 or val < 0.12:
-                return 8  # neutrals / blacks / whites
-            return int(hue * 8) % 8  # 8 colour families: red/orange/yellow/green/cyan/blue/violet/pink
-        except Exception:
-            return random.randint(0, 8)
-
-    random.shuffle(pool)
-    buckets: dict[int, list] = {}
-    for c in pool:
-        b = _hue_bucket(c.get("hex", ""))
-        buckets.setdefault(b, []).append(c)
-
-    # Round-robin across buckets so picks are as diverse as possible
-    picks: list = []
-    bucket_keys = list(buckets.keys())
-    random.shuffle(bucket_keys)
-    i = 0
-    while len(picks) < count and any(buckets[k] for k in bucket_keys):
-        key = bucket_keys[i % len(bucket_keys)]
-        if buckets[key]:
-            picks.append(buckets[key].pop(0))
-        i += 1
-
-    now_str = _cs_utc_now()
-
-    injected = []
-    for c in picks:
-        fake_id = f"gtac_{c['ID']}"
-        hex_val = f"#{c['hex'].upper().lstrip('#')}"
-        image_url = f"https://gtacolors.com/{c['image_url']}.jpg"
-        data["submissions"][fake_id] = {
-            "message_id": fake_id,
-            "channel_id": "0",
-            "author_id": str(c["ID"]),
-            "author_name": f"{c['manufacturer']} (Auto-Pick)",
-            "color_name": c["color"],
-            "hex_code": hex_val,
-            "image_url": image_url,
-            "status": "pending",
-            "submitted_at": now_str,
-            "selected_for_vote": False,
-            "locked_at": "", "approved_at": "", "won_at": "",
-            "source": "gtacolors.com",
-        }
-        injected.append(f"**{c['color']}** `{hex_val}` — {c['manufacturer']}")
-    _cs_save(data)
-
-    # If a vote is already open, just report what was added
-    current_vote = data.get("current_vote")
-    if current_vote and not current_vote.get("closed", False):
-        lines = "\n".join(f"• {x}" for x in injected)
-        await thinking.edit(content=(
-            f"✅ Injected **{len(picks)}** color(s) into the pool — but a vote is already active.\n"
-            f"{lines}\n\n"
-            "Close the current vote first, then use `/force-color-vote`."
-        ))
-        return
-
-    success = await _cs_try_post_weekly_vote(ctx.guild)
-    lines = "\n".join(f"• {x}" for x in injected)
-    if success:
-        await thinking.edit(content=(
-            f"✅ Pulled **{len(picks)}** colors from gtacolors.com and posted the weekly vote!\n{lines}"
-        ))
-    else:
-        await thinking.edit(content=(
-            f"✅ Injected **{len(picks)}** color(s) — but couldn't auto-start the vote "
-            f"(need 4 unique submissions). Use `/force-color-vote` to trigger manually.\n{lines}"
-        ))
-
     try:
         await ctx.message.delete()
     except Exception:
         pass
+
+    thinking = await ctx.send("🎨 Fetching colors from gtacolors.com…")
+
+    all_colors = await _cs_fetch_gta_color_pool()
+    if not all_colors:
+        await thinking.edit(content="❌ Could not reach gtacolors.com — try again in a moment.")
+        return
+
+    data = _cs_load()
+    used_hexes = {s.get("hex_code", "").upper().lstrip("#") for s in data["submissions"].values()}
+    pool = [c for c in all_colors if c.get("image_url") and c.get("hex", "").upper().lstrip("#") not in used_hexes]
+    if len(pool) < count:
+        pool = [c for c in all_colors if c.get("image_url")]
+    if len(pool) < count:
+        await thinking.edit(content="❌ Not enough colors available from gtacolors.com.")
+        return
+
+    picks = _cs_diverse_picks(pool, count)
+    embeds = _cs_build_preview_embeds(picks)
+    view = GtaColorPreviewView(picks=picks, all_colors=all_colors, invoker_id=ctx.author.id, guild=ctx.guild)
+    await thinking.edit(
+        content="🎨 **Preview — confirm to post the vote, or reroll for different colors:**",
+        embeds=embeds,
+        view=view,
+    )
+
+
+@bot.command(name="colorhistory", aliases=["colorwins", "pastcolors"])
+async def _cmd_color_history(ctx: commands.Context):
+    """Show the last 10 crew color winners."""
+    if not isinstance(ctx.author, discord.Member) or not _cs_is_color_admin(ctx.author):
+        await ctx.send("Leadership only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    data = _cs_load()
+    history = data.get("history", [])
+    if not history:
+        await ctx.send("No color vote history yet.", delete_after=10)
+        return
+
+    recent = list(reversed(history))[:10]
+    embed = discord.Embed(
+        title="🎨 Crew Color History",
+        description=f"Last {len(recent)} winning colors",
+        color=0x2F3136,
+        timestamp=datetime.now(_EST_TZ),
+    )
+    for i, entry in enumerate(recent, 1):
+        hex_code = entry.get("hex_code", "")
+        author = entry.get("author_name", "")
+        closed = entry.get("closed_at", "")
+        date_str = ""
+        if closed:
+            try:
+                date_str = datetime.fromisoformat(closed).astimezone(_EST_TZ).strftime("%b %d, %Y")
+            except Exception:
+                pass
+        value_parts = []
+        if hex_code:
+            value_parts.append(f"`{hex_code}`")
+        if author:
+            value_parts.append(f"by {author}")
+        if date_str:
+            value_parts.append(date_str)
+        embed.add_field(
+            name=f"{i}. {entry.get('winner_name', 'Unknown')}",
+            value=" • ".join(value_parts) if value_parts else "—",
+            inline=False,
+        )
+    embed.set_footer(text="Different Meets • Crew Color System")
+    await ctx.send(embed=embed)
 
 
 # =========================
