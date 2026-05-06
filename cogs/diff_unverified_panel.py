@@ -12,7 +12,8 @@ from discord.ext import commands
 # =========================
 # CONFIG
 # =========================
-TARGET_CHANNEL_ID  = 1486058055991824655
+TARGET_CHANNEL_ID    = 1486058055991824655
+PINNED_PANEL_MSG_ID  = 1501405070565179455   # permanent panel — always edit, never repost
 UNVERIFIED_ROLE_ID = 1486011550916411512
 VERIFIED_ROLE_ID   = 1141424243616256032
 RULES_CHANNEL_ID   = 1047161846257438743
@@ -360,70 +361,33 @@ class UnverifiedPanelCog(commands.Cog):
         return ch if isinstance(ch, discord.TextChannel) else None
 
     async def ensure_panel(self, guild: Optional[discord.Guild] = None) -> None:
+        """Edit the pinned panel message. Never posts a new message."""
         channel = await self._get_channel()
         if channel is None:
             print(f"[UnverifiedPanel] Channel not found: {TARGET_CHANNEL_ID}")
             return
 
         embed = self._build_embed(guild or channel.guild)
-        saved_id = _get_msg_id()
-
-        if saved_id:
-            try:
-                msg = await channel.fetch_message(saved_id)
-                await msg.edit(embed=embed, view=self._view)
-                print("[UnverifiedPanel] Panel refreshed.")
-                return
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                print(f"[UnverifiedPanel] Edit failed: {e}")
-
-        # Clean up stale duplicates
-        try:
-            async for msg in channel.history(limit=50):
-                if (
-                    msg.author == self.bot.user
-                    and msg.embeds
-                    and PANEL_TAG in (msg.embeds[0].footer.text or "")
-                ):
-                    try:
-                        await msg.delete()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
 
         try:
-            new_msg = await channel.send(embed=embed, view=self._view)
-            _set_msg_id(new_msg.id)
-            print(f"[UnverifiedPanel] Panel posted: {new_msg.id}")
+            msg = await channel.fetch_message(PINNED_PANEL_MSG_ID)
+            await msg.edit(embed=embed, view=self._view)
+            print("[UnverifiedPanel] Panel updated.")
+        except discord.NotFound:
+            print(f"[UnverifiedPanel] Pinned message {PINNED_PANEL_MSG_ID} not found — no action taken.")
         except Exception as e:
-            print(f"[UnverifiedPanel] Failed to post panel: {e}")
+            print(f"[UnverifiedPanel] Edit failed: {e}")
 
     @commands.Cog.listener()
     async def on_ready(self):
         print("[UnverifiedPanel] Cog ready.")
 
-    @commands.Cog.listener()
-    async def on_member_join(self, member: discord.Member):
-        """Refresh the panel count when someone joins."""
-        await self.ensure_panel(member.guild)
-
-    @commands.Cog.listener()
-    async def on_member_update(self, before: discord.Member, after: discord.Member):
-        """Refresh the panel when someone gains/loses the unverified role."""
-        before_ids = {r.id for r in before.roles}
-        after_ids  = {r.id for r in after.roles}
-        if UNVERIFIED_ROLE_ID in (before_ids ^ after_ids):
-            await self.ensure_panel(after.guild)
-
     @commands.command(name="refresh_unverified_panel")
     @commands.has_permissions(manage_guild=True)
     async def refresh_cmd(self, ctx: commands.Context):
-        """Force-refresh the unverified panel."""
+        """Force-refresh the unverified panel (edits the pinned message)."""
         await self.ensure_panel(ctx.guild)
-        await ctx.send("Unverified panel refreshed.", delete_after=10)
+        await ctx.send("Unverified panel updated.", delete_after=10)
 
 
 # =========================
