@@ -18041,7 +18041,9 @@ def _cs_is_color_team(member: discord.Member) -> bool:
 
 
 def _cs_is_color_admin(member: discord.Member) -> bool:
-    return any(r.id in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID) for r in member.roles)
+    if member.guild_permissions.administrator:
+        return True
+    return any(r.id in _LEADERSHIP_ROLE_IDS for r in member.roles)
 
 
 async def _cs_fetch_channel(channel_id: int):
