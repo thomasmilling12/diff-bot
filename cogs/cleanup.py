@@ -266,30 +266,9 @@ class CleanupCog(commands.Cog, name="Cleanup"):
         # ── Post summary embeds (one per category) ────────────────────────────
         ts = datetime.now(timezone.utc)
 
-        # 1. Escalated to Cleanup Review
-        if escalated_rows:
-            _MAX_SHOWN = 20
-            shown   = escalated_rows[:_MAX_SHOWN]
-            overflow = len(escalated_rows) - _MAX_SHOWN
-            lines = []
-            for name, sc, ti, di, ve, me, rs in shown:
-                ver_icon = "✅" if ve else "❌"
-                lines.append(
-                    f"• **{discord.utils.escape_markdown(name)}** — "
-                    f"Score {sc or 'N/A'} · {ti} · inactive {di}d · verified {ver_icon}"
-                )
-            if overflow > 0:
-                lines.append(f"*…and {overflow} more. Use `!cleanupqueue` to see all.*")
-            e = discord.Embed(
-                title=f"⚠️ Cleanup Review — {len(escalated_rows)} member(s) escalated",
-                description="\n".join(lines),
-                color=_C_RED,
-                timestamp=ts,
-            )
-            e.set_footer(text="Different Meets • Auto Cleanup — use !cleanupqueue to review")
-            await self._log_staff(e)
+        # Escalation to Cleanup Review is silent — use !cleanupqueue to review
 
-        # 2. Newly flagged
+        # 1. Newly flagged
         if newly_flagged:
             _MAX_SHOWN = 20
             shown   = newly_flagged[:_MAX_SHOWN]
