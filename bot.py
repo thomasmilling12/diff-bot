@@ -3990,7 +3990,7 @@ class _ASchedAnnounceView(discord.ui.View):
             print(f"[AutoSched] Notify ping failed: {e}")
 
 
-def _asched_build_finalized_embed() -> discord.Embed:
+async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> discord.Embed:
     """Clean, community-facing embed for the upcoming-meet channel. No management details."""
     schedule = _asched_load()
 
@@ -4020,7 +4020,21 @@ def _asched_build_finalized_embed() -> discord.Embed:
         time_val  = entry.get("time",  "TBD")
         date_val  = entry.get("day",   "TBD")
 
-        host_str = f"<@{host_id}>" if host_id else "*TBD*"
+        # Resolve a human-readable name so mobile never shows a raw ID
+        host_str = "*TBD*"
+        if host_id:
+            resolved_name = entry.get("host_name")  # stored at assignment time
+            if not resolved_name and guild:
+                member = guild.get_member(int(host_id))
+                if not member:
+                    try:
+                        member = await guild.fetch_member(int(host_id))
+                    except Exception:
+                        member = None
+                if member:
+                    resolved_name = member.display_name
+            host_str = f"{resolved_name} (<@{host_id}>)" if resolved_name else f"<@{host_id}>"
+
         meet_ts  = _parse_meet_ts(date_val, time_val)
 
         if meet_ts:
@@ -4066,7 +4080,7 @@ async def _asched_post_finalized(bot_client) -> None:
         ping_parts.append(notify_role.mention)
     ping_content = " ".join(ping_parts) if ping_parts else None
 
-    embed = _asched_build_finalized_embed()
+    embed = await _asched_build_finalized_embed(guild=guild)
 
     try:
         await channel.send(content=ping_content, embed=embed)
@@ -4233,7 +4247,8 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
             schedule = _asched_load()
             slot     = schedule["days"].setdefault(slot_name, {})
             slot.update({"host_id": host_id, "host_status": "yes",
-                         "day": day_val, "time": time_val, "class": class_val})
+                         "day": day_val, "time": time_val, "class": class_val,
+                         "host_name": member.display_name if member else None})
             slot["locked"] = True   # lock so Rebuild Schedule doesn't overwrite
             schedule["updated_at"] = utc_now().isoformat()
             _asched_save(schedule)
@@ -4498,6 +4513,8 @@ class AutoScheduleView(discord.ui.View):
                 host_member = interaction.guild.get_member(int(host_id))
                 if not host_member:
                     continue
+                # Cache the display name so the public embed never shows a raw ID
+                entry["host_name"] = host_member.display_name
                 try:
                     dm_embed = discord.Embed(
                         title=f"📅 You've Been Assigned — {day}",
@@ -4515,6 +4532,7 @@ class AutoScheduleView(discord.ui.View):
                 except Exception as _dme:
                     print(f"[AutoSched] DM to host {host_id} failed: {_dme}")
                 _hrel_track_confirmed(str(host_id))
+            _asched_save(schedule)  # persist host_name fields written above
 
         _slots_filled = sum(1 for d in _HRSVP_DAYS if schedule["days"].get(d, {}).get("host_id"))
         _rebuild_msg = "✅ Schedule rebuilt and hosts have been DM'd their assignments."
