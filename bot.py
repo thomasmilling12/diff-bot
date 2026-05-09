@@ -3382,7 +3382,7 @@ def _hrsvp_build_embed() -> discord.Embed:
 
         embed.add_field(name=day, value="\n".join(lines) or "*No responses yet*", inline=False)
 
-    embed.set_footer(text=f"Different Meets • Host Availability  •  Updated <t:{_now_ts}:R>  •  Times shown in your local timezone")
+    embed.set_footer(text=f"Different Meets • Host Availability  •  Updated {_now_et.strftime('%-m/%-d/%Y %-I:%M %p')}  •  Times shown in your local timezone")
     return embed
 
 
@@ -12742,7 +12742,7 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
             value="🧥 Wear your crew jacket  •  🎙️ Join voice if required  •  ⚠️ No-shows are tracked",
             inline=False,
         )
-    embed.set_footer(text=f"DIFF • Auto Roll Call System  •  Updated <t:{_now_ts}:R>  •  Use 📊 My RSVP to see your responses")
+    embed.set_footer(text=f"DIFF • Auto Roll Call System  •  Updated {_now_et.strftime('%-m/%-d/%Y %-I:%M %p')}  •  Use 📊 My RSVP to see your responses")
     return embed
 
 
