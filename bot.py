@@ -2193,6 +2193,11 @@ class ReviewView(discord.ui.View):
                     except Exception:
                         pass
                     update_app(self.app_id, ticket_closed=True, closed_at=utc_now().isoformat())
+                    await asyncio.sleep(10)
+                    try:
+                        await ticket_ch.delete(reason=f"Garage application {new_status.lower()} — auto-cleanup")
+                    except Exception:
+                        pass
 
 
 # =========================
@@ -2563,9 +2568,7 @@ class TicketCloseButton(discord.ui.Button):
         await interaction.response.send_message("🔒 Closing ticket in 5 seconds...", ephemeral=True)
         await asyncio.sleep(5)
         try:
-            _cn = interaction.channel.name
-            await interaction.channel.edit(name=_cn if _cn.startswith("closed-") else f"closed-{_cn[:80]}")
-            await interaction.channel.set_permissions(interaction.guild.default_role, view_channel=False)
+            await interaction.channel.delete(reason=f"Ticket manually closed by {interaction.user}")
         except Exception:
             pass
 
