@@ -13693,6 +13693,7 @@ class _OmRecord:
     ended_at_ts: int | None = None
     attendance_message_id: int | None = None
     attendance_channel_id: int | None = None
+    attendance_all_msg_ids: list = field(default_factory=list)
     rsvp_yes_ids: list = field(default_factory=list)
     rsvp_maybe_ids: list = field(default_factory=list)
     rsvp_no_ids: list = field(default_factory=list)
@@ -13738,7 +13739,8 @@ def _om_upsert_record(record: _OmRecord) -> None:
 def _om_get_record_by_attendance_msg(attendance_msg_id: int) -> _OmRecord | None:
     data = _om_load_records()
     for raw in data.values():
-        if raw.get("attendance_message_id") == attendance_msg_id:
+        if (raw.get("attendance_message_id") == attendance_msg_id
+                or attendance_msg_id in raw.get("attendance_all_msg_ids", [])):
             try:
                 return _OmRecord(**{k: v for k, v in raw.items() if k in _OmRecord.__dataclass_fields__})
             except Exception:
@@ -13972,17 +13974,18 @@ async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | No
         f"Your check-in is recorded for attendance stats and no-show tracking."
     )
 
-    primary_msg = None
+    all_msgs: list[discord.Message] = []
 
     # Post to crew chat with @Crew Member ping
     crew_ch = bot.get_channel(_CREW_CHAT_CHANNEL_ID)
     if isinstance(crew_ch, discord.TextChannel):
         try:
-            primary_msg = await crew_ch.send(
+            m = await crew_ch.send(
                 f"<@&{CREW_MEMBER_ROLE_ID}>\n\n" + _att_body,
                 view=_OmAttendanceView(),
                 allowed_mentions=discord.AllowedMentions(roles=True, users=False),
             )
+            all_msgs.append(m)
         except Exception:
             pass
 
@@ -13990,17 +13993,16 @@ async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | No
     everyone_ch = bot.get_channel(_EVERYONE_CHAT_CHANNEL_ID)
     if isinstance(everyone_ch, discord.TextChannel):
         try:
-            msg = await everyone_ch.send(
+            m = await everyone_ch.send(
                 f"<@&{PS5_ROLE_ID}>\n\n" + _att_body,
                 view=_OmAttendanceView(),
                 allowed_mentions=discord.AllowedMentions(roles=True, users=False),
             )
-            if primary_msg is None:
-                primary_msg = msg
+            all_msgs.append(m)
         except Exception:
             pass
 
-    return primary_msg
+    return all_msgs[0] if all_msgs else None, all_msgs
 
 
 def _om_get_counts(msg_id: int) -> dict:
@@ -14078,10 +14080,11 @@ class _OfficialMeetRSVPView(discord.ui.View):
                 return
             record.started = True
             record.started_at_ts = int(datetime.now(timezone.utc).timestamp())
-            att_msg = await _om_create_attendance_panel(record)
+            att_msg, att_all_msgs = await _om_create_attendance_panel(record)
             if att_msg:
                 record.attendance_message_id = att_msg.id
                 record.attendance_channel_id = att_msg.channel.id
+                record.attendance_all_msg_ids = [m.id for m in att_all_msgs]
             _om_upsert_record(record)
             _om_increment_host_stat(record.host_id, "meets_hosted")
             ch = bot.get_channel(record.channel_id)
