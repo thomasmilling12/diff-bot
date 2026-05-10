@@ -3624,21 +3624,24 @@ class _HostRSVPBtn(discord.ui.Button):
         if self.choice == "maybe":
             await interaction.response.send_modal(_HostMaybeModal(self.day))
             return
-        # "no" → instant mark, confirm ephemerally
+        # "no" → toggle: first click marks unavailable, second click clears the response
         await interaction.response.defer(ephemeral=True)
         try:
             uid  = str(interaction.user.id)
             data = _hrsvp_load()
             slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
+            already_no = any(_hrsvp_uid(e) == uid for e in slot.get("no", []))
             for c in ("yes", "no", "maybe"):
                 slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
-            slot["no"].append(uid)
+            if not already_no:
+                slot["no"].append(uid)
             _hrsvp_save(data)
             await _hrsvp_update_panel(interaction.client)
-            await interaction.followup.send(
-                f"❌ **{self.day}** — you're marked as unavailable.\n*Changed your mind? Hit the button again.*",
-                ephemeral=True,
-            )
+            if already_no:
+                reply = f"↩️ **{self.day}** — your unavailable response has been cleared."
+            else:
+                reply = f"❌ **{self.day}** — you're marked as unavailable.\n*Changed your mind? Hit ❌ again to clear it.*"
+            await interaction.followup.send(reply, ephemeral=True)
         except Exception as _e:
             print(f"[HRSVP] NoBtn callback error: {_e}")
             try:
