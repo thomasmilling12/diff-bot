@@ -4711,6 +4711,7 @@ async def _do_host_weekly_reminder(force: bool = False) -> bool:
         try:
             await member.send(embed=dm_embed)
             sent += 1
+            await asyncio.sleep(1)
         except discord.Forbidden:
             failed += 1
         except Exception as _e:
@@ -4772,6 +4773,7 @@ async def _do_host_weekly_reminder(force: bool = False) -> bool:
             try:
                 await member.send(embed=color_embed)
                 cs += 1
+                await asyncio.sleep(1)
             except discord.Forbidden:
                 cd += 1
             except Exception as _dme:
@@ -10501,10 +10503,8 @@ async def _hp_post_or_refresh() -> None:
         print(f"[HP] post error: {e}")
 
 
-@tasks.loop(minutes=5)
-async def _session_vc_idle_check():
+async def __session_vc_idle_check_logic():
     """Alert and auto-clean session VCs that have been empty for 15+ minutes."""
-    await bot.wait_until_ready()
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
         return
@@ -10575,6 +10575,18 @@ async def _session_vc_idle_check():
                 changed = True
     if changed:
         _hp_save(data)
+
+@tasks.loop(minutes=5)
+async def _session_vc_idle_check():
+    _loop_success('_session_vc_idle_check')
+    try:
+        await run_with_timeout('_session_vc_idle_check', __session_vc_idle_check_logic(), timeout=60)
+    except Exception as _lte:
+        await _handle_loop_error('_session_vc_idle_check', _lte, _session_vc_idle_check)
+
+@_session_vc_idle_check.error
+async def __session_vc_idle_check_on_error(error: Exception) -> None:
+    await _handle_loop_error('_session_vc_idle_check', error, _session_vc_idle_check)
 
 @_session_vc_idle_check.before_loop
 async def _before_session_vc_idle_check():
@@ -33279,6 +33291,7 @@ async def _cmd_loop_status(ctx: commands.Context):
         "_rc_ensure_loop",
         "_rotating_presence_loop",
         "_join_auto_bump_loop",
+        "_join_micro_bump_loop",
         "color_schedule_loop",
         "ticket_scan_loop",
         "color_ops_refresh_loop",
@@ -33291,6 +33304,11 @@ async def _cmd_loop_status(ctx: commands.Context):
         "_stale_join_alert_task",
         "_anniversary_check_task",
         "_host_avail_weekly_dm_task",
+        "_session_vc_idle_check",
+        "_unverified_dm_reminder_loop",
+        "_re_engagement_loop",
+        "_inactivity_daily_report_loop",
+        "_health_score_update_loop",
     ]
 
     now = _t.time()
@@ -33349,6 +33367,7 @@ async def _cmd_bot_health(ctx: commands.Context):
         "_rc_ensure_loop",
         "_rotating_presence_loop",
         "_join_auto_bump_loop",
+        "_join_micro_bump_loop",
         "color_schedule_loop",
         "ticket_scan_loop",
         "color_ops_refresh_loop",
@@ -33361,6 +33380,11 @@ async def _cmd_bot_health(ctx: commands.Context):
         "_stale_join_alert_task",
         "_anniversary_check_task",
         "_host_avail_weekly_dm_task",
+        "_session_vc_idle_check",
+        "_unverified_dm_reminder_loop",
+        "_re_engagement_loop",
+        "_inactivity_daily_report_loop",
+        "_health_score_update_loop",
     ]
 
     now = time.time()
