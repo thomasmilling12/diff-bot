@@ -4457,6 +4457,7 @@ class _ASchedPingNonRespondersBtn(discord.ui.Button):
             try:
                 await member.send(embed=dm_embed)
                 sent += 1
+                await asyncio.sleep(1)
             except Exception:
                 failed += 1
 
@@ -13463,6 +13464,7 @@ async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
         try:
             await member.send(embed=dm_embed)
             sent += 1
+            await asyncio.sleep(1)
         except discord.Forbidden:
             failed += 1
         except Exception as _e:
@@ -32792,6 +32794,7 @@ async def __host_avail_weekly_dm_task_logic():
                 continue
             try:
                 await member.send(embed=dm_embed)
+                await asyncio.sleep(1)
             except Exception:
                 pass
 
@@ -32869,6 +32872,7 @@ async def _cmd_send_weekly_host_dm(ctx: commands.Context):
             try:
                 await member.send(embed=dm_embed)
                 sent += 1
+                await asyncio.sleep(1)
             except Exception:
                 pass
     await ctx.send(f"✅ Host availability summary sent to **{sent}** staff member(s).", delete_after=10)
