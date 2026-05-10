@@ -188,6 +188,7 @@ TICKET_TRANSCRIPTS_CHANNEL_ID = 1493691927353364580
 MOD_HUB_CHANNEL_ID           = 1486598266211664003
 GTA_WEATHER_CHANNEL_ID = 1489823828652720248
 MEET_ATTENDANCE_CHANNEL_ID = 1089579004517953546
+LOBBY_PICTURES_CHANNEL_ID  = 1089579004517953546
 LEADERBOARD_CHANNEL_ID = 1485282044392243290
 ACTIVITY_FILE = os.path.join(DATA_FOLDER, "diff_activity_stats.json")
 REPUTATION_FILE = os.path.join(DATA_FOLDER, "diff_reputation_stats.json")
@@ -25998,6 +25999,18 @@ async def on_message(message: discord.Message) -> None:
         _activity_upsert(message.author.id, last_message=time.time())
     except Exception:
         pass
+
+    # --- Lobby-pictures auto-react ---
+    if message.channel.id == LOBBY_PICTURES_CHANNEL_ID:
+        has_image = any(
+            a.content_type and a.content_type.startswith("image/")
+            for a in message.attachments
+        )
+        if has_image:
+            try:
+                await message.add_reaction("✅")
+            except Exception:
+                pass
 
     # --- Everyone-chat meet Q&A auto-responder ---
     if message.channel.id == EVERYONE_CHAT_CHANNEL_ID:
