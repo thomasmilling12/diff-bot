@@ -343,24 +343,27 @@ class _StaffSelect(discord.ui.Select):
                 not any(r.id in _ADMIN_ROLES for r in member.roles):
             return await interaction.response.send_message("Staff only.", ephemeral=True)
 
-        v = self.values[0]
+        v = self.values[0] if self.values else ""
 
-        if v == "attendance":
-            await interaction.response.defer(ephemeral=True)
-            try:
+        if v == "reset":
+            return await interaction.response.send_message(
+                "⚠️ **Reset Roll Call?**\nThis clears **all** responses and posts a fresh panel.",
+                view=_ResetConfirmView(),
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            if v == "attendance":
                 m         = _main()
                 responses = m._rc_db.get_all_responses(interaction.guild.id)
                 await interaction.followup.send(
                     embed=_build_attendance_embed(responses), ephemeral=True
                 )
-            except Exception as e:
-                await interaction.followup.send(f"Error fetching attendance: {e}", ephemeral=True)
-            await _refresh_admin_panel()
-            return
+                await _refresh_admin_panel()
 
-        if v == "sync":
-            try:
-                await interaction.response.defer(ephemeral=True)
+            elif v == "sync":
                 m        = _main()
                 schedule = m._asched_load()
                 guild    = interaction.guild
@@ -368,11 +371,11 @@ class _StaffSelect(discord.ui.Select):
                 for idx, day in enumerate(m._HRSVP_DAYS, 1):
                     entry = schedule["days"].get(day, {})
                     rc_meets.append({
-                        "meet_number": idx,
-                        "class_name":  entry.get("class", "TBD"),
-                        "start_time":  entry.get("time",  "TBD"),
-                        "host_id":     entry.get("host_id"),
-                        "date_text":   entry.get("day",   day),
+                        "meet_number":  idx,
+                        "class_name":   entry.get("class", "TBD"),
+                        "start_time":   entry.get("time",  "TBD"),
+                        "host_id":      entry.get("host_id"),
+                        "date_text":    entry.get("day",   day),
                         "is_finalized": entry.get("host_id") is not None,
                     })
                 await m._rc_sync_from_schedule(guild, rc_meets)
@@ -381,31 +384,27 @@ class _StaffSelect(discord.ui.Select):
                     ephemeral=True,
                 )
                 await _refresh_admin_panel()
-                return
-            except Exception as e:
-                try:
-                    await interaction.followup.send(f"Sync failed: {e}", ephemeral=True)
-                except Exception:
-                    pass
-                return
 
-        if v == "refresh":
-            await interaction.response.defer(ephemeral=True)
-            try:
+            elif v == "refresh":
                 await _refresh_admin_panel()
                 await interaction.followup.send(
                     "🔃 Panel refreshed with the latest response counts.", ephemeral=True
                 )
-            except Exception as e:
-                await interaction.followup.send(f"Refresh failed: {e}", ephemeral=True)
-            return
 
-        if v == "reset":
-            return await interaction.response.send_message(
-                "⚠️ **Reset Roll Call?**\nThis clears **all** responses and posts a fresh panel.",
-                view=_ResetConfirmView(),
-                ephemeral=True,
-            )
+            else:
+                await interaction.followup.send(
+                    f"Unknown action: `{v}`", ephemeral=True
+                )
+
+        except Exception as e:
+            print(f"[RcAdminPatch] Staff action '{v}' error: {e}")
+            import traceback as _tb; _tb.print_exc()
+            try:
+                await interaction.followup.send(
+                    f"❌ Action failed: {e}", ephemeral=True
+                )
+            except Exception:
+                pass
 
 
 class _StaffView(discord.ui.View):
