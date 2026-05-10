@@ -5,7 +5,16 @@
 **Deployed on:** Raspberry Pi 5 at `~/diff-bot/`  
 **Venv:** `/home/thomas/diff-bot/.venv/bin/python`  
 **Service:** `different-meets-v2` (systemd)  
-**Deploy:** `scp bot.py thomas@192.168.1.211:/home/thomas/diff-bot/bot.py && ssh thomas@192.168.1.211 "sudo systemctl restart different-meets-v2"`
+**Deploy (safe — preserves all live data):**
+```bash
+cd ~/diff-bot && git fetch origin && cp -r diff_data /tmp/diff_data_bak && git reset --hard origin/main && cp -r /tmp/diff_data_bak/. diff_data/ && sudo systemctl restart different-meets-v2
+```
+
+**One-time permanent fix (run once on Pi — stops data from ever being reset):**
+```bash
+bash ~/diff-bot/scripts/untrack_data.sh
+```
+After running the one-time fix, the safe deploy command above is no longer needed — plain `git reset --hard` is safe.
 
 ## Critical Rules
 - Timezone: always `ZoneInfo("America/New_York")` — never `"US/Eastern"`
