@@ -4603,6 +4603,9 @@ def _hrsvp_responded_uids() -> set:
     return uids
 
 
+_weekly_reminder_sent_date: str = ""   # in-memory guard — survives loop restarts but not process restarts
+
+
 async def _do_host_weekly_reminder(force: bool = False) -> bool:
     """Send the weekly host availability reminder.
 
@@ -4620,10 +4623,20 @@ async def _do_host_weekly_reminder(force: bool = False) -> bool:
             return False
 
     # Deduplicate — one blast per calendar day max (unless forced)
+    global _weekly_reminder_sent_date
     today_str = now_et.strftime("%Y-%m-%d")
+
+    # In-memory guard — catches duplicates within the same process lifetime
+    if not force and _weekly_reminder_sent_date == today_str:
+        return False
+
+    # Persistent guard — catches duplicates across restarts (if data file is intact)
     sched = _asched_load()
     if not force and sched.get("_reminder_last_sent") == today_str:
+        _weekly_reminder_sent_date = today_str  # sync the in-memory guard too
         return False
+
+    _weekly_reminder_sent_date = today_str
     sched["_reminder_last_sent"] = today_str
     _asched_save(sched)
 
@@ -16404,8 +16417,6 @@ async def on_ready():
         _rc_ensure_loop.start()
     if not _host_weekly_reminder_loop.is_running():
         _host_weekly_reminder_loop.start()
-    # Catch-up: if bot restarted after the 12 PM window on a Sunday, send immediately
-    asyncio.create_task(_do_host_weekly_reminder(force=False))
     if not _rotating_presence_loop.is_running():
         _rotating_presence_loop.start()
     if not _join_auto_bump_loop.is_running():
