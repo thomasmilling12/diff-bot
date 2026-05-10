@@ -4604,6 +4604,7 @@ def _hrsvp_responded_uids() -> set:
 
 
 _weekly_reminder_sent_date: str = ""   # in-memory guard — survives loop restarts but not process restarts
+_host_weekly_reminder_first_run: bool = True   # always skip the immediate fire on loop start
 
 
 async def _do_host_weekly_reminder(force: bool = False) -> bool:
@@ -4779,6 +4780,10 @@ async def _do_host_weekly_reminder(force: bool = False) -> bool:
 
 async def __host_weekly_reminder_loop_logic():
     """Every 30 min: check if it's Sunday ≥12 PM ET and send the reminder if not yet sent today."""
+    global _host_weekly_reminder_first_run
+    if _host_weekly_reminder_first_run:
+        _host_weekly_reminder_first_run = False
+        return  # always skip the immediate fire when the loop starts on bot startup
     await _do_host_weekly_reminder(force=False)
 
 @tasks.loop(minutes=30)
