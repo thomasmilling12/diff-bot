@@ -3502,7 +3502,7 @@ class HostRSVPView(discord.ui.View):
 class _HostAvailModal(discord.ui.Modal):
     day_time_input = discord.ui.TextInput(
         label="Day & Time you want to host",
-        placeholder="e.g. Sunday 8:00 PM EST",
+        placeholder="e.g. Sunday 8:00 PM ET  or  <t:1234567890:F>",
         required=True,
         max_length=60,
     )
@@ -3757,11 +3757,20 @@ def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple:
 def _parse_meet_ts(date_val: str, time_val: str) -> int | None:
     """Return a Unix timestamp for a meet's date+time.
     Handles:
-      • Weekday names  — "Friday", "sunday", etc. → next occurrence
-      • Explicit dates — "april 12", "Sunday april 12", "april 12, 6:00 PM EST"
+      • Discord timestamps — <t:1234567890:F> pasted from hammertime.cyou
+      • Weekday names     — "Friday", "sunday", etc. → next occurrence
+      • Explicit dates    — "april 12", "Sunday april 12", "april 12, 6:00 PM ET"
+      • Numeric dates     — "05/10", "5/10", "MM-DD"
     Returns None on any parse failure.
     """
     import re as _re
+
+    # ── Discord timestamp shortcut (<t:unix:format> from hammertime.cyou) ───────
+    for _field in (date_val, time_val):
+        _ht = _re.search(r'<t:(\d+)(?::[A-Za-z])?>', _field)
+        if _ht:
+            return int(_ht.group(1))
+
     combined = (date_val + " " + time_val).lower()
 
     # ── Timezone ────────────────────────────────────────────────────────────────
@@ -4215,7 +4224,7 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
     )
     day_time_input = discord.ui.TextInput(
         label="Day & Time",
-        placeholder="e.g. Sunday 8:00 PM EST",
+        placeholder="e.g. Sunday 8:00 PM ET  or  <t:1234567890:F>",
         required=True,
         max_length=60,
     )
@@ -15108,7 +15117,7 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
     )
     datetime_field = discord.ui.TextInput(
         label="Date & Time",
-        placeholder="e.g. April 5 9:00 PM EST  or  04/05 9PM CST",
+        placeholder="e.g. April 5 9:00 PM ET  or  04/05 9PM CT  or  <t:1234567890:F>",
         required=True,
         max_length=80,
     )
@@ -15706,7 +15715,7 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
     )
     time_field = discord.ui.TextInput(
         label="Time",
-        placeholder="e.g. 8pm EST  or  8:30pm CST  or  Now",
+        placeholder="e.g. 8pm ET  or  8:30pm CT  or  <t:1234567890:F>",
         required=True,
         max_length=300,
     )
@@ -17143,7 +17152,7 @@ class StartMeetModal(discord.ui.Modal, title="Start a DIFF Meet"):
     meet_title = discord.ui.TextInput(label="Meet Title", placeholder="Different Meets Saturday Night", max_length=100)
     theme = discord.ui.TextInput(label="Theme / Meet Type", placeholder="Clean JDM / Drift / Muscle / Show Meet", max_length=100)
     location = discord.ui.TextInput(label="Location", placeholder="LS Car Meet / Airport / Vinewood", max_length=100)
-    meet_time = discord.ui.TextInput(label="Time", placeholder="8:30 PM EST", max_length=50)
+    meet_time = discord.ui.TextInput(label="Time", placeholder="8:30 PM ET  or  <t:1234567890:F>", max_length=50)
     details = discord.ui.TextInput(
         label="Restrictions / Weather / Notes",
         style=discord.TextStyle.paragraph,
