@@ -3811,6 +3811,20 @@ def _parse_meet_ts(date_val: str, time_val: str) -> int | None:
                     except Exception:
                         pass
 
+    # ── Try numeric MM/DD or M/D format (e.g. "05/10", "5/10") ─────────────────
+    num_m = _re.search(r'\b(\d{1,2})[/\-](\d{1,2})\b', combined)
+    if num_m:
+        mnum = int(num_m.group(1))
+        day  = int(num_m.group(2))
+        if 1 <= mnum <= 12 and 1 <= day <= 31:
+            for yr in (now.year, now.year + 1):
+                try:
+                    target = datetime(yr, mnum, day, hour, minute, tzinfo=tz)
+                    if target >= now - timedelta(hours=3):
+                        return int(target.timestamp())
+                except Exception:
+                    pass
+
     # ── Fall back to weekday-based "next occurrence" ────────────────────────────
     _DAY_MAP = {
         "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
@@ -5240,10 +5254,10 @@ def _hosthub_guide_embed() -> discord.Embed:
         "• Be mindful of who you invite"
     ), inline=False)
     e.add_field(name="⏰ Meet Timeline", value=(
-        "**7:30 PM EST** — Crew joins party\n"
-        "**7:45 PM EST** — Latest crew join time / Start lobby\n"
-        "**7:55 PM EST** — Send early invites\n"
-        "**8:00 PM EST** — Open lobby"
+        "**7:30 PM ET** — Crew joins party\n"
+        "**7:45 PM ET** — Latest crew join time / Start lobby\n"
+        "**7:55 PM ET** — Send early invites\n"
+        "**8:00 PM ET** — Open lobby"
     ), inline=False)
     e.add_field(name="👥 Crew Preparation", value=(
         "• Assign roles before the meet\n"
@@ -18884,8 +18898,8 @@ def _cs_build_panel_embed() -> discord.Embed:
             "• Press **Submit Color** and fill out the form\n"
             "• Your submission posts to the review channel automatically\n"
             "• Leadership can approve or lock submissions\n"
-            "• Weekly vote auto-posts **Tuesday ~12 PM EST**\n"
-            "• Winner auto-announces **Monday ~12 PM EST**"
+            "• Weekly vote auto-posts **Tuesday ~12 PM ET**\n"
+            "• Winner auto-announces **Monday ~12 PM ET**"
         ),
         inline=False,
     )
@@ -19484,7 +19498,7 @@ def _build_interview_topic_embed(topic: str, guild: Optional[discord.Guild] = No
         embed.add_field(
             name="8️⃣ Meet Attendance",
             value=(
-                "*Our meet time is 8pm EST. You must join 30 minutes early. "
+                "*Our meet time is 8pm ET. You must join 30 minutes early. "
                 "You're required to attend at least one meet per week. "
                 "If you can't make it, you must let a host or Server Operations know in advance.*"
             ),
