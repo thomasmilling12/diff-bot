@@ -3788,12 +3788,22 @@ def _parse_meet_ts(date_val: str, time_val: str) -> int | None:
         return None
 
     # ── Parse hour / minute ─────────────────────────────────────────────────────
-    tm = _re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", combined)
+    # Search time_val first so numeric dates in date_val (e.g. "5/14") cannot
+    # be mistaken for the hour (regex would otherwise grab "5" from "5/14 8pm").
+    _tv = time_val.lower()
+    tm = (
+        _re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)", _tv)       # "8pm" / "8:00 PM" with explicit am/pm
+        or _re.search(r"(\d{1,2}):(\d{2})", _tv)                    # "20:00" 24-hour with colon
+        or _re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", combined)  # fallback: search full combined
+    )
     if not tm:
         return None
     hour   = int(tm.group(1))
     minute = int(tm.group(2) or 0)
-    ampm   = (tm.group(3) or "").lower()
+    try:
+        ampm = (tm.group(3) or "").lower()
+    except IndexError:
+        ampm = ""
     if ampm == "pm" and hour != 12:
         hour += 12
     elif ampm == "am" and hour == 12:
