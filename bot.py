@@ -18725,15 +18725,19 @@ async def _color_schedule_loop_logic():
                     _cs_save(data)
             except Exception as _ae:
                 print(f"[AutoColor] Auto-pull failed: {_ae}")
-    if (now.weekday() == 0 and now.hour == COLOR_SCHEDULE_HOUR and 0 <= now.minute <= 4
+    # Winner announcement: try every minute from noon onward on Monday (not just a 5-min window).
+    # last_winner_post_date guards against double-posting. If there is no active vote
+    # (already force-closed or never started), mark the date anyway so the loop stops retrying.
+    if (now.weekday() == 0 and now.hour >= COLOR_SCHEDULE_HOUR
             and data["schedule"].get("last_winner_post_date") != current_date):
-        if await _cs_try_close_vote(guild):
-            data = _cs_load()
+        _closed_ok = await _cs_try_close_vote(guild)
+        data = _cs_load()
+        if _closed_ok or not data.get("current_vote"):
             data["schedule"]["last_winner_post_date"] = current_date
             _cs_save(data)
 
     weekly_state = _weekly_color_load()
-    if (now.weekday() == 0 and now.hour == COLOR_SCHEDULE_HOUR and 0 <= now.minute <= 4):
+    if (now.weekday() == 0 and now.hour >= COLOR_SCHEDULE_HOUR):
         monday_key = _weekly_color_today_key("monday")
         if weekly_state.get("last_monday_team_post") != current_date:
             role = guild.get_role(COLOR_TEAM_ROLE_ID)
