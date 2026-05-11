@@ -15,14 +15,35 @@ ROLL_CALL_CHANNEL_ID = 1047338695352664165
 GUILD_ID             = 850386896509337710
 RC_DB_PATH           = os.path.join("diff_data", "diff_rollcall.db")
 
+# Leadership
 _LEADER_ROLE_ID = 850391095845584937
 _CO_LEADER_ID   = 850391378559238235
 _MANAGER_ID     = 990011447193006101
-_ADMIN_ROLES    = {_LEADER_ROLE_ID, _CO_LEADER_ID, _MANAGER_ID}
+# Mod / admin tiers (mirrors _ALL_MOD_ROLE_IDS + developer in bot.py)
+_SENIOR_ADMIN_ID  = 1034280192241307718
+_ADMINISTRATOR_ID = 1328458892690063443
+_LEAD_MOD_ID      = 1034282163513872424
+_MODERATOR_ID     = 1328458459339030571
+_JUNIOR_MOD_ID    = 1328458204262305792
+_DEVELOPER_ID     = 1123234905057402890
+# Combined set — any of these roles can use the staff dropdown
+_STAFF_ROLES = {
+    _LEADER_ROLE_ID, _CO_LEADER_ID, _MANAGER_ID,
+    _SENIOR_ADMIN_ID, _ADMINISTRATOR_ID,
+    _LEAD_MOD_ID, _MODERATOR_ID, _JUNIOR_MOD_ID,
+    _DEVELOPER_ID,
+}
 
 
 def _main():
     return sys.modules["__main__"]
+
+
+def _is_staff(member: discord.Member) -> bool:
+    """Return True if member has any staff role OR administrator permission."""
+    if member.guild_permissions.administrator:
+        return True
+    return any(r.id in _STAFF_ROLES for r in member.roles)
 
 
 def _get_admin_msg_id() -> int | None:
@@ -103,9 +124,7 @@ def _parse_ts(date_text: str, start_time: str) -> int | None:
         from datetime import datetime as _dt
         from zoneinfo import ZoneInfo
         _tz = ZoneInfo("America/New_York")
-        # Normalise time string
-        t = start_time.upper().replace("EST", "").replace("EDT", "").strip()
-        # Try various date formats
+        t = start_time.upper().replace("EST", "").replace("EDT", "").replace("ET", "").strip()
         for dfmt in ("%A, %B %d, %Y", "%B %d, %Y", "%A %B %d %Y",
                      "%b %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
             try:
@@ -193,24 +212,6 @@ def _build_attendance_embed(responses: dict) -> discord.Embed:
     return embed
 
 
-# ── Shared helper: rebuild + reset the staff panel ─────────────────────────────
-
-async def _refresh_admin_panel() -> None:
-    """Re-edit the staff panel with a fresh embed and fresh view (resets dropdown)."""
-    try:
-        admin_id = _get_admin_msg_id()
-        if not admin_id:
-            return
-        m  = _main()
-        ch = m.bot.get_channel(ROLL_CALL_CHANNEL_ID)
-        if not isinstance(ch, discord.TextChannel):
-            return
-        msg = await ch.fetch_message(admin_id)
-        await msg.edit(embed=_build_embed(), view=_StaffView())
-    except Exception as e:
-        print(f"[RcAdminPatch] _refresh_admin_panel error: {e}")
-
-
 # ── Finalize modal ─────────────────────────────────────────────────────────────
 
 class _FinalizeModal(discord.ui.Modal):
@@ -238,7 +239,10 @@ class _FinalizeModal(discord.ui.Modal):
             await m._rc_log_attendance(
                 interaction.guild, self.meet_number, attended, no_shows, interaction.user
             )
-            await _refresh_admin_panel()
+
+            cog = interaction.client.cogs.get("RcAdminPatch")
+            if cog:
+                await cog.refresh_panel()
 
             def _tags(uids, limit=15):
                 tags = " ".join(f"<@{uid}>" for uid in uids[:limit])
@@ -256,8 +260,12 @@ class _FinalizeModal(discord.ui.Modal):
                 ephemeral=True,
             )
         except Exception as e:
+            import traceback; traceback.print_exc()
             print(f"[RcAdminPatch] Finalize error: {e}")
-            await interaction.followup.send(f"Error finalizing: {e}", ephemeral=True)
+            try:
+                await interaction.followup.send(f"❌ Error finalizing: {e}", ephemeral=True)
+            except Exception:
+                pass
 
 
 # ── Reset confirm ──────────────────────────────────────────────────────────────
@@ -276,6 +284,7 @@ class _ConfirmBtn(discord.ui.Button):
                 await cog.refresh_panel()
             await interaction.followup.send("✅ Roll call reset and reposted.", ephemeral=True)
         except Exception as e:
+            import traceback; traceback.print_exc()
             print(f"[RcAdminPatch] Reset confirm error: {e}")
             try:
                 await interaction.followup.send(f"Reset failed: {e}", ephemeral=True)
@@ -289,7 +298,10 @@ class _CancelBtn(discord.ui.Button):
         super().__init__(label="Cancel", style=discord.ButtonStyle.secondary)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(content="Reset cancelled.", view=None)
+        try:
+            await interaction.response.edit_message(content="Reset cancelled.", view=None)
+        except Exception:
+            pass
         self.view.stop()
 
 
@@ -338,30 +350,45 @@ class _StaffSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        # ── ALWAYS defer first — guarantees the 3-second window is met ──────
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.InteractionResponded:
+            pass
+        except Exception as e:
+            print(f"[RcAdminPatch] defer failed: {e}")
+            return
+
+        # ── Permission check (after defer so interaction is already acked) ──
         member = interaction.user
-        if not isinstance(member, discord.Member) or \
-                not any(r.id in _ADMIN_ROLES for r in member.roles):
-            return await interaction.response.send_message("Staff only.", ephemeral=True)
+        if not isinstance(member, discord.Member) or not _is_staff(member):
+            try:
+                await interaction.followup.send("Staff only.", ephemeral=True)
+            except Exception:
+                pass
+            print(f"[RcAdminPatch] Unauthorized dropdown use by {member} ({getattr(member, 'id', '?')})")
+            return
 
         v = self.values[0] if self.values else ""
-
-        if v == "reset":
-            return await interaction.response.send_message(
-                "⚠️ **Reset Roll Call?**\nThis clears **all** responses and posts a fresh panel.",
-                view=_ResetConfirmView(),
-                ephemeral=True,
-            )
-
-        await interaction.response.defer(ephemeral=True)
+        print(f"[RcAdminPatch] Staff action '{v}' by {member} ({member.id})")
 
         try:
-            if v == "attendance":
+            if v == "reset":
+                await interaction.followup.send(
+                    "⚠️ **Reset Roll Call?**\nThis clears **all** responses and posts a fresh panel.",
+                    view=_ResetConfirmView(),
+                    ephemeral=True,
+                )
+
+            elif v == "attendance":
                 m         = _main()
                 responses = m._rc_db.get_all_responses(interaction.guild.id)
                 await interaction.followup.send(
                     embed=_build_attendance_embed(responses), ephemeral=True
                 )
-                await _refresh_admin_panel()
+                cog = interaction.client.cogs.get("RcAdminPatch")
+                if cog:
+                    await cog.refresh_panel()
 
             elif v == "sync":
                 m        = _main()
@@ -383,10 +410,14 @@ class _StaffSelect(discord.ui.Select):
                     "✅ Schedule synced — roll call updated with latest dates, times, and hosts.",
                     ephemeral=True,
                 )
-                await _refresh_admin_panel()
+                cog = interaction.client.cogs.get("RcAdminPatch")
+                if cog:
+                    await cog.refresh_panel()
 
             elif v == "refresh":
-                await _refresh_admin_panel()
+                cog = interaction.client.cogs.get("RcAdminPatch")
+                if cog:
+                    await cog.refresh_panel()
                 await interaction.followup.send(
                     "🔃 Panel refreshed with the latest response counts.", ephemeral=True
                 )
@@ -397,8 +428,8 @@ class _StaffSelect(discord.ui.Select):
                 )
 
         except Exception as e:
+            import traceback; traceback.print_exc()
             print(f"[RcAdminPatch] Staff action '{v}' error: {e}")
-            import traceback as _tb; _tb.print_exc()
             try:
                 await interaction.followup.send(
                     f"❌ Action failed: {e}", ephemeral=True
@@ -455,6 +486,7 @@ class RcAdminPatch(commands.Cog, name="RcAdminPatch"):
             print(f"[RcAdminPatch] Scan/delete error: {e}")
 
     async def refresh_panel(self, *, force_repost: bool = False) -> None:
+        """Edit (or repost) the staff admin panel using the cog's registered view."""
         ch = self.bot.get_channel(ROLL_CALL_CHANNEL_ID)
         if not isinstance(ch, discord.TextChannel):
             try:
@@ -468,6 +500,7 @@ class RcAdminPatch(commands.Cog, name="RcAdminPatch"):
             if admin_id:
                 try:
                     msg = await ch.fetch_message(admin_id)
+                    # Always use self.view so the registered persistent view stays attached
                     await msg.edit(embed=_build_embed(), view=self.view)
                     print(f"[RcAdminPatch] Panel edited via DB (msg {admin_id}).")
                     return
@@ -476,10 +509,9 @@ class RcAdminPatch(commands.Cog, name="RcAdminPatch"):
                 except Exception as e:
                     print(f"[RcAdminPatch] Edit failed ({e}), will repost.")
 
-        # Delete all old copies then post a fresh panel
+        # Delete all old copies then post a fresh panel using self.view
         await self._find_and_delete_old_panel(ch)
-        new_view = _StaffView()
-        new_msg  = await ch.send(embed=_build_embed(), view=new_view)
+        new_msg = await ch.send(embed=_build_embed(), view=self.view)
         print(f"[RcAdminPatch] Fresh panel posted (msg {new_msg.id}).")
         try:
             conn = sqlite3.connect(RC_DB_PATH)
