@@ -18238,22 +18238,70 @@ async def _cs_build_vote_collage(candidates: List[Dict[str, Any]]) -> Optional[d
         return None
 
 
-async def _cs_post_winner_announcement(guild: discord.Guild, winner: Dict[str, Any], manual: bool = False):
+async def _cs_post_winner_announcement(guild: discord.Guild, winner: Dict[str, Any], manual: bool = False, vote_info: Optional[Dict[str, Any]] = None):
     channel = await _cs_fetch_channel(COLOR_ANNOUNCEMENT_CHANNEL_ID)
     crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
     ping = crew_role.mention if crew_role else ""
-    lines = []
-    if ping:
-        lines += [ping, ""]
-    lines += ["*The Crew Color has been changed this week.*", "", f"**{winner['color_name']}**", "", "*I hope you enjoy this color!*"]
+
     try:
         embed_color = discord.Color.from_str(winner["hex_code"])
     except Exception:
         embed_color = discord.Color.blurple()
-    embed = discord.Embed(color=embed_color, timestamp=datetime.now(COLOR_TZ))
+
+    # ── Active-week label (Mon – Sun of the current week) ────────────────────
+    _now  = datetime.now(COLOR_TZ)
+    _mon  = _now - timedelta(days=_now.weekday())
+    _sun  = _mon + timedelta(days=6)
+    week_str = f"{_mon.strftime('%b %-d')} – {_sun.strftime('%b %-d, %Y')}"
+
+    embed = discord.Embed(
+        title=f"🏆 This Week's Crew Color: {winner['color_name']}",
+        description="*The Crew Color has been updated — show some love in the comments!*\n*I hope you enjoy this color!*",
+        color=embed_color,
+        timestamp=datetime.now(COLOR_TZ),
+    )
+    embed.add_field(name="🎨 Color",    value=f"**{winner['color_name']}**", inline=True)
+    embed.add_field(name="🔑 HEX Code", value=f"`{winner['hex_code']}`",      inline=True)
+
+    # Manufacturer — stored directly, or extracted from author_name
+    _mfr = winner.get("manufacturer", "")
+    if not _mfr:
+        _an = winner.get("author_name", "")
+        if " (Auto-Pick)" in _an or " (Manual Override)" in _an:
+            _mfr = _an.split(" (")[0].strip()
+    if _mfr:
+        embed.add_field(name="🏭 Manufacturer", value=_mfr, inline=True)
+
+    embed.add_field(name="📅 Active Week", value=week_str, inline=bool(_mfr))
+
+    # ── Vote result (only when closing an actual vote) ───────────────────────
+    if vote_info:
+        _wv = vote_info.get("winner_votes", 0)
+        _tv = vote_info.get("total_votes",  0)
+        _pct = f"  ({int(_wv / _tv * 100)}% of {_tv} cast)" if _tv else ""
+        embed.add_field(
+            name="📊 Vote Result",
+            value=f"**{_wv}** vote{'s' if _wv != 1 else ''}{_pct}",
+            inline=True,
+        )
+        results = vote_info.get("results", [])
+        if results:
+            breakdown_lines = []
+            for _name, _votes in results:
+                _bar_n = round(_votes / _tv * 10) if _tv else 0
+                _bar   = "█" * _bar_n + "░" * (10 - _bar_n)
+                _crown = "🏆 " if _name == winner["color_name"] else "     "
+                breakdown_lines.append(f"{_crown}`{_bar}` **{_name}** — {_votes}")
+            embed.add_field(name="📋 Full Breakdown", value="\n".join(breakdown_lines), inline=False)
+
     embed.set_image(url=winner["image_url"])
-    embed.set_footer(text="DIFF • Crew Color Announcement" + (" • Manual Approval" if manual else ""))
-    msg = await channel.send("\n".join(lines), embed=embed)
+    embed.set_footer(text="DIFF • Crew Color Announcement" + (" • Manual Override" if manual else ""))
+
+    msg = await channel.send(
+        ping or None,
+        embed=embed,
+        allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+    )
 
     # DM the winning color team member
     try:
@@ -18315,12 +18363,26 @@ async def _cs_post_vote_announcement(guild: discord.Guild, candidates: List[Dict
         "*The color with the most votes will be the crew color for the following week.*", "",
     ]
     for idx, c in enumerate(candidates[:4]):
-        lines.append(f"{['1️⃣', '2️⃣', '3️⃣', '4️⃣'][idx]} **{c['color_name']}**")
+        lines.append(f"{['1️⃣', '2️⃣', '3️⃣', '4️⃣'][idx]} **{c['color_name']}** — `{c['hex_code']}`")
     lines += ["", "*Color order starts from left to right.*", "", "*Please choose one color below* 👇"]
+
+    # ── Next-Monday-noon deadline timestamp ──────────────────────────────────
+    _now_v = datetime.now(COLOR_TZ)
+    _days_until_mon = (7 - _now_v.weekday()) % 7 or 7
+    _deadline = (_now_v + timedelta(days=_days_until_mon)).replace(
+        hour=COLOR_SCHEDULE_HOUR, minute=0, second=0, microsecond=0
+    )
+    _dl_ts = int(_deadline.timestamp())
+
     collage = await _cs_build_vote_collage(candidates[:4])
     if collage:
         try:
             embed = discord.Embed(color=discord.Color.blurple(), timestamp=datetime.now(COLOR_TZ))
+            embed.add_field(
+                name="⏰ Voting Closes",
+                value=f"<t:{_dl_ts}:F>  (<t:{_dl_ts}:R>)",
+                inline=False,
+            )
             embed.set_image(url="attachment://diff_color_vote.png")
             embed.set_footer(text="DIFF • Weekly Crew Color Vote")
             msg = await channel.send("\n".join(lines), embed=embed, file=collage)
@@ -18410,7 +18472,15 @@ async def _cs_try_close_vote(guild: discord.Guild) -> bool:
             top_votes = v
             top_idx = idx
     winner = candidates[top_idx]
-    await _cs_post_winner_announcement(guild, winner, manual=False)
+    vote_info = {
+        "winner_votes": top_votes,
+        "total_votes":  sum(reaction_totals.values()),
+        "results": [
+            (candidates[i]["color_name"], reaction_totals.get(NUMBER_EMOJIS[i], 0))
+            for i in range(len(candidates))
+        ],
+    }
+    await _cs_post_winner_announcement(guild, winner, manual=False, vote_info=vote_info)
     winner["status"] = "won"
     winner["won_at"] = _cs_utc_now()
     _cs_add_stat(data, int(winner["author_id"]), "wins", 1)
@@ -18511,6 +18581,7 @@ async def _cs_auto_pull_gta_colors(count: int = 4) -> list:
         data["submissions"][fake_id] = {
             "message_id": fake_id, "channel_id": "0",
             "author_id": str(c["ID"]), "author_name": f"{c['manufacturer']} (Auto-Pick)",
+            "manufacturer": c["manufacturer"],
             "color_name": c["color"], "hex_code": hex_val,
             "image_url": f"https://gtacolors.com/{c['image_url']}.jpg",
             "status": "pending", "submitted_at": now_str,
@@ -18558,6 +18629,7 @@ class GtaColorPreviewView(discord.ui.View):
             data["submissions"][fake_id] = {
                 "message_id": fake_id, "channel_id": "0",
                 "author_id": str(c["ID"]), "author_name": f"{c['manufacturer']} (Auto-Pick)",
+                "manufacturer": c["manufacturer"],
                 "color_name": c["color"], "hex_code": hex_val,
                 "image_url": f"https://gtacolors.com/{c['image_url']}.jpg",
                 "status": "pending", "submitted_at": now_str,
@@ -19111,6 +19183,7 @@ async def _cmd_set_color_winner(ctx: commands.Context, *, color_name: str):
             "channel_id":  "0",
             "author_id":   str(bot.user.id),
             "author_name": f"{gta_hit.get('manufacturer', 'gtacolors.com')} (Manual Override)",
+            "manufacturer": gta_hit.get("manufacturer", ""),
             "color_name":  gta_hit["color"],
             "hex_code":    hex_val,
             "image_url":   img_url,
