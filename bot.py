@@ -19049,6 +19049,82 @@ async def force_color_winner(interaction: discord.Interaction):
         await interaction.followup.send("No active vote to close.", ephemeral=True)
 
 
+@bot.command(name="setcolorwinner", aliases=["manualcolorwinner", "pickcolorwinner", "colorwinner"])
+@commands.guild_only()
+async def _cmd_set_color_winner(ctx: commands.Context, *, color_name: str):
+    """Leadership only: manually declare a color the weekly winner by name.
+    Use when /force-color-winner fails because internal state was lost.
+    Example: !setcolorwinner Rolex Blue
+    """
+    if not isinstance(ctx.author, discord.Member) or not _cs_is_color_admin(ctx.author):
+        await ctx.send("Leadership only.", delete_after=6)
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    data = _cs_load()
+
+    # Find submission matching color name (case-insensitive, partial ok)
+    match = None
+    for sub in data["submissions"].values():
+        if sub.get("color_name", "").lower() == color_name.lower():
+            match = sub
+            break
+    if not match:
+        # Try partial match
+        for sub in data["submissions"].values():
+            if color_name.lower() in sub.get("color_name", "").lower():
+                match = sub
+                break
+    if not match:
+        names = [s.get("color_name", "?") for s in data["submissions"].values()]
+        await ctx.send(
+            f"❌ No submission found matching **{color_name}**.\n"
+            f"Known submissions: {', '.join(names) or 'none'}",
+            delete_after=20,
+        )
+        return
+
+    guild = ctx.guild
+    await _cs_post_winner_announcement(guild, match, manual=True)
+
+    match["status"] = "won"
+    match["won_at"] = _cs_utc_now()
+    _cs_add_stat(data, int(match["author_id"]), "wins", 1)
+
+    # If there's a tracked current_vote, close it out properly
+    current_vote = data.get("current_vote")
+    if current_vote and not current_vote.get("closed", False):
+        candidate_ids = current_vote.get("candidate_submission_ids", [])
+        for cid in candidate_ids:
+            c = data["submissions"].get(cid)
+            if c and c.get("message_id") != match.get("message_id"):
+                c["status"] = "locked"
+                c["locked_at"] = _cs_utc_now()
+        current_vote["closed"] = True
+        current_vote["closed_at"] = _cs_utc_now()
+        current_vote["winner_submission_id"] = match.get("message_id", "")
+
+    data["history"].append({
+        "closed_at": _cs_utc_now(),
+        "winner_name": match["color_name"],
+        "hex_code": match.get("hex_code", ""),
+        "image_url": match.get("image_url", ""),
+        "author_name": match.get("author_name", ""),
+        "votes": {},
+    })
+    data["current_vote"] = None
+    data["schedule"]["last_winner_post_date"] = datetime.now(COLOR_TZ).date().isoformat()
+    _cs_save(data)
+
+    await ctx.send(
+        f"✅ **{match['color_name']}** declared as this week's crew color winner!",
+        delete_after=15,
+    )
+
+
 @bot.command(name="pullgtacolors", aliases=["gtacolors", "autocolor", "pickcolors"])
 async def _cmd_pull_gta_colors(ctx: commands.Context, count: int = 4):
     """Leadership only: preview 4 diverse colors from gtacolors.com, then confirm or reroll before posting."""
