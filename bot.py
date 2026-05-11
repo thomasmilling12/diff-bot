@@ -19053,7 +19053,7 @@ async def force_color_winner(interaction: discord.Interaction):
 @commands.guild_only()
 async def _cmd_set_color_winner(ctx: commands.Context, *, color_name: str):
     """Leadership only: manually declare a color the weekly winner by name.
-    Use when /force-color-winner fails because internal state was lost.
+    Falls back to gtacolors.com when submission data is missing.
     Example: !setcolorwinner Rolex Blue
     """
     if not isinstance(ctx.author, discord.Member) or not _cs_is_color_admin(ctx.author):
@@ -19066,52 +19066,88 @@ async def _cmd_set_color_winner(ctx: commands.Context, *, color_name: str):
 
     data = _cs_load()
 
-    # Find submission matching color name (case-insensitive, partial ok)
+    # ── 1. Search stored submissions (exact then partial) ────────────────────
     match = None
     for sub in data["submissions"].values():
         if sub.get("color_name", "").lower() == color_name.lower():
             match = sub
             break
     if not match:
-        # Try partial match
         for sub in data["submissions"].values():
             if color_name.lower() in sub.get("color_name", "").lower():
                 match = sub
                 break
-    if not match:
-        names = [s.get("color_name", "?") for s in data["submissions"].values()]
-        await ctx.send(
-            f"❌ No submission found matching **{color_name}**.\n"
-            f"Known submissions: {', '.join(names) or 'none'}",
-            delete_after=20,
-        )
-        return
 
+    # ── 2. Fallback: look up from gtacolors.com ──────────────────────────────
+    if not match:
+        thinking = await ctx.send("🎨 No local submission found — searching gtacolors.com…")
+        pool = await _cs_fetch_gta_color_pool()
+        gta_hit = None
+        if pool:
+            # Exact name match first
+            for c in pool:
+                if c.get("color", "").lower() == color_name.lower():
+                    gta_hit = c
+                    break
+            # Partial match fallback
+            if not gta_hit:
+                for c in pool:
+                    if color_name.lower() in c.get("color", "").lower():
+                        gta_hit = c
+                        break
+        if not gta_hit:
+            await thinking.edit(
+                content=(
+                    f"❌ **{color_name}** not found in local submissions or on gtacolors.com.\n"
+                    "Use `!setcolorwinner <exact color name>` — check https://gtacolors.com for the exact spelling."
+                )
+            )
+            return
+        # Build a synthetic submission dict from the gtacolors.com data
+        hex_val = f"#{gta_hit['hex'].upper().lstrip('#')}"
+        img_url = f"https://gtacolors.com/{gta_hit['image_url']}.jpg"
+        match = {
+            "message_id":  f"gtac_{gta_hit['ID']}",
+            "channel_id":  "0",
+            "author_id":   str(bot.user.id),
+            "author_name": f"{gta_hit.get('manufacturer', 'gtacolors.com')} (Manual Override)",
+            "color_name":  gta_hit["color"],
+            "hex_code":    hex_val,
+            "image_url":   img_url,
+            "status":      "won",
+            "submitted_at": _cs_utc_now(),
+            "source":       "gtacolors.com",
+        }
+        await thinking.delete()
+
+    # ── 3. Post winner announcement ──────────────────────────────────────────
     guild = ctx.guild
     await _cs_post_winner_announcement(guild, match, manual=True)
 
+    # ── 4. Update data file ──────────────────────────────────────────────────
+    fake_id = match.get("message_id", f"manual_{_cs_utc_now()}")
     match["status"] = "won"
-    match["won_at"] = _cs_utc_now()
-    _cs_add_stat(data, int(match["author_id"]), "wins", 1)
+    match["won_at"]  = _cs_utc_now()
+    data["submissions"][fake_id] = match
 
-    # If there's a tracked current_vote, close it out properly
+    # Close out any lingering current_vote
     current_vote = data.get("current_vote")
     if current_vote and not current_vote.get("closed", False):
         candidate_ids = current_vote.get("candidate_submission_ids", [])
         for cid in candidate_ids:
             c = data["submissions"].get(cid)
-            if c and c.get("message_id") != match.get("message_id"):
+            if c and c.get("message_id") != fake_id:
                 c["status"] = "locked"
                 c["locked_at"] = _cs_utc_now()
-        current_vote["closed"] = True
+        current_vote["closed"]    = True
         current_vote["closed_at"] = _cs_utc_now()
-        current_vote["winner_submission_id"] = match.get("message_id", "")
+        current_vote["winner_submission_id"] = fake_id
 
     data["history"].append({
-        "closed_at": _cs_utc_now(),
+        "closed_at":   _cs_utc_now(),
         "winner_name": match["color_name"],
-        "hex_code": match.get("hex_code", ""),
-        "image_url": match.get("image_url", ""),
+        "hex_code":    match.get("hex_code", ""),
+        "image_url":   match.get("image_url", ""),
         "author_name": match.get("author_name", ""),
         "votes": {},
     })
