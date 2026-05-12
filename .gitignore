@@ -1,4 +1,5 @@
 # Live bot data — never commit these (they are overwritten by git reset --hard)
+diff_data.json
 diff_data/*.json
 diff_data/*.sqlite3
 diff_data/*.db
