@@ -77,7 +77,7 @@ def _save_bot_config(data: dict) -> None:
 _bot_cfg = _load_bot_config()
 DIFF_LOGO_URL: str = _bot_cfg.get(
     "logo_url",
-    "https://cdn.discordapp.com/attachments/1485265848099799163/1486054805796557033/diff_classic.png",
+    "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png",
 )
 DIFF_BANNER_URL: str = _bot_cfg.get("banner_url", DIFF_LOGO_URL)
 
@@ -4031,13 +4031,8 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
     """Clean, community-facing embed for the upcoming-meet channel. No management details."""
     schedule = _asched_load()
 
-    rc_mention = f"<#{ROLL_CALL_CHANNEL_ID}>"
     embed = discord.Embed(
         title="🗓️ DIFF PS5 Weekly Car Meet Schedule",
-        description=(
-            "All **3 meets** are locked in for this week — see you on the streets! 🚗💨\n"
-            f"Head to {rc_mention} to mark your attendance."
-        ),
         color=0x57F287,
         timestamp=utc_now(),
     )
@@ -4050,6 +4045,18 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
 
     _NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
 
+    # Find the next upcoming meet by earliest future timestamp
+    now_ts = int(utc_now().timestamp())
+    next_idx = None
+    min_ts = None
+    for i, day in enumerate(_HRSVP_DAYS):
+        entry = schedule["days"].get(day, {})
+        mt = _parse_meet_ts(entry.get("day", "TBD"), entry.get("time", "TBD"))
+        if mt and mt > now_ts:
+            if min_ts is None or mt < min_ts:
+                min_ts = mt
+                next_idx = i
+
     for idx, day in enumerate(_HRSVP_DAYS, start=1):
         entry     = schedule["days"].get(day, {})
         host_id   = entry.get("host_id")
@@ -4057,7 +4064,7 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
         time_val  = entry.get("time",  "TBD")
         date_val  = entry.get("day",   "TBD")
 
-        # Resolve a human-readable name so mobile never shows a raw ID
+        # Resolve host name — strip role suffix (e.g. "GTtamal3z | Host" → "GTtamal3z")
         host_str = "*TBD*"
         if host_id:
             resolved_name = entry.get("host_name")  # stored at assignment time
@@ -4070,27 +4077,30 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
                         member = None
                 if member:
                     resolved_name = member.display_name
-            host_str = f"{resolved_name} (<@{host_id}>)" if resolved_name else f"<@{host_id}>"
+            if resolved_name:
+                base_name = resolved_name.split(" | ")[0].strip()
+                host_str = f"{base_name} · <@{host_id}>"
+            # No fallback to raw ID — leave as "*TBD*" if unresolvable
 
-        meet_ts  = _parse_meet_ts(date_val, time_val)
+        meet_ts = _parse_meet_ts(date_val, time_val)
 
         if meet_ts:
             when_line = f"<t:{meet_ts}:F>  ·  <t:{meet_ts}:R>"
         else:
             when_line = f"📅 {date_val}  🕒 {time_val}"
 
+        is_next = (idx - 1) == next_idx
+        field_name = f"⭐  {class_val}" if is_next else f"{_NUM_EMOJI[idx - 1]}  🏎️  {class_val}"
+
         embed.add_field(
-            name=f"{_NUM_EMOJI[idx - 1]}  {class_val}",
-            value=f"{when_line}\n👤 {host_str}",
+            name=field_name,
+            value=f"{when_line}\n🎮 {host_str}",
             inline=False,
         )
 
     embed.add_field(
         name="\u200b",
-        value=(
-            "-# *Meets are subject to change based on host availability.*\n"
-            "-# *All times are displayed in your local timezone.*"
-        ),
+        value="-# *Meets may change based on host availability · Times shown in your local timezone*",
         inline=False,
     )
     embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets")
