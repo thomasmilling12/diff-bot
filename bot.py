@@ -31458,21 +31458,37 @@ def _psn_map_save(_d: dict) -> None:
 def _psn_npsso() -> str:
     return os.environ.get(_PSN_NPSSO_KEY, "").strip()
 
+# Singleton — npsso is exchanged for OAuth tokens ONCE; reusing the same client
+# lets psnawp refresh internally without consuming the npsso again on every call.
+_psn_client_instance = None
+_psn_client_lock = __import__("threading").Lock()
+
+def _psn_client_reset():
+    """Clear the cached client (call after an auth error so it rebuilds next time)."""
+    global _psn_client_instance
+    with _psn_client_lock:
+        _psn_client_instance = None
+
 def _psn_client():
+    global _psn_client_instance
     if not _PSNAWP_AVAILABLE:
         return None
-    npsso = _psn_npsso()
-    if not npsso:
-        return None
-    try:
-        # psnawp_api 2.x dropped the keyword arg — try positional first
+    with _psn_client_lock:
+        if _psn_client_instance is not None:
+            return _psn_client_instance
+        npsso = _psn_npsso()
+        if not npsso:
+            return None
         try:
-            return _PSNAWP(npsso)
-        except TypeError:
-            return _PSNAWP(npsso=npsso)
-    except Exception as _e:
-        print(f"[PSN] Client init failed: {_e}")
-        return None
+            try:
+                _psn_client_instance = _PSNAWP(npsso)
+            except TypeError:
+                _psn_client_instance = _PSNAWP(npsso=npsso)
+            print("[PSN] Client initialised successfully.")
+            return _psn_client_instance
+        except Exception as _e:
+            print(f"[PSN] Client init failed: {_e}")
+            return None
 
 
 def _psn_fetch_all_sync(psn_ids: list) -> dict:
@@ -31503,8 +31519,12 @@ def _psn_fetch_all_sync(psn_ids: list) -> dict:
                 "error":    None,
             }
         except Exception as _e:
+            err_str = str(_e)
             print(f"[PSN] Error for {psn_id}: {type(_e).__name__}: {_e}")
-            results[psn_id] = {"online": False, "dnd": False, "platform": "", "game": "", "last": "", "error": str(_e)}
+            # Auth failures mean the client is dead — reset so it rebuilds next call
+            if any(k in err_str.lower() for k in ("auth", "expired", "npsso", "unauthorized", "401")):
+                _psn_client_reset()
+            results[psn_id] = {"online": False, "dnd": False, "platform": "", "game": "", "last": "", "error": err_str}
     return results
 
 
