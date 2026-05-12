@@ -992,17 +992,7 @@ def load_data():
         "host_role_id": None,
         "meet_ping_role_id": None,
         "warnings": {},
-        "hosts": [
-            {"discord_id": 708024998228525167, "name": "Frostyy2003", "profile_url": "https://profile.playstation.com/Frostyy2003"},
-            {"discord_id": 747199066525663235, "name": "BriMedia", "profile_url": "https://profile.playstation.com/BriMedia"},
-            {"discord_id": 581563227402665984, "name": "Trlioz", "profile_url": "https://profile.playstation.com/Trlioz"},
-            {"discord_id": 380049668178182154, "name": "FRDanjay016", "profile_url": "https://profile.playstation.com/FRDanjay016"},
-            {"discord_id": 343488362331635714, "name": "honda3wheelers", "profile_url": "https://profile.playstation.com/honda3wheelers"},
-            {"discord_id": 612129213000187914, "name": "TheeDarkBullet", "profile_url": "https://profile.playstation.com/TheeDarkBullet"},
-            {"discord_id": 1000988147880054894, "name": "GtTamal3z", "profile_url": "https://profile.playstation.com/GtTamal3z"},
-            {"discord_id": 1252445906901532692, "name": "Tso_Kyng", "profile_url": "https://profile.playstation.com/Tso_Kyng"},
-            {"discord_id": 700021323279368262, "name": "SpMex0322", "profile_url": "https://profile.playstation.com/SpMex0322"},
-        ],
+        "hosts": [],
     }
 
     if not os.path.exists(DATA_FILE):
