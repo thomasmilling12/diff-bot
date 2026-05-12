@@ -31557,7 +31557,7 @@ def _build_host_psn_simple_embed(presence: dict, psn_ids: list) -> discord.Embed
         if p.get("online"):
             dot  = "🟡" if p.get("dnd") else "🟢"
             game = p.get("game", "") or "Online"
-            online_lines.append(f"{dot} {name_str}\n{game}")
+            online_lines.append(f"{dot} {name_str}\n`{game}`")
         else:
             last_str = ""
             raw_last = p.get("last", "")
@@ -31567,7 +31567,7 @@ def _build_host_psn_simple_embed(presence: dict, psn_ids: list) -> discord.Embed
                     last_str = f" · last seen <t:{ts}:R>"
                 except Exception:
                     pass
-            offline_lines.append(f"🔴 {name_str}{last_str}\nN/A")
+            offline_lines.append(f"🔴 {name_str}{last_str}\n`N/A`")
 
     all_lines    = online_lines + offline_lines
     online_count = len(online_lines)
