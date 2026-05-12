@@ -132,26 +132,31 @@ class PingButton(discord.ui.Button):
         label = _staff_label(member)
         count = len(_unverified_members(interaction.guild))
 
+        sender_name = member.display_name.split(" | ")[0].strip()
+
         ping_embed = discord.Embed(
             title="🔔 Verification Reminder",
-            description=(
-                f"You're **not verified yet** — complete the steps below to unlock full access to DIFF."
-            ),
+            description="Complete the steps below to unlock full access to DIFF.",
             color=discord.Color.red(),
             timestamp=datetime.now(timezone.utc),
         )
         ping_embed.add_field(
-            name="How to Verify",
+            name="✅ How to Verify",
             value=(
-                f"1️⃣  Read the rules in <#{RULES_CHANNEL_ID}>\n"
+                f"1️⃣  Head to <#{RULES_CHANNEL_ID}> and read the rules\n"
                 f"2️⃣  Click the **Verify** button at the bottom of that channel\n"
-                f"3️⃣  Head to <#{JOIN_MEETS_CHANNEL}> to join meets"
+                f"3️⃣  Access unlocks automatically — no wait, no staff needed"
             ),
+            inline=False,
+        )
+        ping_embed.add_field(
+            name="🚗 After You're Verified",
+            value=f"Head to <#{JOIN_MEETS_CHANNEL}> to get started with car meets.",
             inline=False,
         )
         ping_embed.set_thumbnail(url=DIFF_LOGO_URL)
         ping_embed.set_footer(
-            text=f"Sent by {member.display_name}{label}  •  {FOOTER_TEXT}"
+            text=f"Sent by {sender_name}  •  {FOOTER_TEXT}"
         )
 
         channel = interaction.channel
@@ -166,27 +171,32 @@ class PingButton(discord.ui.Button):
         dm_fail = 0
         for m in role.members:
             try:
+                member_name = m.display_name.split(" | ")[0].strip()
                 dm_embed = discord.Embed(
                     title="🔔 DIFF — Verification Reminder",
                     description=(
-                        f"Hey **{m.display_name}** — a staff member sent you this reminder.\n"
-                        f"You haven't verified in **{interaction.guild.name}** yet.\n"
+                        f"Hey **{member_name}** — you haven't verified in **{interaction.guild.name}** yet.\n"
                         f"Complete the steps below to unlock full server access."
                     ),
                     color=discord.Color.red(),
                     timestamp=datetime.now(timezone.utc),
                 )
                 dm_embed.add_field(
-                    name="Steps to Verify",
+                    name="✅ How to Verify",
                     value=(
-                        f"1️⃣  Read the rules in <#{RULES_CHANNEL_ID}>\n"
-                        f"2️⃣  Click the **Verify** button at the bottom\n"
-                        f"3️⃣  Head to <#{JOIN_MEETS_CHANNEL}> to join meets"
+                        f"1️⃣  Head to <#{RULES_CHANNEL_ID}> and read the rules\n"
+                        f"2️⃣  Click the **Verify** button at the bottom of that channel\n"
+                        f"3️⃣  Access unlocks automatically — no wait, no staff needed"
                     ),
                     inline=False,
                 )
+                dm_embed.add_field(
+                    name="🚗 After You're Verified",
+                    value=f"Head to <#{JOIN_MEETS_CHANNEL}> to get started with car meets.",
+                    inline=False,
+                )
                 dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
-                dm_embed.set_footer(text=FOOTER_TEXT)
+                dm_embed.set_footer(text=f"Sent by {sender_name}  •  {FOOTER_TEXT}")
                 await m.send(embed=dm_embed)
                 dm_ok += 1
             except Exception:
