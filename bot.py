@@ -31828,7 +31828,7 @@ async def _cmd_psnboard(ctx: commands.Context):
     await _psn_refresh_board(ctx.guild)
 
 
-@bot.command(name="refreshpsnboard", aliases=["psnrefresh", "refreshhostboard", "refreshboard"])
+@bot.command(name="refreshpsnboard", aliases=["psnrefresh", "refreshhostboard"])
 async def _cmd_refresh_psn_board(ctx: commands.Context):
     """!refreshpsnboard — force-refresh the host PSN status board in diff-hosts."""
     is_staff = (
