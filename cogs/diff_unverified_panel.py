@@ -166,45 +166,8 @@ class PingButton(discord.ui.Button):
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
 
-        # DM each unverified member
-        dm_ok = 0
-        dm_fail = 0
-        for m in role.members:
-            try:
-                member_name = m.display_name.split(" | ")[0].strip()
-                dm_embed = discord.Embed(
-                    title="🔔 DIFF — Verification Reminder",
-                    description=(
-                        f"Hey **{member_name}** — you haven't verified in **{interaction.guild.name}** yet.\n"
-                        f"Complete the steps below to unlock full server access."
-                    ),
-                    color=discord.Color.red(),
-                    timestamp=datetime.now(timezone.utc),
-                )
-                dm_embed.add_field(
-                    name="✅ How to Verify",
-                    value=(
-                        f"1️⃣  Head to <#{RULES_CHANNEL_ID}> and read the rules\n"
-                        f"2️⃣  Click the **Verify** button at the bottom of that channel\n"
-                        f"3️⃣  Access unlocks automatically — no wait, no staff needed"
-                    ),
-                    inline=False,
-                )
-                dm_embed.add_field(
-                    name="🚗 After You're Verified",
-                    value=f"Head to <#{JOIN_MEETS_CHANNEL}> to get started with car meets.",
-                    inline=False,
-                )
-                dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
-                dm_embed.set_footer(text=f"Sent by {sender_name}  •  {FOOTER_TEXT}")
-                await m.send(embed=dm_embed)
-                dm_ok += 1
-            except Exception:
-                dm_fail += 1
-
-        dm_note = f"\n📬 DMs sent: **{dm_ok}** delivered, **{dm_fail}** failed (DMs closed)." if (dm_ok + dm_fail) else ""
         await interaction.followup.send(
-            f"✅ Pinged **{count}** unverified member(s).{dm_note}",
+            f"✅ Pinged the unverified role — **{count}** member(s) notified in channel.",
             ephemeral=True,
         )
 
