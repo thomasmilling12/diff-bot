@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import socket
 import random
 import re
 import sqlite3
@@ -31518,39 +31519,50 @@ def _psn_client():
 
 
 def _psn_fetch_all_sync(psn_ids: list) -> dict:
-    """Sync: fetch PSN presence for a list of PSN IDs. Returns {psn_id: parsed_dict}."""
+    """Sync: fetch PSN presence for a list of PSN IDs. Returns {psn_id: parsed_dict}.
+    Uses a 10s socket timeout per call so a hanging PSN API never blocks the thread
+    indefinitely (7 hosts × 10s = 70s max, safely under the 90s loop timeout).
+    """
     client = _psn_client()
     if not client:
         return {}
     results: dict = {}
-    for psn_id in psn_ids:
-        try:
-            user     = client.user(online_id=psn_id)
-            raw      = user.get_presence()
-            basic    = raw.get("basicPresence", raw)
-            avail    = basic.get("availability", "offline")
-            ppi      = basic.get("primaryPlatformInfo") or {}
-            platform = ppi.get("platform", "")
-            online   = ppi.get("onlineStatus", "offline") == "online" or avail == "availableToPlay"
-            dnd      = avail == "doNotDisturb"
-            games    = basic.get("gameTitleInfoList") or []
-            game     = games[0].get("titleName", "") if games else ""
-            last_ts  = basic.get("lastAvailableDate", "")
-            results[psn_id] = {
-                "online":   online,
-                "dnd":      dnd,
-                "platform": platform,
-                "game":     game,
-                "last":     last_ts,
-                "error":    None,
-            }
-        except Exception as _e:
-            err_str = str(_e)
-            print(f"[PSN] Error for {psn_id}: {type(_e).__name__}: {_e}")
-            # Auth failures mean the client is dead — reset so it rebuilds next call
-            if any(k in err_str.lower() for k in ("auth", "expired", "npsso", "unauthorized", "401")):
-                _psn_client_reset()
-            results[psn_id] = {"online": False, "dnd": False, "platform": "", "game": "", "last": "", "error": err_str}
+    _old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(10)
+    try:
+        for psn_id in psn_ids:
+            try:
+                user     = client.user(online_id=psn_id)
+                raw      = user.get_presence()
+                basic    = raw.get("basicPresence", raw)
+                avail    = basic.get("availability", "offline")
+                ppi      = basic.get("primaryPlatformInfo") or {}
+                platform = ppi.get("platform", "")
+                online   = ppi.get("onlineStatus", "offline") == "online" or avail == "availableToPlay"
+                dnd      = avail == "doNotDisturb"
+                games    = basic.get("gameTitleInfoList") or []
+                game     = games[0].get("titleName", "") if games else ""
+                last_ts  = basic.get("lastAvailableDate", "")
+                results[psn_id] = {
+                    "online":   online,
+                    "dnd":      dnd,
+                    "platform": platform,
+                    "game":     game,
+                    "last":     last_ts,
+                    "error":    None,
+                }
+            except socket.timeout:
+                print(f"[PSN] Timeout fetching {psn_id} — skipping")
+                results[psn_id] = {"online": False, "dnd": False, "platform": "", "game": "", "last": "", "error": "timeout"}
+            except Exception as _e:
+                err_str = str(_e)
+                print(f"[PSN] Error for {psn_id}: {type(_e).__name__}: {_e}")
+                # Auth failures mean the client is dead — reset so it rebuilds next call
+                if any(k in err_str.lower() for k in ("auth", "expired", "npsso", "unauthorized", "401")):
+                    _psn_client_reset()
+                results[psn_id] = {"online": False, "dnd": False, "platform": "", "game": "", "last": "", "error": err_str}
+    finally:
+        socket.setdefaulttimeout(_old_timeout)
     return results
 
 
