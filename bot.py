@@ -31526,33 +31526,42 @@ def _psn_platform_emoji(platform: str) -> str:
 
 def _build_host_psn_simple_embed(presence: dict, psn_ids: list) -> discord.Embed:
     """Simple PSN status board for the host activity channel."""
-    lines: list[str] = []
-    online_count = 0
-    for psn_id in psn_ids:
-        p = presence.get(psn_id, {})
-        if p.get("online"):
-            dot  = "🟢"
-            game = p.get("game", "") or "Online"
-            online_count += 1
-            if p.get("dnd"):
-                dot = "🟡"
-        else:
-            dot  = "🔴"
-            game = "N/A"
-        lines.append(f"{dot} **{psn_id}**\n{game}")
+    online_lines:  list[str] = []
+    offline_lines: list[str] = []
 
-    color = 0x43B581 if online_count > 0 else 0x2F3136
+    for psn_id in psn_ids:
+        p        = presence.get(psn_id, {})
+        psn_url  = f"https://profile.playstation.com/{psn_id}"
+        name_str = f"**{psn_id}** [↗]({psn_url})"
+
+        if p.get("online"):
+            dot  = "🟡" if p.get("dnd") else "🟢"
+            game = p.get("game", "") or "Online"
+            online_lines.append(f"{dot} {name_str}\n{game}")
+        else:
+            last_str = ""
+            raw_last = p.get("last", "")
+            if raw_last:
+                try:
+                    ts       = int(datetime.fromisoformat(raw_last.replace("Z", "+00:00")).timestamp())
+                    last_str = f" · last seen <t:{ts}:R>"
+                except Exception:
+                    pass
+            offline_lines.append(f"🔴 {name_str}{last_str}\nN/A")
+
+    all_lines    = online_lines + offline_lines
+    online_count = len(online_lines)
+    total        = len(psn_ids)
+    color        = 0x43B581 if online_count > 0 else 0x2F3136
 
     embed = discord.Embed(
         title="PSN ACCOUNT STATUS",
-        description="\n\n".join(lines) if lines else "*No hosts registered.*",
+        description="\n\n".join(all_lines) if all_lines else "*No hosts registered.*",
         color=color,
         timestamp=datetime.now(timezone.utc),
     )
-    total = len(psn_ids)
-    embed.set_footer(
-        text=f"DIFF Meets · {online_count}/{total} online · updates every 15 min"
-    )
+    embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text=f"DIFF Meets · {online_count}/{total} online · updates every 15 min")
     return embed
 
 
