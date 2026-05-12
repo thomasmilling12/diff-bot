@@ -7382,7 +7382,7 @@ async def _hierarchy_attendance_loop_logic():
                         )
                     except Exception:
                         pass
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0.5)
                 _hierarchy_embed_hashes = new_hashes
     except Exception:
         pass
@@ -7395,7 +7395,7 @@ async def _hierarchy_attendance_loop_logic():
 async def hierarchy_attendance_loop():
     _loop_success('hierarchy_attendance_loop')
     try:
-        await run_with_timeout('hierarchy_attendance_loop', _hierarchy_attendance_loop_logic(), timeout=60)
+        await run_with_timeout('hierarchy_attendance_loop', _hierarchy_attendance_loop_logic(), timeout=120)
     except Exception as _lte:
         await _handle_loop_error('hierarchy_attendance_loop', _lte, hierarchy_attendance_loop)
 @hierarchy_attendance_loop.before_loop
