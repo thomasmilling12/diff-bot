@@ -7800,46 +7800,76 @@ async def _auto_refresh_hierarchy_panel(guild: discord.Guild):
 
 
 def build_status_embed(guild: discord.Guild) -> discord.Embed:
-    gta_hosts:    list[str] = []
-    online_hosts: list[str] = []
-    offline_hosts: list[str] = []
+    gta_hosts:     list[tuple] = []   # (line, last_ts, meets)
+    online_hosts:  list[tuple] = []
+    offline_hosts: list[tuple] = []
 
     hp_data    = _hp_load()
     host_stats = hp_data.get("host_stats", {})
 
-    def _last_session_str(uid: int) -> str:
-        """Return a Discord relative timestamp for the host's last HP session, or empty string."""
-        s = host_stats.get(str(uid), {})
+    def _last_session_ts(uid: int) -> int:
+        s    = host_stats.get(str(uid), {})
         last = s.get("last_session_at")
         if last:
             try:
-                ts = int(datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp())
-                return f"<t:{ts}:R>"
+                return int(datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp())
             except Exception:
                 pass
-        return ""
+        return 0
 
-    def _tier(meets: int) -> str:
-        """Tier badge based on career meets hosted (uses real activity data)."""
-        if meets >= 15:
-            return "💎 Elite"
-        if meets >= 5:
-            return "🔥 Senior"
-        if meets >= 1:
-            return "⭐ Junior"
+    def _tier_label(meets: int) -> str:
+        if meets >= 15: return "💎 Elite"
+        if meets >= 5:  return "🔥 Senior"
+        if meets >= 1:  return "⭐ Active"
         return "🆕 New"
 
-    for host in data["hosts"]:
-        member  = guild.get_member(host["discord_id"])
-        profile = host.get("profile_url", "")
-        link    = f" [↗]({profile})" if profile else ""
-        uid     = host["discord_id"]
+    # ── Weekly session summary from closed HP sessions ────────────────────────
+    _now_et     = datetime.now(_EST_TZ)
+    _week_start = (_now_et - timedelta(days=_now_et.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    _week_start_ts = _week_start.timestamp()
+    _weekly: dict[int, int] = {}
+    try:
+        for _s in hp_data.get("sessions", {}).values():
+            if not _s.get("ended"):
+                continue
+            _sat = _s.get("started_at", "")
+            if not _sat:
+                continue
+            try:
+                _sts = datetime.fromisoformat(str(_sat).replace("Z", "+00:00")).timestamp()
+                if _sts >= _week_start_ts:
+                    _hid = int(_s.get("host_id", 0))
+                    if _hid:
+                        _weekly[_hid] = _weekly.get(_hid, 0) + 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    _total_week    = sum(_weekly.values())
+    _top_host_name = ""
+    if _weekly:
+        _top_id        = max(_weekly, key=lambda k: _weekly[k])
+        _top_m         = guild.get_member(_top_id)
+        _top_host_name = _top_m.display_name if _top_m else ""
 
-        # Pull real meet count from the activity file
-        meets     = get_user_stats(uid).get("meets_hosted", 0)
-        tier      = _tier(meets)
-        meets_str = f"{meets} meet{'s' if meets != 1 else ''}"
-        last_str  = _last_session_str(uid)
+    # ── Build host rows ───────────────────────────────────────────────────────
+    for host in data["hosts"]:
+        uid     = host["discord_id"]
+        member  = guild.get_member(uid)
+        meets   = get_user_stats(uid).get("meets_hosted", 0)
+        tier    = _tier_label(meets)
+        last_ts = _last_session_ts(uid)
+
+        # Only show meet count when non-zero
+        meets_part = f" · **{meets}m**" if meets > 0 else ""
+
+        # Only show last-active when within 14 days
+        last_part = ""
+        if last_ts:
+            if (time.time() - last_ts) / 86400 <= 14:
+                last_part = f" · <t:{last_ts}:R>"
 
         if member:
             is_online = member.status != discord.Status.offline
@@ -7847,75 +7877,77 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
             name      = member.display_name
         else:
             is_online = False
-            activity  = "Offline"
+            activity  = ""
             name      = host["name"]
 
-        activity_lower = activity.lower()
+        activity_lower = (activity or "").lower()
+        name_md = f"**{name}**"
 
         if is_online:
             if "grand theft auto" in activity_lower or "gta" in activity_lower:
-                line = f"🎮 **{name}** • {tier} • {meets_str}{link}"
-                gta_hosts.append(line)
+                line = f"🎮 {name_md} · {tier}{meets_part}"
+                gta_hosts.append((line, last_ts, meets))
             else:
-                act_label = (activity[:22] + "…") if len(activity) > 24 else (activity or "Online")
-                line = f"🟡 **{name}** — `{act_label}` • {tier} • {meets_str}{link}"
-                online_hosts.append(line)
+                act_label = (activity[:20] + "…") if len(activity or "") > 22 else (activity or "Online")
+                line = f"🟡 {name_md} · `{act_label}`{meets_part}"
+                online_hosts.append((line, last_ts, meets))
         else:
-            # Offline: show tier + meets + last session (if any)
-            if last_str:
-                line = f"🔴 **{name}** • {tier} • {meets_str} • last {last_str}{link}"
-            elif meets == 0:
-                line = f"🔴 **{name}** • {tier} • no meets yet{link}"
-            else:
-                line = f"🔴 **{name}** • {tier} • {meets_str}{link}"
-            offline_hosts.append(line)
+            line = f"🔴 {name_md} · {tier}{meets_part}{last_part}"
+            offline_hosts.append((line, last_ts, meets))
 
-    # Progress bar
-    total        = max(len(gta_hosts) + len(online_hosts) + len(offline_hosts), 1)
-    online_count = len(gta_hosts) + len(online_hosts)
-    filled       = round(online_count / total * 10)
-    bar          = "🟩" * filled + "🟥" * (10 - filled)
-    summary_line = f"{bar}  **{online_count}/{total}** online"
+    # Sort offline: most recently active first, then by career meets desc
+    offline_hosts.sort(key=lambda x: (x[1], x[2]), reverse=True)
 
-    # Dynamic color
-    if gta_hosts:
-        color = 0x43B581   # green
-    elif online_hosts:
-        color = 0xFAA61A   # yellow
+    # ── Status pill counts ────────────────────────────────────────────────────
+    n_gta     = len(gta_hosts)
+    n_online  = len(online_hosts)
+    n_offline = len(offline_hosts)
+    n_total   = n_gta + n_online + n_offline
+
+    pill_line = f"🟢 **{n_gta + n_online}**  ·  🔴 **{n_offline}**  ·  total **{n_total}**"
+
+    if _total_week > 0:
+        week_line = f"📅 This week: **{_total_week}** session{'s' if _total_week != 1 else ''} hosted"
+        if _top_host_name:
+            week_line += f" · top: **{_top_host_name}**"
     else:
-        color = 0xED4245   # red
+        week_line = "📅 No sessions hosted yet this week"
+
+    # Dynamic embed color
+    if n_gta > 0:
+        color = 0x43B581
+    elif n_online > 0:
+        color = 0xFAA61A
+    else:
+        color = 0xED4245
 
     embed = discord.Embed(
         title="🏁 DIFF Host Activity Board",
-        description=(
-            "Real-time status of your DIFF host team.\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{summary_line}"
-        ),
+        description=f"{pill_line}\n{week_line}",
         color=color,
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
 
     if gta_hosts:
         embed.add_field(
-            name=f"🎮 In GTA Right Now  ({len(gta_hosts)})",
-            value="\n".join(gta_hosts),
+            name=f"🎮 In GTA  ({n_gta})",
+            value="\n".join(l for l, _, _ in gta_hosts),
             inline=False,
         )
     if online_hosts:
         embed.add_field(
-            name=f"🟡 Online Elsewhere  ({len(online_hosts)})",
-            value="\n".join(online_hosts),
+            name=f"🟡 Away  ({n_online})",
+            value="\n".join(l for l, _, _ in online_hosts),
             inline=False,
         )
     if offline_hosts:
         embed.add_field(
-            name=f"🔴 Offline  ({len(offline_hosts)})",
-            value="\n".join(offline_hosts),
+            name=f"🔴 Offline  ({n_offline})",
+            value="\n".join(l for l, _, _ in offline_hosts),
             inline=False,
         )
 
-    embed.set_footer(text="DIFF Meets • EST. 2020")
+    embed.set_footer(text="DIFF Meets · updates every 15 min")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
