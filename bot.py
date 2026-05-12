@@ -31828,9 +31828,9 @@ async def _cmd_psnboard(ctx: commands.Context):
     await _psn_refresh_board(ctx.guild)
 
 
-@bot.command(name="refreshpsnboard", aliases=["psnrefresh"])
+@bot.command(name="refreshpsnboard", aliases=["psnrefresh", "refreshhostboard", "refreshboard"])
 async def _cmd_refresh_psn_board(ctx: commands.Context):
-    """!refreshpsnboard — force-refresh the existing PSN board embed."""
+    """!refreshpsnboard — force-refresh the host PSN status board in diff-hosts."""
     is_staff = (
         isinstance(ctx.author, discord.Member)
         and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
@@ -31843,8 +31843,8 @@ async def _cmd_refresh_psn_board(ctx: commands.Context):
         pass
     if not ctx.guild:
         return
-    msg = await ctx.send("⏳ Refreshing PSN board…")
-    await _psn_refresh_board(ctx.guild)
+    msg = await ctx.send("⏳ Refreshing host board…")
+    await _host_board_auto_refresh_loop_logic()
     try:
         await msg.delete()
     except Exception:
