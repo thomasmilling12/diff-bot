@@ -7862,6 +7862,10 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
         tier    = _tier_label(meets)
         last_ts = _last_session_ts(uid)
 
+        # PSN profile link
+        profile = host.get("profile_url", "")
+        link    = f" [↗]({profile})" if profile else ""
+
         # Only show meet count when non-zero
         meets_part = f" · **{meets}m**" if meets > 0 else ""
 
@@ -7885,14 +7889,14 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
 
         if is_online:
             if "grand theft auto" in activity_lower or "gta" in activity_lower:
-                line = f"🎮 {name_md} · {tier}{meets_part}"
+                line = f"🎮 {name_md} · {tier}{meets_part}{link}"
                 gta_hosts.append((line, last_ts, meets))
             else:
                 act_label = (activity[:20] + "…") if len(activity or "") > 22 else (activity or "Online")
-                line = f"🟡 {name_md} · `{act_label}`{meets_part}"
+                line = f"🟡 {name_md} · `{act_label}`{meets_part}{link}"
                 online_hosts.append((line, last_ts, meets))
         else:
-            line = f"🔴 {name_md} · {tier}{meets_part}{last_part}"
+            line = f"🔴 {name_md} · {tier}{meets_part}{last_part}{link}"
             offline_hosts.append((line, last_ts, meets))
 
     # Sort offline: most recently active first, then by career meets desc
