@@ -23,12 +23,7 @@ PING_COOLDOWN_SECS = 600  # 10 minutes between pings
 
 DATA_FILE = os.path.join("diff_data", "unverified_panel.json")
 
-DIFF_LOGO_URL = (
-    "https://media.discordapp.net/attachments/1107375326625005719/"
-    "1484949205331083375/content.png?ex=69c01637&is=69bec4b7&hm="
-    "2f7f022f2c6ffce9ffb9c68ac86301c5a8ff407e36ec1c8b3bb97f12ea4b2e9a"
-    "&=&format=webp&quality=lossless&width=1376&height=917"
-)
+DIFF_LOGO_URL = "https://cdn.discordapp.com/attachments/1485265848099799163/1486054805796557033/diff_classic.png"
 EMBED_COLOR = 0xED4245
 FOOTER_TEXT = "DIFF Verification System"
 PANEL_TAG   = "DIFF_UNVERIFIED_PANEL"
@@ -301,26 +296,13 @@ class UnverifiedPanelCog(commands.Cog):
         bot.add_view(self._view)
 
     def _build_embed(self, guild: Optional[discord.Guild] = None) -> discord.Embed:
-        count = len(_unverified_members(guild)) if guild else 0
-
         embed = discord.Embed(
             title="🔒 Verification Required",
-            description=(
-                "You're seeing this because you **haven't verified yet**.\n"
-                "Complete the steps below to unlock full access to DIFF."
-            ),
+            description="Complete the steps below to unlock full access to DIFF.",
             color=EMBED_COLOR,
             timestamp=datetime.now(timezone.utc),
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-
-        if count:
-            word = "member" if count == 1 else "members"
-            embed.add_field(
-                name="👥 Currently Unverified",
-                value=f"**{count}** {word} waiting to verify.",
-                inline=False,
-            )
 
         embed.add_field(
             name="✅ How to Verify",
@@ -334,17 +316,9 @@ class UnverifiedPanelCog(commands.Cog):
         embed.add_field(
             name="🚗 After You're Verified",
             value=(
-                f"• Go to <#{JOIN_MEETS_CHANNEL}> to set up for car meets\n"
+                f"• Head to <#{JOIN_MEETS_CHANNEL}> to set up for car meets\n"
                 f"• Explore the rest of the server\n"
                 f"• Stay up to date with announcements from staff"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="🛠️ Staff Actions",
-            value=(
-                "📣 **Ping Unverified Role** — pings this channel & DMs all unverified members *(10 min cooldown)*\n"
-                "👥 **List Unverified Members** — shows a private list of who still needs to verify"
             ),
             inline=False,
         )
