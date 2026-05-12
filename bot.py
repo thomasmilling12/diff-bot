@@ -31503,6 +31503,7 @@ def _psn_fetch_all_sync(psn_ids: list) -> dict:
                 "error":    None,
             }
         except Exception as _e:
+            print(f"[PSN] Error for {psn_id}: {type(_e).__name__}: {_e}")
             results[psn_id] = {"online": False, "dnd": False, "platform": "", "game": "", "last": "", "error": str(_e)}
     return results
 
@@ -31819,6 +31820,48 @@ async def _cmd_refresh_psn_board(ctx: commands.Context):
         await msg.delete()
     except Exception:
         pass
+
+
+@bot.command(name="psntest", aliases=["psndebug"])
+async def _cmd_psn_test(ctx: commands.Context, psn_id: str = "Frostyy2003"):
+    """!psntest [PSN_ID] — debug raw PSN presence response (staff only)."""
+    is_staff = (
+        isinstance(ctx.author, discord.Member)
+        and any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles)
+    )
+    if not is_staff:
+        return await ctx.send("Staff only.", delete_after=6)
+
+    await ctx.send(f"⏳ Testing PSN lookup for `{psn_id}`…")
+
+    def _run():
+        npsso = _psn_npsso()
+        if not npsso:
+            return "❌ No PSN_NPSSO env var found."
+        try:
+            client = _psn_client()
+            if not client:
+                return "❌ _psn_client() returned None — check token / psnawp init."
+            user = client.user(online_id=psn_id)
+            methods = [m for m in dir(user) if not m.startswith("_") and callable(getattr(user, m))]
+            try:
+                raw = user.get_presence()
+                return (
+                    f"✅ get_presence() succeeded\n"
+                    f"type: {type(raw).__name__}\n"
+                    f"value: {repr(raw)[:600]}"
+                )
+            except Exception as e1:
+                return (
+                    f"❌ get_presence() → {type(e1).__name__}: {e1}\n"
+                    f"Available methods: {methods}"
+                )
+        except Exception as e2:
+            return f"❌ Client/user error → {type(e2).__name__}: {e2}"
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _run)
+    await ctx.send(f"```\n{result[:1900]}\n```")
 
 
 @bot.command(name="psnlist")
