@@ -4080,7 +4080,7 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
             psn_info = psn_lookup.get(int(host_id))
             if psn_info:
                 psn_id, psn_url = psn_info
-                host_str = f"[{psn_id}]({psn_url}) · <@{host_id}>"
+                host_str = f"{psn_id} [↗]({psn_url}) · <@{host_id}>"
             else:
                 # Fallback: Discord display name (strip role suffix)
                 resolved_name = entry.get("host_name")
