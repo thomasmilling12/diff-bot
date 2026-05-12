@@ -4045,6 +4045,16 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
 
     _NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
 
+    # Build PSN ID lookup from hosts list: discord_id → (psn_id, psn_url)
+    psn_lookup: dict[int, tuple[str, str]] = {}
+    for h in data.get("hosts", []):
+        did = h.get("discord_id")
+        purl = h.get("profile_url", "")
+        if did and purl:
+            psn_id = purl.rstrip("/").split("/")[-1]
+            if psn_id:
+                psn_lookup[int(did)] = (psn_id, purl.rstrip("/"))
+
     # Find the next upcoming meet by earliest future timestamp
     now_ts = int(utc_now().timestamp())
     next_idx = None
@@ -4064,23 +4074,29 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
         time_val  = entry.get("time",  "TBD")
         date_val  = entry.get("day",   "TBD")
 
-        # Resolve host name — strip role suffix (e.g. "GTtamal3z | Host" → "GTtamal3z")
+        # Prefer PSN ID (hyperlinked) from hosts list — accurate and never truncated
         host_str = "*TBD*"
         if host_id:
-            resolved_name = entry.get("host_name")  # stored at assignment time
-            if not resolved_name and guild:
-                member = guild.get_member(int(host_id))
-                if not member:
-                    try:
-                        member = await guild.fetch_member(int(host_id))
-                    except Exception:
-                        member = None
-                if member:
-                    resolved_name = member.display_name
-            if resolved_name:
-                base_name = resolved_name.split(" | ")[0].strip()
-                host_str = f"{base_name} · <@{host_id}>"
-            # No fallback to raw ID — leave as "*TBD*" if unresolvable
+            psn_info = psn_lookup.get(int(host_id))
+            if psn_info:
+                psn_id, psn_url = psn_info
+                host_str = f"[{psn_id}]({psn_url}) · <@{host_id}>"
+            else:
+                # Fallback: Discord display name (strip role suffix)
+                resolved_name = entry.get("host_name")
+                if not resolved_name and guild:
+                    member = guild.get_member(int(host_id))
+                    if not member:
+                        try:
+                            member = await guild.fetch_member(int(host_id))
+                        except Exception:
+                            member = None
+                    if member:
+                        resolved_name = member.display_name
+                if resolved_name:
+                    base_name = resolved_name.split(" | ")[0].strip()
+                    host_str = f"{base_name} · <@{host_id}>"
+                # No raw ID fallback — stays "*TBD*" if nothing resolves
 
         meet_ts = _parse_meet_ts(date_val, time_val)
 
