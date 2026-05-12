@@ -426,7 +426,7 @@ _LOOP_RESTART_THRESHOLD = 10  # force restart after this many consecutive failur
 # One misbehaving loop spamming fails will NOT trigger a full restart;
 # only _SYSTEM_FAILURE_THRESHOLD *different* loop names failing in the window will.
 _system_failure_window: list[tuple[str, float]] = []
-_SYSTEM_FAILURE_THRESHOLD = 5   # distinct loop names that must fail = full restart
+_SYSTEM_FAILURE_THRESHOLD = 7   # distinct loop names that must fail = full restart
 _SYSTEM_TIME_WINDOW       = 60  # rolling window in seconds
 
 # Bot process start time (set in on_ready)
@@ -494,14 +494,21 @@ async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
     # Global failsafe — count DISTINCT loop names failing in the rolling window.
     # A single broken loop can spam failures without triggering a full restart;
     # only _SYSTEM_FAILURE_THRESHOLD different loop names failing qualifies.
-    _now = time.time()
-    _system_failure_window.append((name, _now))
-    _system_failure_window[:] = [
-        (n, t) for (n, t) in _system_failure_window if _now - t <= _SYSTEM_TIME_WINDOW
-    ]
-    _unique_failing = {n for (n, _t) in _system_failure_window}
-    if len(_unique_failing) >= _SYSTEM_FAILURE_THRESHOLD:
-        await trigger_system_restart()
+    #
+    # Discord 503 / server errors are transient infrastructure outages — they
+    # hit every loop at once and should NOT count toward a bot restart.
+    _is_discord_outage = isinstance(error, discord.errors.DiscordServerError) or (
+        isinstance(error, discord.errors.HTTPException) and getattr(error, "status", 0) >= 500
+    )
+    if not _is_discord_outage:
+        _now = time.time()
+        _system_failure_window.append((name, _now))
+        _system_failure_window[:] = [
+            (n, t) for (n, t) in _system_failure_window if _now - t <= _SYSTEM_TIME_WINDOW
+        ]
+        _unique_failing = {n for (n, _t) in _system_failure_window}
+        if len(_unique_failing) >= _SYSTEM_FAILURE_THRESHOLD:
+            await trigger_system_restart()
 
 
 async def run_with_timeout(name: str, coro, timeout: int = 60):
