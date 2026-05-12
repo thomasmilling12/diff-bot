@@ -77,7 +77,7 @@ def _save_bot_config(data: dict) -> None:
 _bot_cfg = _load_bot_config()
 DIFF_LOGO_URL: str = _bot_cfg.get(
     "logo_url",
-    "https://media.discordapp.net/attachments/1107375326625005719/1484949205331083375/content.png",
+    "https://cdn.discordapp.com/attachments/1485265848099799163/1486054805796557033/diff_classic.png",
 )
 DIFF_BANNER_URL: str = _bot_cfg.get("banner_url", DIFF_LOGO_URL)
 
