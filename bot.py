@@ -7405,7 +7405,7 @@ async def _hierarchy_attendance_loop_on_error(error: Exception) -> None:
     await _handle_loop_error('hierarchy_attendance_loop', error, hierarchy_attendance_loop)
 
 async def _host_board_auto_refresh_loop_logic():
-    """Edit the Host Activity Board embed every 2 minutes — never posts new messages."""
+    """Edit the Host Activity Board embed every 15 min — never posts new messages."""
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
         return
@@ -7415,7 +7415,20 @@ async def _host_board_auto_refresh_loop_logic():
     channel = guild.get_channel(channel_id)
     if not isinstance(channel, discord.TextChannel):
         return
-    embed = build_status_embed(guild)
+
+    # Use live PSN presence when token is available
+    if _psn_npsso():
+        psn_ids = []
+        for host in data["hosts"]:
+            profile = host.get("profile_url", "")
+            psn_id  = profile.rstrip("/").split("/")[-1] if profile else ""
+            if psn_id:
+                psn_ids.append(psn_id)
+        presence = await _psn_fetch_all(psn_ids) if psn_ids else {}
+        embed = _build_host_psn_simple_embed(presence, psn_ids)
+    else:
+        embed = build_status_embed(guild)
+
     msg_id = data.get("panel_message_id")
     target = None
     if msg_id:
@@ -7435,7 +7448,7 @@ async def _host_board_auto_refresh_loop_logic():
 async def host_board_auto_refresh_loop():
     _loop_success('host_board_auto_refresh_loop')
     try:
-        await run_with_timeout('host_board_auto_refresh_loop', _host_board_auto_refresh_loop_logic(), timeout=60)
+        await run_with_timeout('host_board_auto_refresh_loop', _host_board_auto_refresh_loop_logic(), timeout=90)
     except Exception as _lte:
         await _handle_loop_error('host_board_auto_refresh_loop', _lte, host_board_auto_refresh_loop)
 @host_board_auto_refresh_loop.before_loop
@@ -31508,6 +31521,38 @@ def _psn_platform_emoji(platform: str) -> str:
     if p:
         return f"🎮 {platform}"
     return ""
+
+
+def _build_host_psn_simple_embed(presence: dict, psn_ids: list) -> discord.Embed:
+    """Simple PSN status board for the host activity channel."""
+    lines: list[str] = []
+    online_count = 0
+    for psn_id in psn_ids:
+        p = presence.get(psn_id, {})
+        if p.get("online"):
+            dot  = "🟢"
+            game = p.get("game", "") or "Online"
+            online_count += 1
+            if p.get("dnd"):
+                dot = "🟡"
+        else:
+            dot  = "🔴"
+            game = "N/A"
+        lines.append(f"{dot} **{psn_id}**\n{game}")
+
+    color = 0x43B581 if online_count > 0 else 0x2F3136
+
+    embed = discord.Embed(
+        title="PSN ACCOUNT STATUS",
+        description="\n\n".join(lines) if lines else "*No hosts registered.*",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    total = len(psn_ids)
+    embed.set_footer(
+        text=f"DIFF Meets · {online_count}/{total} online · updates every 15 min"
+    )
+    return embed
 
 
 def _psn_build_board_embed(guild: discord.Guild, presence: dict, psn_map: dict) -> discord.Embed:
