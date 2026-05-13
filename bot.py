@@ -16122,9 +16122,9 @@ async def __join_auto_bump_loop_logic():
             if bump_level >= 4:
                 extra[ch_key] = entry
                 continue
-            # Skip 2h and 6h escalations if a staff member already claimed the ticket.
-            # They are responsible — we only escalate to leadership if truly abandoned (24h+).
-            if "join_claimed_by=" in topic and bump_level < 2:
+            # Skip 2h and 6h escalations if a staff member already claimed the ticket,
+            # or if the application is on hold. We still escalate at 24h if truly abandoned.
+            if ("join_claimed_by=" in topic or entry.get("on_hold")) and bump_level < 2:
                 extra[ch_key] = entry
                 continue
             photos_ts = entry.get("photos_complete_at")
@@ -16302,6 +16302,9 @@ async def __join_micro_bump_logic():
                 continue
             # Only fire after photos are complete
             if not entry.get("photos_complete_at"):
+                continue
+            # Skip if application is on hold — staff is aware and will action it.
+            if entry.get("on_hold"):
                 continue
             # Stop after max pings — escalating system takes over
             micro_count = entry.get("micro_bump_count", 0)
@@ -28068,6 +28071,13 @@ class JoinRequestInfoModal(discord.ui.Modal, title="Request More Info"):
                     await _req_member.send(embed=dm_embed)
                 except Exception:
                     pass
+        # Auto-claim the ticket if not already claimed — staff is clearly engaged.
+        try:
+            topic = interaction.channel.topic or ""
+            if "join_claimed_by=" not in topic:
+                await interaction.channel.edit(topic=topic + f" | join_claimed_by={interaction.user.id}")
+        except Exception:
+            pass
 
 
 def _join_response_time_str(channel: discord.TextChannel) -> str:
@@ -28108,6 +28118,13 @@ class _JoinHoldModal(discord.ui.Modal, title="Put Application On Hold"):
         entry["hold_by"]        = interaction.user.id
         entry["hold_at"]        = datetime.now(timezone.utc).isoformat()
         _join_extra_save(extra)
+        # Auto-claim the ticket so bump loops stop firing while it's on hold.
+        try:
+            topic = interaction.channel.topic or ""
+            if "join_claimed_by=" not in topic:
+                await interaction.channel.edit(topic=topic + f" | join_claimed_by={interaction.user.id}")
+        except Exception:
+            pass
 
         applicant_mention = f"<@{uid_raw}>" if uid_raw else "Applicant"
         hold_embed = discord.Embed(
@@ -28582,6 +28599,42 @@ class JoinTicketView(discord.ui.View):
             await interaction.channel.delete(reason=f"Join ticket closed by {interaction.user}")
         except discord.HTTPException:
             pass
+
+
+@bot.command(name="unclaim", aliases=["unclaimticket", "releaseclaim"])
+async def unclaim_ticket(ctx: commands.Context) -> None:
+    """Remove join_claimed_by from this ticket so another staff member can claim it."""
+    if not isinstance(ctx.author, discord.Member) or not _join_is_staff(ctx.author):
+        return await ctx.reply("Only staff can unclaim join tickets.", mention_author=False)
+    if not isinstance(ctx.channel, discord.TextChannel):
+        return
+    topic = ctx.channel.topic or ""
+    if "join_claimed_by=" not in topic:
+        return await ctx.reply("This ticket isn't currently claimed.", mention_author=False)
+    # Strip the join_claimed_by segment (and the preceding separator if present)
+    import re as _re
+    new_topic = _re.sub(r"\s*\|\s*join_claimed_by=\S+", "", topic).strip()
+    try:
+        await ctx.channel.edit(topic=new_topic)
+    except discord.HTTPException as _e:
+        return await ctx.reply(f"Failed to update topic: {_e}", mention_author=False)
+    # If ticket was also on hold, clear that too
+    try:
+        _uc_extra = _join_extra_load()
+        _uc_entry = _uc_extra.get(str(ctx.channel.id), {})
+        if _uc_entry.get("on_hold"):
+            _uc_entry["on_hold"] = False
+            _uc_extra[str(ctx.channel.id)] = _uc_entry
+            _join_extra_save(_uc_extra)
+    except Exception:
+        pass
+    await ctx.reply(
+        embed=discord.Embed(
+            description=f"🔓 **{ctx.author.display_name}** released the claim on this ticket. Any staff member can now claim it.",
+            color=discord.Color.blurple(),
+        ),
+        mention_author=False,
+    )
 
 
 @bot.tree.command(name="post-join-panel", description="Post the DIFF Join Hub platform selector panel (staff only)")
