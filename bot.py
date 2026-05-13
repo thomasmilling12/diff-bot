@@ -27874,7 +27874,9 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
             if _alert_lines:
                 _alert_emb = discord.Embed(
                     title="🚨 Staff Alert — Review Before Actioning",
-                    description="\n\n.join(_alert_lines),
+                    description="
+
+".join(_alert_lines),
                     color=discord.Color.red(),
                     timestamp=datetime.now(timezone.utc),
                 )
