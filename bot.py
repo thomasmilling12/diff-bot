@@ -28093,6 +28093,28 @@ class JoinDenyModal(discord.ui.Modal, title="Deny Application — Reason"):
             except discord.HTTPException:
                 pass
 
+        # Generate and post transcript before deleting the channel
+        try:
+            _den_meta = {
+                "status": "Denied",
+                "psn": psn,
+                "reviewed_by": str(interaction.user),
+                "deny_reason": reason_text,
+                "response_time": _join_response_time_str(interaction.channel),
+                "opened_at": interaction.channel.created_at.replace(tzinfo=timezone.utc)
+                             .astimezone(_EST_TZ).strftime("%d %b %Y  %I:%M %p EST"),
+                "closed_at": datetime.now(_EST_TZ).strftime("%d %b %Y  %I:%M %p EST"),
+            }
+            _den_tf = await _join_build_transcript(interaction.channel, meta=_den_meta)
+            await _post_transcript_to_channel(
+                interaction.guild, _den_tf,
+                channel_name=interaction.channel.name,
+                ticket_type="Join Application",
+                outcome="❌ Denied",
+            )
+        except Exception as _den_te:
+            print(f"[JoinTranscript] deny: {_den_te}")
+
         await asyncio.sleep(5)
         try:
             await interaction.channel.delete(reason=f"Join application denied by {interaction.user}")
@@ -28544,6 +28566,27 @@ class JoinTicketView(discord.ui.View):
         t = _join_ticket_tasks.pop(interaction.channel.id, None)
         if t:
             t.cancel()
+
+        # Generate and post transcript before deleting the channel
+        try:
+            _acc_meta = {
+                "status": "Accepted",
+                "psn": psn,
+                "reviewed_by": str(interaction.user),
+                "response_time": _join_response_time_str(interaction.channel),
+                "opened_at": interaction.channel.created_at.replace(tzinfo=timezone.utc)
+                             .astimezone(_EST_TZ).strftime("%d %b %Y  %I:%M %p EST"),
+                "closed_at": datetime.now(_EST_TZ).strftime("%d %b %Y  %I:%M %p EST"),
+            }
+            _acc_tf = await _join_build_transcript(interaction.channel, meta=_acc_meta)
+            await _post_transcript_to_channel(
+                interaction.guild, _acc_tf,
+                channel_name=interaction.channel.name,
+                ticket_type="Join Application",
+                outcome="✅ Accepted",
+            )
+        except Exception as _acc_te:
+            print(f"[JoinTranscript] accept: {_acc_te}")
 
         await asyncio.sleep(5)
         try:
