@@ -16122,6 +16122,11 @@ async def __join_auto_bump_loop_logic():
             if bump_level >= 4:
                 extra[ch_key] = entry
                 continue
+            # Skip 2h and 6h escalations if a staff member already claimed the ticket.
+            # They are responsible — we only escalate to leadership if truly abandoned (24h+).
+            if "join_claimed_by=" in topic and bump_level < 2:
+                extra[ch_key] = entry
+                continue
             photos_ts = entry.get("photos_complete_at")
             if not photos_ts:
                 extra[ch_key] = entry
@@ -16269,7 +16274,7 @@ async def __join_auto_bump_loop_on_error(error: Exception) -> None:
 # JOIN TICKET MICRO-BUMP (every 10 min after photos complete, until claimed)
 # =========================
 
-_JOIN_MICRO_BUMP_MAX = 12  # max pings before handing off to escalating system (~2h)
+_JOIN_MICRO_BUMP_MAX = 3   # max pings before handing off to escalating system (3 × 30 min = 90 min)
 
 async def __join_micro_bump_logic():
     """Ping @Ticket Support every 10 min in-ticket after photos are complete, until someone claims the review."""
@@ -16309,11 +16314,12 @@ async def __join_micro_bump_logic():
                     last_dt = datetime.fromisoformat(last_micro)
                     if last_dt.tzinfo is None:
                         last_dt = last_dt.replace(tzinfo=timezone.utc)
-                    if (now_utc - last_dt).total_seconds() < 540:
+                    if (now_utc - last_dt).total_seconds() < 1500:
                         continue
                 except Exception:
                     pass
-            ts_mention = ts_role.mention if ts_role else ""
+            # First reminder is silent (bumps the channel). 2nd and 3rd ping @Ticket Support.
+            ping_mention = (ts_role.mention if ts_role else None) if micro_count >= 1 else None
             emb = discord.Embed(
                 title="🔔 Review Reminder",
                 description=(
@@ -16326,7 +16332,7 @@ async def __join_micro_bump_logic():
             emb.set_footer(text=f"Different Meets • Reminder {micro_count + 1}/{_JOIN_MICRO_BUMP_MAX}")
             try:
                 await ch.send(
-                    content=ts_mention or None,
+                    content=ping_mention,
                     embed=emb,
                     allowed_mentions=discord.AllowedMentions(roles=True),
                 )
@@ -16341,7 +16347,7 @@ async def __join_micro_bump_logic():
     except Exception as _e:
         print(f"[JoinMicroBump] Error: {_e}")
 
-@tasks.loop(minutes=10)
+@tasks.loop(minutes=30)
 async def _join_micro_bump_loop():
     _loop_success("_join_micro_bump_loop")
     try:
