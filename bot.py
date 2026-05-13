@@ -16293,12 +16293,59 @@ async def __join_micro_bump_logic():
             topic = ch.topic or ""
             if "JOIN_USER:" not in topic:
                 continue
-            # Stop if already claimed or auto-closed
-            if "join_claimed_by=" in topic:
-                continue
             ch_key = str(ch.id)
             entry = extra.get(ch_key, {})
             if entry.get("bump_level", 0) >= 4:
+                continue
+
+            # ── Applicant idle ping: fires even on claimed tickets ─────────────
+            _info_ts_str = entry.get("last_info_requested_at")
+            if _info_ts_str and not entry.get("info_idle_pinged"):
+                try:
+                    _info_dt = datetime.fromisoformat(_info_ts_str)
+                    if _info_dt.tzinfo is None:
+                        _info_dt = _info_dt.replace(tzinfo=timezone.utc)
+                    _info_age = (now_utc - _info_dt).total_seconds()
+                    _app_responded = False
+                    _app_msg_str = entry.get("last_applicant_msg_at")
+                    if _app_msg_str:
+                        _app_dt = datetime.fromisoformat(_app_msg_str)
+                        if _app_dt.tzinfo is None:
+                            _app_dt = _app_dt.replace(tzinfo=timezone.utc)
+                        _app_responded = _app_dt > _info_dt
+                    if _info_age >= 86400 and not _app_responded:   # 24 hours
+                        _uid_idle = _join_parse_user_id(topic)
+                        _app_ping  = f"<@{_uid_idle}>" if _uid_idle else ""
+                        _idle_emb  = discord.Embed(
+                            title="⏰ Reminder — Response Needed",
+                            description=(
+                                f"{_app_ping}, staff are waiting for your reply to their last message.
+
+"
+                                "Please respond here to keep your application active. "
+                                "If there's no response soon, your ticket may be closed."
+                            ),
+                            color=discord.Color.orange(),
+                            timestamp=now_utc,
+                        )
+                        _idle_emb.set_footer(text="Different Meets • Join Hub")
+                        try:
+                            await ch.send(
+                                content=_app_ping or None,
+                                embed=_idle_emb,
+                                allowed_mentions=discord.AllowedMentions(users=True),
+                            )
+                            entry["info_idle_pinged"] = True
+                            extra[ch_key] = entry
+                            changed = True
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            # ──────────────────────────────────────────────────────────────────
+
+            # Stop if already claimed or auto-closed
+            if "join_claimed_by=" in topic:
                 continue
             # Only fire after photos are complete
             if not entry.get("photos_complete_at"):
@@ -26477,6 +26524,15 @@ async def on_message(message: discord.Message) -> None:
     topic = message.channel.topic
     join_user_id = _join_parse_user_id(topic)
     if join_user_id and str(message.author.id) == join_user_id:
+        # Track the last time the applicant sent any message (used by idle-ping logic)
+        try:
+            _am_extra = _join_extra_load()
+            _am_entry = _am_extra.setdefault(str(message.channel.id), {})
+            _am_entry["last_applicant_msg_at"] = datetime.now(timezone.utc).isoformat()
+            _am_extra[str(message.channel.id)] = _am_entry
+            _join_extra_save(_am_extra)
+        except Exception:
+            pass
         raw_images = [a for a in message.attachments if a.content_type and a.content_type.startswith("image/")]
         if raw_images:
             async with _join_photo_lock(message.channel.id):
@@ -27784,6 +27840,58 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
         }
         _join_extra_save(extra)
 
+        # ── Staff alerts: duplicate PSN + previous denial ─────────────────────
+        try:
+            _alert_lines: list[str] = []
+            # 1) PSN already registered on the host board?
+            _psn_d = _psn_map_load()
+            _psn_map = _psn_d.get("map", {})
+            for _did, _pid in _psn_map.items():
+                if _pid.lower() == clean_psn.lower():
+                    _existing = interaction.guild.get_member(int(_did))
+                    _ename = _existing.display_name if _existing else f"<@{_did}>"
+                    _alert_lines.append(f"⚠️ **Duplicate PSN on host board** — `{clean_psn}` is already registered to **{_ename}**")
+                    break
+            # 2) PSN in another open join ticket?
+            _cat = interaction.guild.get_channel(JOIN_TICKET_CATEGORY_ID)
+            if isinstance(_cat, discord.CategoryChannel):
+                for _och in _cat.text_channels:
+                    if _och.id == channel.id:
+                        continue
+                    _otopic = _och.topic or ""
+                    if f"PSN:{clean_psn}" in _otopic or f"PSN:{clean_psn.lower()}" in _otopic.lower():
+                        _alert_lines.append(f"⚠️ **Duplicate PSN in open ticket** — `{clean_psn}` appears in {_och.mention}")
+                        break
+            # 3) Previous denial on record for this user?
+            _all_extra = _join_extra_load()
+            _prev_denials = [
+                _e for _e in _all_extra.values()
+                if str(_e.get("user_id", "")) == str(interaction.user.id)
+                and _e.get("status") == "Denied"
+            ]
+            if _prev_denials:
+                _latest = max(_prev_denials, key=lambda e: e.get("reviewed_at", ""))
+                _dr = _latest.get("deny_reason", "No reason recorded")[:300]
+                _alert_lines.append(f"🔴 **Previous denial on record** — Reason: *{_dr}*")
+            if _alert_lines:
+                _alert_emb = discord.Embed(
+                    title="🚨 Staff Alert — Review Before Actioning",
+                    description="
+
+".join(_alert_lines),
+                    color=discord.Color.red(),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                _alert_emb.set_footer(text="Different Meets • Auto-Check System")
+                _ts_role_obj = interaction.guild.get_role(TICKET_SUPPORT_ROLE_ID)
+                await channel.send(
+                    content=_ts_role_obj.mention if _ts_role_obj else None,
+                    embed=_alert_emb,
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+        except Exception as _ae:
+            print(f"[JoinAlerts] {_ae}")
+
         # Start the 30-minute idle auto-close timer
         task = asyncio.create_task(_join_idle_timer(channel, interaction.user))
         _join_ticket_tasks[channel.id] = task
@@ -28076,6 +28184,16 @@ class JoinRequestInfoModal(discord.ui.Modal, title="Request More Info"):
             topic = interaction.channel.topic or ""
             if "join_claimed_by=" not in topic:
                 await interaction.channel.edit(topic=topic + f" | join_claimed_by={interaction.user.id}")
+        except Exception:
+            pass
+        # Track when this request was sent so idle-ping loop can fire if applicant goes quiet.
+        try:
+            _ri_extra = _join_extra_load()
+            _ri_entry = _ri_extra.setdefault(str(interaction.channel.id), {})
+            _ri_entry["last_info_requested_at"] = datetime.now(timezone.utc).isoformat()
+            _ri_entry["info_idle_pinged"] = False   # reset so a new request triggers a fresh ping
+            _ri_extra[str(interaction.channel.id)] = _ri_entry
+            _join_extra_save(_ri_extra)
         except Exception:
             pass
 
@@ -28631,6 +28749,34 @@ async def unclaim_ticket(ctx: commands.Context) -> None:
     await ctx.reply(
         embed=discord.Embed(
             description=f"🔓 **{ctx.author.display_name}** released the claim on this ticket. Any staff member can now claim it.",
+            color=discord.Color.blurple(),
+        ),
+        mention_author=False,
+    )
+
+
+@bot.command(name="reassign", aliases=["reassignticket", "transferclaim"])
+async def reassign_ticket(ctx: commands.Context, member: discord.Member) -> None:
+    """!reassign @user — transfer the claim on this join ticket to another staff member."""
+    if not isinstance(ctx.author, discord.Member) or not _join_is_staff(ctx.author):
+        return await ctx.reply("Only staff can reassign join tickets.", mention_author=False)
+    if not _join_is_staff(member):
+        return await ctx.reply(f"{member.display_name} is not a staff member and cannot claim tickets.", mention_author=False)
+    if not isinstance(ctx.channel, discord.TextChannel):
+        return
+    topic = ctx.channel.topic or ""
+    if "JOIN_USER:" not in topic:
+        return await ctx.reply("This command can only be used inside a join ticket channel.", mention_author=False)
+    import re as _re2
+    new_topic = _re2.sub(r"\s*\|\s*join_claimed_by=\S+", "", topic).strip()
+    new_topic += f" | join_claimed_by={member.id}"
+    try:
+        await ctx.channel.edit(topic=new_topic)
+    except discord.HTTPException as _e:
+        return await ctx.reply(f"Failed to update topic: {_e}", mention_author=False)
+    await ctx.reply(
+        embed=discord.Embed(
+            description=f"🔀 **{ctx.author.display_name}** transferred the claim to {member.mention} — they are now responsible for this ticket.",
             color=discord.Color.blurple(),
         ),
         mention_author=False,
