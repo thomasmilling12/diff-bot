@@ -16319,9 +16319,7 @@ async def __join_micro_bump_logic():
                         _idle_emb  = discord.Embed(
                             title="⏰ Reminder — Response Needed",
                             description=(
-                                f"{_app_ping}, staff are waiting for your reply to their last message.
-
-"
+                                f"{_app_ping}, staff are waiting for your reply to their last message.\n\n"
                                 "Please respond here to keep your application active. "
                                 "If there's no response soon, your ticket may be closed."
                             ),
