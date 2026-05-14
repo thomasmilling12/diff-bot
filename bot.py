@@ -7451,7 +7451,16 @@ async def _host_board_auto_refresh_loop_logic():
             psn_id  = profile.rstrip("/").split("/")[-1] if profile else ""
             if psn_id:
                 psn_ids.append(psn_id)
-        presence = await _psn_fetch_all(psn_ids) if psn_ids else {}
+        # Wrap PSN fetch in a hard 60s asyncio timeout.
+        # If the PSN API hangs (common when NPSSO expires or network is slow),
+        # we return cleanly — no failure counted, no cascade to trigger_system_restart.
+        try:
+            presence = await asyncio.wait_for(
+                _psn_fetch_all(psn_ids), timeout=60.0
+            ) if psn_ids else {}
+        except asyncio.TimeoutError:
+            print("[HostBoard] PSN fetch timed out after 60s — skipping board update this cycle")
+            return
         embed = _build_host_psn_simple_embed(presence, psn_ids)
     else:
         embed = build_status_embed(guild)
