@@ -31743,11 +31743,15 @@ def _psn_npsso() -> str:
 _psn_client_instance = None
 _psn_client_lock = __import__("threading").Lock()
 
+_psn_auth_fail_at: float = 0.0        # timestamp of last NPSSO auth failure
+_PSN_AUTH_BACKOFF_SECS: int   = 1800  # 30-min cooldown after token expiry
+
 def _psn_client_reset():
     """Clear the cached client (call after an auth error so it rebuilds next time)."""
-    global _psn_client_instance
+    global _psn_client_instance, _psn_auth_fail_at
     with _psn_client_lock:
         _psn_client_instance = None
+    _psn_auth_fail_at = time.time()   # start 30-min backoff
 
 def _psn_client():
     global _psn_client_instance
@@ -31774,8 +31778,15 @@ def _psn_client():
 def _psn_fetch_all_sync(psn_ids: list) -> dict:
     """Sync: fetch PSN presence for a list of PSN IDs. Returns {psn_id: parsed_dict}.
     Uses a 10s socket timeout per call so a hanging PSN API never blocks the thread
-    indefinitely (7 hosts × 10s = 70s max, safely under the 90s loop timeout).
+    indefinitely.  Also enforces a 30-min backoff after NPSSO auth failures so an
+    expired token never triggers a repeated failure cascade.
     """
+    global _psn_auth_fail_at
+    # Fast-fail during auth backoff — avoids cascading failures on expired NPSSO
+    if _psn_auth_fail_at and time.time() - _psn_auth_fail_at < _PSN_AUTH_BACKOFF_SECS:
+        remaining = int(_PSN_AUTH_BACKOFF_SECS - (time.time() - _psn_auth_fail_at))
+        print(f"[PSN] Auth backoff active — skipping fetch ({remaining}s remaining)")
+        return {}
     client = _psn_client()
     if not client:
         return {}
@@ -31812,10 +31823,16 @@ def _psn_fetch_all_sync(psn_ids: list) -> dict:
                 print(f"[PSN] Error for {psn_id}: {type(_e).__name__}: {_e}")
                 # Auth failures mean the client is dead — reset so it rebuilds next call
                 if any(k in err_str.lower() for k in ("auth", "expired", "npsso", "unauthorized", "401")):
-                    _psn_client_reset()
+                    _psn_client_reset()   # also starts 30-min backoff via _psn_auth_fail_at
                 results[psn_id] = {"online": False, "dnd": False, "platform": "", "game": "", "last": "", "error": err_str}
     finally:
         socket.setdefaulttimeout(_old_timeout)
+    # Clear auth backoff on a fully successful run (all IDs fetched without auth errors)
+    if results and all(v.get("error") != "timeout" and not any(
+        k in (v.get("error") or "").lower()
+        for k in ("auth", "expired", "npsso", "unauthorized", "401")
+    ) for v in results.values()):
+        _psn_auth_fail_at = 0.0
     return results
 
 
@@ -31981,8 +31998,17 @@ async def _psn_refresh_board(guild: discord.Guild) -> None:
     if not isinstance(ch, discord.TextChannel):
         return
 
-    # Fetch presence (runs sync psnawp in thread pool)
-    presence = await _psn_fetch_all(list(psn_map.values())) if psn_map and _psn_npsso() else {}
+    # Fetch presence (runs sync psnawp in thread pool).
+    # Hard 45s asyncio timeout — if PSN API hangs we skip the update cleanly
+    # rather than letting the loop time out and count as a failure.
+    if psn_map and _psn_npsso():
+        try:
+            presence = await asyncio.wait_for(_psn_fetch_all(list(psn_map.values())), timeout=45.0)
+        except asyncio.TimeoutError:
+            print("[PSNBoard] PSN fetch timed out after 45s — skipping board update this cycle")
+            return
+    else:
+        presence = {}
     embed = _psn_build_board_embed(guild, presence, psn_map)
 
     board_msg_id = d.get("board_message_id")
