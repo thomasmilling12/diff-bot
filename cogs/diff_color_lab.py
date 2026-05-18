@@ -506,18 +506,13 @@ class ColorTeamNoteModal(discord.ui.Modal, title="Add Color Team Note"):
 # =========================================================
 async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog") -> None:
     """Shared logic for archiving a color ticket — called from both the
-    Archive & Close dropdown and the standalone Archive Ticket button."""
+    Archive & Close dropdown and the standalone Archive Ticket button.
+    Builds a transcript, logs it to staff, then deletes the channel."""
     channel = interaction.channel
     guild   = interaction.guild
     if not isinstance(channel, discord.TextChannel) or guild is None:
         return await interaction.response.send_message(
             "This only works inside a ticket channel.", ephemeral=True
-        )
-
-    archive_cat = guild.get_channel(ARCHIVE_CATEGORY_ID)
-    if not isinstance(archive_cat, discord.CategoryChannel):
-        return await interaction.response.send_message(
-            "Archive category not configured. Contact staff.", ephemeral=True
         )
 
     await interaction.response.defer(ephemeral=True)
@@ -527,6 +522,8 @@ async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog"
     transcript_path = os.path.join(TRANSCRIPTS_DIR, f"{channel.name}_{_ts()}.html")
     with open(transcript_path, "w", encoding="utf-8") as f:
         f.write(transcript_html)
+
+    channel_name = channel.name
 
     if channel.topic and "color_request_user_id:" in channel.topic:
         try:
@@ -538,53 +535,21 @@ async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog"
         except Exception:
             pass
 
-    color_team_role = guild.get_role(COLOR_TEAM_ROLE_ID)
-    new_overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        guild.me: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            manage_channels=True, manage_messages=True, read_message_history=True,
-        ),
-    }
-    if color_team_role:
-        new_overwrites[color_team_role] = discord.PermissionOverwrite(
-            view_channel=True, send_messages=False,
-            read_message_history=True, manage_messages=True, manage_channels=True,
-        )
-
-    try:
-        await channel.edit(
-            name=f"archived-{channel.name}"[:100],
-            category=archive_cat,
-            topic=(channel.topic or "") + " | status:archived",
-            overwrites=new_overwrites,
-            reason=f"Archived by {interaction.user}",
-        )
-    except Exception as e:
-        return await interaction.followup.send(f"Failed to archive: {e}", ephemeral=True)
-
-    archive_embed = discord.Embed(
-        title="📦 Ticket Archived",
-        description=(
-            "This ticket has been **archived**.\n"
-            "A full transcript has been saved to staff logs for records."
-        ),
-        color=WARNING_COLOR,
-        timestamp=datetime.now(timezone.utc),
-    )
-    archive_embed.set_thumbnail(url=DIFF_LOGO_URL)
-    archive_embed.set_footer(text=f"Archived by {interaction.user.display_name} • DIFF Color Lab")
-    await channel.send(embed=archive_embed)
-
     transcript_file = discord.File(transcript_path, filename=os.path.basename(transcript_path))
     await cog.log_action(
         guild,
-        f"📦 Archived color ticket `#{channel.name}` by {interaction.user.mention}",
+        f"📦 Closed color ticket `#{channel_name}` by {interaction.user.mention}",
         file=transcript_file,
     )
+
     await interaction.followup.send(
-        "Ticket archived and transcript saved to staff logs.", ephemeral=True
+        "Ticket closed and transcript saved to staff logs.", ephemeral=True
     )
+
+    try:
+        await channel.delete(reason=f"Color ticket closed by {interaction.user}")
+    except Exception as e:
+        pass
 
 
 class _TicketActionsSelect(discord.ui.Select):
