@@ -132,7 +132,9 @@ CONTENT_TEAM_ROLE_ID = 1110037666147336293
 COLOR_TEAM_ROLE_ID = 1115495008670330902
 CREW_MEMBER_ROLE_ID = 886702076552441927
 PS5_ROLE_ID = 1485668852921798849
-NOTIFY_ROLE_ID = 1138691141009674260
+NOTIFY_ROLE_ID               = 1138691141009674260  # Car Meet Notifications
+MEDIA_NOTIFY_ROLE_ID         = 1138690897077338265  # Media Live Notifications
+ANNOUNCEMENT_NOTIFY_ROLE_ID  = 1141435226929762335  # Announcement Notifications
 JOIN_WELCOME_CHANNEL_ID = 1486006000808103986
 _JOIN_UNLOCK_CHANNEL_IDS: tuple[int, ...] = (
     1485861257708834836,
@@ -6608,31 +6610,38 @@ class NotifyMeetView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="Notify Me For Meets",
-        style=discord.ButtonStyle.primary,
-        emoji="🔔",
-        custom_id="diff_notify_meet_toggle",
-    )
-    async def toggle_notify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        member = interaction.user if isinstance(interaction.user, discord.Member) else (interaction.guild.get_member(interaction.user.id) if interaction.guild else None)
+    async def _toggle(self, interaction: discord.Interaction, role_id: int, label: str, on_emoji: str) -> None:
+        member = (interaction.user if isinstance(interaction.user, discord.Member)
+                  else (interaction.guild.get_member(interaction.user.id) if interaction.guild else None))
         if not member or not interaction.guild:
             return await interaction.response.send_message("Could not find your profile.", ephemeral=True)
-        role = interaction.guild.get_role(NOTIFY_ROLE_ID)
+        role = interaction.guild.get_role(role_id)
         if not role:
-            return await interaction.response.send_message("Notify role not configured.", ephemeral=True)
+            return await interaction.response.send_message("Role not configured.", ephemeral=True)
         if role in member.roles:
             try:
-                await member.remove_roles(role, reason="DIFF notify toggle off")
+                await member.remove_roles(role, reason="DIFF notify toggle")
             except discord.Forbidden:
-                return await interaction.response.send_message("I don't have permission to remove that role.", ephemeral=True)
-            return await interaction.response.send_message("🔕 Meet notifications turned **off**.", ephemeral=True)
+                return await interaction.response.send_message("Missing permission.", ephemeral=True)
+            return await interaction.response.send_message(f"🔕 **{label}** notifications turned **off**.", ephemeral=True)
         else:
             try:
-                await member.add_roles(role, reason="DIFF notify toggle on")
+                await member.add_roles(role, reason="DIFF notify toggle")
             except discord.Forbidden:
-                return await interaction.response.send_message("I don't have permission to add that role.", ephemeral=True)
-            return await interaction.response.send_message("🔔 Meet notifications turned **on**.", ephemeral=True)
+                return await interaction.response.send_message("Missing permission.", ephemeral=True)
+            return await interaction.response.send_message(f"{on_emoji} **{label}** notifications turned **on**.", ephemeral=True)
+
+    @discord.ui.button(label="Car Meets", style=discord.ButtonStyle.primary, emoji="🏁", custom_id="diff_notify_meet_toggle", row=0)
+    async def toggle_notify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, NOTIFY_ROLE_ID, "Car Meet", "🔔")
+
+    @discord.ui.button(label="Media Live", style=discord.ButtonStyle.secondary, emoji="📸", custom_id="diff_notify_media_toggle", row=0)
+    async def toggle_notify_media(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, MEDIA_NOTIFY_ROLE_ID, "Media Live", "📸")
+
+    @discord.ui.button(label="Announcements", style=discord.ButtonStyle.secondary, emoji="📢", custom_id="diff_notify_announce_toggle", row=0)
+    async def toggle_notify_announce(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._toggle(interaction, ANNOUNCEMENT_NOTIFY_ROLE_ID, "Announcement", "📢")
 
 
 # =========================
@@ -6875,7 +6884,7 @@ class WeeklyRollCallModal(discord.ui.Modal, title="📅 Weekly Roll Call Setup")
             color=discord.Color.blue(),
         )
         await roll_call_ch.send(
-            content=f"<@&{CREW_MEMBER_ROLE_ID}>",
+            content=f"<@&{CREW_MEMBER_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>",
             embed=embed,
             view=MeetRSVPView(meet1=self.meet1.value, meet2=self.meet2.value, meet3=meet3_val),
         )
@@ -22480,18 +22489,109 @@ async def post_notify_panel(interaction: discord.Interaction):
     if not isinstance(interaction.channel, discord.TextChannel):
         return await interaction.response.send_message("Use this in a text channel.", ephemeral=True)
     embed = discord.Embed(
-        title="🔔 DIFF Meet Notifications",
+        title="🔔 DIFF Notification Roles",
         description="\n".join([
-            "Want to be pinged when meets are announced?",
+            "Pick which notifications you want and click to toggle on or off.",
             "",
-            "Press the button below to **toggle your notification role on or off**.",
-            "You can switch it at any time.",
+            "🏁 **Car Meets** — pinged when weekly roll calls go live",
+            "📸 **Media Live** — pinged when DIFF media or streams go live",
+            "📢 **Announcements** — pinged for important server announcements",
+            "",
+            "You can change your selection at any time.",
         ]),
         color=discord.Color.blurple(),
     )
     embed.set_footer(text="Different Meets • Notification Panel")
     await interaction.channel.send(embed=embed, view=NotifyMeetView())
     await interaction.response.send_message("✅ Notification panel posted.", ephemeral=True)
+
+
+# ── Notification role map (shared by !notify, !notifping, !notifstats) ───────────────────
+_NOTIFY_ROLES: dict[str, tuple[int, str, str]] = {
+    "carmeet":       (NOTIFY_ROLE_ID,              "Car Meet",      "🏁"),
+    "meets":         (NOTIFY_ROLE_ID,              "Car Meet",      "🏁"),
+    "media":         (MEDIA_NOTIFY_ROLE_ID,        "Media Live",    "📸"),
+    "live":          (MEDIA_NOTIFY_ROLE_ID,        "Media Live",    "📸"),
+    "announcements": (ANNOUNCEMENT_NOTIFY_ROLE_ID, "Announcement",  "📢"),
+    "announce":      (ANNOUNCEMENT_NOTIFY_ROLE_ID, "Announcement",  "📢"),
+}
+
+
+@bot.command(name="notify", aliases=["notifications"])
+async def _cmd_notify(ctx: commands.Context, target: str = ""):
+    """Toggle a notification role. !notify <carmeet|media|announcements>"""
+    if not isinstance(ctx.author, discord.Member) or not ctx.guild:
+        return
+    key = target.strip().lower()
+    if not key or key not in _NOTIFY_ROLES:
+        opts = "  🏁 `!notify carmeet` — Car Meet Notifications\n  📸 `!notify media` — Media Live Notifications\n  📢 `!notify announcements` — Announcement Notifications"
+        return await ctx.reply(f"**Pick a notification to toggle:**\n{opts}", mention_author=False)
+    role_id, label, emoji = _NOTIFY_ROLES[key]
+    role = ctx.guild.get_role(role_id)
+    if not role:
+        return await ctx.reply("That notification role isn't configured.", mention_author=False)
+    try:
+        if role in ctx.author.roles:
+            await ctx.author.remove_roles(role, reason="!notify toggle off")
+            await ctx.reply(f"🔕 **{label}** notifications turned **off**.", mention_author=False, delete_after=12)
+        else:
+            await ctx.author.add_roles(role, reason="!notify toggle on")
+            await ctx.reply(f"{emoji} **{label}** notifications turned **on**.", mention_author=False, delete_after=12)
+    except discord.Forbidden:
+        await ctx.reply("I'm missing permission to manage that role.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+
+@bot.command(name="notifping", aliases=["notifyping", "pingnotif"])
+async def _cmd_notif_ping(ctx: commands.Context, target: str = "", *, message: str = ""):
+    """Send a one-off ping to a notification group. Staff only.
+    Usage: !notifping <carmeet|media|announcements> [optional message]"""
+    if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    key = target.strip().lower()
+    if not key or key not in _NOTIFY_ROLES:
+        return await ctx.reply("Specify a target: `carmeet` / `media` / `announcements`", mention_author=False)
+    role_id, label, emoji = _NOTIFY_ROLES[key]
+    if not ctx.guild:
+        return
+    role = ctx.guild.get_role(role_id)
+    if not role:
+        return await ctx.reply("That notification role isn't configured.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    body = message.strip() if message.strip() else f"{emoji} **{label}** ping from staff."
+    await ctx.send(f"<@&{role_id}> — {body}")
+
+
+@bot.command(name="notifstats", aliases=["notifystats", "notificationstats"])
+async def _cmd_notif_stats(ctx: commands.Context):
+    """Show member count for each notification role. Staff only."""
+    if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if not ctx.guild:
+        return
+    seen: set[int] = set()
+    rows = []
+    for _key, (role_id, label, emoji) in _NOTIFY_ROLES.items():
+        if role_id in seen:
+            continue
+        seen.add(role_id)
+        role = ctx.guild.get_role(role_id)
+        count = len([m for m in role.members if not m.bot]) if role else 0
+        rows.append(f"{emoji} **{label}:** {count} member(s)")
+    embed = discord.Embed(
+        title="🔔 Notification Role Stats",
+        description="\n".join(rows) or "No roles found.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="DIFF Meets • Notification Stats")
+    await ctx.send(embed=embed)
 
 
 @bot.tree.command(name="post-staff-dashboard", description="Post/refresh the staff dashboard and run crew invite check (staff only)")
