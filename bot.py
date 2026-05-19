@@ -16479,8 +16479,7 @@ async def on_error(event: str, *args, **kwargs) -> None:
     Logs to bot.log and posts a one-line alert to staff-logs so nothing is silent."""
     import traceback as _tb
     _bot_log.error(
-        "[EventError] Unhandled exception in event '%s':
-%s",
+        "[EventError] Unhandled exception in event '%s': %s",
         event, _tb.format_exc(),
     )
     try:
