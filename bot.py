@@ -556,6 +556,8 @@ def _loop_success(name: str) -> None:
 def _activity_db():
     conn = sqlite3.connect(_ACTIVITY_DB_FILE, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")   # allow concurrent reads + writes
+    conn.execute("PRAGMA busy_timeout=5000")  # wait up to 5s instead of erroring on lock
     return conn
 
 def _init_activity_db() -> None:
@@ -16471,6 +16473,28 @@ class _PostmeetReceivedView(discord.ui.View):
 # =========================
 # EVENTS
 # =========================
+@bot.event
+async def on_error(event: str, *args, **kwargs) -> None:
+    """Global fallback — catches unhandled exceptions in any @bot.event handler.
+    Logs to bot.log and posts a one-line alert to staff-logs so nothing is silent."""
+    import traceback as _tb
+    _bot_log.error(
+        "[EventError] Unhandled exception in event '%s':
+%s",
+        event, _tb.format_exc(),
+    )
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                await ch.send(
+                    f"⚠️ Unhandled error in bot event `{event}` — check `logs/bot.log` for details."
+                )
+    except Exception:
+        pass
+
+
 @bot.event
 async def on_disconnect():
     print(f"[Gateway] ⚠️  Bot disconnected from Discord — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
