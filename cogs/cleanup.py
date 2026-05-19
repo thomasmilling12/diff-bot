@@ -332,6 +332,10 @@ class CleanupCog(commands.Cog, name="Cleanup"):
     # ── Background loop ───────────────────────────────────────────────────────
     @tasks.loop(hours=6)
     async def cleanup_scan_loop(self):
+        # Register tick with bot.py loop health tracker (via sys.modules)
+        _main = __import__("sys").modules.get("__main__")
+        if _main and hasattr(_main, "_loop_success"):
+            _main._loop_success("cleanup_scan_loop")
         if self.scanning:
             return
         self.scanning = True
