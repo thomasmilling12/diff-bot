@@ -33511,12 +33511,18 @@ async def __host_avail_weekly_dm_task_logic():
     rsvp_data = _hrsvp_load()
     lines = []
     total_responses = 0
+    unique_respondents: set = set()
     for day in _HRSVP_DAYS:
         slot   = rsvp_data.get(day, {})
         yes    = slot.get("yes", [])
         no     = slot.get("no", [])
         maybe  = slot.get("maybe", [])
         total_responses += len(yes) + len(no) + len(maybe)
+        for _bkt in (yes, no, maybe):
+            for _e in _bkt:
+                _u = _hrsvp_uid(_e)
+                if _u:
+                    unique_respondents.add(_u)
 
         yes_names = []
         for entry in yes:
@@ -33541,15 +33547,29 @@ async def __host_avail_weekly_dm_task_logic():
         _host_digest_mark_sent()
         return
 
+    _host_role = guild.get_role(HOST_ROLE_ID)
+    _total_hosts = len([_hm for _hm in (_host_role.members if _host_role else []) if not _hm.bot])
+    _rate_str = (
+        f"{len(unique_respondents)} of {_total_hosts} host(s) responded"
+        if _total_hosts else f"{len(unique_respondents)} host(s) responded"
+    )
     dm_embed = discord.Embed(
         title="📅 Weekly Host Availability Summary",
-        description="\n\n".join(lines) or "No availability data.",
+        description=f"**{_rate_str}**\n\n" + ("\n\n".join(lines) or "No availability data."),
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
     )
     dm_embed.set_footer(text="DIFF Meets • Weekly Host Digest")
 
     _host_digest_mark_sent()
+
+    # Post to staff channel so the digest is always findable
+    try:
+        _staff_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(_staff_ch, discord.TextChannel):
+            await _staff_ch.send(embed=dm_embed)
+    except Exception:
+        pass
 
     for role_id in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID):
         role = guild.get_role(role_id)
@@ -33619,9 +33639,22 @@ async def _cmd_send_weekly_host_dm(ctx: commands.Context):
             f"  ❌ Unavailable ({len(no)}): {', '.join(no_names) or '—'}"
         )
 
+    _host_role2 = guild.get_role(HOST_ROLE_ID)
+    _total_hosts2 = len([_hm for _hm in (_host_role2.members if _host_role2 else []) if not _hm.bot])
+    _resp_uids: set = set()
+    for _d in _HRSVP_DAYS:
+        for _bkt2 in ("yes", "no", "maybe"):
+            for _e2 in rsvp_data.get(_d, {}).get(_bkt2, []):
+                _u2 = _hrsvp_uid(_e2)
+                if _u2:
+                    _resp_uids.add(_u2)
+    _rate_str2 = (
+        f"{len(_resp_uids)} of {_total_hosts2} host(s) responded"
+        if _total_hosts2 else f"{len(_resp_uids)} host(s) responded"
+    )
     dm_embed = discord.Embed(
         title="📅 Weekly Host Availability Summary",
-        description="\n\n".join(lines) or "No availability data.",
+        description=f"**{_rate_str2}**\n\n" + ("\n\n".join(lines) or "No availability data."),
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
     )
@@ -34079,6 +34112,7 @@ async def _cmd_loop_status(ctx: commands.Context):
         "_re_engagement_loop",
         "_inactivity_daily_report_loop",
         "_health_score_update_loop",
+        "cleanup_scan_loop",
     ]
 
     now = _t.time()
@@ -34126,9 +34160,10 @@ async def _cmd_loop_status(ctx: commands.Context):
 
 
 @bot.command(name="bothealth")
-@commands.is_owner()
 async def _cmd_bot_health(ctx: commands.Context):
-    """Full bot health dashboard — loop status, global failsafe, and uptime. Owner only."""
+    """Full bot health dashboard — loop status, global failsafe, and uptime. Leadership only."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Leadership only.", mention_author=False)
     LOOP_NAMES = [
         "_host_weekly_reminder_loop",
         "hierarchy_attendance_loop",
@@ -34155,6 +34190,7 @@ async def _cmd_bot_health(ctx: commands.Context):
         "_re_engagement_loop",
         "_inactivity_daily_report_loop",
         "_health_score_update_loop",
+        "cleanup_scan_loop",
     ]
 
     now = time.time()
@@ -34270,6 +34306,15 @@ async def _cmd_bot_health(ctx: commands.Context):
             inline=False,
         )
 
+    # PSN backoff / token status
+    _psn_rem = int(_PSN_AUTH_BACKOFF_SECS - (time.time() - _psn_auth_fail_at)) if (_psn_auth_fail_at and time.time() - _psn_auth_fail_at < _PSN_AUTH_BACKOFF_SECS) else 0
+    if _psn_rem > 0:
+        _psn_val = f"🔴 Auth backoff active — {_psn_rem // 60}m {_psn_rem % 60}s remaining. Run `!setnpsso <token>` to refresh."
+    elif _psn_npsso():
+        _psn_val = "✅ Token present — PSN boards active"
+    else:
+        _psn_val = "⚠️ No NPSSO token set — PSN boards disabled"
+    embed.add_field(name="🎮 PSN Status", value=_psn_val, inline=False)
     embed.set_footer(text=f"Uptime: {uptime_str}  |  ✅ Healthy  ⚠️ Unstable (1–4)  ❌ Failing (5+)  🔔 Staff alerted")
     await ctx.send(embed=embed)
 
