@@ -22506,6 +22506,34 @@ async def post_notify_panel(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Notification panel posted.", ephemeral=True)
 
 
+@bot.command(name="postnotifypanel", aliases=["notifypanel", "notifpanel"])
+async def _cmd_post_notify_panel(ctx: commands.Context):
+    """Post the 3-button notification opt-in panel here. Staff only."""
+    if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if not isinstance(ctx.channel, discord.TextChannel):
+        return await ctx.reply("Use this in a text channel.", mention_author=False)
+    embed = discord.Embed(
+        title="🔔 DIFF Notification Roles",
+        description="\n".join([
+            "Pick which notifications you want and click to toggle on or off.",
+            "",
+            "🏁 **Car Meets** — pinged when weekly roll calls go live",
+            "📸 **Media Live** — pinged when DIFF media or streams go live",
+            "📢 **Announcements** — pinged for important server announcements",
+            "",
+            "You can change your selection at any time.",
+        ]),
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="Different Meets • Notification Panel")
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    await ctx.send(embed=embed, view=NotifyMeetView())
+
+
 # ── Notification role map (shared by !notify, !notifping, !notifstats) ───────────────────
 _NOTIFY_ROLES: dict[str, tuple[int, str, str]] = {
     "carmeet":       (NOTIFY_ROLE_ID,              "Car Meet",      "🏁"),
