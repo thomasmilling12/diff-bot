@@ -496,12 +496,24 @@ async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
     # A single broken loop can spam failures without triggering a full restart;
     # only _SYSTEM_FAILURE_THRESHOLD different loop names failing qualifies.
     #
-    # Discord 503 / server errors are transient infrastructure outages — they
-    # hit every loop at once and should NOT count toward a bot restart.
+    # Transient outages — Discord server errors AND Pi-side network errors — hit
+    # every loop at once and must NOT count toward the restart threshold.
+    # DiscordServerError  = Discord 5xx
+    # HTTPException ≥500  = Discord 5xx via HTTP
+    # OSError/ConnectionError = Pi network drop (no route, connection refused, etc.)
+    # aiohttp.ClientError = aiohttp-level connection failure (if aiohttp active)
     _is_discord_outage = isinstance(error, discord.errors.DiscordServerError) or (
         isinstance(error, discord.errors.HTTPException) and getattr(error, "status", 0) >= 500
     )
-    if not _is_discord_outage:
+    _aiohttp_mod = sys.modules.get("aiohttp")
+    _is_network_error = isinstance(error, (OSError, ConnectionError, TimeoutError)) or (
+        _aiohttp_mod is not None and isinstance(error, _aiohttp_mod.ClientError)
+    ) or type(error).__name__ in (
+        # common aiohttp / network exception names — caught by name for safety
+        "ClientConnectorError", "ClientOSError", "ServerDisconnectedError",
+        "ClientConnectionError", "ClientPayloadError", "ServerTimeoutError",
+    )
+    if not _is_discord_outage and not _is_network_error:
         _now = time.time()
         _system_failure_window.append((name, _now))
         _system_failure_window[:] = [
@@ -17302,16 +17314,19 @@ async def _auto_refresh_status_panel(guild: discord.Guild):
 @bot.event
 async def on_presence_update(before: discord.Member, after: discord.Member):
     global _panel_refresh_task, _hierarchy_refresh_task
-    if after.guild.id != GUILD_ID:
-        return
-    if before.status == after.status and before.activity == after.activity:
-        return
-    if _panel_refresh_task is not None and not _panel_refresh_task.done():
-        _panel_refresh_task.cancel()
-    _panel_refresh_task = asyncio.ensure_future(_auto_refresh_status_panel(after.guild))
-    if _hierarchy_refresh_task is not None and not _hierarchy_refresh_task.done():
-        _hierarchy_refresh_task.cancel()
-    _hierarchy_refresh_task = asyncio.ensure_future(_auto_refresh_hierarchy_panel(after.guild))
+    try:
+        if after.guild.id != GUILD_ID:
+            return
+        if before.status == after.status and before.activity == after.activity:
+            return
+        if _panel_refresh_task is not None and not _panel_refresh_task.done():
+            _panel_refresh_task.cancel()
+        _panel_refresh_task = asyncio.ensure_future(_auto_refresh_status_panel(after.guild))
+        if _hierarchy_refresh_task is not None and not _hierarchy_refresh_task.done():
+            _hierarchy_refresh_task.cancel()
+        _hierarchy_refresh_task = asyncio.ensure_future(_auto_refresh_hierarchy_panel(after.guild))
+    except Exception as _pe:
+        _bot_log.debug("[PresenceUpdate] error: %s", _pe)
 
 
 # =========================
@@ -26694,7 +26709,10 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel) -> None:
         return
     if channel.guild.id != GUILD_ID:
         return
-    await _auto_finalize_ticket(channel.guild, channel.id)
+    try:
+        await _auto_finalize_ticket(channel.guild, channel.id)
+    except Exception as _e:
+        _bot_log.error("[ChannelDelete] _auto_finalize_ticket error: %s", _e, exc_info=True)
 
 
 @bot.event
