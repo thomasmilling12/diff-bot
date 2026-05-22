@@ -13029,9 +13029,9 @@ class _RcBtn(discord.ui.Button):
         "no":    discord.ButtonStyle.danger,
     }
     _DISPLAY = {
-        "yes":   "✅ marked as attending",
-        "maybe": "❓ marked as maybe",
-        "no":    "❌ marked as not attending",
+        "yes":   "attending",
+        "maybe": "maybe",
+        "no":    "not attending",
     }
 
     def __init__(self, meet_number: int, status: str, row: int) -> None:
@@ -13070,9 +13070,9 @@ class _RcBtn(discord.ui.Button):
         prev_clean = previous if previous and previous != "none" else None
         new_icon   = self._LABELS[self.status]
         if prev_clean is None:
-            msg = f"{new_icon} Marked as **{self._DISPLAY[self.status].split(' ', 1)[1]}** for **Meet {self.meet_number}**."
+            msg = f"{new_icon} Marked as **{self._DISPLAY[self.status]}** for **Meet {self.meet_number}**."
         elif prev_clean == self.status:
-            msg = f"Already {new_icon} **{self._DISPLAY[self.status].split(' ', 1)[1]}** for **Meet {self.meet_number}** — no change."
+            msg = f"Already marked as {new_icon} **{self._DISPLAY[self.status]}** for **Meet {self.meet_number}** — no change."
         else:
             old_icon = self._LABELS.get(prev_clean, "⬜")
             msg = f"Updated **Meet {self.meet_number}**: {old_icon} → {new_icon}"
