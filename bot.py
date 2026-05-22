@@ -32039,13 +32039,14 @@ async def _psn_fetch_all(psn_ids: list) -> dict:
 
 
 def _psn_platform_emoji(platform: str) -> str:
-    p = platform.upper()
-    if "PS5" in p:
+    # DIFF is a PS5-only community.  Never render "PS4" in user-facing
+    # embeds — normalize any PlayStation platform string from Sony's API
+    # to "PS5" so legacy/quirky reads do not leak a PS4 label.
+    p = (platform or "").upper()
+    if "PS5" in p or "PS4" in p or p.startswith("PS"):
         return "🎮 PS5"
-    if "PS4" in p:
-        return "🎮 PS4"
     if p:
-        return f"🎮 {platform}"
+        return "🎮"
     return ""
 
 
