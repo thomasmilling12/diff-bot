@@ -5,16 +5,11 @@
 **Deployed on:** Raspberry Pi 5 at `~/diff-bot/`  
 **Venv:** `/home/thomas/diff-bot/.venv/bin/python`  
 **Service:** `different-meets-v2` (systemd)  
-**Deploy (safe — preserves all live data):**
+**Deploy:**
 ```bash
-cd ~/diff-bot && git fetch origin && cp -r diff_data /tmp/diff_data_bak && git reset --hard origin/main && cp -r /tmp/diff_data_bak/. diff_data/ && sudo systemctl restart different-meets-v2
+cd ~/diff-bot && git fetch origin && git reset --hard origin/main && sudo systemctl restart different-meets-v2
 ```
-
-**One-time permanent fix (run once on Pi — stops data from ever being reset):**
-```bash
-bash ~/diff-bot/scripts/untrack_data.sh
-```
-After running the one-time fix, the safe deploy command above is no longer needed — plain `git reset --hard` is safe.
+Data files are permanently untracked — `git reset --hard` is safe and never touches live data.
 
 ## Critical Rules
 - Timezone: always `ZoneInfo("America/New_York")` — never `"US/Eastern"`
@@ -168,7 +163,10 @@ sudo systemctl restart different-meets-v2
 ```
 
 ## Loop Health
-All 19 loops (plus new health score loop = 20) use:
+All loops use:
 - `_loop_fail_counts` / `_loop_alerted` / `_loop_last_run` tracking
 - `run_with_timeout()` wrapper
 - `trigger_system_restart()` global failsafe (5 unique loops failing in 60s → `os._exit(1)`)
+
+## Removed: PSN Host Status Board (May 22 2026)
+The PSN integration (psnawp + `_psn_*` helpers + `_psn_board_refresh_loop` + `!setpsn`/`!removepsn`/`!psnboard`/`!refreshpsnboard`/`!psntest`/`!psnlist` commands) was removed because Sony's PSN API was starving the default asyncio thread pool when it hung, freezing the entire event loop and causing silent bot offlines that required physical Pi reboots (systemd couldn't recover because the process was still alive). The `host_board_auto_refresh_loop` now always renders the static `build_status_embed()` instead of live PSN presence. The `psnawp` package was removed from `requirements.txt`. Data file `diff_data/diff_psn_map.json` is untouched and can be safely deleted on the Pi.
