@@ -515,7 +515,10 @@ async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
         "ClientConnectorError", "ClientOSError", "ServerDisconnectedError",
         "ClientConnectionError", "ClientPayloadError", "ServerTimeoutError",
     )
-    if not _is_discord_outage and not _is_network_error:
+    # Loop timeouts are transient (Pi load spike / slow Discord) — never trigger
+    # the global failsafe. Per-loop restart counter still applies.
+    _is_loop_timeout = isinstance(error, LoopTimeoutError)
+    if not _is_discord_outage and not _is_network_error and not _is_loop_timeout:
         _now = time.time()
         _system_failure_window.append((name, _now))
         _system_failure_window[:] = [
@@ -526,13 +529,18 @@ async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
             await trigger_system_restart()
 
 
+class LoopTimeoutError(RuntimeError):
+    """Raised by run_with_timeout so _handle_loop_error can exclude it from
+    the global failsafe window (timeouts are transient, not logic failures)."""
+
+
 async def run_with_timeout(name: str, coro, timeout: int = 60):
-    """Run a coroutine with a timeout. Raises RuntimeError on timeout so the
-    loop error handler can treat it as a normal failure and trigger recovery."""
+    """Run a coroutine with a timeout. Raises LoopTimeoutError on timeout so
+    the loop error handler treats it as a transient failure, not a logic crash."""
     try:
         return await asyncio.wait_for(coro, timeout=timeout)
     except asyncio.TimeoutError:
-        raise RuntimeError(f"{name} timed out after {timeout}s")
+        raise LoopTimeoutError(f"{name} timed out after {timeout}s")
 
 
 def _loop_success(name: str) -> None:
