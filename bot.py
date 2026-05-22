@@ -23530,6 +23530,28 @@ def _author_class(author) -> str:
     return "normal"
 
 
+# Image/video extension fallback for transcript attachment rendering.
+# Discord sometimes returns att.content_type as None (especially when messages
+# are re-fetched from history), which caused photos to render as generic file
+# icons in saved transcripts.  Filename-extension check is a reliable fallback.
+_IMG_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif", ".avif", ".tif", ".tiff")
+_VID_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v")
+
+def _att_is_image(att) -> bool:
+    ct = (getattr(att, "content_type", None) or "").lower()
+    if ct.startswith("image/"):
+        return True
+    fn = (getattr(att, "filename", "") or "").lower()
+    return fn.endswith(_IMG_EXTS)
+
+def _att_is_video(att) -> bool:
+    ct = (getattr(att, "content_type", None) or "").lower()
+    if ct.startswith("video/"):
+        return True
+    fn = (getattr(att, "filename", "") or "").lower()
+    return fn.endswith(_VID_EXTS)
+
+
 _TRANSCRIPT_CSS = """
 body{background:#313338;color:#dcddde;font-family:"gg sans","Noto Sans",Arial,sans-serif;margin:0;padding:0}
 .hdr{background:#1e1f22;padding:14px 20px;border-bottom:1px solid #404249;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10}
@@ -23663,14 +23685,13 @@ async def _build_html_transcript(
 
         # Attachments
         for att in msg.attachments:
-            is_img = att.content_type and att.content_type.startswith("image/")
-            if is_img:
+            if _att_is_image(att):
                 msg_html.append(
                     f'<img class="att-img" src="{_esc(att.url)}" alt="{_esc(att.filename)}" '
                     f'onerror="this.style.display=\'none\'">'
                 )
             else:
-                icon = "🎬" if att.content_type and att.content_type.startswith("video/") else "📄"
+                icon = "🎬" if _att_is_video(att) else "📄"
                 size = _size_label(att.size) if att.size else ""
                 msg_html.append(
                     f'<div class="att"><span style="font-size:28px">{icon}</span>'
@@ -27605,14 +27626,13 @@ async def _join_build_transcript(
             msg_html.append(f'<div class="ct">{_md(msg.content, mention_map)}</div>')
 
         for att in msg.attachments:
-            is_img = att.content_type and att.content_type.startswith("image/")
-            if is_img:
+            if _att_is_image(att):
                 msg_html.append(
                     f'<img class="att-img" src="{_esc(att.url)}" alt="{_esc(att.filename)}" '
                     f'onerror="this.style.display:\'none\'">'
                 )
             else:
-                icon = "🎬" if att.content_type and att.content_type.startswith("video/") else "📄"
+                icon = "🎬" if _att_is_video(att) else "📄"
                 size = _size_label(att.size) if att.size else ""
                 msg_html.append(
                     f'<div class="att"><span style="font-size:28px">{icon}</span>'
