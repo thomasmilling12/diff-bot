@@ -32112,8 +32112,17 @@ def _psn_fetch_all_sync(psn_ids: list) -> dict:
 
 
 async def _psn_fetch_all(psn_ids: list) -> dict:
+    # CRITICAL: must use the dedicated _psn_executor, not the default thread
+    # pool (None).  Sony's PSN API frequently hangs for 30-90+ seconds, and
+    # if these calls land on the default executor they consume every worker
+    # thread (Pi 5 has only 8), starving every other run_in_executor call in
+    # the bot (sqlite writes, file I/O, etc).  When that happens the event
+    # loop appears alive but cannot make progress — Discord heartbeats fail,
+    # the bot goes offline, and systemd never restarts it because the
+    # process is technically still running.  This is the cause of the
+    # silent-offline hangs that required physical Pi reboots.
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _psn_fetch_all_sync, psn_ids)
+    return await loop.run_in_executor(_psn_executor, _psn_fetch_all_sync, psn_ids)
 
 
 def _psn_platform_emoji(platform: str) -> str:
