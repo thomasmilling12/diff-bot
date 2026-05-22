@@ -28103,16 +28103,7 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
         # ── Staff alerts: duplicate PSN + previous denial ─────────────────────
         try:
             _alert_lines: list[str] = []
-            # 1) PSN already registered on the host board?
-            _psn_d = _psn_map_load()
-            _psn_map = _psn_d.get("map", {})
-            for _did, _pid in _psn_map.items():
-                if _pid.lower() == clean_psn.lower():
-                    _existing = interaction.guild.get_member(int(_did))
-                    _ename = _existing.display_name if _existing else f"<@{_did}>"
-                    _alert_lines.append(f"⚠️ **Duplicate PSN on host board** — `{clean_psn}` is already registered to **{_ename}**")
-                    break
-            # 2) PSN in another open join ticket?
+            # 1) PSN in another open join ticket?
             _cat = interaction.guild.get_channel(JOIN_TICKET_CATEGORY_ID)
             if isinstance(_cat, discord.CategoryChannel):
                 for _och in _cat.text_channels:
@@ -33983,15 +33974,6 @@ async def _cmd_bot_health(ctx: commands.Context):
             inline=False,
         )
 
-    # PSN backoff / token status
-    _psn_rem = int(_PSN_AUTH_BACKOFF_SECS - (time.time() - _psn_auth_fail_at)) if (_psn_auth_fail_at and time.time() - _psn_auth_fail_at < _PSN_AUTH_BACKOFF_SECS) else 0
-    if _psn_rem > 0:
-        _psn_val = f"🔴 Auth backoff active — {_psn_rem // 60}m {_psn_rem % 60}s remaining. Run `!setnpsso <token>` to refresh."
-    elif _psn_npsso():
-        _psn_val = "✅ Token present — PSN boards active"
-    else:
-        _psn_val = "⚠️ No NPSSO token set — PSN boards disabled"
-    embed.add_field(name="🎮 PSN Status", value=_psn_val, inline=False)
     embed.set_footer(text=f"Uptime: {uptime_str}  |  ✅ Healthy  ⚠️ Unstable (1–4)  ❌ Failing (5+)  🔔 Staff alerted")
     await ctx.send(embed=embed)
 
