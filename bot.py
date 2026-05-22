@@ -23552,6 +23552,69 @@ def _att_is_video(att) -> bool:
     return fn.endswith(_VID_EXTS)
 
 
+async def _att_to_data_uri(att, *, max_bytes: int = 2 * 1024 * 1024) -> str | None:
+    """Download an image attachment and return a self-contained data: URI so
+    saved transcripts survive Discord CDN URL expiry and source-channel
+    deletion (join tickets are removed right after accept/deny).  Returns
+    None on failure or if the file exceeds max_bytes."""
+    try:
+        if att.size and att.size > max_bytes:
+            return None
+        if aiohttp is None:
+            return None
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(att.url) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.read()
+        if len(data) > max_bytes:
+            return None
+        ct = (getattr(att, "content_type", None) or "").lower()
+        if not ct.startswith("image/"):
+            fn = (getattr(att, "filename", "") or "").lower()
+            if   fn.endswith(".png"):                ct = "image/png"
+            elif fn.endswith(".gif"):                ct = "image/gif"
+            elif fn.endswith(".webp"):               ct = "image/webp"
+            elif fn.endswith((".heic", ".heif")):    ct = "image/heic"
+            elif fn.endswith(".avif"):               ct = "image/avif"
+            else:                                    ct = "image/jpeg"
+        import base64 as _b64
+        return f"data:{ct};base64," + _b64.b64encode(data).decode("ascii")
+    except Exception as _e:
+        print(f"[Transcript] image fetch failed for {getattr(att, 'filename', '?')}: {_e}")
+        return None
+
+
+async def _prepare_image_cache(
+    msgs,
+    *,
+    total_budget: int = 18 * 1024 * 1024,
+    per_image:    int = 2  * 1024 * 1024,
+) -> dict:
+    """Pre-fetch every image attachment in parallel and return
+    {att.id: data_uri} for those that fit budget."""
+    img_atts = [att for msg in msgs for att in msg.attachments if _att_is_image(att)]
+    if not img_atts:
+        return {}
+    results = await asyncio.gather(
+        *[_att_to_data_uri(a, max_bytes=per_image) for a in img_atts],
+        return_exceptions=True,
+    )
+    cache: dict = {}
+    total = 0
+    for att, res in zip(img_atts, results):
+        if isinstance(res, Exception) or not res:
+            continue
+        if total + len(res) > total_budget:
+            continue
+        cache[att.id] = res
+        total += len(res)
+    print(f"[Transcript] inlined {len(cache)}/{len(img_atts)} images "
+          f"({total/1024/1024:.1f} MB) into transcript")
+    return cache
+
+
 _TRANSCRIPT_CSS = """
 body{background:#313338;color:#dcddde;font-family:"gg sans","Noto Sans",Arial,sans-serif;margin:0;padding:0}
 .hdr{background:#1e1f22;padding:14px 20px;border-bottom:1px solid #404249;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:10}
@@ -23605,6 +23668,9 @@ async def _build_html_transcript(
     msgs: list[discord.Message] = []
     async for m in channel.history(limit=limit, oldest_first=True):
         msgs.append(m)
+
+    # Inline images as base64 so transcripts survive channel deletion / CDN expiry.
+    _img_cache = await _prepare_image_cache(msgs)
 
     server_name = _esc(channel.guild.name) if channel.guild else "Unknown Server"
     generated = datetime.now(_EST_TZ).strftime("%d %b %Y at %I:%M %p EST")
@@ -23686,8 +23752,9 @@ async def _build_html_transcript(
         # Attachments
         for att in msg.attachments:
             if _att_is_image(att):
+                _src = _img_cache.get(att.id) or _esc(att.url)
                 msg_html.append(
-                    f'<img class="att-img" src="{_esc(att.url)}" alt="{_esc(att.filename)}" '
+                    f'<img class="att-img" src="{_src}" alt="{_esc(att.filename)}" '
                     f'onerror="this.style.display=\'none\'">'
                 )
             else:
@@ -27507,6 +27574,10 @@ async def _join_build_transcript(
     async for m in channel.history(limit=300, oldest_first=True):
         msgs.append(m)
 
+    # Inline images as base64 — join ticket channel is deleted right after
+    # this transcript is uploaded, invalidating every Discord CDN URL.
+    _img_cache = await _prepare_image_cache(msgs)
+
     server_name = _esc(channel.guild.name) if channel.guild else "Unknown Server"
     generated   = datetime.now(_EST_TZ).strftime("%d %b %Y at %I:%M %p EST")
     ch_name     = _esc(channel.name)
@@ -27627,9 +27698,10 @@ async def _join_build_transcript(
 
         for att in msg.attachments:
             if _att_is_image(att):
+                _src = _img_cache.get(att.id) or _esc(att.url)
                 msg_html.append(
-                    f'<img class="att-img" src="{_esc(att.url)}" alt="{_esc(att.filename)}" '
-                    f'onerror="this.style.display:\'none\'">'
+                    f'<img class="att-img" src="{_src}" alt="{_esc(att.filename)}" '
+                    f'onerror="this.style.display=\'none\'">'
                 )
             else:
                 icon = "🎬" if _att_is_video(att) else "📄"
