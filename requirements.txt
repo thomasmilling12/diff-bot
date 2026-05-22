@@ -8,4 +8,3 @@ yt-dlp
 edge-tts
 spotipy
 PyNaCl
-psnawp
