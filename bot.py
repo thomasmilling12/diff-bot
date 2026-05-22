@@ -13047,6 +13047,17 @@ class _RcBtn(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
+        # Defer IMMEDIATELY so we get a 15-minute response window.  Doing the
+        # sqlite write first can blow past Discord's hard 3-second interaction
+        # deadline on a busy Pi and cause "This interaction failed" errors,
+        # which is exactly what members were reporting.
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+        except discord.InteractionResponded:
+            pass
+        except Exception as _de:
+            print(f"[RcBtn] defer failed for {interaction.user}: {_de}")
+
         try:
             previous = _rc_db.set_response(
                 interaction.guild.id, interaction.user.id, self.meet_number, self.status
@@ -13067,15 +13078,10 @@ class _RcBtn(discord.ui.Button):
             msg = f"Updated **Meet {self.meet_number}**: {old_icon} → {new_icon}"
 
         try:
-            await interaction.response.send_message(msg, ephemeral=True)
-        except discord.InteractionResponded:
-            try:
-                await interaction.followup.send(msg, ephemeral=True)
-            except Exception:
-                pass
+            await interaction.followup.send(msg, ephemeral=True)
         except Exception as e:
-            print(f"[RcBtn] send_message error for {interaction.user}: {e}")
-            return
+            print(f"[RcBtn] followup send error for {interaction.user}: {e}")
+
         try:
             await _rc_refresh_panel(interaction.guild)
             await _rc_log_rsvp(
