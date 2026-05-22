@@ -32013,9 +32013,29 @@ def _psn_fetch_all_sync(psn_ids: list) -> dict:
     return results
 
 
+# Dedicated single-thread executor for PSN calls.  Isolates stuck PSN API
+# threads from the default executor (which is shared with every other
+# run_in_executor call in the bot).  Single thread = we never queue duplicate
+# fetches; if one is stuck, the next caller is told to back off.
+import concurrent.futures as _cf
+_psn_executor = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="psn")
+_psn_fetch_in_flight = False
+
+
 async def _psn_fetch_all(psn_ids: list) -> dict:
+    """Run the sync PSN fetch on a dedicated single-thread executor.
+    If a previous fetch is still running (thread stuck on slow PSN API), skip
+    this call entirely and return {} — prevents thread pileup."""
+    global _psn_fetch_in_flight
+    if _psn_fetch_in_flight:
+        print("[PSN] Previous fetch still running — skipping this cycle")
+        return {}
+    _psn_fetch_in_flight = True
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _psn_fetch_all_sync, psn_ids)
+    try:
+        return await loop.run_in_executor(_psn_executor, _psn_fetch_all_sync, psn_ids)
+    finally:
+        _psn_fetch_in_flight = False
 
 
 def _psn_platform_emoji(platform: str) -> str:
