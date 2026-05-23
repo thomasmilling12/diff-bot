@@ -16383,6 +16383,17 @@ async def __join_micro_bump_logic():
             micro_count = entry.get("micro_bump_count", 0)
             if micro_count >= _JOIN_MICRO_BUMP_MAX:
                 continue
+            # First reminder waits until photos have been complete for at least 30 min
+            # so staff get a real chance to action it without instant pinging.
+            if micro_count == 0:
+                try:
+                    _pc_dt = datetime.fromisoformat(entry["photos_complete_at"])
+                    if _pc_dt.tzinfo is None:
+                        _pc_dt = _pc_dt.replace(tzinfo=timezone.utc)
+                    if (now_utc - _pc_dt).total_seconds() < 1800:
+                        continue
+                except Exception:
+                    pass
             # Rate-limit: at least 9 minutes since last micro ping (buffer for loop jitter)
             last_micro = entry.get("micro_last_ping")
             if last_micro:
@@ -28601,16 +28612,71 @@ class _JoinClaimButton(discord.ui.Button):
             return await interaction.response.send_message(
                 f"This application is already being reviewed by <@{claimer_raw}>.", ephemeral=True
             )
+        # Defer first so we have time to scan history + edit messages without the 3s interaction window
+        await interaction.response.defer(ephemeral=True, thinking=False)
         try:
             await channel.edit(topic=topic + f" | join_claimed_by={interaction.user.id}")
         except Exception:
             pass
-        await interaction.response.send_message(
-            embed=discord.Embed(
-                description=f"🙋 **{interaction.user.display_name}** is reviewing this application.",
-                color=discord.Color.blurple(),
+        # Try to edit the most recent "Review Reminder" embed in place — avoids posting a
+        # duplicate "is reviewing" message right next to it.
+        _edited_in_place = False
+        try:
+            async for _m in channel.history(limit=15):
+                if (
+                    _m.author.id == bot.user.id
+                    and _m.embeds
+                    and (_m.embeds[0].title or "").startswith("🔔 Review Reminder")
+                ):
+                    _claimed_emb = discord.Embed(
+                        title="✅ Claimed for Review",
+                        description=f"🙋 **{interaction.user.display_name}** is reviewing this application.",
+                        color=discord.Color.blurple(),
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                    _claimed_emb.set_footer(text="Different Meets • Join Hub")
+                    await _m.edit(embed=_claimed_emb)
+                    _edited_in_place = True
+                    break
+        except Exception:
+            pass
+        if _edited_in_place:
+            await interaction.followup.send("✅ Claim recorded.", ephemeral=True)
+        else:
+            # Fallback: no reminder embed found (e.g. claimed before any reminder fired)
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description=f"🙋 **{interaction.user.display_name}** is reviewing this application.",
+                    color=discord.Color.blurple(),
+                ),
             )
-        )
+
+
+class _JoinAutoCloseView(discord.ui.View):
+    """60-second auto-close countdown with a Cancel button for accept/deny flows."""
+    def __init__(self, channel_id: int, closer_id: int) -> None:
+        super().__init__(timeout=120)
+        self.channel_id = channel_id
+        self.closer_id = closer_id
+        self.cancelled = False
+        self.cancelled_by: int = 0
+
+    @discord.ui.button(label="Cancel Close", emoji="✋", style=discord.ButtonStyle.secondary, custom_id="diff_join_cancel_close")
+    async def cancel_close(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not isinstance(interaction.user, discord.Member) or not _join_is_staff(interaction.user):
+            return await interaction.response.send_message("Only staff can cancel auto-close.", ephemeral=True)
+        self.cancelled = True
+        self.cancelled_by = interaction.user.id
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.response.edit_message(view=self)
+        except discord.HTTPException:
+            try:
+                await interaction.response.send_message("✅ Auto-close cancelled.", ephemeral=True)
+            except Exception:
+                pass
+        self.stop()
 
 
 class JoinTicketView(discord.ui.View):
@@ -28721,9 +28787,14 @@ class JoinTicketView(discord.ui.View):
             description="\n".join([
                 f"{member.mention}, your PlayStation join application has been **approved**.",
                 "",
-                f"**PSN:** {psn}",
-                "Welcome to DIFF Meets.",
+                f"**PSN:** `{psn}`",
+                f"**Reviewed by:** {interaction.user.mention}",
+                f"**Roles Granted:** {', '.join(r.mention for r in roles_to_add) if roles_to_add else '—'}",
+                "",
+                "Welcome to DIFF Meets — you can now see all crew channels.",
                 "Stay ready for meet posts, announcements, and instructions.",
+                "",
+                "*This ticket will close automatically in 60 seconds.*",
             ]),
             color=discord.Color.green(),
             timestamp=now,
@@ -28837,11 +28908,45 @@ class JoinTicketView(discord.ui.View):
         except Exception as _acc_te:
             print(f"[JoinTranscript] accept: {_acc_te}")
 
-        await asyncio.sleep(5)
+        # 60-second auto-close countdown with Cancel button (replaces blind 5s delete).
+        _close_view = _JoinAutoCloseView(interaction.channel.id, interaction.user.id)
+        _close_msg = None
         try:
-            await interaction.channel.delete(reason=f"Join application accepted by {interaction.user}")
+            _close_msg = await interaction.channel.send(
+                embed=discord.Embed(
+                    title="🔒 Closing in 60 seconds…",
+                    description=(
+                        "This ticket will be automatically deleted shortly so the category stays tidy.\n"
+                        "Click **Cancel Close** below to keep it open (the transcript is already saved)."
+                    ),
+                    color=discord.Color.dark_grey(),
+                ),
+                view=_close_view,
+            )
         except discord.HTTPException:
             pass
+        try:
+            await asyncio.sleep(60)
+        except Exception:
+            pass
+        if _close_view.cancelled:
+            try:
+                if _close_msg:
+                    await _close_msg.edit(
+                        embed=discord.Embed(
+                            title="✋ Auto-close cancelled",
+                            description=f"Cancelled by <@{_close_view.cancelled_by}>. Close the ticket manually when finished.",
+                            color=discord.Color.blurple(),
+                        ),
+                        view=None,
+                    )
+            except discord.HTTPException:
+                pass
+        else:
+            try:
+                await interaction.channel.delete(reason=f"Join application accepted by {interaction.user}")
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(label="Deny", emoji="❌", style=discord.ButtonStyle.danger, custom_id="diff_join_deny")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
