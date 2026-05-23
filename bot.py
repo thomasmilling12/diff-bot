@@ -8033,13 +8033,9 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
         # Only show meet count when non-zero
         meets_part = f" · **{meets}m**" if meets > 0 else ""
 
-        # Last-active anchor: HP session within 14d → use that;
-        # else fall back to Discord join date so every row has time context.
+        # No last-active timestamp on rows (was confusing — looked like
+        # Discord activity but was actually last HP session / join date).
         last_part = ""
-        if last_ts and (time.time() - last_ts) / 86400 <= 14:
-            last_part = f" · <t:{last_ts}:R>"
-        elif member and member.joined_at:
-            last_part = f" · joined <t:{int(member.joined_at.timestamp())}:R>"
 
         # 🕸️ inactivity warning: no HP session in 30+ days (only if we have any history)
         inactive_prefix = ""
@@ -8138,7 +8134,7 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
             inline=False,
         )
 
-    embed.set_footer(text="DIFF Meets · updates every 5 min · click 🔄 Refresh for instant update · 🕸️ = no session 30+ days")
+    embed.set_footer(text="DIFF Meets · updates every 5 min · click 🔄 Refresh for instant update · 🕸️ = inactive 30+ days")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
