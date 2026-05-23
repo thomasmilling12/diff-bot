@@ -4104,21 +4104,24 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
         time_val  = entry.get("time",  "TBD")
         date_val  = entry.get("day",   "TBD")
 
-        # Host: Discord mention + hyperlinked PSN profile (members click → PSN profile)
+        # Host: PSN name (linked to PSN profile) · Discord mention — matches original format
         host_str = "*TBD*"
         if host_id:
-            host_str = f"<@{host_id}>"
+            _psn_id, _psn_url = "", ""
             try:
                 for _h in data.get("hosts", []):
                     if _h.get("discord_id") == int(host_id):
                         _purl = (_h.get("profile_url") or "").rstrip("/")
                         if _purl:
+                            _psn_url = _purl
                             _psn_id = _purl.split("/")[-1]
-                            if _psn_id:
-                                host_str += f"  ·  [🎮 PSN: {_psn_id}]({_purl})"
                         break
             except Exception:
                 pass
+            if _psn_id and _psn_url:
+                host_str = f"{_psn_id} [↗]({_psn_url}) · <@{host_id}>"
+            else:
+                host_str = f"<@{host_id}>"
 
         meet_ts = _parse_meet_ts(date_val, time_val)
         is_past = bool(meet_ts and meet_ts < now_ts)
