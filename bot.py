@@ -14091,6 +14091,7 @@ class _OmRecord:
     late_ids: list = field(default_factory=list)
     unable_ids: list = field(default_factory=list)
     no_show_ids: list = field(default_factory=list)
+    unable_reasons: dict = field(default_factory=dict)  # {uid_str: reason}
 
 
 def _om_load_records() -> dict:
@@ -14311,6 +14312,167 @@ async def _om_post_or_update_leaderboard() -> None:
     await _upsert_unified_leaderboard()
 
 
+# Class → emoji map (matches the visual language used elsewhere)
+_OM_CLASS_EMOJI = {
+    "italian": "🏁", "muscle": "🚗", "supercar": "🏎️", "exotic": "🏎️",
+    "gran tour": "🏎️", "gt": "🏎️", "tuner": "🚙", "jdm": "🚙",
+    "off-road": "🛻", "offroad": "🛻", "classic": "🚘", "lowrider": "🚓",
+}
+
+def _om_class_emoji(theme: str) -> str:
+    t = (theme or "").lower()
+    for key, emj in _OM_CLASS_EMOJI.items():
+        if key in t:
+            return emj
+    return "🏁"
+
+
+def _om_psn_only(member: "discord.Member | None", fallback_id: int) -> str:
+    """Display the host PSN without the ' | Role' suffix."""
+    if member is None:
+        return f"<@{fallback_id}>"
+    name = member.display_name.split(" | ")[0].strip() or member.display_name
+    return f"**{name}**"
+
+
+def _om_build_attendance_embed(record: "_OmRecord", guild: "discord.Guild | None" = None) -> discord.Embed:
+    if guild is None:
+        guild = bot.get_guild(GUILD_ID) if bot.guilds else None
+    host_member = guild.get_member(record.host_id) if guild else None
+
+    emj           = _om_class_emoji(record.theme)
+    host_disp     = _om_psn_only(host_member, record.host_id)
+    n_present     = len(set(record.checked_in_ids))
+    n_late        = len(set(record.late_ids))
+    n_unable      = len(set(record.unable_ids))
+
+    # Headline countdown
+    countdown = f"<t:{record.timestamp}:R>"
+    color     = 0x57F287 if (record.timestamp - int(time.time())) > 0 else 0xFAA61A
+
+    embed = discord.Embed(
+        title=f"📊 DIFF Meet Attendance — {emj} {record.theme}",
+        description=f"🕐 **Starts {countdown}** · <t:{record.timestamp}:F>",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="🎤 Host", value=host_disp, inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+    embed.add_field(
+        name="✅ How to Check In",
+        value=(
+            "• **Present** — you're here\n"
+            "• **Late** — joining a bit late\n"
+            "• **Unable to Join** — can't make it (you can leave a quick reason)\n"
+            "• **Clear my RSVP** — remove your status if it changes"
+        ),
+        inline=False,
+    )
+
+    # Live RSVP tallies — social-proof drives RSVPs
+    tally = f"✅ Present: **{n_present}**  ·  🕒 Late: **{n_late}**  ·  ❌ Can't make it: **{n_unable}**"
+    embed.add_field(name="📈 Live RSVP", value=tally, inline=False)
+
+    if record.unable_reasons:
+        lines = []
+        for uid_str, reason in list(record.unable_reasons.items())[:5]:
+            try:
+                m = guild.get_member(int(uid_str)) if guild else None
+                disp = (m.display_name.split(" | ")[0].strip() if m else f"<@{uid_str}>")
+            except Exception:
+                disp = f"<@{uid_str}>"
+            lines.append(f"• **{disp}** — {str(reason)[:80]}")
+        embed.add_field(name="📝 Heads up (Can't make it)", value="\n".join(lines), inline=False)
+
+    embed.set_footer(text="Different Meets · Attendance updates live on each click")
+    return embed
+
+
+async def _om_refresh_attendance_panels(record: "_OmRecord") -> None:
+    """Edit every attendance panel message with the latest embed + tallies."""
+    if not bot.guilds:
+        return
+    guild = bot.guilds[0]
+    embed = _om_build_attendance_embed(record, guild)
+    msg_ids = list(record.attendance_all_msg_ids or [])
+    if record.attendance_message_id and record.attendance_message_id not in msg_ids:
+        msg_ids.append(record.attendance_message_id)
+    if not msg_ids:
+        return
+    ch_candidates = [
+        bot.get_channel(_CREW_CHAT_CHANNEL_ID),
+        bot.get_channel(_EVERYONE_CHAT_CHANNEL_ID),
+    ]
+    for mid in msg_ids:
+        for ch in ch_candidates:
+            if not isinstance(ch, discord.TextChannel):
+                continue
+            try:
+                msg = await ch.fetch_message(int(mid))
+                await msg.edit(embed=embed, view=_OmAttendanceView())
+                break
+            except (discord.NotFound, discord.Forbidden):
+                continue
+            except Exception:
+                continue
+
+
+class _OmUnableReasonModal(discord.ui.Modal, title="Why can't you make it? (optional)"):
+    reason = discord.ui.TextInput(
+        label="Reason (1 line, optional)",
+        placeholder="e.g. have to work late, family thing, controller died…",
+        required=False,
+        max_length=120,
+        style=discord.TextStyle.short,
+    )
+
+    def __init__(self, attendance_msg_id: int):
+        super().__init__(timeout=300)
+        self.attendance_msg_id = attendance_msg_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        record = _om_get_record_by_attendance_msg(self.attendance_msg_id)
+        if not record or record.ended:
+            return await interaction.response.send_message("Meet not found or already ended.", ephemeral=True)
+        uid = interaction.user.id
+        record.checked_in_ids = [x for x in record.checked_in_ids if x != uid]
+        record.late_ids       = [x for x in record.late_ids       if x != uid]
+        record.unable_ids     = [x for x in record.unable_ids     if x != uid]
+        record.unable_ids.append(uid)
+        reason_text = str(self.reason.value or "").strip()
+        if reason_text:
+            record.unable_reasons[str(uid)] = reason_text
+        else:
+            record.unable_reasons.pop(str(uid), None)
+        _om_upsert_record(record)
+
+        # DM the host if marked unable within 1h of start (gives time to backfill)
+        try:
+            secs_until = record.timestamp - int(time.time())
+            if 0 < secs_until <= 3600 and bot.guilds:
+                host = bot.guilds[0].get_member(record.host_id)
+                if host:
+                    note = f' — _"{reason_text}"_' if reason_text else ""
+                    await safe_dm(
+                        host,
+                        f"⚠️ Heads up — **{interaction.user.display_name}** just marked **Unable to Join** "
+                        f"for **{record.theme}** (starts <t:{record.timestamp}:R>){note}."
+                    )
+        except Exception:
+            pass
+
+        await interaction.response.send_message(
+            f"❌ You've been marked as **Unable to Join**." + (f"\n📝 Reason recorded." if reason_text else ""),
+            ephemeral=True,
+        )
+        try:
+            await _om_refresh_attendance_panels(record)
+        except Exception:
+            pass
+
+
 class _OmAttendanceView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -14324,45 +14486,53 @@ class _OmAttendanceView(discord.ui.View):
             await interaction.response.send_message("This meet has already ended.", ephemeral=True)
             return
         uid = interaction.user.id
+
+        # Unable to Join → open optional reason modal (handles everything itself)
+        if state == "unable":
+            return await interaction.response.send_modal(_OmUnableReasonModal(interaction.message.id))
+
+        # Clear RSVP → drop from all lists
         record.checked_in_ids = [x for x in record.checked_in_ids if x != uid]
         record.late_ids       = [x for x in record.late_ids       if x != uid]
         record.unable_ids     = [x for x in record.unable_ids     if x != uid]
+        record.unable_reasons.pop(str(uid), None)
+
         if state == "present":
             record.checked_in_ids.append(uid)
             reply = "✅ You've been checked in as **Present**."
         elif state == "late":
             record.late_ids.append(uid)
             reply = "🕐 You've been marked as **Late**."
+        elif state == "clear":
+            reply = "↻ Your RSVP has been cleared."
         else:
-            record.unable_ids.append(uid)
-            reply = "❌ You've been marked as **Unable to Join**."
+            reply = "Unknown action."
         _om_upsert_record(record)
         await interaction.response.send_message(reply, ephemeral=True)
+        try:
+            await _om_refresh_attendance_panels(record)
+        except Exception:
+            pass
 
-    @discord.ui.button(label="Present", style=discord.ButtonStyle.success, custom_id="diff_om_att:present")
+    @discord.ui.button(label="Present", style=discord.ButtonStyle.success, emoji="✅", custom_id="diff_om_att:present")
     async def btn_present(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle(interaction, "present")
 
-    @discord.ui.button(label="Late", style=discord.ButtonStyle.secondary, custom_id="diff_om_att:late")
+    @discord.ui.button(label="Late", style=discord.ButtonStyle.secondary, emoji="🕒", custom_id="diff_om_att:late")
     async def btn_late(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle(interaction, "late")
 
-    @discord.ui.button(label="Unable to Join", style=discord.ButtonStyle.danger, custom_id="diff_om_att:unable")
+    @discord.ui.button(label="Unable to Join", style=discord.ButtonStyle.danger, emoji="❌", custom_id="diff_om_att:unable")
     async def btn_unable(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._handle(interaction, "unable")
 
+    @discord.ui.button(label="Clear my RSVP", style=discord.ButtonStyle.secondary, emoji="↻", custom_id="diff_om_att:clear", row=1)
+    async def btn_clear(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, "clear")
+
 
 async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | None:
-    _att_body = (
-        f"📊 **DIFF Meet Attendance — {record.theme}**\n\n"
-        f"Host: <@{record.host_id}>\n"
-        f"Date: <t:{record.timestamp}:F>\n\n"
-        f"Use the buttons below to check in:\n"
-        f"• **Present** — you're here\n"
-        f"• **Late** — joining a bit late\n"
-        f"• **Unable to Join** — can't make it\n\n"
-        f"Your check-in is recorded for attendance stats and no-show tracking."
-    )
+    att_embed = _om_build_attendance_embed(record)
 
     all_msgs: list[discord.Message] = []
 
@@ -14371,7 +14541,8 @@ async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | No
     if isinstance(crew_ch, discord.TextChannel):
         try:
             m = await crew_ch.send(
-                f"<@&{CREW_MEMBER_ROLE_ID}>\n\n" + _att_body,
+                content=f"<@&{CREW_MEMBER_ROLE_ID}>",
+                embed=att_embed,
                 view=_OmAttendanceView(),
                 allowed_mentions=discord.AllowedMentions(roles=True, users=False),
             )
@@ -14384,7 +14555,8 @@ async def _om_create_attendance_panel(record: _OmRecord) -> discord.Message | No
     if isinstance(everyone_ch, discord.TextChannel):
         try:
             m = await everyone_ch.send(
-                f"<@&{PS5_ROLE_ID}>\n\n" + _att_body,
+                content=f"<@&{PS5_ROLE_ID}>",
+                embed=att_embed,
                 view=_OmAttendanceView(),
                 allowed_mentions=discord.AllowedMentions(roles=True, users=False),
             )
