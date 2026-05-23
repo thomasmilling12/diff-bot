@@ -501,7 +501,7 @@ async def _gateway_watchdog_loop():
 
     if healthy:
         if _GW_UNHEALTHY_STRIKES > 0:
-            _bot_log.info("[Watchdog] Recovered after %d bad check(s).", _GW_UNHEALTHY_STRIKES)
+            _bot_log.warning("[Watchdog] Recovered after %d bad check(s).", _GW_UNHEALTHY_STRIKES)
         _GW_UNHEALTHY_STRIKES = 0
         return
 
@@ -17265,7 +17265,7 @@ async def on_ready():
         _GW_WATCHDOG_STARTED_AT = time.time()
         if not _gateway_watchdog_loop.is_running():
             _gateway_watchdog_loop.start()
-            _bot_log.info("[Watchdog] Gateway watchdog armed (60s checks, 3-strike ~3min trip).")
+            _bot_log.warning("[Watchdog] Gateway watchdog armed (60s checks, 3-strike ~3min trip).")
     except Exception as _e:
         _bot_log.error("[Watchdog] Failed to start: %s", _e)
 
