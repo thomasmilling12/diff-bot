@@ -23964,13 +23964,16 @@ async def _post_transcript_to_channel(
         return None
 
     # ── Step 1: upload raw file ───────────────────────────────────────────────
-    # Discord CDN attachment URLs now expire (~24 h) regardless of whether the
-    # message is kept. We return a permanent Discord jump link instead, which
-    # navigates directly to the message so Discord generates a fresh download
-    # URL on demand.
+    # Discord CDN attachment URLs now expire (~24 h), but they are the only URL
+    # that actually opens the HTML transcript in a browser. We expose BOTH:
+    #   • Open Transcript  → direct CDN URL (works ~24 h, opens HTML directly)
+    #   • Find in Server   → permanent jump link to the upload message
+    file_url: str | None = None
     jump_url: str | None = None
     try:
         upload_msg = await tc.send(file=transcript_file)
+        if upload_msg.attachments:
+            file_url = upload_msg.attachments[0].url
         jump_url = f"https://discord.com/channels/{guild.id}/{tc.id}/{upload_msg.id}"
     except discord.HTTPException:
         pass
@@ -23984,17 +23987,31 @@ async def _post_transcript_to_channel(
     ref_embed.add_field(name="📁 Channel", value=f"`{channel_name}`", inline=True)
     if outcome:
         ref_embed.add_field(name="📋 Outcome", value=outcome, inline=True)
+    if file_url:
+        ref_embed.add_field(
+            name="​",
+            value="-# Direct link works for ~24 h. After that, find the file via **Find in Server**.",
+            inline=False,
+        )
     ref_embed.set_footer(text="Different Meets • Transcripts")
 
     view: discord.ui.View | None = None
-    if jump_url:
+    if file_url or jump_url:
         view = discord.ui.View(timeout=None)
-        view.add_item(discord.ui.Button(
-            label="View Transcript",
-            emoji="📋",
-            style=discord.ButtonStyle.link,
-            url=jump_url,
-        ))
+        if file_url:
+            view.add_item(discord.ui.Button(
+                label="Open Transcript",
+                emoji="📄",
+                style=discord.ButtonStyle.link,
+                url=file_url,
+            ))
+        if jump_url:
+            view.add_item(discord.ui.Button(
+                label="Find in Server",
+                emoji="📍",
+                style=discord.ButtonStyle.link,
+                url=jump_url,
+            ))
 
     try:
         if view:
@@ -24004,7 +24021,8 @@ async def _post_transcript_to_channel(
     except discord.HTTPException:
         pass
 
-    return jump_url
+    # Prefer the file URL for the returned value (used by DM rating view button)
+    return file_url or jump_url
 
 
 # ─────────────────────────────────────────────────────────────────────────────
