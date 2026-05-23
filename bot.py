@@ -7623,7 +7623,13 @@ async def _host_board_auto_refresh_loop_logic():
         target = await find_existing_status_panel_message(channel)
     if target is not None:
         try:
-            await target.edit(embed=embed, view=HostBoardRefreshView())
+            # NOTE: do NOT pass a new view= here. The HostBoardRefreshView is
+            # already registered persistently in setup_hook so its custom_id
+            # ('diff_host_board_refresh_v1') is bound. Re-attaching a fresh
+            # instance every 5 min was potentially accumulating view objects
+            # inside discord.py's internal store and was a suspect cause of
+            # the bot-freeze that required a physical Pi reboot.
+            await target.edit(embed=embed)
         except Exception as _e:
             print(f"[BoardLoop] edit failed: {_e}")
 
@@ -14391,11 +14397,17 @@ def _om_build_attendance_embed(record: "_OmRecord", guild: "discord.Guild | None
 
 
 async def _om_refresh_attendance_panels(record: "_OmRecord") -> None:
-    """Edit every attendance panel message with the latest embed + tallies."""
+    """Edit every attendance panel message with the latest embed + tallies.
+    Hardened: per-call timeout (5s total), bounded fetch attempts, never
+    re-attaches a fresh view (already registered persistently)."""
     if not bot.guilds:
         return
     guild = bot.guilds[0]
-    embed = _om_build_attendance_embed(record, guild)
+    try:
+        embed = _om_build_attendance_embed(record, guild)
+    except Exception as _e:
+        print(f"[OMAtt] embed build error: {_e}")
+        return
     msg_ids = list(record.attendance_all_msg_ids or [])
     if record.attendance_message_id and record.attendance_message_id not in msg_ids:
         msg_ids.append(record.attendance_message_id)
@@ -14405,18 +14417,27 @@ async def _om_refresh_attendance_panels(record: "_OmRecord") -> None:
         bot.get_channel(_CREW_CHAT_CHANNEL_ID),
         bot.get_channel(_EVERYONE_CHAT_CHANNEL_ID),
     ]
-    for mid in msg_ids:
-        for ch in ch_candidates:
-            if not isinstance(ch, discord.TextChannel):
-                continue
-            try:
-                msg = await ch.fetch_message(int(mid))
-                await msg.edit(embed=embed, view=_OmAttendanceView())
-                break
-            except (discord.NotFound, discord.Forbidden):
-                continue
-            except Exception:
-                continue
+
+    async def _do_refresh():
+        for mid in msg_ids[:4]:  # cap to 4 messages defensively
+            for ch in ch_candidates:
+                if not isinstance(ch, discord.TextChannel):
+                    continue
+                try:
+                    msg = await ch.fetch_message(int(mid))
+                    await msg.edit(embed=embed)  # no view= — already registered persistently
+                    break
+                except (discord.NotFound, discord.Forbidden):
+                    continue
+                except Exception:
+                    continue
+
+    try:
+        await asyncio.wait_for(_do_refresh(), timeout=5.0)
+    except asyncio.TimeoutError:
+        print("[OMAtt] refresh timed out — skipped to keep loop responsive")
+    except Exception as _e:
+        print(f"[OMAtt] refresh error: {_e}")
 
 
 class _OmUnableReasonModal(discord.ui.Modal, title="Why can't you make it? (optional)"):
@@ -14448,18 +14469,24 @@ class _OmUnableReasonModal(discord.ui.Modal, title="Why can't you make it? (opti
             record.unable_reasons.pop(str(uid), None)
         _om_upsert_record(record)
 
-        # DM the host if marked unable within 1h of start (gives time to backfill)
+        # DM the host if marked unable within 1h of start (gives time to backfill).
+        # Fire-and-forget so a slow Discord DM API call NEVER blocks the modal callback.
         try:
             secs_until = record.timestamp - int(time.time())
             if 0 < secs_until <= 3600 and bot.guilds:
                 host = bot.guilds[0].get_member(record.host_id)
                 if host:
                     note = f' — _"{reason_text}"_' if reason_text else ""
-                    await safe_dm(
-                        host,
+                    msg_text = (
                         f"⚠️ Heads up — **{interaction.user.display_name}** just marked **Unable to Join** "
                         f"for **{record.theme}** (starts <t:{record.timestamp}:R>){note}."
                     )
+                    async def _bg_dm():
+                        try:
+                            await asyncio.wait_for(safe_dm(host, msg_text), timeout=5.0)
+                        except Exception:
+                            pass
+                    asyncio.create_task(_bg_dm())
         except Exception:
             pass
 
