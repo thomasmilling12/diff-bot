@@ -7524,7 +7524,7 @@ async def _hierarchy_attendance_loop_on_error(error: Exception) -> None:
     await _handle_loop_error('hierarchy_attendance_loop', error, hierarchy_attendance_loop)
 
 async def _host_board_auto_refresh_loop_logic():
-    """Edit the Host Activity Board embed every 15 min — never posts new messages."""
+    """Edit the Host Activity Board embed every 5 min — never posts new messages."""
     guild = bot.guilds[0] if bot.guilds else None
     if guild is None:
         return
@@ -7551,11 +7551,11 @@ async def _host_board_auto_refresh_loop_logic():
         target = await find_existing_status_panel_message(channel)
     if target is not None:
         try:
-            await target.edit(embed=embed)
+            await target.edit(embed=embed, view=HostBoardRefreshView())
         except Exception as _e:
             print(f"[BoardLoop] edit failed: {_e}")
 
-@tasks.loop(minutes=15)
+@tasks.loop(minutes=5)
 async def host_board_auto_refresh_loop():
     _loop_success('host_board_auto_refresh_loop')
     try:
@@ -7989,7 +7989,35 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
         _top_m         = guild.get_member(_top_id)
         _top_host_name = _top_m.display_name if _top_m else ""
 
+    # ── Next meet from weekly schedule (for top "Next Meet" field) ───────────
+    _next_meet_value = ""
+    try:
+        _sched = _asched_load()
+        _now_ts = int(time.time())
+        _candidates = []
+        for _day_key in _HRSVP_DAYS:
+            _entry = _sched.get("days", {}).get(_day_key, {})
+            _mt = _parse_meet_ts(_entry.get("day", "TBD"), _entry.get("time", "TBD"))
+            if _mt and _mt > _now_ts:
+                _candidates.append((_mt, _entry))
+        if _candidates:
+            _candidates.sort(key=lambda x: x[0])
+            _mt, _entry = _candidates[0]
+            _cls = _entry.get("class", "TBD")
+            _hid = _entry.get("host_id")
+            _host_disp = ""
+            if _hid:
+                _hm = guild.get_member(int(_hid))
+                if _hm:
+                    _host_disp = _hm.display_name.split(" | ")[0].strip()
+            _next_meet_value = f"🏎️ **{_cls}** · <t:{_mt}:F> (<t:{_mt}:R>)"
+            if _host_disp:
+                _next_meet_value += f"\n👤 Host: **{_host_disp}**"
+    except Exception:
+        pass
+
     # ── Build host rows ───────────────────────────────────────────────────────
+    _now_utc_dt = datetime.now(timezone.utc)
     for host in data["hosts"]:
         uid     = host["discord_id"]
         member  = guild.get_member(uid)
@@ -7998,18 +8026,25 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
         tier_part  = f" · {tier}" if tier else ""
         last_ts = _last_session_ts(uid)
 
-        # PSN profile link
+        # PSN profile link (kept — easy click-through for members)
         profile = host.get("profile_url", "")
         link    = f" [↗]({profile})" if profile else ""
 
         # Only show meet count when non-zero
         meets_part = f" · **{meets}m**" if meets > 0 else ""
 
-        # Only show last-active when within 14 days
+        # Last-active anchor: HP session within 14d → use that;
+        # else fall back to Discord join date so every row has time context.
         last_part = ""
-        if last_ts:
-            if (time.time() - last_ts) / 86400 <= 14:
-                last_part = f" · <t:{last_ts}:R>"
+        if last_ts and (time.time() - last_ts) / 86400 <= 14:
+            last_part = f" · <t:{last_ts}:R>"
+        elif member and member.joined_at:
+            last_part = f" · joined <t:{int(member.joined_at.timestamp())}:R>"
+
+        # 🕸️ inactivity warning: no HP session in 30+ days (only if we have any history)
+        inactive_prefix = ""
+        if last_ts and (time.time() - last_ts) / 86400 >= 30:
+            inactive_prefix = "🕸️ "
 
         if member:
             is_online = member.status != discord.Status.offline
@@ -8032,26 +8067,22 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
                 line = f"🟡 {name_md} · `{act_label}`{meets_part}{link}"
                 online_hosts.append((line, last_ts, meets))
         else:
-            line = f"🔴 {name_md}{tier_part}{meets_part}{last_part}{link}"
+            line = f"🔴 {inactive_prefix}{name_md}{tier_part}{meets_part}{last_part}{link}"
             offline_hosts.append((line, last_ts, meets))
 
     # Sort offline: most recently active first, then by career meets desc
     offline_hosts.sort(key=lambda x: (x[1], x[2]), reverse=True)
 
-    # ── Status pill counts ────────────────────────────────────────────────────
+    # ── Labelled count header ────────────────────────────────────────────────
     n_gta     = len(gta_hosts)
     n_online  = len(online_hosts)
     n_offline = len(offline_hosts)
     n_total   = n_gta + n_online + n_offline
 
-    pill_line = f"🟢 **{n_gta + n_online}**  ·  🔴 **{n_offline}**  ·  total **{n_total}**"
-
-    if _total_week > 0:
-        week_line = f"📅 This week: **{_total_week}** session{'s' if _total_week != 1 else ''} hosted"
-        if _top_host_name:
-            week_line += f" · top: **{_top_host_name}**"
-    else:
-        week_line = "📅 No sessions hosted yet this week"
+    pill_line = (
+        f"🎮 GTA: **{n_gta}**  ·  🟡 Away: **{n_online}**  ·  "
+        f"🔴 Offline: **{n_offline}**  ·  Total: **{n_total}**"
+    )
 
     # Dynamic embed color
     if n_gta > 0:
@@ -8063,15 +8094,35 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
 
     embed = discord.Embed(
         title="🏁 DIFF Host Activity Board",
-        description=f"{pill_line}\n{week_line}",
+        description=pill_line,
         color=color,
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
 
+    # Next Meet field (top — ties host board to schedule)
+    if _next_meet_value:
+        embed.add_field(name="🏁 Next Meet", value=_next_meet_value, inline=False)
+
+    # Weekly summary as its own field
+    if _total_week > 0:
+        _wk_val = f"**{_total_week}** session{'s' if _total_week != 1 else ''} hosted"
+        if _top_host_name:
+            _wk_val += f"\n👑 Top host: **{_top_host_name}**"
+    else:
+        _wk_val = "*No sessions hosted yet this week.*"
+    embed.add_field(name="📅 This Week", value=_wk_val, inline=False)
+
+    # Always show In GTA (empty state included so absence is obvious)
     if gta_hosts:
         embed.add_field(
             name=f"🎮 In GTA  ({n_gta})",
             value="\n".join(l for l, _, _ in gta_hosts),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="🎮 In GTA  (0)",
+            value="*No hosts currently playing GTA.*",
             inline=False,
         )
     if online_hosts:
@@ -8087,7 +8138,7 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
             inline=False,
         )
 
-    embed.set_footer(text="DIFF Meets · updates every 15 min")
+    embed.set_footer(text="DIFF Meets · updates every 5 min · click 🔄 Refresh for instant update · 🕸️ = no session 30+ days")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
