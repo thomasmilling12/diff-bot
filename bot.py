@@ -501,12 +501,12 @@ async def _gateway_watchdog_loop():
 
     if healthy:
         if _GW_UNHEALTHY_STRIKES > 0:
-            print(f"[Watchdog] Recovered after {_GW_UNHEALTHY_STRIKES} bad check(s).")
+            _bot_log.info("[Watchdog] Recovered after %d bad check(s).", _GW_UNHEALTHY_STRIKES)
         _GW_UNHEALTHY_STRIKES = 0
         return
 
     _GW_UNHEALTHY_STRIKES += 1
-    print(f"[Watchdog] ⚠️  Unhealthy gateway (strike {_GW_UNHEALTHY_STRIKES}/{_GW_MAX_STRIKES}) — {reason}")
+    _bot_log.warning("[Watchdog] Unhealthy gateway (strike %d/%d) — %s", _GW_UNHEALTHY_STRIKES, _GW_MAX_STRIKES, reason)
 
     if _GW_UNHEALTHY_STRIKES >= _GW_MAX_STRIKES:
         try:
@@ -17265,9 +17265,9 @@ async def on_ready():
         _GW_WATCHDOG_STARTED_AT = time.time()
         if not _gateway_watchdog_loop.is_running():
             _gateway_watchdog_loop.start()
-            print("[Watchdog] Gateway watchdog armed (60s checks, 3-strike ~3min trip).")
+            _bot_log.info("[Watchdog] Gateway watchdog armed (60s checks, 3-strike ~3min trip).")
     except Exception as _e:
-        print(f"[Watchdog] Failed to start: {_e}")
+        _bot_log.error("[Watchdog] Failed to start: %s", _e)
 
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
