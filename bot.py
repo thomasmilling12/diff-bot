@@ -16165,6 +16165,52 @@ async def __rotating_presence_loop_logic():
     member_count = guild.member_count if guild else 0
     next_meet    = _status_next_meet_label()
 
+    # ── Live signals ─────────────────────────────────────────────────────────
+    active_session_count = 0
+    lifetime_meets       = 0
+    try:
+        _hp = _hp_load()
+        for _s in _hp.get("sessions", {}).values():
+            if not _s.get("ended"):
+                active_session_count += 1
+        for _u in _hp.get("host_stats", {}).values():
+            lifetime_meets += int(_u.get("meets_hosted", 0) or 0)
+    except Exception:
+        pass
+
+    hosts_online = 0
+    try:
+        if guild:
+            for _h in data.get("hosts", []):
+                _m = guild.get_member(_h.get("discord_id", 0))
+                if _m and _m.status != discord.Status.offline:
+                    hosts_online += 1
+    except Exception:
+        pass
+
+    week_meets_confirmed = 0
+    try:
+        _sched = _asched_load()
+        for _d in _sched.get("days", {}).values():
+            if _d.get("host_id"):
+                week_meets_confirmed += 1
+    except Exception:
+        pass
+
+    # ── Status color: red during active sessions, idle at night, online otherwise
+    try:
+        from datetime import datetime as _dt
+        _hr_et = _dt.now(_EST_TZ).hour
+    except Exception:
+        _hr_et = 12
+    if active_session_count > 0:
+        presence_status = discord.Status.dnd
+    elif 2 <= _hr_et < 8:
+        presence_status = discord.Status.idle
+    else:
+        presence_status = discord.Status.online
+
+    # ── Build activity rotation ──────────────────────────────────────────────
     activities = [
         discord.Streaming(
             name="🏁 DIFF Car Meets | PS5 GTA V",
@@ -16174,9 +16220,33 @@ async def __rotating_presence_loop_logic():
         discord.Activity(type=discord.ActivityType.competing, name="DIFF Host Meets"),
         discord.Activity(type=discord.ActivityType.listening, name="the DIFF community"),
         discord.Activity(type=discord.ActivityType.watching,  name="🚗 Host Flow • Crew Management"),
+        discord.Activity(type=discord.ActivityType.listening, name="!mystats for your standing"),
     ]
 
-    # inject next meet as its own slide if data is available
+    if active_session_count > 0:
+        activities.insert(0, discord.Activity(
+            type=discord.ActivityType.playing,
+            name=f"🏁 LIVE: {active_session_count} meet{'s' if active_session_count != 1 else ''} in progress",
+        ))
+
+    if hosts_online > 0:
+        activities.append(discord.Activity(
+            type=discord.ActivityType.watching,
+            name=f"🟢 {hosts_online} host{'s' if hosts_online != 1 else ''} online now",
+        ))
+
+    if week_meets_confirmed > 0:
+        activities.append(discord.Activity(
+            type=discord.ActivityType.competing,
+            name=f"📅 {week_meets_confirmed} meet{'s' if week_meets_confirmed != 1 else ''} this week",
+        ))
+
+    if lifetime_meets > 0:
+        activities.append(discord.Activity(
+            type=discord.ActivityType.watching,
+            name=f"🏆 {lifetime_meets:,} car meets hosted all-time",
+        ))
+
     if next_meet:
         activities.insert(2, discord.Activity(
             type=discord.ActivityType.playing,
@@ -16186,7 +16256,7 @@ async def __rotating_presence_loop_logic():
     activity = activities[_presence_index % len(activities)]
     _presence_index += 1
     try:
-        await bot.change_presence(status=discord.Status.online, activity=activity)
+        await bot.change_presence(status=presence_status, activity=activity)
     except Exception:
         pass
 
