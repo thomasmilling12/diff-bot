@@ -8051,8 +8051,10 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
             activity  = ""
             name      = host["name"]
 
-        activity_lower = (activity or "").lower()
-        name_md = f"**{name}**"
+        # Strip role suffix (e.g. "Frostyy2003 | Owner" → "Frostyy2003")
+        # and box the PSN in a code-block so it pops visually.
+        psn_only = name.split(" | ")[0].strip()
+        name_md  = f"`{psn_only}`"
 
         if is_online:
             if "grand theft auto" in activity_lower or "gta" in activity_lower:
