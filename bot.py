@@ -462,6 +462,65 @@ async def trigger_system_restart() -> None:
     os._exit(1)
 
 
+# ── Gateway watchdog ─────────────────────────────────────────────────────
+# Detects silent freezes: if the Discord WebSocket dies and discord.py's
+# auto-reconnect gets stuck (common on Pi after WiFi blips), the bot stays
+# "alive" to systemd but is invisible to Discord. This watchdog catches
+# that state and exits the process so systemd can cleanly restart it.
+_GW_UNHEALTHY_STRIKES = 0
+_GW_MAX_STRIKES = 3            # 3 consecutive bad checks @ 60s = ~3 min unhealthy
+_GW_LATENCY_CEILING = 30.0     # seconds — any latency above this is "frozen"
+_GW_WATCHDOG_STARTED_AT: float = 0.0
+
+@tasks.loop(seconds=60)
+async def _gateway_watchdog_loop():
+    """Force-exits the process if the Discord gateway has been silently dead
+    for 3 minutes. systemd will restart us cleanly."""
+    global _GW_UNHEALTHY_STRIKES
+    # Grace period — let the bot fully connect on fresh boot
+    if time.time() - _GW_WATCHDOG_STARTED_AT < 120:
+        return
+
+    healthy = True
+    reason = ""
+    try:
+        if not bot.is_ready():
+            healthy = False; reason = "bot.is_ready() == False"
+        else:
+            lat = bot.latency  # may be inf/nan if ws dead
+            if lat is None:
+                healthy = False; reason = "latency is None"
+            elif lat != lat:  # NaN
+                healthy = False; reason = "latency is NaN"
+            elif lat == float("inf") or lat > _GW_LATENCY_CEILING:
+                healthy = False; reason = f"latency={lat:.1f}s > {_GW_LATENCY_CEILING}s"
+            elif bot.ws is None or bot.ws.socket is None:
+                healthy = False; reason = "websocket is None"
+    except Exception as _e:
+        healthy = False; reason = f"exception during check: {_e}"
+
+    if healthy:
+        if _GW_UNHEALTHY_STRIKES > 0:
+            print(f"[Watchdog] Recovered after {_GW_UNHEALTHY_STRIKES} bad check(s).")
+        _GW_UNHEALTHY_STRIKES = 0
+        return
+
+    _GW_UNHEALTHY_STRIKES += 1
+    print(f"[Watchdog] ⚠️  Unhealthy gateway (strike {_GW_UNHEALTHY_STRIKES}/{_GW_MAX_STRIKES}) — {reason}")
+
+    if _GW_UNHEALTHY_STRIKES >= _GW_MAX_STRIKES:
+        try:
+            _bot_log.critical(
+                "[Watchdog] Gateway dead for %ds (%s) — exiting for systemd restart.",
+                _GW_MAX_STRIKES * 60, reason,
+            )
+        except Exception:
+            pass
+        # Don't try to send Discord messages — gateway is dead. Just exit.
+        await asyncio.sleep(1)
+        os._exit(1)
+
+
 async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
     """Shared error handler for all @tasks.loop functions.
     Logs full traceback, increments failure counter, alerts staff ONCE per
@@ -17199,6 +17258,16 @@ async def on_ready():
         _re_engagement_loop.start()
     if not _health_score_update_loop.is_running():
         _health_score_update_loop.start()
+
+    # ── Gateway watchdog: catches silent freezes (WiFi/gateway death) ──
+    try:
+        global _GW_WATCHDOG_STARTED_AT
+        _GW_WATCHDOG_STARTED_AT = time.time()
+        if not _gateway_watchdog_loop.is_running():
+            _gateway_watchdog_loop.start()
+            print("[Watchdog] Gateway watchdog armed (60s checks, 3-strike ~3min trip).")
+    except Exception as _e:
+        print(f"[Watchdog] Failed to start: {_e}")
 
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
