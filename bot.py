@@ -343,6 +343,10 @@ async def _setup_hook():
             print(f"[Cogs] Loaded {_cog}")
         except Exception as _e:
             print(f"[Cogs] FAILED to load {_cog}: {_e}")
+    try:
+        bot.add_view(HostBoardRefreshView())
+    except Exception as _e:
+        print(f"[Views] FAILED to register HostBoardRefreshView: {_e}")
 
 bot.setup_hook = _setup_hook
 
@@ -7907,6 +7911,27 @@ async def _auto_refresh_hierarchy_panel(guild: discord.Guild):
             )
         except Exception:
             pass
+
+
+class HostBoardRefreshView(discord.ui.View):
+    """Persistent view for the Refresh button on the Host Activity Board message."""
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="diff_host_board_refresh_v1")
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not interaction.guild:
+            return await interaction.response.send_message("Guild only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=False)
+        try:
+            embed = build_status_embed(interaction.guild)
+            await interaction.message.edit(embed=embed, view=HostBoardRefreshView())
+            await interaction.followup.send("✅ Board refreshed.", ephemeral=True)
+        except Exception as _e:
+            try:
+                await interaction.followup.send(f"Refresh failed: {_e}", ephemeral=True)
+            except Exception:
+                pass
 
 
 def build_status_embed(guild: discord.Guild) -> discord.Embed:
