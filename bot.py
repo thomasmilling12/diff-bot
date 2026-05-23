@@ -4104,11 +4104,21 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
         time_val  = entry.get("time",  "TBD")
         date_val  = entry.get("day",   "TBD")
 
-        # Host: just the Discord mention — no more dead PSN [↗] links / duplicate names
+        # Host: Discord mention + hyperlinked PSN profile (members click → PSN profile)
+        host_str = "*TBD*"
         if host_id:
             host_str = f"<@{host_id}>"
-        else:
-            host_str = "*TBD*"
+            try:
+                for _h in data.get("hosts", []):
+                    if _h.get("discord_id") == int(host_id):
+                        _purl = (_h.get("profile_url") or "").rstrip("/")
+                        if _purl:
+                            _psn_id = _purl.split("/")[-1]
+                            if _psn_id:
+                                host_str += f"  ·  [🎮 PSN: {_psn_id}]({_purl})"
+                        break
+            except Exception:
+                pass
 
         meet_ts = _parse_meet_ts(date_val, time_val)
         is_past = bool(meet_ts and meet_ts < now_ts)
@@ -7918,7 +7928,7 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
         if meets >= 15: return "💎 Elite"
         if meets >= 5:  return "🔥 Senior"
         if meets >= 1:  return "⭐ Active"
-        return "🆕 New"
+        return ""  # no tier shown for hosts with 0 career meets
 
     # ── Weekly session summary from closed HP sessions ────────────────────────
     _now_et     = datetime.now(_EST_TZ)
@@ -7957,6 +7967,7 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
         member  = guild.get_member(uid)
         meets   = get_user_stats(uid).get("meets_hosted", 0)
         tier    = _tier_label(meets)
+        tier_part  = f" · {tier}" if tier else ""
         last_ts = _last_session_ts(uid)
 
         # PSN profile link
@@ -7986,14 +7997,14 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
 
         if is_online:
             if "grand theft auto" in activity_lower or "gta" in activity_lower:
-                line = f"🎮 {name_md} · {tier}{meets_part}{link}"
+                line = f"🎮 {name_md}{tier_part}{meets_part}{link}"
                 gta_hosts.append((line, last_ts, meets))
             else:
                 act_label = (activity[:20] + "…") if len(activity or "") > 22 else (activity or "Online")
                 line = f"🟡 {name_md} · `{act_label}`{meets_part}{link}"
                 online_hosts.append((line, last_ts, meets))
         else:
-            line = f"🔴 {name_md} · {tier}{meets_part}{last_part}{link}"
+            line = f"🔴 {name_md}{tier_part}{meets_part}{last_part}{link}"
             offline_hosts.append((line, last_ts, meets))
 
     # Sort offline: most recently active first, then by career meets desc
