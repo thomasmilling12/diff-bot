@@ -8106,7 +8106,7 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
     if gta_hosts:
         embed.add_field(
             name=f"🎮 In GTA  ({n_gta})",
-            value="\n".join(l for l, _, _ in gta_hosts),
+            value="\n\n".join(l for l, _, _ in gta_hosts),
             inline=False,
         )
     else:
@@ -8118,17 +8118,17 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
     if online_hosts:
         embed.add_field(
             name=f"🟡 Away  ({n_online})",
-            value="\n".join(l for l, _, _ in online_hosts),
+            value="\n\n".join(l for l, _, _ in online_hosts),
             inline=False,
         )
     if offline_hosts:
         embed.add_field(
             name=f"🔴 Offline  ({n_offline})",
-            value="\n".join(l for l, _, _ in offline_hosts),
+            value="\n\n".join(l for l, _, _ in offline_hosts),
             inline=False,
         )
 
-    embed.set_footer(text="DIFF Meets · updates every 5 min · click 🔄 Refresh for instant update · 🕸️ = inactive 30+ days")
+    embed.set_footer(text="DIFF Meets · auto-updates every 5 min · 🕸️ = inactive 30+ days")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
