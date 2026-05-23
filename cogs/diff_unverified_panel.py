@@ -64,6 +64,21 @@ def _set_msg_id(message_id: int) -> None:
     _save(d)
 
 
+def _get_last_ping_msg_id(guild_id: int) -> Optional[int]:
+    v = _load().get("last_ping_msgs", {}).get(str(guild_id))
+    return int(v) if v else None
+
+
+def _set_last_ping_msg_id(guild_id: int, message_id: Optional[int]) -> None:
+    d = _load()
+    d.setdefault("last_ping_msgs", {})
+    if message_id is None:
+        d["last_ping_msgs"].pop(str(guild_id), None)
+    else:
+        d["last_ping_msgs"][str(guild_id)] = message_id
+    _save(d)
+
+
 def _is_staff(member: discord.Member) -> bool:
     return (
         any(r.id in STAFF_ROLE_IDS for r in member.roles)
@@ -160,16 +175,31 @@ class PingButton(discord.ui.Button):
         )
 
         channel = interaction.channel
-        await channel.send(
+
+        # Delete the previous reminder (if any) so the channel never stacks
+        # duplicate Verification Reminder embeds.
+        prev_deleted = False
+        prev_id = _get_last_ping_msg_id(guild_id)
+        if prev_id:
+            try:
+                prev_msg = await channel.fetch_message(prev_id)
+                await prev_msg.delete()
+                prev_deleted = True
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+            _set_last_ping_msg_id(guild_id, None)
+
+        new_msg = await channel.send(
             content=role.mention,
             embed=ping_embed,
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
+        _set_last_ping_msg_id(guild_id, new_msg.id)
 
-        await interaction.followup.send(
-            f"✅ Pinged the unverified role — **{count}** member(s) notified in channel.",
-            ephemeral=True,
-        )
+        confirm = f"✅ Pinged the unverified role — **{count}** member(s) notified in channel."
+        if prev_deleted:
+            confirm += "\n🧹 Removed previous Verification Reminder to keep the channel clean."
+        await interaction.followup.send(confirm, ephemeral=True)
 
 
 class ListUnverifiedButton(discord.ui.Button):
