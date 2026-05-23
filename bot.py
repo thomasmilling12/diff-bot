@@ -8055,6 +8055,7 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
         # and box the PSN in a code-block so it pops visually.
         psn_only = name.split(" | ")[0].strip()
         name_md  = f"`{psn_only}`"
+        activity_lower = (activity or "").lower()
 
         if is_online:
             if "grand theft auto" in activity_lower or "gta" in activity_lower:
@@ -8100,15 +8101,6 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
     # Next Meet field (top — ties host board to schedule)
     if _next_meet_value:
         embed.add_field(name="🏁 Next Meet", value=_next_meet_value, inline=False)
-
-    # Weekly summary as its own field
-    if _total_week > 0:
-        _wk_val = f"**{_total_week}** session{'s' if _total_week != 1 else ''} hosted"
-        if _top_host_name:
-            _wk_val += f"\n👑 Top host: **{_top_host_name}**"
-    else:
-        _wk_val = "*No sessions hosted yet this week.*"
-    embed.add_field(name="📅 This Week", value=_wk_val, inline=False)
 
     # Always show In GTA (empty state included so absence is obvious)
     if gta_hosts:
