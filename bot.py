@@ -1688,6 +1688,18 @@ def build_review_embed(app_id: str, applicant, answers: dict, ticket_channel_id=
     return embed
 
 
+_NONE_REPORTED_TOKENS = {"", "n", "no", "non", "none", "n/a", "na", "nothing", "nada", "nope", "-"}
+
+def _normalize_prior_history(raw: str) -> str:
+    """Normalize short 'none' answers to a clean badge; preserve real responses."""
+    if not raw:
+        return "✅ None reported"
+    cleaned = str(raw).strip().lower().rstrip(".")
+    if cleaned in _NONE_REPORTED_TOKENS:
+        return "✅ None reported"
+    return str(raw)[:1024]
+
+
 def build_tracker_embed(app_id: str, applicant, answers: dict, status: str, reviewer_text: str = "Not reviewed yet"):
     color_map = {
         "Approved": discord.Color.green(),
@@ -1696,47 +1708,107 @@ def build_tracker_embed(app_id: str, applicant, answers: dict, status: str, revi
         "More Info Requested": discord.Color.yellow(),
         "Timed Out": discord.Color.dark_orange(),
     }
-    # Handle applicant who has left the server (applicant is None)
+    status_badge_map = {
+        "Pending":             "🟡 **PENDING REVIEW**",
+        "Approved":            "🟢 **APPROVED**",
+        "Denied":              "🔴 **DENIED**",
+        "Closed":              "⚫ **CLOSED**",
+        "More Info Requested": "🟠 **MORE INFO REQUESTED**",
+        "Timed Out":           "⏰ **TIMED OUT**",
+    }
+
+    # Resolve applicant (may have left the server)
+    gamertag = answers.get("gamertag") or ""
     if applicant is not None:
-        user_display = applicant.mention
-        user_id = applicant.id
+        user_id      = applicant.id
+        applicant_mention = applicant.mention
+        author_name  = applicant.display_name.split(" | ")[0].strip() or gamertag or "Applicant"
+        author_icon  = applicant.display_avatar.url
     else:
-        stored_id = answers.get("user_id", answers.get("applicant_id", "Unknown"))
-        stored_name = answers.get("username", "Unknown User")
-        user_display = f"{stored_name}\n`{stored_id}`"
-        user_id = stored_id
+        user_id      = answers.get("user_id", answers.get("applicant_id", "Unknown"))
+        stored_name  = answers.get("username", "Unknown User").split(" | ")[0].strip()
+        applicant_mention = f"<@{user_id}>" if str(user_id).isdigit() else stored_name
+        author_name  = stored_name or gamertag or "Applicant (left server)"
+        author_icon  = None
+
+    # Status headline — big colored badge at the top
+    status_badge = status_badge_map.get(status, f"**{status}**")
+    description  = f"{status_badge}\n*DIFF Crew Application*"
 
     embed = discord.Embed(
-        title=f"Application Tracker #{app_id}",
-        description="DIFF Crew Application",
+        description=description,
         color=color_map.get(status, discord.Color.orange()),
         timestamp=utc_now(),
     )
-    embed.add_field(name="👤 Applicant", value=user_display, inline=True)
-    embed.add_field(name="🎮 Gamertag", value=answers.get("gamertag", "N/A"), inline=True)
-    embed.add_field(name="📊 Status", value=make_status_emoji(status), inline=True)
+    if author_icon:
+        embed.set_author(name=author_name, icon_url=author_icon)
+    else:
+        embed.set_author(name=author_name)
+
+    # Clean applicant field — just the mention (no broken "@🆔 -" prefix)
+    embed.add_field(name="👤 Applicant", value=applicant_mention, inline=True)
+    embed.add_field(name="🎮 Gamertag", value=gamertag or "N/A", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+
     embed.add_field(name="🏆 GTA Rank", value=answers.get("gta_rank", "N/A"), inline=True)
     embed.add_field(name="🎂 Age", value=answers.get("age", "N/A"), inline=True)
-    prior = answers.get("prior_history", "N/A")
-    embed.add_field(name="⚠️ Prior Warnings / Bans", value=prior if prior else "None", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+    embed.add_field(
+        name="⚠️ Prior Warnings / Bans",
+        value=_normalize_prior_history(answers.get("prior_history", "")),
+        inline=False,
+    )
+
+    # Submitted — relative timestamp with full date on hover
     submitted_at = answers.get("submitted_at", "")
+    submitted_display = ""
     if submitted_at:
         try:
             from datetime import datetime as _dt
             parsed = _dt.fromisoformat(submitted_at.replace("Z", "+00:00"))
-            submitted_display = f"<t:{int(parsed.timestamp())}:F>"
+            _ts = int(parsed.timestamp())
+            submitted_display = f"<t:{_ts}:R>\n-# <t:{_ts}:F>"
         except Exception:
             submitted_display = submitted_at[:19]
     else:
-        submitted_display = "N/A"
+        # Fallback: if missing, use the embed's own timestamp so card never says "N/A"
+        _now_ts = int(utc_now().timestamp())
+        submitted_display = f"<t:{_now_ts}:R>\n-# <t:{_now_ts}:F>"
+
     embed.add_field(name="📅 Submitted", value=submitted_display, inline=True)
     embed.add_field(name="🔍 Reviewed By", value=reviewer_text, inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)
+
     deny_reason = answers.get("deny_reason", "")
     if deny_reason:
         embed.add_field(name="📝 Decision Notes", value=deny_reason[:1024], inline=False)
-    embed.set_footer(text=f"Applicant ID: {user_id}")
+
+    embed.set_footer(text=f"App #{app_id} · Applicant ID: {user_id}")
     return embed
+
+
+def build_tracker_view(answers: dict, status: str) -> "discord.ui.View | None":
+    """Quick-action view shown on Pending tracker cards.
+    A 'Jump to Review Ticket' link button so leadership can act in one click
+    without duplicating the (large) approve/deny logic that already lives on the
+    review buttons inside the ticket channel."""
+    if status not in {"Pending", "More Info Requested"}:
+        return None
+    ticket_id = answers.get("ticket_channel_id")
+    if not ticket_id:
+        return None
+    guild_id = answers.get("guild_id") or (bot.guilds[0].id if bot.guilds else None)
+    if not guild_id:
+        return None
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(
+        label="Open Review Ticket",
+        emoji="🎫",
+        style=discord.ButtonStyle.link,
+        url=f"https://discord.com/channels/{guild_id}/{ticket_id}",
+    ))
+    return v
 
 
 def build_denied_result_embed(custom_deny_reason: str):
@@ -2190,7 +2262,7 @@ class ReviewView(discord.ui.View):
                     except Exception:
                         applicant = None
                     tracker_embed = build_tracker_embed(self.app_id, applicant, record, new_status, reviewer.mention)
-                    await tracker_msg.edit(embed=tracker_embed)
+                    await tracker_msg.edit(embed=tracker_embed, view=None)
                 except Exception:
                     pass
             if close_ticket and record.get("ticket_channel_id"):
@@ -2293,7 +2365,7 @@ class RequestMoreInfoModal(discord.ui.Modal, title="Request More Info"):
                     "More Info Requested",
                     interaction.user.mention,
                 )
-                await tracker_msg.edit(embed=tracker_embed)
+                await tracker_msg.edit(embed=tracker_embed, view=None)
             except Exception:
                 pass
         await interaction.response.send_message("Requested more info from the applicant.", ephemeral=True)
@@ -2409,7 +2481,7 @@ class TicketAcceptModal(discord.ui.Modal, title="Accept Applicant"):
             if isinstance(tracker_ch, discord.TextChannel) and record.get("tracker_message_id"):
                 tracker_msg = await tracker_ch.fetch_message(record["tracker_message_id"])
                 t_emb = build_tracker_embed(app_id, applicant, record, "Approved", interaction.user.mention)
-                await tracker_msg.edit(embed=t_emb)
+                await tracker_msg.edit(embed=t_emb, view=None)
         except Exception:
             pass
         try:
@@ -2488,7 +2560,7 @@ class TicketDenyModal(discord.ui.Modal, title="Deny Applicant"):
             if isinstance(tracker_ch, discord.TextChannel) and record.get("tracker_message_id"):
                 tracker_msg = await tracker_ch.fetch_message(record["tracker_message_id"])
                 t_emb = build_tracker_embed(app_id, applicant, record, "Denied", interaction.user.mention)
-                await tracker_msg.edit(embed=t_emb)
+                await tracker_msg.edit(embed=t_emb, view=None)
         except Exception:
             pass
         denied_embed = build_denied_result_embed(deny_reason)
@@ -8880,7 +8952,8 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
         review_view = ReviewView(app_id=app_id, applicant_id=interaction.user.id)
         review_message = await review_channel.send(embed=review_embed, view=review_view)
         tracker_embed = build_tracker_embed(app_id, interaction.user, answers, "Pending")
-        tracker_message = await tracker_channel.send(embed=tracker_embed)
+        tracker_view  = build_tracker_view(answers, "Pending")
+        tracker_message = await tracker_channel.send(embed=tracker_embed, view=tracker_view)
         save_app(app_id, {
             "app_id": app_id,
             "user_id": interaction.user.id,
@@ -17477,7 +17550,7 @@ async def application_timeout_loop():
                             "Timed Out",
                             "System Auto Timeout",
                         )
-                        await tracker_msg.edit(embed=tracker_embed)
+                        await tracker_msg.edit(embed=tracker_embed, view=None)
                     except Exception:
                         pass
                 if isinstance(ticket_channel, discord.TextChannel):
