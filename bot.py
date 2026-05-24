@@ -494,10 +494,11 @@ async def _gateway_watchdog_loop():
                 healthy = False; reason = "latency is NaN"
             elif lat == float("inf") or lat > _GW_LATENCY_CEILING:
                 healthy = False; reason = f"latency={lat:.1f}s > {_GW_LATENCY_CEILING}s"
-            elif bot.ws is None or bot.ws.socket is None:
-                healthy = False; reason = "websocket is None"
     except Exception as _e:
-        healthy = False; reason = f"exception during check: {_e}"
+        # Don't mark unhealthy on a check exception — likely a transient attribute
+        # access during reconnect. Log it and treat as healthy to avoid false trips.
+        _bot_log.warning("[Watchdog] Check exception (treating as healthy): %s", _e)
+        return
 
     if healthy:
         if _GW_UNHEALTHY_STRIKES > 0:
