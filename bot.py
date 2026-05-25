@@ -14865,12 +14865,19 @@ class _OfficialMeetRSVPView(discord.ui.View):
 
     @discord.ui.button(label="🚫 Cancel Meet", style=discord.ButtonStyle.secondary, custom_id="diff_om_ctrl:cancel", row=2)
     async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # BUGFIX: never silently return — always respond to the interaction or
+        # Discord shows "This interaction failed" to the user.
         if not isinstance(interaction.user, discord.Member):
-            return
-        is_staff = (
-            interaction.user.guild_permissions.manage_guild
-            or any(r.id in _JOIN_STAFF_ROLE_IDS for r in interaction.user.roles)
-        )
+            return await interaction.response.send_message(
+                "This action must be used inside the server.", ephemeral=True
+            )
+        try:
+            is_staff = (
+                interaction.user.guild_permissions.manage_guild
+                or any(r.id in _JOIN_STAFF_ROLE_IDS for r in interaction.user.roles)
+            )
+        except Exception:
+            is_staff = False
         if not is_staff:
             return await interaction.response.send_message("Only staff can cancel a meet.", ephemeral=True)
         msg_id = interaction.message.id
@@ -14878,9 +14885,15 @@ class _OfficialMeetRSVPView(discord.ui.View):
         if not record:
             return await interaction.response.send_message("Meet record not found.", ephemeral=True)
         if record.ended:
-            return await interaction.response.send_message("This meet has already ended.", ephemeral=True)
+            return await interaction.response.send_message("This meet has already ended (or already cancelled).", ephemeral=True)
 
-        await interaction.response.defer(ephemeral=True)
+        # Defer first so we always have ≥15 min to finish even on slow Discord API
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.InteractionResponded:
+            pass
+        except Exception as _e:
+            _bot_log.warning("[CancelMeet] defer failed: %s", _e)
 
         # Post cancellation notice in the meet channel
         cancel_embed = discord.Embed(
@@ -14937,15 +14950,23 @@ class _OfficialMeetRSVPView(discord.ui.View):
         except Exception:
             pass
 
-        await _om_staff_log("Meet Cancelled", record, interaction.user)
-        await interaction.followup.send("Meet cancelled and the channel has been notified.", ephemeral=True)
+        try:
+            await _om_staff_log("Meet Cancelled", record, interaction.user)
+        except Exception as _e:
+            _bot_log.warning("[CancelMeet] staff log failed: %s", _e)
 
-        # Refresh panel so next-meet field updates
+        # ALWAYS send a followup so the interaction resolves cleanly
+        try:
+            await interaction.followup.send("Meet cancelled and the channel has been notified.", ephemeral=True)
+        except Exception as _e:
+            _bot_log.warning("[CancelMeet] followup failed: %s", _e)
+
+        # Refresh panel so next-meet field updates (non-critical — never crashes the click)
         if guild:
             try:
                 await _om_panel_post_or_refresh(guild, force_repost=False)
-            except Exception:
-                pass
+            except Exception as _e:
+                _bot_log.warning("[CancelMeet] panel refresh failed: %s", _e)
 
 
 async def _om_staff_log(title: str, record: _OmRecord, acted_by: discord.Member) -> None:
