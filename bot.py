@@ -20144,7 +20144,8 @@ def _hp_put(msg_id: int, state: dict) -> None:
     data[str(msg_id)] = state
     _hp_save_all(data)
 
-def _hp_update(msg_id: int, mutator) -> dict | None:
+def _hp_update(msg_id, mutator) -> dict | None:
+    """Atomic load-mutate-save for a single record. Accepts int or str msg_id."""
     data = _hp_load_all()
     key = str(msg_id)
     if key not in data:
@@ -20152,6 +20153,12 @@ def _hp_update(msg_id: int, mutator) -> dict | None:
     mutator(data[key])
     _hp_save_all(data)
     return data[key]
+
+def _hp_delete(msg_id) -> None:
+    """Atomic delete of a single record."""
+    data = _hp_load_all()
+    if data.pop(str(msg_id), None) is not None:
+        _hp_save_all(data)
 
 def _hp_is_authorized(member) -> bool:
     if not isinstance(member, discord.Member):
@@ -25122,78 +25129,115 @@ async def cmd_backup_now(ctx):
 # ─── Host Posters reminder + escalation loop ─────────────────────────────
 @tasks.loop(minutes=5)
 async def _host_posters_reminder_loop():
+    """Per-record atomic update loop — never holds a whole-file snapshot across
+    awaits, so concurrent button clicks can never be clobbered by this loop.
+
+    Trigger semantics: each fire-once flag (reminded_t2h, escalated_t30m) is
+    set if we're inside the window OR slightly past it (5-min grace) and the
+    flag is still false. This makes reminders resilient to delayed ticks /
+    short outages — the flag itself prevents duplicate fires."""
     try:
-        data = _hp_load_all()
-        if not data:
+        # Snapshot keys only — read fresh state for each key inside the loop
+        keys = list(_hp_load_all().keys())
+        if not keys:
             return
         now_ts = datetime.now(timezone.utc).timestamp()
-        changed = False
-        prune_keys: list[str] = []
         guild = bot.get_guild(GUILD_ID)
-        for key, state in list(data.items()):
-            meet_ts = state.get("meet_ts")
-            if not meet_ts:
-                try:
+
+        T2H = 2 * 3600
+        T30M = 30 * 60
+        GRACE = 5 * 60  # let a reminder fire up to 5 min late before giving up
+
+        for key in keys:
+            try:
+                state = _hp_load_all().get(key)
+                if not state:
+                    continue
+                meet_ts = state.get("meet_ts")
+
+                # --- Pruning ---
+                if not meet_ts:
+                    # No parseable meet time. Prune by created_at (or by first-seen
+                    # fallback if created_at is also unparseable, so records can
+                    # never become immortal).
+                    created = 0.0
                     created_iso = state.get("created_at", "")
-                    created = datetime.fromisoformat(created_iso).timestamp() if created_iso else 0
-                except Exception:
-                    created = 0
-                if created and now_ts - created > 7 * 86400:
-                    prune_keys.append(key)
-                continue
-
-            # Prune past meets
-            if now_ts - meet_ts > _HOST_POSTER_RETENTION_HOURS * 3600:
-                prune_keys.append(key)
-                continue
-
-            secs_to_meet = meet_ts - now_ts
-
-            # T-2h reminder DM
-            if 0 < secs_to_meet <= 2 * 3600 and not state.get("reminded_t2h"):
-                if guild is not None:
-                    responded = set(state.get("responses", {}).keys())
-                    missing = [uid for uid in state.get("assigned_host_ids", []) if str(uid) not in responded]
-                    for uid in missing:
-                        m = guild.get_member(uid)
-                        if m is None or m.bot:
-                            continue
+                    if created_iso:
                         try:
-                            await m.send(
-                                f"⏰ **2-hour reminder** — you haven't confirmed your meet yet.\n"
-                                f"Theme: **{state.get('theme') or 'Upcoming meet'}**\n"
-                                f"Start: <t:{meet_ts}:R>\n"
-                                f"Please tap **✅ Attending** in #hosts-posters."
-                            )
+                            created = datetime.fromisoformat(created_iso).timestamp()
                         except Exception:
-                            pass
-                state["reminded_t2h"] = True
-                changed = True
+                            created = 0.0
+                    if not created:
+                        # Stamp a recoverable timestamp so we'll prune later
+                        def _stamp(s, _now_iso=datetime.now(timezone.utc).isoformat()):
+                            s["created_at"] = _now_iso
+                        _hp_update(key, _stamp)
+                        continue
+                    if now_ts - created > 7 * 86400:
+                        _hp_delete(key)
+                    continue
 
-            # T-30m staff escalation if no confirmations
-            if 0 < secs_to_meet <= 30 * 60 and not state.get("escalated_t30m"):
-                attending = [v for v in state.get("responses", {}).values() if v.get("status") == "attending"]
-                if not attending and guild is not None:
-                    staff_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-                    if isinstance(staff_ch, discord.TextChannel):
-                        jump = f"https://discord.com/channels/{state.get('guild_id', GUILD_ID)}/{state.get('channel_id')}/{state.get('bot_msg_id', key)}"
-                        host_pings = " ".join(f"<@{u}>" for u in state.get("assigned_host_ids", []))
-                        try:
-                            await staff_ch.send(
-                                f"⚠️ **Host poster T-30m, no Attending confirmations** {host_pings}\n"
-                                f"Meet starts <t:{meet_ts}:R>\n{jump}"
-                            )
-                        except Exception as _e:
-                            print(f"[host-posters] T-30m escalation failed: {_e!r}")
-                state["escalated_t30m"] = True
-                changed = True
+                # Past-meet prune
+                if now_ts - meet_ts > _HOST_POSTER_RETENTION_HOURS * 3600:
+                    _hp_delete(key)
+                    continue
 
-        if prune_keys:
-            for k in prune_keys:
-                data.pop(k, None)
-            changed = True
-        if changed:
-            _hp_save_all(data)
+                secs_to_meet = meet_ts - now_ts
+
+                # --- T-2h reminder DM ---
+                # Fire if we're inside the 2h window OR up to GRACE past meet
+                # start (handles loop-tick delay) AND haven't already fired.
+                if (secs_to_meet <= T2H and secs_to_meet > -GRACE
+                        and not state.get("reminded_t2h")):
+                    if guild is not None:
+                        responded = set(state.get("responses", {}).keys())
+                        missing = [uid for uid in state.get("assigned_host_ids", [])
+                                   if str(uid) not in responded]
+                        for uid in missing:
+                            m = guild.get_member(uid)
+                            if m is None or m.bot:
+                                continue
+                            try:
+                                await m.send(
+                                    f"⏰ **2-hour reminder** — you haven't confirmed your meet yet.\n"
+                                    f"Theme: **{state.get('theme') or 'Upcoming meet'}**\n"
+                                    f"Start: <t:{meet_ts}:R>\n"
+                                    f"Please tap **✅ Attending** in #hosts-posters."
+                                )
+                            except Exception:
+                                pass
+                    # Atomic flag set — won't clobber any button click that
+                    # happened during the await sends above.
+                    _hp_update(key, lambda s: s.__setitem__("reminded_t2h", True))
+
+                # --- T-30m staff escalation ---
+                if (secs_to_meet <= T30M and secs_to_meet > -GRACE
+                        and not state.get("escalated_t30m")):
+                    # Re-read responses fresh so we don't escalate a host who
+                    # just clicked Attending during the await above.
+                    fresh = _hp_load_all().get(key) or state
+                    attending = [v for v in fresh.get("responses", {}).values()
+                                 if v.get("status") == "attending"]
+                    if not attending and guild is not None:
+                        staff_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+                        if isinstance(staff_ch, discord.TextChannel):
+                            jump = (f"https://discord.com/channels/"
+                                    f"{fresh.get('guild_id', GUILD_ID)}/"
+                                    f"{fresh.get('channel_id')}/"
+                                    f"{fresh.get('bot_msg_id', key)}")
+                            host_pings = " ".join(f"<@{u}>" for u in fresh.get("assigned_host_ids", []))
+                            try:
+                                await staff_ch.send(
+                                    f"⚠️ **Host poster T-30m, no Attending confirmations** {host_pings}\n"
+                                    f"Meet starts <t:{meet_ts}:R>\n{jump}"
+                                )
+                            except Exception as _e:
+                                print(f"[host-posters] T-30m escalation failed: {_e!r}")
+                    _hp_update(key, lambda s: s.__setitem__("escalated_t30m", True))
+
+            except Exception as _per_key_err:
+                print(f"[host-posters] per-record err on {key}: {_per_key_err!r}")
+                continue
     except Exception as _e:
         print(f"[host-posters] reminder loop error: {_e!r}")
 
