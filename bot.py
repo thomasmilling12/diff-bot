@@ -18059,7 +18059,8 @@ _POPUP_TZ_MAP = {
 }
 
 # ── Pop-Up Meet system config (editable) ─────────────────────────────────────
-_POPUP_AUTO_END_HOURS = 3        # auto-end any pop-up older than N hours
+_POPUP_AUTO_END_HOURS = 3        # auto-end any LIVE pop-up older than N hours (measured from started_at)
+_POPUP_ABANDON_HOURS  = 24       # auto-end any never-started pop-up older than N hours (measured from created_at)
 _POPUP_MAX_ACTIVE     = 5        # cap simultaneous active pop-ups per guild
 _POPUP_NOTIFY_OPTIONS = [
     ("both",    "🔔 Both — PlayStation + Car Meet"),
@@ -19212,16 +19213,29 @@ async def _popup_auto_end_loop() -> None:
                 except Exception:
                     continue
                 for meet in actives:
+                    # Decide which clock to measure against:
+                    #   • Live meets  → started_at + _POPUP_AUTO_END_HOURS (3h)
+                    #   • Never-started → created_at + _POPUP_ABANDON_HOURS (24h)
+                    # This stops meets scheduled hours in advance from being killed
+                    # before their scheduled start time.
                     try:
-                        created_iso = meet["created_at"]
-                        created = datetime.fromisoformat(created_iso)
-                        if created.tzinfo is None:
-                            created = created.replace(tzinfo=timezone.utc)
+                        is_started = int(_popup_meet_col(meet, "is_started") or 0) == 1
+                        if is_started:
+                            anchor_iso = _popup_meet_col(meet, "started_at") or meet["created_at"]
+                            cap_hours  = _POPUP_AUTO_END_HOURS
+                            close_reason_h = _POPUP_AUTO_END_HOURS
+                        else:
+                            anchor_iso = meet["created_at"]
+                            cap_hours  = _POPUP_ABANDON_HOURS
+                            close_reason_h = _POPUP_ABANDON_HOURS
+                        anchor = datetime.fromisoformat(anchor_iso)
+                        if anchor.tzinfo is None:
+                            anchor = anchor.replace(tzinfo=timezone.utc)
                     except Exception:
                         continue
-                    age_h = (now_utc - created).total_seconds() / 3600.0
-                    # Last-call DM ~30 min before auto-close (once per meet)
-                    if (_POPUP_AUTO_END_HOURS - 0.5) <= age_h < _POPUP_AUTO_END_HOURS:
+                    age_h = (now_utc - anchor).total_seconds() / 3600.0
+                    # Last-call DM ~30 min before auto-close (once per meet, live meets only)
+                    if is_started and (cap_hours - 0.5) <= age_h < cap_hours:
                         mid = int(meet["id"])
                         if mid not in _popup_lastcall_sent:
                             _popup_lastcall_sent.add(mid)
@@ -19230,12 +19244,12 @@ async def _popup_auto_end_loop() -> None:
                                 if host_mem:
                                     await host_mem.send(
                                         f"⏰ **Last call** — your pop-up meet (#{mid}) will auto-close "
-                                        f"in ~30 minutes ({_POPUP_AUTO_END_HOURS}h cap). "
+                                        f"in ~30 minutes ({cap_hours}h cap). "
                                         f"Hit **🏁 End Meet** when you're done, or just let it auto-close."
                                     )
                             except Exception:
                                 pass
-                    if age_h < _POPUP_AUTO_END_HOURS:
+                    if age_h < cap_hours:
                         continue
                     _popup_lastcall_sent.discard(int(meet["id"]))
                     meet_id = int(meet["id"])
@@ -19263,18 +19277,31 @@ async def _popup_auto_end_loop() -> None:
                             except Exception:
                                 pass
                         # Thread thank-you for auto-ended meets too
+                        _reason_txt = (
+                            f"auto-closed after {close_reason_h}h"
+                            if is_started else
+                            f"auto-closed — never started within {close_reason_h}h of being posted"
+                        )
                         await _popup_post_thread_summary(
-                            g, meet, meet_id, counts, reason=f"auto-closed after {_POPUP_AUTO_END_HOURS}h"
+                            g, meet, meet_id, counts, reason=_reason_txt
                         )
                         # DM the host so they know it auto-closed
                         try:
                             host_mem = g.get_member(int(meet["host_user_id"]))
                             if host_mem:
-                                await host_mem.send(
-                                    f"⏱ Your pop-up meet (ID #{meet_id}) was auto-closed after "
-                                    f"{_POPUP_AUTO_END_HOURS} hours. "
-                                    f"Final RSVPs: {counts['pullup']} pulled up, {counts['cantmake']} couldn't make it."
-                                )
+                                if is_started:
+                                    _dm = (
+                                        f"⏱ Your pop-up meet (ID #{meet_id}) was auto-closed after "
+                                        f"{close_reason_h} hours. "
+                                        f"Final RSVPs: {counts['pullup']} pulled up, {counts['cantmake']} couldn't make it."
+                                    )
+                                else:
+                                    _dm = (
+                                        f"⏱ Your pop-up meet (ID #{meet_id}) was auto-closed because it "
+                                        f"was never started within {close_reason_h} hours of being posted. "
+                                        f"Final RSVPs: {counts['pullup']} pulled up, {counts['cantmake']} couldn't make it."
+                                    )
+                                await host_mem.send(_dm)
                         except Exception:
                             pass
                     except Exception as _ie:
