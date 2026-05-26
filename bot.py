@@ -15979,6 +15979,8 @@ class _PopupDB:
             ("is_ended",           "INTEGER NOT NULL DEFAULT 0"),
             ("host_display_name",  "TEXT"),
             ("host_avatar_url",    "TEXT"),
+            ("voice_channel_id",   "INTEGER"),
+            ("capacity",           "INTEGER NOT NULL DEFAULT 0"),
         ):
             try:
                 cur.execute(f"ALTER TABLE popup_meets ADD COLUMN {col} {defn}")
@@ -15987,17 +15989,44 @@ class _PopupDB:
         self.conn.commit()
 
     def add_meet(self, guild_id, host_id, theme, location, time_text, extra_notes,
-                 ping_ps, ping_cm, host_display_name: str = "", host_avatar_url: str = "") -> int:
+                 ping_ps, ping_cm, host_display_name: str = "", host_avatar_url: str = "",
+                 voice_channel_id: int = 0, capacity: int = 0) -> int:
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO popup_meets (guild_id, host_user_id, theme, location, time_text, extra_notes,
-                ping_playstation, ping_carmeet, created_at, host_display_name, host_avatar_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ping_playstation, ping_carmeet, created_at, host_display_name, host_avatar_url,
+                voice_channel_id, capacity)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (guild_id, host_id, theme, location, time_text, extra_notes,
               1 if ping_ps else 0, 1 if ping_cm else 0,
-              datetime.now(timezone.utc).isoformat(), host_display_name, host_avatar_url))
+              datetime.now(timezone.utc).isoformat(), host_display_name, host_avatar_url,
+              int(voice_channel_id or 0), int(capacity or 0)))
         self.conn.commit()
         return int(cur.lastrowid)
+
+    def get_host_active_meet(self, guild_id: int, host_id: int):
+        """One-active-per-host check for cooldown enforcement."""
+        return self.conn.execute(
+            "SELECT id FROM popup_meets WHERE guild_id=? AND host_user_id=? AND is_ended=0 AND message_id IS NOT NULL",
+            (guild_id, host_id),
+        ).fetchone()
+
+    def promote_oldest_waitlist(self, guild_id: int, meet_id: int) -> int | None:
+        """Promote the oldest waitlisted member to pullup. Returns the user_id promoted, or None."""
+        row = self.conn.execute(
+            "SELECT user_id FROM popup_rsvps WHERE guild_id=? AND meet_id=? AND status='waitlist' "
+            "ORDER BY updated_at ASC LIMIT 1",
+            (guild_id, meet_id),
+        ).fetchone()
+        if not row:
+            return None
+        uid = int(row[0])
+        self.conn.execute(
+            "UPDATE popup_rsvps SET status='pullup', updated_at=? WHERE guild_id=? AND meet_id=? AND user_id=?",
+            (datetime.now(timezone.utc).isoformat(), guild_id, meet_id, uid),
+        )
+        self.conn.commit()
+        return uid
 
     def set_message_id(self, meet_id: int, message_id: int) -> None:
         self.conn.execute("UPDATE popup_meets SET message_id=? WHERE id=?", (message_id, meet_id))
@@ -16051,7 +16080,7 @@ class _PopupDB:
         return row[0] if row else None
 
     def get_rsvp_counts(self, guild_id: int, meet_id: int) -> dict:
-        counts = {"pullup": 0, "cantmake": 0}
+        counts = {"pullup": 0, "cantmake": 0, "waitlist": 0}
         for row in self.conn.execute(
             "SELECT status, COUNT(*) FROM popup_rsvps WHERE guild_id=? AND meet_id=? GROUP BY status",
             (guild_id, meet_id),
@@ -16094,6 +16123,49 @@ _POPUP_NOTIFY_OPTIONS = [
     ("carmeet", "🚗 Car Meet only"),
     ("none",    "🤫 No pings (silent post)"),
 ]
+
+# Quick-pick themes for the pre-modal step. "custom" means use whatever the host
+# types in the modal\'s theme field (or "Open Class" if blank).
+_POPUP_THEME_OPTIONS = [
+    ("custom",     "✍️  Custom (type in modal)"),
+    ("open",       "🏁 Open Class — any clean build"),
+    ("jdm",        "🇯🇵 JDM Night"),
+    ("euros",      "🇪🇺 Clean Euros"),
+    ("supers",     "🏎️  Supers / Hypers"),
+    ("offroad",    "🚙 Off-Road"),
+    ("cinematic",  "🎬 Cinematic / Photo Run"),
+    ("muscle",     "🇺🇸 American Muscle"),
+    ("tuners",     "🛠️  Tuners & Modified"),
+]
+_POPUP_THEME_LABEL_FROM_KEY = {
+    "open": "Open Class", "jdm": "JDM Night", "euros": "Clean Euros",
+    "supers": "Supers / Hypers", "offroad": "Off-Road",
+    "cinematic": "Cinematic / Photo Run", "muscle": "American Muscle",
+    "tuners": "Tuners & Modified",
+}
+
+
+def _popup_meet_col(meet, col: str):
+    """Safe-read a column from a sqlite3.Row that might not yet have the col
+    (older rows pre-migration). Returns 0 / None on missing or KeyError."""
+    try:
+        return meet[col]
+    except Exception:
+        return 0
+
+
+def _popup_parse_capacity(raw: str) -> int:
+    """Parse a capacity field. 0 = unlimited. Clamps to 1..50 when valid."""
+    if not raw:
+        return 0
+    import re
+    m = re.search(r"\d{1,3}", str(raw))
+    if not m:
+        return 0
+    n = int(m.group(0))
+    if n <= 0:
+        return 0
+    return min(50, n)
 
 
 def _popup_sanitize(text: str) -> str:
@@ -16208,6 +16280,9 @@ def _popup_build_meet_embed(
     pullup_count: int = 0,
     cantmake_count: int = 0,
     is_ended: bool = False,
+    voice_channel_id: int = 0,
+    capacity: int = 0,
+    waitlist_count: int = 0,
 ) -> discord.Embed:
     if is_ended:
         title = "🛑 DIFF Pop-Up Meet — Ended"
@@ -16236,11 +16311,17 @@ def _popup_build_meet_embed(
     # Row 2: Time + Host + Pulling Up (3 columns)
     embed.add_field(name="🕒 Time",  value=time_text,         inline=True)
     embed.add_field(name="👤 Host",  value=f"<@{host_id}>",   inline=True)
-    embed.add_field(
-        name="🚗 Pulling Up",
-        value=f"**{pullup_count}** confirmed" + (f"  •  {cantmake_count} can't make it" if cantmake_count else ""),
-        inline=True,
-    )
+    if capacity and capacity > 0:
+        _cap_str = f"**{pullup_count}/{capacity}** confirmed"
+    else:
+        _cap_str = f"**{pullup_count}** confirmed"
+    if cantmake_count:
+        _cap_str += f"  •  {cantmake_count} can\'t make it"
+    if waitlist_count:
+        _cap_str += f"  •  📋 {waitlist_count} on waitlist"
+    embed.add_field(name="🚗 Pulling Up", value=_cap_str, inline=True)
+    if voice_channel_id:
+        embed.add_field(name="🔊 Voice", value=f"<#{int(voice_channel_id)}>", inline=True)
     if notes:
         embed.add_field(name="📝 Notes", value=notes, inline=False)
 
@@ -16283,12 +16364,35 @@ class _PopupPullUpBtn(discord.ui.Button):
             return await interaction.response.send_message("This meet has already ended.", ephemeral=True)
 
         existing = _popup_db.get_user_rsvp(interaction.guild.id, self.meet_id, interaction.user.id)
-        if existing == "pullup":
+        cap = int(_popup_meet_col(meet, "capacity") or 0)
+        if existing in ("pullup", "waitlist"):
             _popup_db.remove_rsvp(interaction.guild.id, self.meet_id, interaction.user.id)
-            reply = "Removed your RSVP — you're no longer listed as pulling up."
+            reply = "Removed your RSVP."
+            # If a pullup spot opened up and capacity is enforced, promote next waitlister
+            if existing == "pullup" and cap > 0:
+                promoted = _popup_db.promote_oldest_waitlist(interaction.guild.id, self.meet_id)
+                if promoted:
+                    try:
+                        promoted_mem = interaction.guild.get_member(promoted)
+                        if promoted_mem:
+                            await promoted_mem.send(
+                                f"🎉 A spot opened up on pop-up meet #{self.meet_id} — you\'re now confirmed!"
+                            )
+                    except Exception:
+                        pass
         else:
-            _popup_db.set_rsvp(interaction.guild.id, self.meet_id, interaction.user.id, "pullup")
-            reply = "🚗 You're pulling up! See you there."
+            # Capacity check: at-or-over → waitlist
+            if cap > 0:
+                _cnt = _popup_db.get_rsvp_counts(interaction.guild.id, self.meet_id)
+                if _cnt.get("pullup", 0) >= cap:
+                    _popup_db.set_rsvp(interaction.guild.id, self.meet_id, interaction.user.id, "waitlist")
+                    reply = f"📋 Meet is full ({cap}/{cap}) — you\'re on the waitlist. We\'ll DM you if a spot opens."
+                else:
+                    _popup_db.set_rsvp(interaction.guild.id, self.meet_id, interaction.user.id, "pullup")
+                    reply = "🚗 You\'re pulling up! See you there."
+            else:
+                _popup_db.set_rsvp(interaction.guild.id, self.meet_id, interaction.user.id, "pullup")
+                reply = "🚗 You\'re pulling up! See you there."
 
         counts  = _popup_db.get_rsvp_counts(interaction.guild.id, self.meet_id)
         new_emb = _popup_build_meet_embed(
@@ -16296,6 +16400,9 @@ class _PopupPullUpBtn(discord.ui.Button):
             meet["extra_notes"] or "", self.meet_id, meet["host_user_id"],
             meet["host_display_name"] or "", meet["host_avatar_url"],
             counts["pullup"], counts["cantmake"],
+            voice_channel_id=_popup_meet_col(meet, "voice_channel_id"),
+            capacity=_popup_meet_col(meet, "capacity"),
+            waitlist_count=counts.get("waitlist", 0),
         )
         await interaction.response.edit_message(embed=new_emb)
         await interaction.followup.send(reply, ephemeral=True)
@@ -16332,6 +16439,9 @@ class _PopupCantMakeBtn(discord.ui.Button):
             meet["extra_notes"] or "", self.meet_id, meet["host_user_id"],
             meet["host_display_name"] or "", meet["host_avatar_url"],
             counts["pullup"], counts["cantmake"],
+            voice_channel_id=_popup_meet_col(meet, "voice_channel_id"),
+            capacity=_popup_meet_col(meet, "capacity"),
+            waitlist_count=counts.get("waitlist", 0),
         )
         await interaction.response.edit_message(embed=new_emb)
         await interaction.followup.send(reply, ephemeral=True)
@@ -16371,8 +16481,16 @@ class _PopupEndMeetBtn(discord.ui.Button):
             meet["extra_notes"] or "", self.meet_id, meet["host_user_id"],
             meet["host_display_name"] or "", meet["host_avatar_url"],
             counts["pullup"], counts["cantmake"], is_ended=True,
+            voice_channel_id=_popup_meet_col(meet, "voice_channel_id"),
+            capacity=_popup_meet_col(meet, "capacity"),
+            waitlist_count=counts.get("waitlist", 0),
         )
         await interaction.response.edit_message(embed=end_emb, view=None)
+        # Auto-unpin if we pinned it
+        try:
+            await interaction.message.unpin(reason=f"Pop-up meet #{self.meet_id} ended")
+        except Exception:
+            pass
 
 
 class _PopupMeetView(discord.ui.View):
@@ -16527,11 +16645,18 @@ class _PopupCreateBtn(discord.ui.Button):
             return await interaction.response.send_message(
                 "Only users with the **Host** role can create pop-up meets.", ephemeral=True
             )
-        # Step 1 of 2: show the "Who to Notify" dropdown first.
-        # Step 2 (Continue button) opens the modal with the chosen target.
-        view = _PopupNotifySelectView(user.id)
+        try:
+            existing = _popup_db.get_host_active_meet(interaction.guild.id, user.id) if interaction.guild else None
+        except Exception:
+            existing = None
+        if existing:
+            return await interaction.response.send_message(
+                f"⚠️ You already have an active pop-up (#{existing[0]}). End it first before starting another.",
+                ephemeral=True,
+            )
+        view = _PopupNotifySelectView(user.id, interaction.guild)
         await interaction.response.send_message(
-            "**Step 1 of 2 — Who should be pinged?**\nPick a target, then tap **Continue** to fill in the meet details.",
+            "**Step 1 of 2 — Set up the pings, theme, and optional voice channel.**\nDefaults are fine for most meets — just tap **Continue** when ready.",
             view=view,
             ephemeral=True,
         )
@@ -16684,12 +16809,19 @@ async def _popup_auto_end_loop() -> None:
                             meet["extra_notes"] or "", meet_id, meet["host_user_id"],
                             meet["host_display_name"] or "", meet["host_avatar_url"],
                             counts["pullup"], counts["cantmake"], is_ended=True,
+                            voice_channel_id=_popup_meet_col(meet, "voice_channel_id"),
+                            capacity=_popup_meet_col(meet, "capacity"),
+                            waitlist_count=counts.get("waitlist", 0),
                         )
                         ch = g.get_channel(_POPUP_PANEL_CHANNEL_ID)
                         if isinstance(ch, discord.TextChannel) and meet["message_id"]:
                             try:
                                 msg = await ch.fetch_message(int(meet["message_id"]))
                                 await msg.edit(embed=ended_embed, view=None)
+                                try:
+                                    await msg.unpin(reason=f"Pop-up meet #{meet_id} auto-ended")
+                                except Exception:
+                                    pass
                             except Exception:
                                 pass
                         # DM the host so they know it auto-closed
