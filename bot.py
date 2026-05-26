@@ -20111,42 +20111,235 @@ async def _before_join_micro_bump():
     await bot.wait_until_ready()
 
 # =========================
-# HOST POSTERS — received button
+# HOST POSTERS — persistent state + role-gated multi-action view
+# (upgrade May 26 2026: persistence, role-gate, theme/host/thumbnail, T-2h DM
+# + T-30m staff escalation, !editposter, user-ID tracking. Legacy custom_id
+# "diff_postmeet_received" kept for back-compat with messages from before the
+# upgrade — clicks on those are now treated as "Attending".)
 # =========================
-_postmeet_seen_by: dict[int, list[str]] = {}
+_HOST_POSTERS_FILE = os.path.join(DATA_FOLDER, "diff_host_posters.json")
+_HOST_POSTER_RETENTION_HOURS = 48  # prune entries N hours after meet starts
 
-class _PostmeetReceivedButton(discord.ui.Button):
-    def __init__(self, count: int = 0):
-        label = "✅ Mark Received" if count == 0 else f"✅ Received ({count})"
-        super().__init__(
-            style=discord.ButtonStyle.success,
-            label=label,
-            custom_id="diff_postmeet_received",
+def _hp_load_all() -> dict:
+    try:
+        with open(_HOST_POSTERS_FILE) as _f:
+            return json.load(_f) or {}
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, ValueError, TypeError, OSError) as _e:
+        print(f"[host-posters] state load failed ({_e!r}); starting fresh")
+        return {}
+
+def _hp_save_all(data: dict) -> None:
+    try:
+        _atomic_json_save(_HOST_POSTERS_FILE, data)
+    except Exception as _e:
+        print(f"[host-posters] failed to persist state: {_e!r}")
+
+def _hp_get(msg_id: int) -> dict | None:
+    return _hp_load_all().get(str(msg_id))
+
+def _hp_put(msg_id: int, state: dict) -> None:
+    data = _hp_load_all()
+    data[str(msg_id)] = state
+    _hp_save_all(data)
+
+def _hp_update(msg_id: int, mutator) -> dict | None:
+    data = _hp_load_all()
+    key = str(msg_id)
+    if key not in data:
+        return None
+    mutator(data[key])
+    _hp_save_all(data)
+    return data[key]
+
+def _hp_is_authorized(member) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    ids = {r.id for r in member.roles}
+    return HOST_ROLE_ID in ids or bool(ids & _LEADERSHIP_HOST_ROLE_IDS)
+
+def _hp_render_embed(state: dict) -> discord.Embed:
+    resp = state.get("responses", {}) or {}
+    statuses = {v.get("status") for v in resp.values()}
+    if "help" in statuses:
+        color = 0xF1C40F
+    elif "attending" in statuses:
+        color = 0x2ECC71
+    else:
+        color = state.get("color", 0xE91E63)
+
+    emb = discord.Embed(title="🏁 DIFF Host Posters", color=color)
+    theme = state.get("theme") or ""
+    if theme:
+        emb.description = f"**{theme}**"
+
+    ts = state.get("meet_ts")
+    if ts:
+        emb.add_field(name="📅 Date & Time", value=f"<t:{ts}:F>\n<t:{ts}:R>", inline=False)
+    else:
+        emb.add_field(name="📅 Date & Time", value=state.get("dt_value", "See poster"), inline=False)
+
+    host_ids = state.get("assigned_host_ids", []) or []
+    if host_ids:
+        emb.add_field(
+            name="🎤 Hosts",
+            value=" ".join(f"<@{hid}>" for hid in host_ids),
+            inline=False,
         )
 
+    attending = [uid for uid, v in resp.items() if v.get("status") == "attending"]
+    declined  = [uid for uid, v in resp.items() if v.get("status") == "declined"]
+    helping   = [uid for uid, v in resp.items() if v.get("status") == "help"]
+
+    def _fmt(ids):
+        return ", ".join(f"<@{i}>" for i in ids) if ids else "—"
+
+    emb.add_field(name=f"✅ Attending ({len(attending)})", value=_fmt(attending), inline=True)
+    emb.add_field(name=f"❌ Can't attend ({len(declined)})", value=_fmt(declined), inline=True)
+    emb.add_field(name=f"🆘 Need help ({len(helping)})", value=_fmt(helping), inline=True)
+
+    img = state.get("poster_url")
+    if img:
+        emb.set_image(url=img)
+    emb.set_thumbnail(url=_POSTMEET_LOGO_URL)
+
+    footer_bits = ["DIFF Meets • Host Poster"]
+    if state.get("edited_at"):
+        footer_bits.append("edited")
+    emb.set_footer(text=" • ".join(footer_bits))
+    return emb
+
+async def _hp_record_response(interaction: discord.Interaction, status: str) -> None:
+    member = interaction.user
+    if not _hp_is_authorized(member):
+        try:
+            await interaction.response.send_message(
+                "Only Hosts and leadership can respond to host posters.", ephemeral=True
+            )
+        except Exception:
+            pass
+        return
+
+    msg_id = interaction.message.id
+    now_iso = datetime.now(timezone.utc).isoformat()
+    uid = str(member.id)
+
+    def _mut(state: dict) -> None:
+        resp = state.setdefault("responses", {})
+        resp[uid] = {
+            "status": status,
+            "name": getattr(member, "display_name", str(member)),
+            "ts": now_iso,
+            "via": "button",
+        }
+
+    state = _hp_update(msg_id, _mut)
+    if state is None:
+        # Bootstrap for a message we don't know about (legacy / pre-upgrade post)
+        state = {
+            "guild_id": getattr(interaction.guild, "id", GUILD_ID),
+            "channel_id": getattr(interaction.channel, "id", _POSTMEET_HOST_POSTERS_ID),
+            "bot_msg_id": msg_id,
+            "responses": {uid: {"status": status, "name": getattr(member, "display_name", str(member)), "ts": now_iso, "via": "button"}},
+            "created_at": now_iso,
+            "assigned_host_ids": [],
+        }
+        if interaction.message.embeds:
+            old = interaction.message.embeds[0]
+            if old.image and old.image.url:
+                state["poster_url"] = old.image.url
+        _hp_put(msg_id, state)
+
+    new_embed = _hp_render_embed(state)
+    try:
+        await interaction.response.edit_message(embed=new_embed, view=_HostPosterActionsView())
+    except Exception as _e:
+        print(f"[host-posters] edit_message failed: {_e!r}")
+
+    if status == "help":
+        try:
+            guild = interaction.guild
+            staff_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+            if isinstance(staff_ch, discord.TextChannel):
+                jump = interaction.message.jump_url
+                await staff_ch.send(
+                    f"🆘 **Host needs help** — {member.mention} requested help on a host poster.\n{jump}"
+                )
+        except Exception as _e:
+            print(f"[host-posters] staff help-ping failed: {_e!r}")
+
+
+class _HostPosterAttendingBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(style=discord.ButtonStyle.success, label="✅ Attending",
+                         custom_id="diff_hp_attending")
     async def callback(self, interaction: discord.Interaction) -> None:
-        msg_id = interaction.message.id
-        name   = interaction.user.display_name
-        seen   = _postmeet_seen_by.setdefault(msg_id, [])
-        if name not in seen:
-            seen.append(name)
-        old_embeds = interaction.message.embeds
-        if old_embeds:
-            emb  = discord.Embed.from_dict(old_embeds[0].to_dict())
-            kept = [f for f in emb.fields if f.name != "👁️ Seen By"]
-            emb.clear_fields()
-            for f in kept:
-                emb.add_field(name=f.name, value=f.value, inline=f.inline)
-            emb.add_field(name="👁️ Seen By", value=", ".join(seen), inline=False)
-        else:
-            emb = None
-        new_view = _PostmeetReceivedView(count=len(seen))
-        await interaction.response.edit_message(embed=emb, view=new_view)
+        await _hp_record_response(interaction, "attending")
+
+class _HostPosterDeclineBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(style=discord.ButtonStyle.danger, label="❌ Can't attend",
+                         custom_id="diff_hp_decline")
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _hp_record_response(interaction, "declined")
+
+class _HostPosterHelpBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(style=discord.ButtonStyle.secondary, label="🆘 Need help",
+                         custom_id="diff_hp_help")
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _hp_record_response(interaction, "help")
+
+class _HostPosterActionsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(_HostPosterAttendingBtn())
+        self.add_item(_HostPosterDeclineBtn())
+        self.add_item(_HostPosterHelpBtn())
+
+# --- LEGACY back-compat: pre-upgrade messages still have the old custom_id
+# button. Keep it registered so old clicks don't silently fail.
+class _PostmeetReceivedButton(discord.ui.Button):
+    def __init__(self, count: int = 0):
+        super().__init__(style=discord.ButtonStyle.success, label="✅ Attending",
+                         custom_id="diff_postmeet_received")
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _hp_record_response(interaction, "attending")
 
 class _PostmeetReceivedView(discord.ui.View):
     def __init__(self, count: int = 0):
         super().__init__(timeout=None)
-        self.add_item(_PostmeetReceivedButton(count=count))
+        self.add_item(_PostmeetReceivedButton())
+
+async def _hp_dm_mirror(guild, state: dict, jump_url: str) -> None:
+    if guild is None:
+        return
+    sent: list[int] = []
+    for uid in state.get("assigned_host_ids", []):
+        if uid == state.get("poster_user_id"):
+            continue  # don't DM the person who posted it
+        member = guild.get_member(uid)
+        if member is None or member.bot:
+            continue
+        try:
+            theme = state.get("theme") or "Upcoming meet"
+            dt_part = ""
+            if state.get("meet_ts"):
+                dt_part = f"\n🕒 <t:{state['meet_ts']}:F>  (<t:{state['meet_ts']}:R>)"
+            await member.send(
+                f"🏁 **You're hosting:** {theme}{dt_part}\n"
+                f"Tap **✅ Attending** on the bot's reply in #hosts-posters when you've seen it:\n{jump_url}"
+            )
+            sent.append(uid)
+        except discord.Forbidden:
+            pass
+        except Exception as _e:
+            print(f"[host-posters] DM mirror failed for {uid}: {_e!r}")
+    if sent:
+        def _mut(s):
+            s["dm_sent_to"] = sorted(set(s.get("dm_sent_to", []) + sent))
+        _hp_update(state["bot_msg_id"], _mut)
 
 # =========================
 # EVENTS
@@ -20218,6 +20411,7 @@ async def on_ready():
             _tb.print_exc()
 
     _safe_add_view(lambda: _PostmeetReceivedView(),                                          "PostmeetReceivedView")
+    _safe_add_view(lambda: _HostPosterActionsView(),                                         "HostPosterActionsView")
     _safe_add_view(lambda: RulesAcceptView(GUILD_ID),                                        "RulesAcceptView")
     _safe_add_view(lambda: CrewPanelView(),                                                  "CrewPanelView")
     _safe_add_view(lambda: ReviewView(app_id="0000", applicant_id=0),                        "ReviewView")
@@ -20242,6 +20436,9 @@ async def on_ready():
         if not _json_backup_loop.is_running():
             _json_backup_loop.start()
             print("[backup] _json_backup_loop started")
+        if not _host_posters_reminder_loop.is_running():
+            _host_posters_reminder_loop.start()
+            print("[host-posters] _host_posters_reminder_loop started")
     except Exception as _e:
         print(f"[backup] failed to start loop: {_e!r}")
 
@@ -24920,6 +25117,130 @@ async def cmd_backup_now(ctx):
         await msg.edit(content="✅ Backup posted to staff logs.")
     else:
         await msg.edit(content="❌ Backup failed — check console.")
+
+
+# ─── Host Posters reminder + escalation loop ─────────────────────────────
+@tasks.loop(minutes=5)
+async def _host_posters_reminder_loop():
+    try:
+        data = _hp_load_all()
+        if not data:
+            return
+        now_ts = datetime.now(timezone.utc).timestamp()
+        changed = False
+        prune_keys: list[str] = []
+        guild = bot.get_guild(GUILD_ID)
+        for key, state in list(data.items()):
+            meet_ts = state.get("meet_ts")
+            if not meet_ts:
+                try:
+                    created_iso = state.get("created_at", "")
+                    created = datetime.fromisoformat(created_iso).timestamp() if created_iso else 0
+                except Exception:
+                    created = 0
+                if created and now_ts - created > 7 * 86400:
+                    prune_keys.append(key)
+                continue
+
+            # Prune past meets
+            if now_ts - meet_ts > _HOST_POSTER_RETENTION_HOURS * 3600:
+                prune_keys.append(key)
+                continue
+
+            secs_to_meet = meet_ts - now_ts
+
+            # T-2h reminder DM
+            if 0 < secs_to_meet <= 2 * 3600 and not state.get("reminded_t2h"):
+                if guild is not None:
+                    responded = set(state.get("responses", {}).keys())
+                    missing = [uid for uid in state.get("assigned_host_ids", []) if str(uid) not in responded]
+                    for uid in missing:
+                        m = guild.get_member(uid)
+                        if m is None or m.bot:
+                            continue
+                        try:
+                            await m.send(
+                                f"⏰ **2-hour reminder** — you haven't confirmed your meet yet.\n"
+                                f"Theme: **{state.get('theme') or 'Upcoming meet'}**\n"
+                                f"Start: <t:{meet_ts}:R>\n"
+                                f"Please tap **✅ Attending** in #hosts-posters."
+                            )
+                        except Exception:
+                            pass
+                state["reminded_t2h"] = True
+                changed = True
+
+            # T-30m staff escalation if no confirmations
+            if 0 < secs_to_meet <= 30 * 60 and not state.get("escalated_t30m"):
+                attending = [v for v in state.get("responses", {}).values() if v.get("status") == "attending"]
+                if not attending and guild is not None:
+                    staff_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+                    if isinstance(staff_ch, discord.TextChannel):
+                        jump = f"https://discord.com/channels/{state.get('guild_id', GUILD_ID)}/{state.get('channel_id')}/{state.get('bot_msg_id', key)}"
+                        host_pings = " ".join(f"<@{u}>" for u in state.get("assigned_host_ids", []))
+                        try:
+                            await staff_ch.send(
+                                f"⚠️ **Host poster T-30m, no Attending confirmations** {host_pings}\n"
+                                f"Meet starts <t:{meet_ts}:R>\n{jump}"
+                            )
+                        except Exception as _e:
+                            print(f"[host-posters] T-30m escalation failed: {_e!r}")
+                state["escalated_t30m"] = True
+                changed = True
+
+        if prune_keys:
+            for k in prune_keys:
+                data.pop(k, None)
+            changed = True
+        if changed:
+            _hp_save_all(data)
+    except Exception as _e:
+        print(f"[host-posters] reminder loop error: {_e!r}")
+
+
+@bot.command(name="editposter", aliases=["posteredit", "fixposter"])
+async def cmd_edit_poster(ctx: commands.Context, *, args: str = ""):
+    """Reply to the bot's host-poster embed: !editposter <date> | <time> [| <theme>]"""
+    if not _hp_is_authorized(ctx.author):
+        return await ctx.reply("Hosts and leadership only.", mention_author=False)
+    ref = ctx.message.reference
+    if not ref or not ref.message_id:
+        return await ctx.reply("Reply to the bot's host-poster embed when running this.", mention_author=False)
+    target_id = ref.message_id
+    state = _hp_get(target_id)
+    if state is None:
+        return await ctx.reply("That message isn't a tracked host poster.", mention_author=False)
+    if not args.strip():
+        return await ctx.reply("Usage: `!editposter <date> | <time> [| <theme>]`", mention_author=False)
+    parts = [p.strip() for p in args.split("|")]
+    date_s = parts[0] if parts else ""
+    time_s = parts[1] if len(parts) > 1 else ""
+    theme_s = parts[2] if len(parts) > 2 else state.get("theme", "")
+    import re as _re_ep
+    date_clean = _re_ep.sub(r"(\d+)(st|nd|rd|th)\b", r"\1", date_s, flags=_re_ep.IGNORECASE)
+    new_ts = _parse_meet_ts(date_clean, time_s) if (date_s and time_s) else None
+    if not new_ts:
+        return await ctx.reply("Couldn't parse date/time. Try `Sunday, May 24, 2026 | 8:00 PM`.", mention_author=False)
+
+    def _mut(s: dict) -> None:
+        s["meet_ts"] = new_ts
+        s["theme"] = theme_s
+        s["dt_value"] = f"<t:{new_ts}:F>\n<t:{new_ts}:R>"
+        s["reminded_t2h"] = False
+        s["escalated_t30m"] = False
+        s["edited_at"] = datetime.now(timezone.utc).isoformat()
+        s["edited_by"] = ctx.author.id
+
+    new_state = _hp_update(target_id, _mut)
+    try:
+        ch_id = state.get("channel_id", _POSTMEET_HOST_POSTERS_ID)
+        ch = ctx.guild.get_channel(ch_id) if ctx.guild else None
+        if isinstance(ch, (discord.TextChannel, discord.Thread)):
+            target_msg = await ch.fetch_message(target_id)
+            await target_msg.edit(embed=_hp_render_embed(new_state), view=_HostPosterActionsView())
+    except Exception as _e:
+        print(f"[host-posters] editposter edit failed: {_e!r}")
+    await ctx.reply("✅ Host poster updated.", mention_author=False)
 
 
 # ─── #3  `!me` — personal member dashboard ───────────────────────────────
@@ -32868,7 +33189,7 @@ async def on_message(message: discord.Message) -> None:
                 except Exception:
                     pass
 
-    # --- Host posters auto-embed + received button ---
+    # --- Host posters auto-embed + multi-action view + DM mirror ---
     if message.channel.id == _POSTMEET_HOST_POSTERS_ID:
         _pm_images = [
             a for a in message.attachments
@@ -32880,33 +33201,58 @@ async def on_message(message: discord.Message) -> None:
             _pm_parts   = [p.strip() for p in _pm_caption.split("|")] if _pm_caption else []
             _pm_date    = _pm_parts[0] if _pm_parts else ""
             _pm_time    = _pm_parts[1] if len(_pm_parts) > 1 else ""
+            _pm_theme   = _pm_parts[2] if len(_pm_parts) > 2 else ""
             import re as _re_pm
-            # If the caption already contains a Discord timestamp token, use it directly
-            if _re_pm.search(r"<t:\d+(?::[tTdDfFR])?>", _pm_caption):
-                _pm_dt_value = _pm_caption
+            _pm_ts = None
+            _m_ts_token = _re_pm.search(r"<t:(\d+)(?::[tTdDfFR])?>", _pm_caption)
+            if _m_ts_token:
+                try:
+                    _pm_ts = int(_m_ts_token.group(1))
+                except Exception:
+                    _pm_ts = None
             elif _pm_date and _pm_time:
-                # strip ordinal suffixes (12th→12) so the parser reads the time correctly
                 _pm_date_clean = _re_pm.sub(r"(\d+)(st|nd|rd|th)\b", r"\1", _pm_date, flags=_re_pm.IGNORECASE)
                 _pm_ts = _parse_meet_ts(_pm_date_clean, _pm_time)
-                _pm_dt_value = f"<t:{_pm_ts}:F>\n<t:{_pm_ts}:R>" if _pm_ts else f"{_pm_date}  •  {_pm_time}"
-            elif _pm_caption:
-                _pm_dt_value = _pm_caption
-            else:
-                _pm_dt_value = "See poster"
-            _pm_embed = discord.Embed(
-                title="🏁 DIFF Host Posters",
-                color=0xE91E63,
-                timestamp=utc_now(),
+            _pm_dt_value = (
+                f"<t:{_pm_ts}:F>\n<t:{_pm_ts}:R>" if _pm_ts
+                else (_pm_caption or "See poster")
             )
-            _pm_embed.add_field(name="📅 Date & Time", value=_pm_dt_value, inline=False)
-            _pm_embed.set_footer(text="DIFF Meets • Host Poster")
-            _pm_embed.set_thumbnail(url=_POSTMEET_LOGO_URL)
+
+            # Assigned hosts = users mentioned in the original message;
+            # if nobody was mentioned, fall back to the person who posted.
+            _assigned_ids = [m.id for m in (message.mentions or []) if not m.bot]
+            if not _assigned_ids:
+                _assigned_ids = [message.author.id]
+
+            _state = {
+                "guild_id": message.guild.id if message.guild else GUILD_ID,
+                "channel_id": message.channel.id,
+                "host_msg_id": message.id,
+                "poster_url": _pm_images[0].url,
+                "poster_proxy_url": _pm_images[0].proxy_url,
+                "raw_caption": _pm_caption,
+                "theme": _pm_theme,
+                "meet_ts": _pm_ts,
+                "dt_value": _pm_dt_value,
+                "assigned_host_ids": _assigned_ids,
+                "poster_user_id": message.author.id,
+                "responses": {},
+                "reminded_t2h": False,
+                "escalated_t30m": False,
+                "dm_sent_to": [],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "color": _POSTMEET_EMBED_COLOR,
+            }
             try:
-                await message.reply(
-                    embed=_pm_embed,
-                    view=_PostmeetReceivedView(),
+                _pm_reply = await message.reply(
+                    embed=_hp_render_embed(_state),
+                    view=_HostPosterActionsView(),
                     mention_author=False,
                 )
+                _state["bot_msg_id"] = _pm_reply.id
+                _hp_put(_pm_reply.id, _state)
+                # Fire-and-forget DM mirror to assigned hosts
+                asyncio.create_task(_hp_dm_mirror(message.guild, _state, _pm_reply.jump_url))
             except Exception as _pm_err:
                 print(f"[host-posters] reply error: {_pm_err}")
         return
