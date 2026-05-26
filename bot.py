@@ -17446,6 +17446,9 @@ class _PopupDB:
             ("voice_channel_id",   "INTEGER"),
             ("capacity",           "INTEGER NOT NULL DEFAULT 0"),
             ("thread_id",          "INTEGER"),
+            ("is_started",         "INTEGER NOT NULL DEFAULT 0"),
+            ("started_at",         "TEXT"),
+            ("live_message_id",    "INTEGER"),
         ):
             try:
                 cur.execute(f"ALTER TABLE popup_meets ADD COLUMN {col} {defn}")
@@ -17521,8 +17524,29 @@ class _PopupDB:
         self.conn.execute("UPDATE popup_meets SET message_id=? WHERE id=?", (message_id, meet_id))
         self.conn.commit()
 
+    def get_rsvp_user_ids(self, guild_id: int, meet_id: int, status: str) -> list:
+        rows = self.conn.execute(
+            "SELECT user_id FROM popup_rsvps WHERE guild_id=? AND meet_id=? AND status=?",
+            (guild_id, meet_id, status),
+        ).fetchall()
+        return [int(r["user_id"]) for r in rows]
+
     def end_meet(self, meet_id: int) -> None:
         self.conn.execute("UPDATE popup_meets SET is_ended=1 WHERE id=?", (meet_id,))
+        self.conn.commit()
+
+    def start_meet(self, meet_id: int) -> None:
+        self.conn.execute(
+            "UPDATE popup_meets SET is_started=1, started_at=? WHERE id=?",
+            (datetime.now(timezone.utc).isoformat(), meet_id),
+        )
+        self.conn.commit()
+
+    def set_live_message_id(self, meet_id: int, live_msg_id: int) -> None:
+        self.conn.execute(
+            "UPDATE popup_meets SET live_message_id=? WHERE id=?",
+            (int(live_msg_id), meet_id),
+        )
         self.conn.commit()
 
     def get_meet(self, meet_id: int):
@@ -17772,6 +17796,7 @@ def _popup_build_meet_embed(
     voice_channel_id: int = 0,
     capacity: int = 0,
     waitlist_count: int = 0,
+    is_started: bool = False,
 ) -> discord.Embed:
     if is_ended:
         title = "🛑 DIFF Pop-Up Meet — Ended"
@@ -17780,6 +17805,10 @@ def _popup_build_meet_embed(
         if cantmake_count:
             attendance_line += f"  •  {cantmake_count} couldn't make it"
         description = f"This meet has ended. Hosted by <@{host_id}>.\n{attendance_line}"
+    elif is_started:
+        title = "🟢 DIFF Pop-Up Meet — LIVE NOW"
+        color = discord.Color.from_rgb(46, 204, 113)
+        description = f"The meet is live — <@{host_id}> is hosting. Pull up now!"
     else:
         title = "⚡ DIFF Pop-Up Meet"
         color = discord.Color.from_rgb(255, 140, 0)
@@ -17827,6 +17856,8 @@ def _popup_build_meet_embed(
     footer = f"DIFF Pop-Up Meet #{meet_id}"
     if is_ended:
         footer += " • Ended"
+    elif is_started:
+        footer += " • Live now — pull up!"
     else:
         footer += " • Click below to RSVP"
     embed.set_footer(text=footer)
@@ -17936,6 +17967,148 @@ class _PopupCantMakeBtn(discord.ui.Button):
         await interaction.followup.send(reply, ephemeral=True)
 
 
+class _PopupStartMeetBtn(discord.ui.Button):
+    """Marks a Pop-Up Meet as live — posts a 🟢 LIVE announcement in the meet
+    channel (with the original PS5 / Car Meet pings the host selected), DMs
+    every member who clicked Pulling Up, and swaps the meet embed to its
+    green LIVE state. Host or staff only."""
+    def __init__(self, meet_id: int):
+        super().__init__(
+            label="🟢 Start Meet",
+            style=discord.ButtonStyle.success,
+            custom_id=f"diff_popup:{meet_id}:start",
+            row=1,
+        )
+        self.meet_id = meet_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        meet = _popup_db.get_meet(self.meet_id)
+        if not meet:
+            return await interaction.response.send_message("Meet not found.", ephemeral=True)
+        if meet["is_ended"]:
+            return await interaction.response.send_message("This meet has already ended.", ephemeral=True)
+        try:
+            if int(_popup_meet_col(meet, "is_started") or 0) == 1:
+                return await interaction.response.send_message("This meet is already live.", ephemeral=True)
+        except Exception:
+            pass
+
+        is_host  = interaction.user.id == meet["host_user_id"]
+        is_staff = interaction.user.guild_permissions.administrator or \
+                   any(r.id in _POPUP_STAFF_ROLES for r in interaction.user.roles)
+        if not (is_host or is_staff):
+            return await interaction.response.send_message(
+                "Only the host or staff can start this meet.", ephemeral=True
+            )
+
+        await interaction.response.defer(ephemeral=True, thinking=False)
+        _popup_db.start_meet(self.meet_id)
+
+        # Refresh embed → green LIVE state
+        counts = _popup_db.get_rsvp_counts(interaction.guild.id, self.meet_id)
+        live_emb = _popup_build_meet_embed(
+            meet["theme"] or "", meet["location"], meet["time_text"],
+            meet["extra_notes"] or "", self.meet_id, meet["host_user_id"],
+            meet["host_display_name"] or "", meet["host_avatar_url"],
+            counts["pullup"], counts["cantmake"], is_ended=False, is_started=True,
+            voice_channel_id=_popup_meet_col(meet, "voice_channel_id"),
+            capacity=_popup_meet_col(meet, "capacity"),
+            waitlist_count=counts.get("waitlist", 0),
+        )
+        new_view = _PopupMeetView(self.meet_id, is_started=True, is_ended=False)
+        try:
+            await interaction.message.edit(embed=live_emb, view=new_view)
+        except Exception:
+            pass
+
+        # Post a 🟢 LIVE announcement in the meet channel with the originally
+        # requested pings (ping_playstation → PS5 role, ping_carmeet → Car Meet
+        # Notifications role). Falls back silently if channel access is gone.
+        ping_parts = []
+        try:
+            if int(meet["ping_playstation"] or 0) == 1:
+                ping_parts.append(f"<@&{PS5_ROLE_ID}>")
+        except Exception:
+            pass
+        try:
+            if int(meet["ping_carmeet"] or 0) == 1:
+                ping_parts.append(f"<@&{NOTIFY_ROLE_ID}>")
+        except Exception:
+            pass
+        live_announce = discord.Embed(
+            title="🟢 Pop-Up Meet — LIVE NOW",
+            description=(f"<@{meet['host_user_id']}> just started the pop-up meet. "
+                         f"**Pull up!**"),
+            color=discord.Color.from_rgb(46, 204, 113),
+            timestamp=datetime.now(timezone.utc),
+        )
+        live_announce.add_field(name="🎨 Theme",    value=meet["theme"] or "Open Class", inline=True)
+        live_announce.add_field(name="📍 Location", value=(meet["location"] or "TBD — ask host"), inline=True)
+        _vc_id = _popup_meet_col(meet, "voice_channel_id")
+        if _vc_id:
+            live_announce.add_field(name="🔊 Voice", value=f"<#{int(_vc_id)}>", inline=True)
+        live_announce.set_footer(text=f"DIFF Pop-Up Meet #{self.meet_id} • Live now")
+        if meet["host_avatar_url"]:
+            live_announce.set_thumbnail(url=meet["host_avatar_url"])
+        try:
+            ch = interaction.channel
+            if isinstance(ch, discord.TextChannel):
+                _sent_live = await ch.send(
+                    content=(" ".join(ping_parts) if ping_parts else None),
+                    embed=live_announce,
+                    allowed_mentions=discord.AllowedMentions(roles=True, users=False),
+                )
+                try:
+                    _popup_db.set_live_message_id(self.meet_id, int(_sent_live.id))
+                except Exception:
+                    pass
+        except Exception as _le:
+            try:
+                _bot_log.warning("[Popup] start: live announce send failed for #%s: %s",
+                                 self.meet_id, _le)
+            except Exception:
+                pass
+
+        # DM every member who RSVPd "pullup" (waitlist excluded — they aren't in)
+        _dm_ok, _dm_fail = 0, 0
+        try:
+            pullup_ids = _popup_db.get_rsvp_user_ids(interaction.guild.id, self.meet_id, "pullup")
+        except Exception:
+            pullup_ids = []
+        dm_embed = discord.Embed(
+            title="🟢 The pop-up meet is LIVE",
+            description=(f"<@{meet['host_user_id']}> just started **{meet['theme'] or 'the pop-up meet'}**. "
+                         f"Pull up now!"),
+            color=discord.Color.from_rgb(46, 204, 113),
+        )
+        dm_embed.add_field(name="📍 Location", value=(meet["location"] or "TBD — ask host"), inline=True)
+        if _vc_id:
+            dm_embed.add_field(name="🔊 Voice", value=f"<#{int(_vc_id)}>", inline=True)
+        dm_embed.set_footer(text=f"DIFF Pop-Up Meet #{self.meet_id}")
+        for uid in pullup_ids:
+            if int(uid) == int(meet["host_user_id"]):
+                continue
+            try:
+                member = interaction.guild.get_member(int(uid)) or await interaction.guild.fetch_member(int(uid))
+                if member and not member.bot:
+                    await member.send(embed=dm_embed)
+                    _dm_ok += 1
+            except Exception:
+                _dm_fail += 1
+
+        try:
+            await interaction.followup.send(
+                f"Meet marked as **LIVE** 🟢\n"
+                f"📣 Announcement posted with {len(ping_parts)} role ping(s).\n"
+                f"📬 DMs sent: **{_dm_ok}** delivered, {_dm_fail} failed.",
+                ephemeral=True,
+            )
+        except Exception:
+            pass
+
+
 class _PopupEndMeetBtn(discord.ui.Button):
     def __init__(self, meet_id: int):
         super().__init__(
@@ -17980,6 +18153,16 @@ class _PopupEndMeetBtn(discord.ui.Button):
             await interaction.message.unpin(reason=f"Pop-up meet #{self.meet_id} ended")
         except Exception:
             pass
+        # If the meet was started, also delete the 🟢 LIVE announcement message
+        _live_id = _popup_meet_col(meet, "live_message_id")
+        if _live_id:
+            try:
+                ch = interaction.channel
+                if isinstance(ch, discord.TextChannel):
+                    _live_msg = await ch.fetch_message(int(_live_id))
+                    await _live_msg.delete()
+            except Exception:
+                pass
         # Post a thank-you summary in the discussion thread if one exists
         await _popup_post_thread_summary(
             interaction.guild, meet, self.meet_id, counts, reason="manually ended"
@@ -18134,13 +18317,17 @@ class _PopupDMAttendeesBtn(discord.ui.Button):
 
 
 class _PopupMeetView(discord.ui.View):
-    """Persistent per-meet RSVP view.  meet_id is encoded in each button's custom_id."""
-    def __init__(self, meet_id: int):
+    """Persistent per-meet RSVP view.  meet_id is encoded in each button's custom_id.
+    The 🟢 Start Meet button is included only while the meet hasn't been started
+    or ended — once a meet is live, it's removed (the LIVE state speaks for itself)."""
+    def __init__(self, meet_id: int, *, is_started: bool = False, is_ended: bool = False):
         super().__init__(timeout=None)
         self.add_item(_PopupPullUpBtn(meet_id))
         self.add_item(_PopupCantMakeBtn(meet_id))
         self.add_item(_PopupEditBtn(meet_id))
         self.add_item(_PopupDMAttendeesBtn(meet_id))
+        if not is_started and not is_ended:
+            self.add_item(_PopupStartMeetBtn(meet_id))
         self.add_item(_PopupEndMeetBtn(meet_id))
 
 
