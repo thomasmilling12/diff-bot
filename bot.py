@@ -15246,7 +15246,8 @@ def _get_theme_guide(theme: str) -> tuple[str, str] | None:
     return None
 
 
-def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str = "") -> discord.Embed:
+def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str = "",
+                    entry_info: str | None = None, style_direction: str | None = None) -> discord.Embed:
     embed = discord.Embed(
         title="🏁 DIFF Official Meet",
         color=0xC9A227,
@@ -15258,14 +15259,17 @@ def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str
     embed.add_field(name="🎙️ Host", value=host.mention, inline=True)
     embed.add_field(name="🎨 Theme", value=theme, inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)
-    embed.add_field(
-        name="📋 Entry Info",
-        value=(
-            "Send your vehicle photos to the host before joining, unless told otherwise.\n"
-            f"All vehicles must match the meet theme and follow the standards in <#{MEET_INFO_CHANNEL_ID}> and <#{MEET_RULES_CHANNEL_ID}>."
-        ),
-        inline=False,
-    )
+    if entry_info:
+        embed.add_field(name="📋 Entry Info", value=entry_info, inline=False)
+    else:
+        embed.add_field(
+            name="📋 Entry Info",
+            value=(
+                "Send your vehicle photos to the host before joining, unless told otherwise.\n"
+                f"All vehicles must match the meet theme and follow the standards in <#{MEET_INFO_CHANNEL_ID}> and <#{MEET_RULES_CHANNEL_ID}>."
+            ),
+            inline=False,
+        )
     embed.add_field(
         name="📌 Meet Notes",
         value=(
@@ -15283,6 +15287,8 @@ def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str
             value=_accepted,
             inline=False,
         )
+    elif style_direction:
+        embed.add_field(name="🚗 Style Direction", value=style_direction, inline=False)
     else:
         embed.add_field(
             name="🚗 Style Direction",
@@ -15774,15 +15780,41 @@ def _om_panel_build_embed() -> discord.Embed:
 
 def _om_parse_combined_datetime(text: str) -> int | None:
     """Parse a natural-language 'Date & Time' string into a Unix timestamp.
-    Accepts: 'April 5 9:00 PM EST', '04/05 9PM CST', '2026-04-05 21:00 UTC', etc.
+
+    Layered strategy:
+      1. Try the popup smart-parser first — handles relative ("in 30 min", "+45m",
+         "in 2 hours"), shorthand ("tonight 9", "tomorrow 7pm CT"), and bare clock
+         times ("8pm", "20:00").
+      2. Fall through to explicit absolute formats ("April 5 9:00 PM EST",
+         "04/05 9PM CST", "2026-04-05 21:00 UTC").
     """
-    text = text.strip()
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    _ht = re.search(r'<t:(\d+)(?::[A-Za-z])?>', text)
+    if _ht:
+        try:
+            return int(_ht.group(1))
+        except Exception:
+            pass
+
+    try:
+        parsed = _popup_parse_time(text)
+        if parsed and parsed != text:
+            _ht2 = re.search(r'<t:(\d+)(?::[A-Za-z])?>', parsed)
+            if _ht2:
+                return int(_ht2.group(1))
+    except Exception:
+        pass
+
     tz_name = "America/New_York"
     m = re.search(r'\b([A-Za-z]{2,5})$', text)
     if m:
         abbr = m.group(1).upper()
-        tz_name = _POPUP_TZ_MAP.get(abbr, tz_name)
-        text = text[:m.start()].strip()
+        if abbr in _POPUP_TZ_MAP:
+            tz_name = _POPUP_TZ_MAP[abbr]
+            text = text[:m.start()].strip()
     try:
         tz = ZoneInfo(tz_name)
     except Exception:
@@ -15808,147 +15840,433 @@ def _om_parse_combined_datetime(text: str) -> int | None:
     return None
 
 
-class _HostPickerView(discord.ui.View):
-    """Ephemeral view shown before the schedule modal — lets staff pick a host from a member select."""
+_OM_THEME_OPTIONS = [
+    ("custom",     "✍️  Custom (type in modal)"),
+    ("jdm",        "🇯🇵 JDM Night"),
+    ("euros",      "🇪🇺 Clean Euros"),
+    ("supers",     "🏎️  Supers / Hypers"),
+    ("offroad",    "🚙 Off-Road"),
+    ("cinematic",  "🎬 Cinematic / Photo Run"),
+    ("muscle",     "🇺🇸 American Muscle"),
+    ("tuners",     "🛠️  Tuners & Modified"),
+    ("tire_let",   "🖌️ Tire Lettering"),
+    ("stanced",    "💎 Stanced Only"),
+    ("open",       "🏁 Open Class — any clean build"),
+]
+_OM_THEME_LABEL = {
+    "jdm": "JDM Night", "euros": "Clean Euros", "supers": "Supers / Hypers",
+    "offroad": "Off-Road", "cinematic": "Cinematic / Photo Run",
+    "muscle": "American Muscle", "tuners": "Tuners & Modified",
+    "tire_let": "Tire Lettering", "stanced": "Stanced Only", "open": "Open Class",
+}
+_OM_PING_OPTIONS = [
+    ("both",    "🔔 Both — PlayStation + Car Meet"),
+    ("ps5",     "🎮 PlayStation only"),
+    ("carmeet", "🚗 Car Meet only"),
+    ("none",    "🤫 No pings (silent post)"),
+]
+_OM_PING_ROLES = {
+    "both":    [PS5_ROLE_ID, NOTIFY_ROLE_ID],
+    "ps5":     [PS5_ROLE_ID],
+    "carmeet": [NOTIFY_ROLE_ID],
+    "none":    [],
+}
+_OM_CONFLICT_WINDOW_SECS = 2 * 3600  # warn if another meet is within 2h
 
-    def __init__(self):
-        super().__init__(timeout=120)
+
+def _om_last_completed_meet():
+    """Return the most-recently ENDED official meet record, or None."""
+    try:
+        records = _om_load_records()
+    except Exception:
+        return None
+    best_ts = -1
+    best = None
+    for raw in records.values():
+        if not raw.get("ended"):
+            continue
+        ts = int(raw.get("ended_at_ts") or raw.get("timestamp") or 0)
+        if ts > best_ts:
+            best_ts = ts
+            best = raw
+    return best
+
+
+def _om_conflict_summary(meet_ts):
+    """If another non-ended official meet exists within ±2h of meet_ts,
+    return a short human-readable summary string. Else None."""
+    try:
+        records = _om_load_records()
+    except Exception:
+        return None
+    for raw in records.values():
+        if raw.get("ended"):
+            continue
+        ts = int(raw.get("timestamp") or 0)
+        if ts <= 0:
+            continue
+        if abs(ts - meet_ts) <= _OM_CONFLICT_WINDOW_SECS:
+            theme = (raw.get("theme") or "Official Meet")[:50]
+            hid = raw.get("host_id") or 0
+            return f"**{theme}** — hosted by <@{hid}> at <t:{ts}:F> (<t:{ts}:R>)"
+    return None
+
+
+class _OmScheduleSetupView(discord.ui.View):
+    """Step 1 of 2: pick host + theme preset + ping target, then Continue."""
+
+    def __init__(self, invoker_id):
+        super().__init__(timeout=240)
+        self.invoker_id = invoker_id
+        self.selected_host_id = None
+        self.theme_key = "custom"
+        self.ping_key = "both"
+        self.prefill_theme = ""
+        self.prefill_notes = ""
+        self.prefill_style = ""
 
     @discord.ui.select(
         cls=discord.ui.UserSelect,
-        placeholder="Search and select the meet host…",
-        min_values=1,
-        max_values=1,
+        placeholder="🎙️  Pick the meet host…",
+        min_values=1, max_values=1, row=0,
     )
-    async def host_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+    async def host_select(self, interaction, select):
         selected = select.values[0]
         guild = interaction.guild
-
-        # Ensure we have a Member object (not just a User) so role check is reliable
         member = selected if isinstance(selected, discord.Member) else None
         if member is None and guild:
             try:
                 member = await guild.fetch_member(selected.id)
             except Exception:
                 pass
-
         if member is None:
-            await interaction.response.send_message(
-                "Couldn't resolve that user as a server member. Try again.", ephemeral=True
+            return await interaction.response.send_message(
+                "Couldn’t resolve that user as a server member.", ephemeral=True
             )
-            return
-
-        # Validate Host role
-        has_role = any(r.id == HOST_ROLE_ID for r in member.roles)
-        if not has_role:
-            await interaction.response.send_message(
-                f"⚠️ {member.mention} doesn't have the **Host** role. Select someone with the Host role.",
+        if not any(r.id == HOST_ROLE_ID for r in member.roles):
+            return await interaction.response.send_message(
+                f"⚠️ {member.mention} doesn’t have the **Host** role. "
+                "Pick someone with the Host role, or tap **🎙️ Schedule for myself** if that’s you.",
                 ephemeral=True,
             )
-            return
+        self.selected_host_id = member.id
+        await interaction.response.send_message(
+            f"✅ Host set to {member.mention}. Pick theme/ping (or keep defaults) and tap **Continue →**.",
+            ephemeral=True,
+        )
 
-        # Open the scheduling modal with the chosen host pre-loaded
-        await interaction.response.send_modal(_OfficialMeetScheduleModal(host_id=member.id))
+    @discord.ui.select(
+        placeholder="🎨  Quick-pick theme (optional)",
+        min_values=1, max_values=1, row=1,
+        options=[discord.SelectOption(label=lbl, value=k) for k, lbl in _OM_THEME_OPTIONS],
+    )
+    async def theme_select(self, interaction, select):
+        self.theme_key = select.values[0]
+        label = next((lbl for k, lbl in _OM_THEME_OPTIONS if k == self.theme_key), self.theme_key)
+        await interaction.response.send_message(f"🎨 Theme preset: **{label}**", ephemeral=True)
+
+    @discord.ui.select(
+        placeholder="🔔  Who to ping",
+        min_values=1, max_values=1, row=2,
+        options=[discord.SelectOption(label=lbl, value=k, default=(k == "both"))
+                 for k, lbl in _OM_PING_OPTIONS],
+    )
+    async def ping_select(self, interaction, select):
+        self.ping_key = select.values[0]
+        label = next((lbl for k, lbl in _OM_PING_OPTIONS if k == self.ping_key), self.ping_key)
+        await interaction.response.send_message(f"🔔 Ping target: **{label}**", ephemeral=True)
+
+    @discord.ui.button(label="🎙️ Schedule for myself", style=discord.ButtonStyle.secondary, row=3)
+    async def schedule_self_btn(self, interaction, button):
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not any(r.id == HOST_ROLE_ID for r in member.roles):
+            return await interaction.response.send_message(
+                "You don’t have the **Host** role — pick another host from the dropdown above.",
+                ephemeral=True,
+            )
+        self.selected_host_id = member.id
+        await interaction.response.send_message(
+            f"✅ Host set to **you** ({member.mention}).", ephemeral=True
+        )
+
+    @discord.ui.button(label="🔁 Same as last week", style=discord.ButtonStyle.secondary, row=3)
+    async def same_as_last_btn(self, interaction, button):
+        last = _om_last_completed_meet()
+        if not last:
+            return await interaction.response.send_message(
+                "📭 No previous completed meet found to copy from.", ephemeral=True
+            )
+        self.prefill_theme = (last.get("theme") or "")[:100]
+        self.prefill_notes = (last.get("notes") or last.get("staff_notes") or "")[:400]
+        self.prefill_style = (last.get("style_direction") or "")[:200]
+        tk = "custom"
+        tl = self.prefill_theme.lower()
+        for k, lbl in _OM_THEME_LABEL.items():
+            if lbl.lower() in tl:
+                tk = k
+                break
+        if tk != "custom":
+            self.theme_key = tk
+        _theme_disp = self.prefill_theme or "—"
+        _notes_disp = "_set_" if self.prefill_notes else "—"
+        _style_disp = "_set_" if self.prefill_style else "—"
+        await interaction.response.send_message(
+            "🔁 Loaded last meet preset:\n"
+            f"• Theme: **{_theme_disp}**\n"
+            f"• Notes: {_notes_disp}\n"
+            f"• Style: {_style_disp}\n"
+            "These will pre-fill the modal — edit any field before submitting.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="▶️ Continue", style=discord.ButtonStyle.primary, row=3)
+    async def continue_btn(self, interaction, button):
+        if self.selected_host_id is None:
+            return await interaction.response.send_message(
+                "❌ Pick a host first (use the dropdown above or **🎙️ Schedule for myself**).",
+                ephemeral=True,
+            )
+        default_theme = self.prefill_theme or _OM_THEME_LABEL.get(self.theme_key, "")
+        await interaction.response.send_modal(
+            _OfficialMeetScheduleModal(
+                host_id=self.selected_host_id,
+                ping_key=self.ping_key,
+                default_theme=default_theme,
+                default_notes=self.prefill_notes,
+                default_style=self.prefill_style,
+            )
+        )
 
 
 class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official Meet"):
-    theme_field = discord.ui.TextInput(
-        label="Meet Theme",
-        placeholder="e.g. Tire Lettering / JDM Night / Stanced Only",
-        required=True,
-        max_length=100,
-    )
-    datetime_field = discord.ui.TextInput(
-        label="Date & Time",
-        placeholder="e.g. April 5 9:00 PM ET  or  04/05 9PM CT  or  <t:1234567890:F>",
-        required=True,
-        max_length=80,
-    )
-    notes_field = discord.ui.TextInput(
-        label="Meet Notes (optional)",
-        placeholder="e.g. LOWERED CARS ONLY • Send photos to host before joining",
-        style=discord.TextStyle.paragraph,
-        required=False,
-        max_length=500,
-    )
-
-    def __init__(self, host_id: int):
+    def __init__(self, host_id, ping_key="both", default_theme="",
+                 default_notes="", default_style=""):
         super().__init__()
         self._selected_host_id = host_id
+        self._ping_key = ping_key
+        self.theme_field = discord.ui.TextInput(
+            label="Meet Theme",
+            placeholder="e.g. JDM Night / Clean Euros / Stanced Only",
+            default=default_theme[:100],
+            required=True, max_length=100,
+        )
+        self.datetime_field = discord.ui.TextInput(
+            label="Date & Time (smart parser)",
+            placeholder="friday 9pm CT • tomorrow 8pm • in 2 hours • April 5 9:00 PM EST",
+            required=True, max_length=80,
+        )
+        self.entry_field = discord.ui.TextInput(
+            label="Entry Info (optional)",
+            placeholder="e.g. Send photos to host before joining",
+            style=discord.TextStyle.paragraph,
+            required=False, max_length=400,
+        )
+        self.notes_field = discord.ui.TextInput(
+            label="Staff Notes (optional)",
+            placeholder="e.g. LOWERED CARS ONLY • New hosts welcome",
+            default=default_notes[:400],
+            style=discord.TextStyle.paragraph,
+            required=False, max_length=400,
+        )
+        self.style_field = discord.ui.TextInput(
+            label="Style Direction (optional)",
+            placeholder="e.g. Cinematic / clean roll-in / no aggressive driving",
+            default=default_style[:200],
+            required=False, max_length=200,
+        )
+        for f in (self.theme_field, self.datetime_field, self.entry_field,
+                  self.notes_field, self.style_field):
+            self.add_item(f)
 
-    async def on_submit(self, interaction: discord.Interaction):
+    async def on_submit(self, interaction):
         guild = interaction.guild
         if not guild:
-            await interaction.response.send_message("Server only.", ephemeral=True)
-            return
+            return await interaction.response.send_message("Server only.", ephemeral=True)
 
-        host_id = self._selected_host_id
-        host_member = guild.get_member(host_id)
+        host_member = guild.get_member(self._selected_host_id)
         if not host_member:
             try:
-                host_member = await guild.fetch_member(host_id)
+                host_member = await guild.fetch_member(self._selected_host_id)
             except Exception:
-                await interaction.response.send_message(
-                    "That user wasn't found in the server.", ephemeral=True
+                return await interaction.response.send_message(
+                    "That host wasn’t found in the server.", ephemeral=True
                 )
-                return
 
         meet_ts = _om_parse_combined_datetime(self.datetime_field.value)
         if meet_ts is None:
-            await interaction.response.send_message(
-                "❌ Couldn't read that date/time. Try:\n"
-                "• `April 5 9:00 PM EST`\n"
-                "• `04/05 9PM CST`\n"
-                "• `2026-04-05 21:00 UTC`",
+            return await interaction.response.send_message(
+                "❌ Couldn’t read that date/time. Try:\n"
+                "• `friday 9pm CT` • `tomorrow 8pm` • `in 2 hours`\n"
+                "• `April 5 9:00 PM EST` • `04/05 9PM CT` • `2026-04-05 21:00 UTC`",
                 ephemeral=True,
             )
-            return
         if meet_ts <= int(datetime.now(timezone.utc).timestamp()):
-            await interaction.response.send_message("That date/time is already in the past.", ephemeral=True)
-            return
+            return await interaction.response.send_message(
+                "That date/time is already in the past.", ephemeral=True
+            )
 
+        conflict = _om_conflict_summary(meet_ts)
+        theme = self.theme_field.value.strip()
+        entry = self.entry_field.value.strip()
+        notes = self.notes_field.value.strip()
+        style = self.style_field.value.strip()
+
+        preview_emb = _om_build_embed(
+            theme=theme, host=host_member, timestamp=meet_ts, notes=notes,
+            entry_info=entry or None, style_direction=style or None,
+        )
+        ping_label = next((lbl for k, lbl in _OM_PING_OPTIONS if k == self._ping_key), self._ping_key)
+        header = discord.Embed(
+            title="🔍 Preview — Schedule Official Meet",
+            color=discord.Color.from_rgb(241, 196, 15),
+            description=(
+                f"Posting to <#{_OFFICIAL_MEET_CHANNEL_ID}> with **{ping_label}**.\n"
+                f"🎙️ Host: {host_member.mention}  •  ⏰ <t:{meet_ts}:F>  (<t:{meet_ts}:R>)"
+            ),
+        )
+        if conflict:
+            header.add_field(
+                name="⚠️ Conflict warning",
+                value=f"Another official meet is within 2h of this slot:\n{conflict}",
+                inline=False,
+            )
+        view = _OmPreviewView(
+            host_id=host_member.id, theme=theme, meet_ts=meet_ts, notes=notes,
+            entry_info=entry, style_direction=style, ping_key=self._ping_key,
+        )
+        await interaction.response.send_message(
+            embeds=[header, preview_emb], view=view, ephemeral=True
+        )
+
+
+class _OmPreviewView(discord.ui.View):
+    """Ephemeral preview shown after the modal — confirm or edit before posting."""
+
+    def __init__(self, host_id, theme, meet_ts, notes, entry_info,
+                 style_direction, ping_key):
+        super().__init__(timeout=300)
+        self.host_id = host_id
+        self.theme = theme
+        self.meet_ts = meet_ts
+        self.notes = notes
+        self.entry_info = entry_info
+        self.style_direction = style_direction
+        self.ping_key = ping_key
+        self._posted = False
+
+    @discord.ui.button(label="✅ Post Meet", style=discord.ButtonStyle.success)
+    async def post_btn(self, interaction, button):
+        if self._posted:
+            return await interaction.response.send_message("Already posted.", ephemeral=True)
+        guild = interaction.guild
+        if not guild:
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        host_member = guild.get_member(self.host_id) or await guild.fetch_member(self.host_id)
         channel = bot.get_channel(_OFFICIAL_MEET_CHANNEL_ID)
         if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message("Meet channel not found.", ephemeral=True)
-            return
+            return await interaction.response.send_message("Meet channel not found.", ephemeral=True)
 
-        notes = self.notes_field.value.strip() if self.notes_field.value else ""
         await interaction.response.defer(ephemeral=True)
+        role_ids = _OM_PING_ROLES.get(self.ping_key, [])
+        ping_line = " ".join(f"<@&{rid}>" for rid in role_ids) if role_ids else ""
         try:
             sent = await channel.send(
-                content=f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>",
+                content=ping_line if ping_line else None,
                 embed=_om_build_embed(
-                    theme=self.theme_field.value.strip(),
-                    host=host_member,
-                    timestamp=meet_ts,
-                    notes=notes,
+                    theme=self.theme, host=host_member, timestamp=self.meet_ts,
+                    notes=self.notes,
+                    entry_info=self.entry_info or None,
+                    style_direction=self.style_direction or None,
                 ),
                 view=_OfficialMeetRSVPView(),
                 allowed_mentions=discord.AllowedMentions(roles=True, users=True),
             )
         except discord.Forbidden:
-            await interaction.followup.send("Missing permissions to post in the meet channel.", ephemeral=True)
-            return
+            return await interaction.followup.send(
+                "Missing permissions to post in the meet channel.", ephemeral=True
+            )
         except Exception as _e:
-            await interaction.followup.send(f"❌ Failed to post meet: {_e}", ephemeral=True)
-            return
+            return await interaction.followup.send(f"❌ Failed to post meet: {_e}", ephemeral=True)
 
         record = _OmRecord(
-            message_id=sent.id,
-            channel_id=channel.id,
-            host_id=host_member.id,
-            theme=self.theme_field.value.strip(),
-            timestamp=meet_ts,
+            message_id=sent.id, channel_id=channel.id,
+            host_id=host_member.id, theme=self.theme, timestamp=self.meet_ts,
         )
         _om_upsert_record(record)
+        try:
+            data = _om_load_records()
+            raw = data.get(str(sent.id), {})
+            raw["notes"] = self.notes
+            raw["entry_info"] = self.entry_info
+            raw["style_direction"] = self.style_direction
+            raw["ping_key"] = self.ping_key
+            data[str(sent.id)] = raw
+            _om_save_records(data)
+        except Exception:
+            pass
         _om_schedule_reminders(record)
+
+        thread_url = ""
+        try:
+            thr = await sent.create_thread(
+                name=f"💬 {self.theme[:60]} — discussion",
+                auto_archive_duration=1440,
+                reason="Official meet discussion thread",
+            )
+            thread_url = f"\n💬 Discussion thread: {thr.mention}"
+        except Exception as _te:
+            _bot_log.warning("[OM] auto-thread create failed: %s", _te)
+
+        self._posted = True
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.edit_original_response(view=self)
+        except Exception:
+            pass
         await interaction.followup.send(
-            f"Official meet posted for <t:{meet_ts}:F>.", ephemeral=True
+            f"✅ Official meet posted for <t:{self.meet_ts}:F>.{thread_url}",
+            ephemeral=True,
         )
         try:
             await _om_panel_post_or_refresh(guild, force_repost=True)
         except Exception:
             pass
+
+    @discord.ui.button(label="✏️ Edit", style=discord.ButtonStyle.secondary)
+    async def edit_btn(self, interaction, button):
+        if self._posted:
+            return await interaction.response.send_message(
+                "Already posted — open the meet message to edit.", ephemeral=True
+            )
+        await interaction.response.send_modal(
+            _OfficialMeetScheduleModal(
+                host_id=self.host_id, ping_key=self.ping_key,
+                default_theme=self.theme,
+                default_notes=self.notes,
+                default_style=self.style_direction,
+            )
+        )
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_btn(self, interaction, button):
+        if self._posted:
+            return await interaction.response.send_message("Already posted.", ephemeral=True)
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.response.edit_message(
+                content="❌ Cancelled — nothing posted.", embeds=[], view=self,
+            )
+        except Exception:
+            await interaction.response.send_message("❌ Cancelled.", ephemeral=True)
+
+
+def _HostPickerView():  # type: ignore[no-redef]
+    """Backwards-compatible factory — returns the new 2-step setup view."""
+    return _OmScheduleSetupView(invoker_id=0)
 
 
 class _OfficialMeetPanelView(discord.ui.View):
@@ -15986,15 +16304,21 @@ class _OfficialMeetPanelView(discord.ui.View):
             await interaction.response.send_message("Only staff can schedule official meets.", ephemeral=True)
             return
         embed = discord.Embed(
-            title="🎙️ Select Meet Host",
+            title="🛠️ Schedule Official Meet — Step 1 of 2",
             description=(
-                "Use the dropdown below to select the host for this meet.\n"
-                "Only members with the **Host** role can be chosen."
+                "1️⃣ Pick the **host** (dropdown) — or tap **🎙️ Schedule for myself**.\n"
+                "2️⃣ Quick-pick a **theme** preset (optional) + choose **who to ping**.\n"
+                "3️⃣ Tap **🔁 Same as last week** to prefill from the last meet — totally optional.\n"
+                "4️⃣ Tap **▶️ Continue** to fill the meet details modal, then preview before posting."
             ),
-            color=discord.Color.dark_gold(),
+            color=discord.Color.from_rgb(241, 196, 15),
         )
         embed.set_footer(text="DIFF Official Meet System • Step 1 of 2")
-        await interaction.response.send_message(embed=embed, view=_HostPickerView(), ephemeral=True)
+        await interaction.response.send_message(
+            embed=embed,
+            view=_OmScheduleSetupView(invoker_id=member.id),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="🗓️ Full Schedule", style=discord.ButtonStyle.secondary, custom_id="diff_om_panel:schedule_view", row=0)
     async def schedule_view_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
