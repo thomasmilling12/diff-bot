@@ -34351,6 +34351,24 @@ class JoinPlatformSelect(discord.ui.Select):
 
             platform = self.values[0]
 
+            if platform in ("xbox", "pc"):
+                is_xbox = platform == "xbox"
+                label   = "Xbox Series X|S" if is_xbox else "PC"
+                emoji   = "🟢" if is_xbox else "💻"
+                embed = discord.Embed(
+                    title=f"{emoji} {label} — Join Info",
+                    description=(
+                        f"{label} car meets are handled by our partners at **MMI Meets**.\n"
+                        f"Join their server using the invite below, then head straight to the join channel."
+                    ),
+                    color=discord.Color.from_str("#107C10") if is_xbox else discord.Color.blurple(),
+                )
+                embed.add_field(name="1️⃣  Join MMI Meets", value=f"[Click here to join]({_JOIN_MMI_INVITE})", inline=True)
+                embed.add_field(name="2️⃣  Go to their join channel", value=f"[#join-car-meet]({_JOIN_MMI_CHANNEL})", inline=True)
+                embed.set_image(url=_JOIN_MMI_LOGO)
+                embed.set_footer(text="Different Meets • GTA Car Meets  •  Only you can see this")
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+
             if platform == "join_crew":
                 embed = discord.Embed(
                     title="📋 How to Join the DIFF Crew",
