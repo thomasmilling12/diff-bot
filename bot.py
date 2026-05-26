@@ -16274,13 +16274,15 @@ class _OfficialMeetPanelView(discord.ui.View):
         super().__init__(timeout=None)
         # ── Row 1: quick links for members (always visible) ──────────────
         try:
-            self.add_item(discord.ui.Button(
-                label="Official Meets", style=discord.ButtonStyle.link, emoji="📅",
-                url=build_channel_link(GUILD_ID, _OFFICIAL_MEET_CHANNEL_ID), row=1,
-            ))
+            # NOTE: no "Official Meets" link button — this panel lives in that
+            # channel already, so a self-link is a no-op in the Discord client.
             self.add_item(discord.ui.Button(
                 label="Rules", style=discord.ButtonStyle.link, emoji="📜",
                 url=build_channel_link(GUILD_ID, MEET_RULES_CHANNEL_ID), row=1,
+            ))
+            self.add_item(discord.ui.Button(
+                label="Meet Info", style=discord.ButtonStyle.link, emoji="ℹ️",
+                url=build_channel_link(GUILD_ID, MEET_INFO_CHANNEL_ID), row=1,
             ))
             self.add_item(discord.ui.Button(
                 label="Pop-Up Meets", style=discord.ButtonStyle.link, emoji="⚡",
