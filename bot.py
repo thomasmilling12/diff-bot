@@ -17024,42 +17024,60 @@ class _PopupMeetPanelView(discord.ui.View):
 def _popup_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="⚡ DIFF Pop-Up Meets Hub",
-        description="Spontaneous meets hosted by approved DIFF hosts throughout the week.",
-        color=discord.Color.blue(),
+        description="Spontaneous PS5 meets hosted by approved DIFF hosts — no schedule, no warning, just drop and pull up.",
+        color=discord.Color.from_rgb(255, 140, 0),
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.add_field(
-        name="🚗 What Are Pop-Up Meets?",
-        value="Quick, unscheduled meets that go live without advance notice — pull up fast when one drops.",
+        name="🚗 For Members",
+        value=(
+            "• Tap **🚗 Pulling Up!** on any meet card to RSVP\n"
+            "• If the meet is full you\'ll be **waitlisted** + auto-promoted (with DM) when a spot opens\n"
+            "• Each meet has a 💬 discussion thread — chat, meet up, drop pics there\n"
+            "• Want pings? Grab the **PlayStation** and **Car Meet** roles in <#1141434729133047848>"
+        ),
         inline=False,
     )
     embed.add_field(
-        name="📋 How It Works",
+        name="🛠️ For Hosts (3 steps)",
         value=(
-            "• Host clicks **Create Pop-Up Meet** below\n"
-            "• Picks who to ping (PlayStation / Car Meet / Both / None)\n"
-            "• Fills in theme + time (location optional; accepts `in 30 min`, `tonight 9`, etc.)\n"
-            "• Bot posts the meet card — members click **🚗 Pulling Up!** to RSVP\n"
-            "• Meets auto-close after 3 hours if the host forgets"
+            "**1.** Tap **⚡ Create Pop-Up Meet** below\n"
+            "**2.** Pick from 3 dropdowns: who to ping • theme • voice channel (optional)\n"
+            "**3.** Fill the modal — theme (required) • time (required, smart parser: `in 30 min`, `tonight 9`, `tomorrow 7pm CT`) • location, notes, capacity (all optional)\n"
+            "Manage the live card with **✏️ Edit**, **📣 DM Attendees**, and **🏁 End Meet**. "
+            "📖 Full guide is pinned above — tap to expand."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="✨ What Happens Automatically",
+        value=(
+            "• Host is auto-RSVPed as the first pullup\n"
+            "• Card is auto-pinned + a discussion thread is created\n"
+            "• Waitlist auto-promotes with DMs when spots open\n"
+            "• Host gets a 30-min last-call DM before auto-close\n"
+            "• Meets auto-close after 3h with a thank-you summary in the thread"
         ),
         inline=False,
     )
     embed.add_field(
         name="⚠️ Rules",
         value=(
-            "• Clean, realistic builds only\n"
-            "• No crashing or griefing\n"
-            "• Follow host instructions\n"
-            "• Be ready to join when you RSVP"
+            "• PS5 only • clean, realistic builds only\n"
+            "• No crashing or griefing • follow host instructions\n"
+            "• Be ready to join when you RSVP — repeat no-shows get flagged"
         ),
         inline=False,
     )
     embed.add_field(
-        name="🔒 Access",
-        value="Only users with the **Host** role can create pop-up meets.",
+        name="🔒 Access & Limits",
+        value=(
+            "• Only **Host** role members can create pop-ups\n"
+            "• 1 active pop-up per host • 5 active per server max"
+        ),
         inline=False,
     )
-    embed.set_footer(text="DIFF Pop-Up Meet System")
+    embed.set_footer(text="DIFF Pop-Up Meet System — pinned guide above has full host walkthrough")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
