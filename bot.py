@@ -16332,7 +16332,7 @@ def _popup_build_meet_embed(
 
     # Row 1: Theme + Location (2 columns, no spacer needed)
     embed.add_field(name="🎨 Theme",    value=theme or "Open Class", inline=True)
-    embed.add_field(name="📍 Location", value=location,              inline=True)
+    embed.add_field(name="📍 Location", value=(location or "_TBD — ask host_"), inline=True)
     # Row 2: Time + Host + Pulling Up (3 columns)
     embed.add_field(name="🕒 Time",  value=time_text,         inline=True)
     embed.add_field(name="👤 Host",  value=f"<@{host_id}>",   inline=True)
@@ -16678,15 +16678,15 @@ class _PopupMeetView(discord.ui.View):
 
 class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
     theme_field = discord.ui.TextInput(
-        label="Meet Theme (optional)",
-        placeholder="e.g. JDM Night / Clean Euros / Under 1M  — leave blank for open theme",
-        required=False,
+        label="Meet Theme",
+        placeholder="e.g. JDM Night / Clean Euros / Under 1M",
+        required=True,
         max_length=100,
     )
     location_field = discord.ui.TextInput(
-        label="Location",
-        placeholder="e.g. LS Car Meet / City / Sandy Shores",
-        required=True,
+        label="Location (optional)",
+        placeholder="e.g. LS Car Meet / City / Sandy Shores — leave blank if TBD",
+        required=False,
         max_length=100,
     )
     time_field = discord.ui.TextInput(
@@ -16715,6 +16715,11 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
         self.notify_target = notify_target if notify_target in {"both","ps5","carmeet","none"} else "both"
         self.theme_key = theme_key if theme_key in {k for k,_ in _POPUP_THEME_OPTIONS} else "custom"
         self.voice_channel_id = int(voice_channel_id or 0)
+        # Pre-fill the (now-required) theme field with whatever was picked in the
+        # pre-modal dropdown so hosts can just hit Submit when the preset is fine.
+        _preset = _POPUP_THEME_LABEL_FROM_KEY.get(self.theme_key, "")
+        if _preset:
+            self.theme_field.default = _preset
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -16837,7 +16842,7 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
                 description=f"{user.mention} created a new pop-up meet.",
             )
             log_embed.add_field(name="Meet ID",   value=str(meet_id),       inline=True)
-            log_embed.add_field(name="Location",  value=location,           inline=True)
+            log_embed.add_field(name="Location",  value=(location or "TBD"), inline=True)
             log_embed.add_field(name="Theme",     value=theme or "Open Class", inline=True)
             try:
                 await log_ch.send(embed=log_embed)
@@ -17023,7 +17028,7 @@ def _popup_build_panel_embed() -> discord.Embed:
         value=(
             "• Host clicks **Create Pop-Up Meet** below\n"
             "• Picks who to ping (PlayStation / Car Meet / Both / None)\n"
-            "• Fills in theme, location & time (accepts `in 30 min`, `tonight 9`, etc.)\n"
+            "• Fills in theme + time (location optional; accepts `in 30 min`, `tonight 9`, etc.)\n"
             "• Bot posts the meet card — members click **🚗 Pulling Up!** to RSVP\n"
             "• Meets auto-close after 3 hours if the host forgets"
         ),
