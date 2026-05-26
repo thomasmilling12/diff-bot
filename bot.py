@@ -15981,6 +15981,7 @@ class _PopupDB:
             ("host_avatar_url",    "TEXT"),
             ("voice_channel_id",   "INTEGER"),
             ("capacity",           "INTEGER NOT NULL DEFAULT 0"),
+            ("thread_id",          "INTEGER"),
         ):
             try:
                 cur.execute(f"ALTER TABLE popup_meets ADD COLUMN {col} {defn}")
@@ -16027,6 +16028,30 @@ class _PopupDB:
         )
         self.conn.commit()
         return uid
+
+    def set_thread_id(self, meet_id: int, thread_id: int) -> None:
+        self.conn.execute("UPDATE popup_meets SET thread_id=? WHERE id=?", (int(thread_id), meet_id))
+        self.conn.commit()
+
+    def update_meet_fields(self, meet_id: int, *, theme=None, location=None,
+                           time_text=None, extra_notes=None) -> None:
+        sets, vals = [], []
+        if theme       is not None: sets.append("theme=?");       vals.append(theme)
+        if location    is not None: sets.append("location=?");    vals.append(location)
+        if time_text   is not None: sets.append("time_text=?");   vals.append(time_text)
+        if extra_notes is not None: sets.append("extra_notes=?"); vals.append(extra_notes)
+        if not sets:
+            return
+        vals.append(meet_id)
+        self.conn.execute(f"UPDATE popup_meets SET {', '.join(sets)} WHERE id=?", vals)
+        self.conn.commit()
+
+    def get_rsvps_by_status(self, guild_id: int, meet_id: int, status: str):
+        return [int(r[0]) for r in self.conn.execute(
+            "SELECT user_id FROM popup_rsvps WHERE guild_id=? AND meet_id=? AND status=? "
+            "ORDER BY updated_at ASC",
+            (guild_id, meet_id, status),
+        ).fetchall()]
 
     def set_message_id(self, meet_id: int, message_id: int) -> None:
         self.conn.execute("UPDATE popup_meets SET message_id=? WHERE id=?", (message_id, meet_id))
@@ -16493,12 +16518,161 @@ class _PopupEndMeetBtn(discord.ui.Button):
             pass
 
 
+def _popup_is_host_or_staff(meet, member) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    if member.id == meet["host_user_id"]:
+        return True
+    if member.guild_permissions.administrator:
+        return True
+    return any(r.id in _POPUP_STAFF_ROLES for r in member.roles)
+
+
+class _PopupEditModal(discord.ui.Modal, title="✏️ Edit Pop-Up Meet"):
+    def __init__(self, meet_id: int, meet_row):
+        super().__init__()
+        self.meet_id = meet_id
+        self.theme_in = discord.ui.TextInput(
+            label="Theme",
+            default=(meet_row["theme"] or "")[:100],
+            required=False, max_length=100,
+        )
+        self.location_in = discord.ui.TextInput(
+            label="Location",
+            default=(meet_row["location"] or "")[:100],
+            required=True, max_length=100,
+        )
+        self.time_in = discord.ui.TextInput(
+            label="Time",
+            default=(meet_row["time_text"] or "")[:100],
+            required=True, max_length=100,
+        )
+        self.notes_in = discord.ui.TextInput(
+            label="Notes (optional)",
+            style=discord.TextStyle.paragraph,
+            default=(meet_row["extra_notes"] or "")[:500],
+            required=False, max_length=500,
+        )
+        for f in (self.theme_in, self.location_in, self.time_in, self.notes_in):
+            self.add_item(f)
+
+    async def on_submit(self, interaction):
+        meet = _popup_db.get_meet(self.meet_id)
+        if not meet or meet["is_ended"]:
+            return await interaction.response.send_message("Meet not found or already ended.", ephemeral=True)
+        theme     = _popup_sanitize(self.theme_in.value.strip())
+        location  = _popup_sanitize(self.location_in.value.strip())
+        time_text = _popup_sanitize(_popup_parse_time(self.time_in.value.strip()))
+        notes     = _popup_sanitize(self.notes_in.value.strip())
+        _popup_db.update_meet_fields(
+            self.meet_id, theme=theme, location=location, time_text=time_text, extra_notes=notes,
+        )
+        meet = _popup_db.get_meet(self.meet_id)
+        counts = _popup_db.get_rsvp_counts(interaction.guild.id, self.meet_id)
+        new_emb = _popup_build_meet_embed(
+            theme, location, time_text, notes, self.meet_id, meet["host_user_id"],
+            meet["host_display_name"] or "", meet["host_avatar_url"],
+            counts["pullup"], counts["cantmake"],
+            voice_channel_id=_popup_meet_col(meet, "voice_channel_id"),
+            capacity=_popup_meet_col(meet, "capacity"),
+            waitlist_count=counts.get("waitlist", 0),
+        )
+        try:
+            ch = interaction.guild.get_channel(_POPUP_PANEL_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel) and meet["message_id"]:
+                msg = await ch.fetch_message(int(meet["message_id"]))
+                await msg.edit(embed=new_emb)
+        except Exception as _e:
+            _bot_log.warning("[Popup] edit refresh failed for #%s: %s", self.meet_id, _e)
+        await interaction.response.send_message("✅ Meet updated.", ephemeral=True)
+
+
+class _PopupEditBtn(discord.ui.Button):
+    def __init__(self, meet_id: int):
+        super().__init__(
+            label="✏️ Edit", style=discord.ButtonStyle.secondary,
+            custom_id=f"diff_popup:{meet_id}:edit", row=1,
+        )
+        self.meet_id = meet_id
+
+    async def callback(self, interaction):
+        meet = _popup_db.get_meet(self.meet_id)
+        if not meet or meet["is_ended"]:
+            return await interaction.response.send_message("Meet not found or already ended.", ephemeral=True)
+        if not _popup_is_host_or_staff(meet, interaction.user):
+            return await interaction.response.send_message("Only the host or staff can edit this meet.", ephemeral=True)
+        await interaction.response.send_modal(_PopupEditModal(self.meet_id, meet))
+
+
+class _PopupDMAttendeesModal(discord.ui.Modal, title="📣 Message Attendees"):
+    def __init__(self, meet_id: int):
+        super().__init__()
+        self.meet_id = meet_id
+        self.body_in = discord.ui.TextInput(
+            label="Message to confirmed attendees",
+            style=discord.TextStyle.paragraph,
+            placeholder="e.g. Lobby is up — search 'DIFF JDM' on PS5. See you in 5!",
+            required=True, max_length=1500,
+        )
+        self.add_item(self.body_in)
+
+    async def on_submit(self, interaction):
+        meet = _popup_db.get_meet(self.meet_id)
+        if not meet:
+            return await interaction.response.send_message("Meet not found.", ephemeral=True)
+        attendees = _popup_db.get_rsvps_by_status(interaction.guild.id, self.meet_id, "pullup")
+        if not attendees:
+            return await interaction.response.send_message(
+                "No confirmed attendees to DM yet.", ephemeral=True
+            )
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        body = _popup_sanitize(self.body_in.value.strip())
+        prefix = f"📣 **Pop-Up Meet #{self.meet_id} — message from host <@{meet['host_user_id']}>:**\n\n"
+        sent, failed = 0, 0
+        for uid in attendees:
+            mem = interaction.guild.get_member(uid)
+            if not mem:
+                failed += 1
+                continue
+            try:
+                await mem.send(prefix + body)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.25)
+        msg = f"✅ DMed **{sent}** of {sent + failed} confirmed attendees"
+        if failed:
+            msg += f" ({failed} couldn't be reached)."
+        else:
+            msg += "."
+        await interaction.followup.send(msg, ephemeral=True)
+
+
+class _PopupDMAttendeesBtn(discord.ui.Button):
+    def __init__(self, meet_id: int):
+        super().__init__(
+            label="📣 DM Attendees", style=discord.ButtonStyle.primary,
+            custom_id=f"diff_popup:{meet_id}:dm", row=1,
+        )
+        self.meet_id = meet_id
+
+    async def callback(self, interaction):
+        meet = _popup_db.get_meet(self.meet_id)
+        if not meet or meet["is_ended"]:
+            return await interaction.response.send_message("Meet not found or already ended.", ephemeral=True)
+        if not _popup_is_host_or_staff(meet, interaction.user):
+            return await interaction.response.send_message("Only the host or staff can message attendees.", ephemeral=True)
+        await interaction.response.send_modal(_PopupDMAttendeesModal(self.meet_id))
+
+
 class _PopupMeetView(discord.ui.View):
     """Persistent per-meet RSVP view.  meet_id is encoded in each button's custom_id."""
     def __init__(self, meet_id: int):
         super().__init__(timeout=None)
         self.add_item(_PopupPullUpBtn(meet_id))
         self.add_item(_PopupCantMakeBtn(meet_id))
+        self.add_item(_PopupEditBtn(meet_id))
+        self.add_item(_PopupDMAttendeesBtn(meet_id))
         self.add_item(_PopupEndMeetBtn(meet_id))
 
 
@@ -16528,10 +16702,19 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
         required=False,
         max_length=500,
     )
+    capacity_field = discord.ui.TextInput(
+        label="Capacity (optional, blank = unlimited)",
+        placeholder="e.g. 12  (max 50)",
+        required=False,
+        max_length=3,
+    )
 
-    def __init__(self, notify_target: str = "both"):
+    def __init__(self, notify_target: str = "both", theme_key: str = "custom",
+                 voice_channel_id: int = 0):
         super().__init__()
         self.notify_target = notify_target if notify_target in {"both","ps5","carmeet","none"} else "both"
+        self.theme_key = theme_key if theme_key in {k for k,_ in _POPUP_THEME_OPTIONS} else "custom"
+        self.voice_channel_id = int(voice_channel_id or 0)
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -16560,22 +16743,42 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
                 ephemeral=True,
             )
 
-        # Notify target comes from the dropdown the host picked BEFORE the modal
+        # Host cooldown: one active pop-up per host (also pre-checked at panel-click)
+        try:
+            existing_for_host = _popup_db.get_host_active_meet(guild.id, user.id)
+        except Exception:
+            existing_for_host = None
+        if existing_for_host:
+            return await interaction.response.send_message(
+                f"⚠️ You already have an active pop-up (#{existing_for_host[0]}). End it first.",
+                ephemeral=True,
+            )
+
         nt = self.notify_target
         ping_ps = nt in ("both", "ps5")
         ping_cm = nt in ("both", "carmeet")
 
-        # Sanitize all free-text fields against @everyone / @here mass-ping abuse
-        theme     = _popup_sanitize(self.theme_field.value.strip())
+        # Theme: typed value in modal overrides dropdown pick
+        typed_theme = _popup_sanitize(self.theme_field.value.strip())
+        if typed_theme:
+            theme = typed_theme
+        elif self.theme_key in _POPUP_THEME_LABEL_FROM_KEY:
+            theme = _POPUP_THEME_LABEL_FROM_KEY[self.theme_key]
+        else:
+            theme = ""
+
         location  = _popup_sanitize(self.location_field.value.strip())
         time_text = _popup_sanitize(_popup_parse_time(self.time_field.value.strip()))
         notes     = _popup_sanitize(self.notes_field.value.strip())
+        capacity  = _popup_parse_capacity(self.capacity_field.value)
 
         avatar_url = str(user.display_avatar.url)
         meet_id = _popup_db.add_meet(
             guild.id, user.id, theme, location, time_text, notes, ping_ps, ping_cm,
             host_display_name=user.display_name,
             host_avatar_url=avatar_url,
+            voice_channel_id=self.voice_channel_id,
+            capacity=capacity,
         )
 
         ping_parts = []
@@ -16594,6 +16797,9 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
             theme, location, time_text, notes, meet_id,
             user.id, user.display_name, avatar_url,
             pullup_count=0, cantmake_count=0,
+            voice_channel_id=self.voice_channel_id,
+            capacity=capacity,
+            waitlist_count=0,
         )
 
         meet_msg = await panel_ch.send(
@@ -16605,6 +16811,22 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
             ),
         )
         _popup_db.set_message_id(meet_id, meet_msg.id)
+        # Auto-pin the live meet so it stays visible at the top of the channel.
+        try:
+            await meet_msg.pin(reason=f"Pop-up meet #{meet_id} live")
+        except Exception as _pe:
+            _bot_log.warning("[Popup] pin failed for #%s: %s", meet_id, _pe)
+        # Auto-create a discussion thread off the meet message so chat doesn't
+        # clutter #popup-meets. 1-day auto-archive after last message.
+        try:
+            thread = await meet_msg.create_thread(
+                name=f"💬 Pop-Up #{meet_id} — {(theme or 'Open Class')[:40]}",
+                auto_archive_duration=1440,
+                reason=f"Pop-up meet #{meet_id} discussion",
+            )
+            _popup_db.set_thread_id(meet_id, thread.id)
+        except Exception as _te:
+            _bot_log.warning("[Popup] thread create failed for #%s: %s", meet_id, _te)
 
         log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
         if isinstance(log_ch, discord.TextChannel):
@@ -16669,18 +16891,63 @@ class _PopupNotifySelect(discord.ui.Select):
             for val, lbl in _POPUP_NOTIFY_OPTIONS
         ]
         super().__init__(
-            placeholder="🔔 Who to notify…",
-            options=options,
-            min_values=1,
-            max_values=1,
+            placeholder="🔔 Who to notify…", options=options,
+            min_values=1, max_values=1, row=0,
             custom_id="diff_popup:notify_select",
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        # Persist the chosen value on the parent view so Continue can read it.
         if isinstance(self.view, _PopupNotifySelectView):
             self.view.notify_target = self.values[0]
-        # ACK with a tiny update so Discord doesn't show "interaction failed"
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception:
+            pass
+
+
+class _PopupThemeSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label=lbl, value=val, default=(val == "custom"))
+            for val, lbl in _POPUP_THEME_OPTIONS[:25]
+        ]
+        super().__init__(
+            placeholder="🎨 Theme (quick-pick)…", options=options,
+            min_values=1, max_values=1, row=1,
+            custom_id="diff_popup:theme_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if isinstance(self.view, _PopupNotifySelectView):
+            self.view.theme_key = self.values[0]
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception:
+            pass
+
+
+class _PopupVCSelect(discord.ui.Select):
+    """Voice channel dropdown — populated dynamically from the guild's VCs."""
+    def __init__(self, guild):
+        opts = [discord.SelectOption(label="🚫 No voice channel", value="0", default=True)]
+        seen = 0
+        for vc in (guild.voice_channels if guild else []):
+            if seen >= 24:
+                break
+            opts.append(discord.SelectOption(label=f"🔊 {vc.name[:90]}", value=str(vc.id)))
+            seen += 1
+        super().__init__(
+            placeholder="🔊 Attach a voice channel (optional)…", options=opts,
+            min_values=1, max_values=1, row=2,
+            custom_id="diff_popup:vc_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if isinstance(self.view, _PopupNotifySelectView):
+            try:
+                self.view.voice_channel_id = int(self.values[0])
+            except Exception:
+                self.view.voice_channel_id = 0
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception:
@@ -16690,22 +16957,23 @@ class _PopupNotifySelect(discord.ui.Select):
 class _PopupNotifyContinueBtn(discord.ui.Button):
     def __init__(self):
         super().__init__(
-            label="Continue →",
-            style=discord.ButtonStyle.success,
-            custom_id="diff_popup:notify_continue",
-            row=1,
+            label="Continue →", style=discord.ButtonStyle.success,
+            custom_id="diff_popup:notify_continue", row=3,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
-        # Only the host who opened it can advance
         if isinstance(view, _PopupNotifySelectView) and interaction.user.id != view.invoker_id:
             return await interaction.response.send_message(
                 "Only the host who opened this can continue.", ephemeral=True
             )
-        nt = getattr(view, "notify_target", "both") or "both"
+        nt  = getattr(view, "notify_target", "both") or "both"
+        thk = getattr(view, "theme_key", "custom") or "custom"
+        vc  = int(getattr(view, "voice_channel_id", 0) or 0)
         try:
-            await interaction.response.send_modal(_PopupMeetModal(notify_target=nt))
+            await interaction.response.send_modal(
+                _PopupMeetModal(notify_target=nt, theme_key=thk, voice_channel_id=vc)
+            )
         except Exception as _e:
             _bot_log.warning("[Popup] send_modal failed: %s", _e)
             try:
@@ -16718,13 +16986,17 @@ class _PopupNotifyContinueBtn(discord.ui.Button):
 
 
 class _PopupNotifySelectView(discord.ui.View):
-    """Ephemeral 2-min view: dropdown for notify target + Continue button.
-    NOT persistent — auto-times-out so we don't leak views on bot restart."""
-    def __init__(self, invoker_id: int):
-        super().__init__(timeout=120)
+    """Ephemeral pre-modal config: Notify + Theme + VC + Continue.
+    NOT persistent — 3 min timeout to avoid leaking views on bot restart."""
+    def __init__(self, invoker_id: int, guild=None):
+        super().__init__(timeout=180)
         self.invoker_id = invoker_id
-        self.notify_target = "both"  # matches default-selected option
+        self.notify_target = "both"
+        self.theme_key = "custom"
+        self.voice_channel_id = 0
         self.add_item(_PopupNotifySelect())
+        self.add_item(_PopupThemeSelect())
+        self.add_item(_PopupVCSelect(guild))
         self.add_item(_PopupNotifyContinueBtn())
 
 
@@ -16777,9 +17049,12 @@ def _popup_build_panel_embed() -> discord.Embed:
     return embed
 
 
+_popup_lastcall_sent: set = set()  # meet_ids we've already DMed a last-call for
+
 async def _popup_auto_end_loop() -> None:
-    """Every 10 min: end any pop-up meet older than _POPUP_AUTO_END_HOURS.
-    Edits the meet message in place (greyed out, ended state) and DMs the host."""
+    """Every 10 min: (a) DM host a 'last call' ~30 min before auto-close, then
+    (b) end any pop-up meet older than _POPUP_AUTO_END_HOURS. Edits the meet
+    message in place (greyed out, ended state) and DMs the host."""
     await bot.wait_until_ready()
     while not bot.is_closed():
         try:
@@ -16798,8 +17073,24 @@ async def _popup_auto_end_loop() -> None:
                     except Exception:
                         continue
                     age_h = (now_utc - created).total_seconds() / 3600.0
+                    # Last-call DM ~30 min before auto-close (once per meet)
+                    if (_POPUP_AUTO_END_HOURS - 0.5) <= age_h < _POPUP_AUTO_END_HOURS:
+                        mid = int(meet["id"])
+                        if mid not in _popup_lastcall_sent:
+                            _popup_lastcall_sent.add(mid)
+                            try:
+                                host_mem = g.get_member(int(meet["host_user_id"]))
+                                if host_mem:
+                                    await host_mem.send(
+                                        f"⏰ **Last call** — your pop-up meet (#{mid}) will auto-close "
+                                        f"in ~30 minutes ({_POPUP_AUTO_END_HOURS}h cap). "
+                                        f"Hit **🏁 End Meet** when you're done, or just let it auto-close."
+                                    )
+                            except Exception:
+                                pass
                     if age_h < _POPUP_AUTO_END_HOURS:
                         continue
+                    _popup_lastcall_sent.discard(int(meet["id"]))
                     meet_id = int(meet["id"])
                     try:
                         _popup_db.end_meet(meet_id)
@@ -16840,6 +17131,58 @@ async def _popup_auto_end_loop() -> None:
         except Exception as _le:
             _bot_log.warning("[PopupAutoEnd] loop error: %s", _le)
         await asyncio.sleep(600)  # 10 min
+
+
+@bot.command(name="popupinfo", aliases=["popup", "popupmembers"])
+async def popupinfo_cmd(ctx, meet_id: int = 0):
+    """!popupinfo <id> — full attendee + waitlist + can't-make breakdown.
+    Host of that meet OR any staff member can use it."""
+    if not ctx.guild or meet_id <= 0:
+        return await ctx.reply("Usage: `!popupinfo <meet_id>`", mention_author=False)
+    meet = _popup_db.get_meet(meet_id)
+    if not meet or meet["guild_id"] != ctx.guild.id:
+        return await ctx.reply(f"No pop-up meet found with ID `#{meet_id}`.", mention_author=False)
+    if not _popup_is_host_or_staff(meet, ctx.author):
+        return await ctx.reply("Only the host of this meet or staff can view its info.", mention_author=False)
+
+    counts    = _popup_db.get_rsvp_counts(ctx.guild.id, meet_id)
+    pullups   = _popup_db.get_rsvps_by_status(ctx.guild.id, meet_id, "pullup")
+    waitlist  = _popup_db.get_rsvps_by_status(ctx.guild.id, meet_id, "waitlist")
+    cantmakes = _popup_db.get_rsvps_by_status(ctx.guild.id, meet_id, "cantmake")
+
+    def _fmt(uids, cap_n: int = 30) -> str:
+        if not uids:
+            return "_None_"
+        shown = [f"<@{u}>" for u in uids[:cap_n]]
+        more  = len(uids) - cap_n
+        s = ", ".join(shown)
+        if more > 0:
+            s += f"  …and **{more}** more"
+        return s
+
+    cap     = int(_popup_meet_col(meet, "capacity") or 0)
+    vc_id   = int(_popup_meet_col(meet, "voice_channel_id") or 0)
+    status  = "🛑 Ended" if meet["is_ended"] else "🟢 Live"
+    cap_str = f"{counts['pullup']}/{cap}" if cap > 0 else f"{counts['pullup']}"
+
+    emb = discord.Embed(
+        title=f"📋 Pop-Up Meet #{meet_id} — {status}",
+        color=discord.Color.greyple() if meet["is_ended"] else discord.Color.green(),
+    )
+    emb.add_field(name="🎨 Theme",    value=(meet["theme"] or "Open Class"), inline=True)
+    emb.add_field(name="📍 Location", value=meet["location"] or "—",         inline=True)
+    emb.add_field(name="🕒 Time",     value=meet["time_text"] or "—",        inline=True)
+    emb.add_field(name="👤 Host",     value=f"<@{meet['host_user_id']}>",    inline=True)
+    if vc_id:
+        emb.add_field(name="🔊 Voice", value=f"<#{vc_id}>", inline=True)
+    emb.add_field(name="🚗 Confirmed", value=cap_str, inline=True)
+    emb.add_field(name=f"✅ Pulling Up ({counts['pullup']})", value=_fmt(pullups), inline=False)
+    if waitlist:
+        emb.add_field(name=f"📋 Waitlist ({counts['waitlist']})", value=_fmt(waitlist), inline=False)
+    if cantmakes:
+        emb.add_field(name=f"❌ Can't Make It ({counts['cantmake']})", value=_fmt(cantmakes), inline=False)
+    emb.set_footer(text=f"Created {meet['created_at'][:19].replace('T',' ')} UTC")
+    await ctx.reply(embed=emb, mention_author=False)
 
 
 async def _popup_post_or_refresh(guild: discord.Guild):
