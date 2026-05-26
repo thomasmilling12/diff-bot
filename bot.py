@@ -19151,7 +19151,38 @@ async def _cs_post_vote_announcement(guild: discord.Guild, candidates: List[Dict
     return msg
 
 
+def _cs_hex_to_rgb(hex_code: str) -> tuple:
+    """Convert '#RRGGBB' or 'RRGGBB' to (r, g, b). Returns (0,0,0) on parse failure."""
+    try:
+        h = hex_code.strip().lstrip("#")
+        if len(h) != 6:
+            return (0, 0, 0)
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    except Exception:
+        return (0, 0, 0)
+
+
+def _cs_color_distance(a: tuple, b: tuple) -> float:
+    """Weighted RGB distance — roughly perceptual. Higher = more visually distinct."""
+    # Weight green more (eye is most sensitive), use squared diffs
+    dr = (a[0] - b[0]) * 0.30
+    dg = (a[1] - b[1]) * 0.59
+    db = (a[2] - b[2]) * 0.11
+    return (dr * dr + dg * dg + db * db) ** 0.5
+
+
 def _cs_get_candidate_pool(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Pick 4 user-submitted colors for the weekly vote, preferring VISUAL DISTINCTNESS
+    so voters aren't stuck choosing between near-identical shades.
+
+    Strategy:
+      1. One submission per unique author (newest first).
+      2. Shuffle the pool for fairness.
+      3. Greedy pick: always include the first candidate, then iteratively pick
+         the candidate whose minimum distance to any already-picked color is
+         the LARGEST (farthest-point sampling).
+      4. If the pool has <4 candidates, return whatever's available.
+    """
     pending = sorted(
         [s for s in data["submissions"].values() if s.get("status") == "pending"],
         key=lambda s: s.get("submitted_at", ""), reverse=True,
@@ -19160,9 +19191,35 @@ def _cs_get_candidate_pool(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     for sub in pending:
         if sub["author_id"] not in unique:
             unique[sub["author_id"]] = sub
-    candidates = list(unique.values())
-    random.shuffle(candidates)
-    return candidates[:4]
+    pool = list(unique.values())
+    random.shuffle(pool)
+
+    if len(pool) <= 4:
+        return pool
+
+    # Pre-compute RGB for every candidate
+    rgb_map = {id(c): _cs_hex_to_rgb(c.get("hex_code", "#000000")) for c in pool}
+
+    picked: List[Dict[str, Any]] = [pool[0]]
+    remaining = pool[1:]
+
+    while len(picked) < 4 and remaining:
+        # For each remaining candidate, find its MIN distance to any picked color.
+        # Then pick the one with the LARGEST min distance (= most different).
+        best_cand = None
+        best_score = -1.0
+        for cand in remaining:
+            cand_rgb = rgb_map[id(cand)]
+            min_d = min(_cs_color_distance(cand_rgb, rgb_map[id(p)]) for p in picked)
+            if min_d > best_score:
+                best_score = min_d
+                best_cand = cand
+        if best_cand is None:
+            break
+        picked.append(best_cand)
+        remaining.remove(best_cand)
+
+    return picked
 
 
 async def _cs_try_post_weekly_vote(guild: discord.Guild) -> bool:
