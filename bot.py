@@ -1720,14 +1720,40 @@ async def safe_dm(user, message: str):
 
 
 def build_review_embed(app_id: str, applicant, answers: dict, ticket_channel_id=None):
+    # #2 Quality score — quick triage signal at the top of the embed
+    try:
+        q_score, q_pos, q_neg = _compute_app_quality(applicant, answers)
+        q_badge = _quality_badge(q_score)
+    except Exception:
+        q_score, q_pos, q_neg, q_badge = None, [], [], ""
+
     embed = discord.Embed(
         title=f"DIFF Application #{app_id}",
-        description="Staff: review the application and check the garage ticket before making a decision.",
+        description=(
+            (f"**Quality:** {q_badge} — **{q_score}/100**\n"
+             "Staff: review the application and check the garage ticket before making a decision.")
+            if q_score is not None else
+            "Staff: review the application and check the garage ticket before making a decision."
+        ),
         color=discord.Color.blurple(),
         timestamp=utc_now(),
     )
     embed.set_author(name=str(applicant), icon_url=applicant.display_avatar.url)
     embed.add_field(name="Applicant", value=f"{applicant.mention}\n`{applicant.id}`", inline=False)
+
+    # Quality breakdown — top 3 positives + top 3 negatives
+    if q_score is not None and (q_pos or q_neg):
+        breakdown_lines = []
+        for line in q_pos[:3]:
+            breakdown_lines.append(f"✅ {line}")
+        for line in q_neg[:3]:
+            breakdown_lines.append(f"⚠️ {line}")
+        if breakdown_lines:
+            embed.add_field(
+                name="📊 Quality Signals",
+                value="\n".join(breakdown_lines)[:1024],
+                inline=False,
+            )
     embed.add_field(name="Gamertag", value=answers.get("gamertag", "N/A"), inline=True)
     embed.add_field(name="Age", value=answers.get("age", "N/A"), inline=True)
     embed.add_field(name="Timezone", value=answers.get("timezone", "N/A"), inline=True)
@@ -20159,6 +20185,14 @@ async def on_ready():
     _safe_add_view(InterviewInfoView(),                                  "InterviewInfoView")
     _safe_add_view(InterviewOutcomeView(),                               "InterviewOutcomeView")
     _safe_add_view(_InterviewSessionView(),                              "InterviewSessionView")
+
+    # #9 Weekly JSON backup loop
+    try:
+        if not _json_backup_loop.is_running():
+            _json_backup_loop.start()
+            print("[backup] _json_backup_loop started")
+    except Exception as _e:
+        print(f"[backup] failed to start loop: {_e!r}")
     _safe_add_view(SupportDropdownView(),                                "SupportDropdownView")
     _safe_add_view(SupportCloseButton(),                                 "SupportCloseButton")
     _safe_add_view(SupportApplicationReviewView(),                      "SupportApplicationReviewView")
@@ -24257,16 +24291,76 @@ async def _interview_outcome_close_ticket(channel: discord.TextChannel, status: 
 
 
 async def _interview_outcome_dm_accept(applicant: discord.Member) -> None:
-    try:
-        await applicant.send(
-            "✅ **Welcome to Different Meets (DIFF)!**\n\n"
-            "Your interview has been accepted.\n\n"
-            "Please make sure you review the server information, stay active, "
-            "and represent DIFF the right way at meets and events.\n\n"
-            "Welcome to the crew."
-        )
-    except discord.HTTPException:
-        pass
+    # #1 Rich onboarding DM + 7-day follow-up
+    embed = discord.Embed(
+        title="✅ Welcome to Different Meets!",
+        description=(
+            f"Hey {applicant.mention} — your interview was accepted. "
+            "You're officially part of the crew. 🚗💨\n\n"
+            "**Your first-week checklist:**"
+        ),
+        color=discord.Color.green(), timestamp=utc_now(),
+    )
+    embed.add_field(
+        name="📌 Week 1 — Get integrated",
+        value=(
+            "⬜ Drop a quick intro in the crew chat\n"
+            "⬜ Set your crew tag in GTA (`DIFF`)\n"
+            "⬜ RSVP to your first meet — check the meets channel\n"
+            "⬜ Hop in VC during a meet and meet people\n"
+            "⬜ Run `!me` any time to see your member stats"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📜 Quick reminders",
+        value=(
+            "• Follow meet etiquette and host instructions\n"
+            "• Respect the 3-strike system — it's there for everyone\n"
+            "• Have your headset ready for meets\n"
+            "• If you're unsure about anything, DM any Leadership member"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Different Meets • Welcome aboard!")
+    sent = await _safe_dm(applicant, embed=embed)
+    if not sent:
+        try:
+            await applicant.send(
+                "✅ Welcome to Different Meets! Your interview was accepted — "
+                "see the server for next steps."
+            )
+        except discord.HTTPException:
+            pass
+
+    # 7-day follow-up DM (best-effort, dies on bot restart — acceptable for v1)
+    async def _followup():
+        try:
+            await asyncio.sleep(7 * 24 * 3600)
+            # Skip if they left the server or got banned in the meantime
+            try:
+                guild = bot.get_guild(GUILD_ID)
+                if guild and not guild.get_member(applicant.id):
+                    return
+            except Exception:
+                pass
+            fu = discord.Embed(
+                title="👋 One week in — how's it going?",
+                description=(
+                    "Hey! It's been a week since you joined DIFF.\n\n"
+                    "Quick check-in: have you been to a meet yet? Need help with "
+                    "anything? Reply here or DM a Leadership member if you're "
+                    "stuck — we want you to actually enjoy being part of the crew.\n\n"
+                    "Run `!me` in the server to see your activity stats."
+                ),
+                color=discord.Color.blurple(), timestamp=utc_now(),
+            )
+            fu.set_footer(text="Different Meets • 7-day check-in")
+            await _safe_dm(applicant, embed=fu)
+        except Exception:
+            pass
+
+    asyncio.create_task(_followup())
 
 
 async def _interview_outcome_dm_deny(applicant: discord.Member, notes: str) -> None:
@@ -24475,6 +24569,572 @@ class InterviewOutcomeView(discord.ui.View):
         await interaction.response.send_message(text, ephemeral=True)
 
 
+
+
+# =========================================================================
+# DIFF QUALITY-OF-LIFE PASS — 8 improvements (foundation + onboarding +
+# member dashboard + applicant quality score + strike timeline + pulse
+# + alt-account detection + JSON backup).
+# =========================================================================
+
+# ─── #10  Central DM rate limiter ────────────────────────────────────────
+# Stops any single member receiving more than DM_RATE_MAX messages in
+# DM_RATE_WINDOW seconds from the bot.  Available as `_safe_dm()` for all
+# *new* code — existing direct `member.send(...)` calls are untouched on
+# purpose (retrofitting 200+ call-sites would be too risky in one push).
+DM_RATE_MAX = 4          # per user
+DM_RATE_WINDOW = 3600    # seconds
+_DM_RATE_TRACK: dict[int, list[float]] = {}
+
+async def _safe_dm(user, *args, **kwargs) -> bool:
+    """Rate-limited DM helper.  Returns True if the DM was sent."""
+    try:
+        uid = int(getattr(user, "id", 0))
+    except Exception:
+        uid = 0
+    now = datetime.now(timezone.utc).timestamp()
+    if uid:
+        hist = _DM_RATE_TRACK.setdefault(uid, [])
+        hist[:] = [t for t in hist if now - t < DM_RATE_WINDOW]
+        if len(hist) >= DM_RATE_MAX:
+            try:
+                print(f"[safe_dm] suppressed DM to {uid} — over rate limit ({len(hist)}/{DM_RATE_MAX} in last hour)")
+            except Exception:
+                pass
+            return False
+        hist.append(now)
+    try:
+        await user.send(*args, **kwargs)
+        return True
+    except Exception:
+        return False
+
+
+# ─── #2  Application quality score (0-100) ───────────────────────────────
+def _compute_app_quality(applicant, answers: dict) -> tuple[int, list[str], list[str]]:
+    """Heuristic 0-100 score for triaging fresh applications.  Returns
+    (score, positive_lines, negative_lines)."""
+    score = 50
+    pos, neg = [], []
+
+    # Account age
+    try:
+        acc_age = (datetime.now(timezone.utc) - applicant.created_at).days
+    except Exception:
+        acc_age = 0
+    if acc_age >= 365:
+        score += 15; pos.append(f"+15 Account age {acc_age}d (1y+)")
+    elif acc_age >= 90:
+        score += 8; pos.append(f"+8 Account age {acc_age}d (3mo+)")
+    elif acc_age < 30:
+        score -= 20; neg.append(f"-20 Account is only {acc_age}d old")
+
+    # Server tenure
+    try:
+        join_age = (datetime.now(timezone.utc) - applicant.joined_at).days if applicant.joined_at else 0
+    except Exception:
+        join_age = 0
+    if join_age >= 30:
+        score += 10; pos.append(f"+10 Been in server {join_age}d")
+    elif join_age >= 7:
+        score += 5; pos.append(f"+5 Been in server {join_age}d")
+    elif join_age < 1:
+        score -= 10; neg.append("-10 Joined server <24h ago")
+
+    # Answer effort (length of free-text answers)
+    long_fields = ["why_join", "what_bring", "personal_skills", "meet_experience"]
+    total_len = sum(len(str(answers.get(k, ""))) for k in long_fields)
+    if total_len >= 600:
+        score += 10; pos.append(f"+10 Detailed answers ({total_len} chars)")
+    elif total_len >= 300:
+        score += 5; pos.append(f"+5 Decent answer detail ({total_len} chars)")
+    elif total_len < 100:
+        score -= 15; neg.append(f"-15 Very short answers ({total_len} chars)")
+
+    # PSN / Gamertag present
+    if str(answers.get("gamertag", "")).strip():
+        score += 3; pos.append("+3 PSN ID provided")
+    else:
+        score -= 10; neg.append("-10 No PSN ID")
+
+    # Prior warnings/bans honesty bump (only counts if they wrote a real reply)
+    ph = str(answers.get("prior_history", "")).strip().lower()
+    if ph and ph not in {"", "n", "no", "none", "n/a", "na", "nothing", "-"}:
+        score += 5; pos.append("+5 Disclosed prior crew history")
+
+    # Existing activity in our server (messages, meets)
+    try:
+        row = _activity_get(applicant.id)
+        msg_count = int(row["message_count_30d"] or 0) if row else 0
+        meet_count = int(row["meet_attendance_count"] or 0) if row else 0
+    except Exception:
+        msg_count = meet_count = 0
+    if meet_count >= 1:
+        score += 10; pos.append(f"+10 Already attended {meet_count} meet(s)")
+    if msg_count >= 30:
+        score += 5; pos.append(f"+5 Active in chat ({msg_count} msgs/30d)")
+    elif msg_count == 0:
+        score -= 5; neg.append("-5 No messages in last 30d")
+
+    # Prior denied applications (from APPLICATIONS_FILE)
+    try:
+        all_apps = load_apps().get("applications", {})
+        prior_denied = sum(
+            1 for a in all_apps.values()
+            if str(a.get("user_id")) == str(applicant.id) and a.get("status") == "Denied"
+        )
+        if prior_denied:
+            score -= 5 * prior_denied
+            neg.append(f"-{5 * prior_denied} {prior_denied} prior denied application(s)")
+    except Exception:
+        pass
+
+    score = max(0, min(100, score))
+    return score, pos, neg
+
+
+def _quality_badge(score: int) -> str:
+    if score >= 80: return "🟢 STRONG"
+    if score >= 60: return "🔵 SOLID"
+    if score >= 40: return "🟡 BORDERLINE"
+    return "🔴 WEAK"
+
+
+# ─── #11  Alt-account detection on join ──────────────────────────────────
+def _alt_account_check(member: discord.Member) -> tuple[bool, str]:
+    """Heuristic: account <30d AND username very similar to a previously
+    denied/banned application's username. Returns (is_suspicious, reason)."""
+    try:
+        acc_age = (datetime.now(timezone.utc) - member.created_at).days
+    except Exception:
+        acc_age = 365
+    if acc_age >= 30:
+        return False, ""
+    try:
+        from difflib import SequenceMatcher
+        apps = load_apps().get("applications", {})
+        m_name = (member.name or "").lower()
+        if not m_name:
+            return False, ""
+        best_ratio = 0.0
+        best_match = ""
+        best_status = ""
+        for a in apps.values():
+            if a.get("status") not in ("Denied", "Banned"):
+                continue
+            other = str(a.get("username") or "").split("#")[0].lower()
+            if not other:
+                continue
+            r = SequenceMatcher(None, m_name, other).ratio()
+            if r > best_ratio:
+                best_ratio, best_match, best_status = r, other, a.get("status")
+        if best_ratio >= 0.80:
+            return True, (
+                f"Account is **{acc_age}d** old AND name `{m_name}` is "
+                f"{int(best_ratio * 100)}% similar to previously-{best_status.lower()} "
+                f"applicant `{best_match}`."
+            )
+    except Exception:
+        pass
+    return False, ""
+
+
+async def _post_alt_alert(member: discord.Member, reason: str) -> None:
+    guild = member.guild
+    ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return
+    embed = discord.Embed(
+        title="🚨 Possible Alt Account Detected",
+        description=f"{member.mention} just joined and matches an alt-account heuristic.",
+        color=discord.Color.orange(), timestamp=utc_now(),
+    )
+    try:
+        embed.set_thumbnail(url=member.display_avatar.url)
+    except Exception:
+        pass
+    embed.add_field(name="User", value=f"{member} (`{member.id}`)", inline=False)
+    embed.add_field(name="Reason", value=reason, inline=False)
+    embed.add_field(
+        name="Account Created",
+        value=f"<t:{int(member.created_at.timestamp())}:R>",
+        inline=True,
+    )
+    embed.set_footer(text="Different Meets • Alt Heuristic")
+    try:
+        await ch.send(embed=embed)
+    except Exception:
+        pass
+
+
+# ─── #9  Weekly JSON backup loop ─────────────────────────────────────────
+BACKUP_INTERVAL_HOURS = 168  # 7 days
+_last_backup_ts: float = 0.0
+
+async def _run_json_backup_once() -> bool:
+    """Zip up diff_data/*.json and post to STAFF_LOGS as an attachment."""
+    import zipfile, io as _io
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return False
+    ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return False
+    try:
+        buf = _io.BytesIO()
+        added = 0
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in sorted(os.listdir(DATA_FOLDER)):
+                if not name.endswith(".json"):
+                    continue
+                full = os.path.join(DATA_FOLDER, name)
+                try:
+                    zf.write(full, arcname=name)
+                    added += 1
+                except Exception:
+                    pass
+        if added == 0:
+            return False
+        buf.seek(0)
+        stamp = datetime.now(_EST_TZ).strftime("%Y-%m-%d_%H%M")
+        await ch.send(
+            content=f"💾 **Weekly JSON backup** — {added} files",
+            file=discord.File(buf, filename=f"diff_data_backup_{stamp}.zip"),
+        )
+        return True
+    except Exception as e:
+        print(f"[backup] failed: {e!r}")
+        return False
+
+
+@tasks.loop(hours=6)
+async def _json_backup_loop():
+    global _last_backup_ts
+    now = datetime.now(timezone.utc).timestamp()
+    if now - _last_backup_ts < BACKUP_INTERVAL_HOURS * 3600:
+        return
+    ok = await _run_json_backup_once()
+    if ok:
+        _last_backup_ts = now
+
+
+# Manual trigger
+@bot.command(name="backupnow", aliases=["jsonbackup", "backupjson"])
+async def cmd_backup_now(ctx):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    msg = await ctx.send("📦 Backing up `diff_data/` to staff logs…")
+    ok = await _run_json_backup_once()
+    global _last_backup_ts
+    if ok:
+        _last_backup_ts = datetime.now(timezone.utc).timestamp()
+        await msg.edit(content="✅ Backup posted to staff logs.")
+    else:
+        await msg.edit(content="❌ Backup failed — check console.")
+
+
+# ─── #3  `!me` — personal member dashboard ───────────────────────────────
+@bot.command(name="me", aliases=["mydashboard", "mystatus"])
+async def cmd_me_dashboard(ctx):
+    if not isinstance(ctx.author, discord.Member):
+        return
+    member = ctx.author
+    guild = ctx.guild
+
+    # Health score
+    h_score = h_tier = None
+    try:
+        h = await _update_health_score_for(member)
+        if h:
+            h_score = h.get("score")
+            h_tier = h.get("tier")
+    except Exception:
+        pass
+
+    # Activity row → meets attended, last message/VC
+    try:
+        row = _activity_get(member.id)
+        meet_count = int(row["meet_attendance_count"] or 0) if row else 0
+        msg_count_30d = int(row["message_count_30d"] or 0) if row else 0
+    except Exception:
+        meet_count = msg_count_30d = 0
+
+    # Warnings (active)
+    try:
+        warns = _warnings_load().get(str(member.id), [])
+    except Exception:
+        warns = []
+
+    # Host stats (if any)
+    hp_pts = 0
+    hp_tier = "—"
+    try:
+        hp_data = _hp_load()
+        s = hp_data.get("host_stats", {}).get(str(member.id), {})
+        hp_pts = int(s.get("points", 0))
+        if hp_pts:
+            hp_tier = host_performance_tier(hp_pts)
+    except Exception:
+        pass
+
+    # RC streak
+    rc_streak = 0
+    try:
+        rc_data = _load_diff_json(_RC_STREAKS_FILE) or {}
+        rc_streak = int((rc_data.get(str(member.id)) or {}).get("current_streak", 0))
+    except Exception:
+        pass
+
+    # Reputation
+    rep_pts = 0
+    try:
+        rep = _load_activity_json(REPUTATION_FILE) or {}
+        rep_pts = int((rep.get(str(member.id)) or {}).get("points", 0))
+    except Exception:
+        pass
+
+    # Server tenure
+    try:
+        join_age = (datetime.now(timezone.utc) - member.joined_at).days if member.joined_at else 0
+    except Exception:
+        join_age = 0
+
+    color = discord.Color.blurple()
+    if h_score is not None:
+        if h_score >= 80: color = discord.Color.green()
+        elif h_score >= 60: color = discord.Color.blue()
+        elif h_score >= 40: color = discord.Color.gold()
+        else: color = discord.Color.red()
+
+    embed = discord.Embed(
+        title=f"🪪 Your DIFF Dashboard — {member.display_name}",
+        color=color, timestamp=utc_now(),
+    )
+    try:
+        embed.set_thumbnail(url=member.display_avatar.url)
+    except Exception:
+        pass
+
+    # Header row
+    if h_score is not None:
+        bar_filled = "█" * int(h_score / 10)
+        bar_empty = "░" * (10 - len(bar_filled))
+        embed.add_field(
+            name=f"🫀 Health Score — {h_tier or '—'}",
+            value=f"**{h_score}/100**  `{bar_filled}{bar_empty}`",
+            inline=False,
+        )
+
+    embed.add_field(name="🚗 Meets attended", value=str(meet_count), inline=True)
+    embed.add_field(name="🔥 RC streak",        value=f"{rc_streak} weeks", inline=True)
+    embed.add_field(name="⭐ Reputation",       value=f"{rep_pts} pts", inline=True)
+
+    embed.add_field(name="💬 Messages (30d)",   value=str(msg_count_30d), inline=True)
+    embed.add_field(name="📅 In server",        value=f"{join_age}d", inline=True)
+    embed.add_field(name="⚠️ Active warnings", value=str(len(warns)), inline=True)
+
+    if hp_pts:
+        embed.add_field(
+            name="🎤 Host Performance",
+            value=f"**{hp_pts} pts** — {hp_tier}",
+            inline=False,
+        )
+
+    # Friendly tip based on score
+    tip = ""
+    if h_score is not None:
+        if h_score < 40:
+            tip = "💡 Drop in a meet, post in chat, or hop in VC to boost your score this week!"
+        elif h_score < 60:
+            tip = "💡 You're on the radar — one more meet or active week pushes you to Active tier."
+        elif h_score < 80:
+            tip = "💡 Solid! Keep showing up and you'll hit Strong tier soon."
+        else:
+            tip = "💡 You're crushing it — DIFF runs on members like you."
+    if tip:
+        embed.add_field(name="\u200b", value=tip, inline=False)
+
+    embed.set_footer(text="Different Meets • Self-lookup • !me to refresh")
+    try:
+        await ctx.send(embed=embed)
+    except Exception:
+        pass
+
+
+# ─── #8  `!strikepattern @user` — warnings timeline + escalation alert ───
+@bot.command(name="strikepattern", aliases=["warningtimeline", "warntimeline"])
+async def cmd_strike_pattern(ctx, member: discord.Member = None):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    if member is None:
+        return await ctx.send("Usage: `!strikepattern @member`")
+    warns = _warnings_load().get(str(member.id), [])
+    if not warns:
+        return await ctx.send(f"✅ {member.mention} has no warnings on record.")
+
+    # Sort newest-first by timestamp
+    def _ts(w):
+        try:
+            return datetime.fromisoformat(w["timestamp"]).timestamp()
+        except Exception:
+            return 0
+    warns_sorted = sorted(warns, key=_ts, reverse=True)
+    now_ts = datetime.now(timezone.utc).timestamp()
+
+    # Escalation pattern: ≥3 warnings in the last 30 days, or ≥5 ever
+    recent_30 = sum(1 for w in warns_sorted if (now_ts - _ts(w)) <= 30 * 86400)
+    recent_90 = sum(1 for w in warns_sorted if (now_ts - _ts(w)) <= 90 * 86400)
+
+    if recent_30 >= 3 or len(warns_sorted) >= 5:
+        pattern_color = discord.Color.red()
+        pattern_emoji = "🚨"
+        alert_lines = []
+        if recent_30 >= 3:
+            alert_lines.append(f"• **{recent_30} warnings in the last 30 days** — escalation recommended.")
+        if len(warns_sorted) >= 5:
+            alert_lines.append(f"• **{len(warns_sorted)} lifetime warnings** — review for kick/ban.")
+        alert = "\n".join(alert_lines)
+    elif recent_90 >= 3:
+        pattern_color = discord.Color.gold()
+        pattern_emoji = "⚠️"
+        alert = f"• **{recent_90} warnings in the last 90 days** — watch this member closely."
+    else:
+        pattern_color = discord.Color.blue()
+        pattern_emoji = "📊"
+        alert = "• No escalation pattern detected. Member is within normal range."
+
+    embed = discord.Embed(
+        title=f"{pattern_emoji} Strike Timeline — {member.display_name}",
+        description=(
+            f"**Total:** {len(warns_sorted)}  •  "
+            f"**Last 30d:** {recent_30}  •  **Last 90d:** {recent_90}\n\n"
+            f"{alert}"
+        ),
+        color=pattern_color, timestamp=utc_now(),
+    )
+    try:
+        embed.set_thumbnail(url=member.display_avatar.url)
+    except Exception:
+        pass
+
+    # Timeline (newest first, up to 10)
+    lines = []
+    for w in warns_sorted[:10]:
+        try:
+            dt = datetime.fromisoformat(w["timestamp"]).astimezone(_EST_TZ)
+            when = dt.strftime("%b %d %Y")
+            ago_days = int((now_ts - dt.timestamp()) / 86400)
+        except Exception:
+            when, ago_days = "?", 0
+        reason = (w.get("reason") or "?")[:80]
+        lines.append(f"• **{when}** ({ago_days}d ago) — {reason}")
+    embed.add_field(name="📜 Timeline", value="\n".join(lines)[:1024], inline=False)
+
+    embed.set_footer(text="Different Meets • Use !warnings for full details")
+    await ctx.send(embed=embed)
+
+
+# ─── #6  `!pulse` — community snapshot ───────────────────────────────────
+@bot.command(name="pulse", aliases=["communitypulse", "diffpulse"])
+async def cmd_pulse(ctx):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    guild = ctx.guild
+    if not guild:
+        return
+
+    total_members = sum(1 for m in guild.members if not m.bot)
+    verified = sum(
+        1 for m in guild.members
+        if not m.bot and any(r.id == VERIFIED_ROLE_ID for r in m.roles)
+    )
+
+    # Approved this month (from applications)
+    approved_30 = 0
+    try:
+        apps = load_apps().get("applications", {})
+        cutoff = datetime.now(timezone.utc).timestamp() - 30 * 86400
+        for a in apps.values():
+            if a.get("status") != "Approved":
+                continue
+            try:
+                t = datetime.fromisoformat(a.get("reviewed_at", "").replace("Z", "+00:00")).timestamp()
+            except Exception:
+                continue
+            if t >= cutoff:
+                approved_30 += 1
+    except Exception:
+        pass
+
+    # Top hosts by HP points
+    top_hosts_str = "—"
+    try:
+        hp = _hp_load().get("host_stats", {})
+        ranked = sorted(hp.items(), key=lambda kv: int(kv[1].get("points", 0)), reverse=True)[:3]
+        lines = []
+        for i, (uid, s) in enumerate(ranked, start=1):
+            m = guild.get_member(int(uid))
+            name = m.display_name if m else f"`{uid}`"
+            lines.append(f"`{i}.` **{name}** — {int(s.get('points', 0))} pts")
+        if lines:
+            top_hosts_str = "\n".join(lines)
+    except Exception:
+        pass
+
+    # Top RC streaks
+    top_rc_str = "—"
+    try:
+        rc = _load_diff_json(_RC_STREAKS_FILE) or {}
+        ranked_rc = sorted(
+            rc.items(),
+            key=lambda kv: int((kv[1] or {}).get("current_streak", 0)),
+            reverse=True,
+        )[:3]
+        lines = []
+        for i, (uid, d) in enumerate(ranked_rc, start=1):
+            s = int((d or {}).get("current_streak", 0))
+            if s <= 0:
+                continue
+            m = guild.get_member(int(uid))
+            name = m.display_name if m else f"`{uid}`"
+            lines.append(f"`{i}.` **{name}** — {s} wk streak")
+        if lines:
+            top_rc_str = "\n".join(lines)
+    except Exception:
+        pass
+
+    # Health tier distribution
+    try:
+        import sqlite3
+        with sqlite3.connect(_ACTIVITY_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT health_tier, COUNT(*) AS c FROM member_activity "
+                "WHERE health_tier IS NOT NULL GROUP BY health_tier"
+            ).fetchall()
+        tier_counts = {r["health_tier"]: r["c"] for r in rows}
+    except Exception:
+        tier_counts = {}
+    tier_line = (
+        f"💚 {tier_counts.get('Strong', 0)} • "
+        f"🔵 {tier_counts.get('Active', 0)} • "
+        f"🟡 {tier_counts.get('At Risk', 0)} • "
+        f"🔴 {tier_counts.get('Ghost', 0)}"
+    )
+
+    embed = discord.Embed(
+        title="📈 DIFF Community Pulse",
+        description=f"Snapshot as of {datetime.now(_EST_TZ).strftime('%b %d %Y, %I:%M %p ET')}",
+        color=discord.Color.blurple(), timestamp=utc_now(),
+    )
+    embed.add_field(name="👥 Total Members", value=str(total_members), inline=True)
+    embed.add_field(name="✅ Verified",       value=str(verified),     inline=True)
+    embed.add_field(name="🆕 Approved (30d)", value=str(approved_30),  inline=True)
+    embed.add_field(name="🫀 Health Tiers",   value=tier_line,         inline=False)
+    embed.add_field(name="🎤 Top Hosts",      value=top_hosts_str,     inline=False)
+    embed.add_field(name="🔥 Top RC Streaks", value=top_rc_str,        inline=False)
+    embed.set_footer(text="Different Meets • !pulse to refresh")
+    await ctx.send(embed=embed)
 
 # =========================================================================
 # DIFF CREW INTERVIEW — LIVE SESSION WORKFLOW (Improvements #1-10)
@@ -29955,6 +30615,17 @@ async def _startup_catchup_welcome_dms() -> None:
 async def on_member_join(member: discord.Member) -> None:
     if member.bot:
         return
+
+    # #11 Alt-account heuristic — fires once on join, posts to staff if suspicious
+    try:
+        suspicious, reason = _alt_account_check(member)
+        if suspicious:
+            asyncio.create_task(_post_alt_alert(member, reason))
+    except Exception as _e:
+        try:
+            print(f"[alt_check] {_e!r}")
+        except Exception:
+            pass
 
     # ── Anti-raid join-flood detection ────────────────────────────────────────
     import time as _time_mod
