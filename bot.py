@@ -16583,6 +16583,489 @@ async def postofficialguide_cmd(ctx):
 
 
 # =========================
+# OFFICIAL MEET — RECURRING SCHEDULER
+# =========================
+# Lets staff create weekly recurring slots (e.g. "every Friday 9pm ET, JDM Night,
+# host @SpMex0322") that the bot auto-posts 48h ahead, deduped per ISO week.
+
+_OM_RECUR_FILE = os.path.join("diff_data", "diff_om_recurring.json")
+_OM_RECUR_POST_HOURS_BEFORE = 48        # post the meet this many hours before slot
+_OM_RECUR_LOOP_INTERVAL_SECS = 30 * 60  # check every 30 min
+
+_OM_RECUR_DAYS = {
+    "mon": 0, "monday": 0,
+    "tue": 1, "tues": 1, "tuesday": 1,
+    "wed": 2, "weds": 2, "wednesday": 2,
+    "thu": 3, "thur": 3, "thurs": 3, "thursday": 3,
+    "fri": 4, "friday": 4,
+    "sat": 5, "saturday": 5,
+    "sun": 6, "sunday": 6,
+}
+_OM_RECUR_DAY_LABEL = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+
+
+def _om_recur_load() -> dict:
+    try:
+        os.makedirs(os.path.dirname(_OM_RECUR_FILE), exist_ok=True)
+    except Exception:
+        pass
+    if not os.path.exists(_OM_RECUR_FILE):
+        return {"slots": {}}
+    try:
+        with open(_OM_RECUR_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or "slots" not in data:
+            return {"slots": {}}
+        return data
+    except Exception:
+        return {"slots": {}}
+
+
+def _om_recur_save(data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(_OM_RECUR_FILE), exist_ok=True)
+    except Exception:
+        pass
+    tmp = _OM_RECUR_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, _OM_RECUR_FILE)
+
+
+def _om_recur_new_id() -> str:
+    import secrets
+    return secrets.token_hex(4)
+
+
+def _om_recur_parse_time(raw: str):
+    """Accept '9pm', '9:30pm', '21:00', '9 PM CT'. Returns (hour, minute, tz_name)."""
+    if not raw:
+        return None
+    s = raw.strip().lower().replace(".", "")
+    m = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*([a-z]{2,4})?$", s)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2)) if m.group(2) else 0
+    meridiem = m.group(3)
+    tz_abbr = (m.group(4) or "ET").upper()
+    if meridiem == "pm" and hour != 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    if hour > 23 or minute > 59:
+        return None
+    tz_name = _POPUP_TZ_MAP.get(tz_abbr, "America/New_York")
+    return (hour, minute, tz_name)
+
+
+def _om_recur_next_dt(slot: dict):
+    """Return the next datetime (tz-aware) this slot will fire."""
+    try:
+        tz = ZoneInfo(slot.get("tz") or "America/New_York")
+    except Exception:
+        tz = ZoneInfo("America/New_York")
+    now = datetime.now(tz)
+    target_dow = int(slot["day_of_week"])
+    hour = int(slot["hour"])
+    minute = int(slot["minute"])
+    days_ahead = (target_dow - now.weekday()) % 7
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=days_ahead)
+    if candidate <= now:
+        candidate += timedelta(days=7)
+    return candidate
+
+
+def _om_recur_format_slot(slot_id: str, slot: dict) -> str:
+    day_label = _OM_RECUR_DAY_LABEL[int(slot["day_of_week"])]
+    hour = int(slot["hour"]); minute = int(slot["minute"])
+    tz_short = slot.get("tz", "America/New_York").split("/")[-1].replace("_", " ")
+    next_dt = _om_recur_next_dt(slot)
+    next_ts = int(next_dt.timestamp())
+    enabled = "🟢" if slot.get("enabled", True) else "🔴"
+    host_id = slot.get("host_id") or 0
+    theme = (slot.get("theme") or "Open Class")[:40]
+    return (
+        f"{enabled} `{slot_id}` — **{day_label} {hour:02d}:{minute:02d} {tz_short}** "
+        f"• {theme} • host <@{host_id}>\n"
+        f"   ↳ next post: <t:{next_ts - _OM_RECUR_POST_HOURS_BEFORE*3600}:R> "
+        f"for meet at <t:{next_ts}:F>"
+    )
+
+
+async def _om_recur_post_slot(slot_id: str, slot: dict, slot_dt) -> bool:
+    """Post the meet now for the given slot occurrence. Returns True on success."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return False
+    host_member = guild.get_member(int(slot["host_id"]))
+    if not host_member:
+        try:
+            host_member = await guild.fetch_member(int(slot["host_id"]))
+        except Exception:
+            _bot_log.warning("[OM recur %s] host %s not found, skipping post", slot_id, slot.get("host_id"))
+            return False
+    channel = bot.get_channel(_OFFICIAL_MEET_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return False
+
+    meet_ts = int(slot_dt.timestamp())
+    theme = slot.get("theme") or "Official Meet"
+    notes = slot.get("notes") or ""
+    entry = slot.get("entry_info") or None
+    style = slot.get("style_direction") or None
+    ping_key = slot.get("ping_key") or "both"
+
+    role_ids = _OM_PING_ROLES.get(ping_key, [])
+    ping_line = " ".join(f"<@&{rid}>" for rid in role_ids) if role_ids else ""
+
+    try:
+        sent = await channel.send(
+            content=ping_line if ping_line else None,
+            embed=_om_build_embed(
+                theme=theme, host=host_member, timestamp=meet_ts,
+                notes=notes, entry_info=entry, style_direction=style,
+            ),
+            view=_OfficialMeetRSVPView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+        )
+    except Exception as _e:
+        _bot_log.warning("[OM recur %s] post failed: %s", slot_id, _e)
+        return False
+
+    record = _OmRecord(
+        message_id=sent.id, channel_id=channel.id,
+        host_id=host_member.id, theme=theme, timestamp=meet_ts,
+    )
+    _om_upsert_record(record)
+    try:
+        data = _om_load_records()
+        raw = data.get(str(sent.id), {})
+        raw["notes"] = notes
+        raw["entry_info"] = entry or ""
+        raw["style_direction"] = style or ""
+        raw["ping_key"] = ping_key
+        raw["recurring_slot_id"] = slot_id
+        data[str(sent.id)] = raw
+        _om_save_records(data)
+    except Exception:
+        pass
+    _om_schedule_reminders(record)
+
+    try:
+        await sent.create_thread(
+            name=f"💬 {theme[:60]} — discussion",
+            auto_archive_duration=1440,
+            reason=f"Recurring meet auto-post (slot {slot_id})",
+        )
+    except Exception:
+        pass
+
+    try:
+        await _om_panel_post_or_refresh(guild, force_repost=True)
+    except Exception:
+        pass
+
+    # Staff log
+    try:
+        staff_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if "STAFF_LOGS_CHANNEL_ID" in globals() else None
+        if isinstance(staff_ch, discord.TextChannel):
+            await staff_ch.send(
+                f"🔁 Auto-posted recurring meet `{slot_id}` — **{theme}** "
+                f"for <t:{meet_ts}:F> (host <@{host_member.id}>)."
+            )
+    except Exception:
+        pass
+
+    return True
+
+
+async def _om_recur_loop():
+    """Every 30 min, check each enabled recurring slot. If its next occurrence is
+    within _OM_RECUR_POST_HOURS_BEFORE hours from now AND we haven\'t already
+    posted for that week, post it and stamp last_posted_for_week."""
+    await bot.wait_until_ready()
+    await asyncio.sleep(90)
+    while not bot.is_closed():
+        try:
+            data = _om_recur_load()
+            slots = data.get("slots", {})
+            changed = False
+            now_utc = datetime.now(timezone.utc)
+            for slot_id, slot in list(slots.items()):
+                if not slot.get("enabled", True):
+                    continue
+                try:
+                    next_dt = _om_recur_next_dt(slot)
+                except Exception as _ne:
+                    _bot_log.warning("[OM recur %s] next_dt failed: %s", slot_id, _ne)
+                    continue
+                hours_until = (next_dt.astimezone(timezone.utc) - now_utc).total_seconds() / 3600
+                if hours_until > _OM_RECUR_POST_HOURS_BEFORE or hours_until < 0.5:
+                    continue
+                week_key = next_dt.strftime("%G-W%V")
+                if slot.get("last_posted_for_week") == week_key:
+                    continue
+                ok = await _om_recur_post_slot(slot_id, slot, next_dt)
+                if ok:
+                    slot["last_posted_for_week"] = week_key
+                    slot["last_posted_at"] = int(now_utc.timestamp())
+                    changed = True
+            if changed:
+                _om_recur_save(data)
+        except Exception as _e:
+            _bot_log.warning("[OM recur] loop error: %s", _e)
+        await asyncio.sleep(_OM_RECUR_LOOP_INTERVAL_SECS)
+
+
+# ─── Staff prefix commands ─────────────────────────────────────────────────
+def _om_recur_is_staff(member) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    return member.guild_permissions.manage_guild or any(
+        r.id in _JOIN_STAFF_ROLE_IDS for r in member.roles
+    )
+
+
+@bot.command(name="recurmeet", aliases=["addrecur", "newrecur"])
+async def recurmeet_cmd(ctx, day: str = None, time_str: str = None,
+                        host: discord.Member = None, *, theme: str = None):
+    """!recurmeet <day> <time> <@host> <theme...>
+
+    Examples:
+      !recurmeet friday 9pm @SpMex0322 JDM Night
+      !recurmeet sun 21:00 @host Clean Euros
+      !recurmeet sat "9:30 PM CT" @host Stanced Only
+
+    Posts the meet automatically 48h before each weekly occurrence.
+    Optional Entry Info / Notes / Style Direction can be added later via
+    `!recuredit <id>` (or set them on the latest auto-posted meet manually)."""
+    if not ctx.guild or not _om_recur_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if not (day and time_str and host and theme):
+        return await ctx.reply(
+            "Usage: `!recurmeet <day> <time> <@host> <theme...>`\n"
+            "Example: `!recurmeet friday 9pm @SpMex0322 JDM Night`",
+            mention_author=False,
+        )
+    dow = _OM_RECUR_DAYS.get(day.strip().lower())
+    if dow is None:
+        return await ctx.reply(
+            f"❌ Unknown day `{day}`. Use mon/tue/wed/thu/fri/sat/sun.",
+            mention_author=False,
+        )
+    parsed = _om_recur_parse_time(time_str)
+    if not parsed:
+        return await ctx.reply(
+            f"❌ Couldn't parse time `{time_str}`. Try `9pm`, `9:30pm`, `21:00`, `9pm CT`.",
+            mention_author=False,
+        )
+    if not any(r.id == HOST_ROLE_ID for r in host.roles):
+        return await ctx.reply(
+            f"⚠️ {host.mention} doesn't have the **Host** role. "
+            "Add the role first or pick a different host.",
+            mention_author=False,
+        )
+
+    hour, minute, tz_name = parsed
+    data = _om_recur_load()
+    slot_id = _om_recur_new_id()
+    slot = {
+        "id": slot_id,
+        "day_of_week": dow,
+        "hour": hour,
+        "minute": minute,
+        "tz": tz_name,
+        "host_id": host.id,
+        "theme": theme.strip()[:100],
+        "entry_info": "",
+        "notes": "",
+        "style_direction": "",
+        "ping_key": "both",
+        "enabled": True,
+        "created_by": ctx.author.id,
+        "created_at": int(datetime.now(timezone.utc).timestamp()),
+        "last_posted_for_week": None,
+        "last_posted_at": None,
+    }
+    data.setdefault("slots", {})[slot_id] = slot
+    _om_recur_save(data)
+
+    next_dt = _om_recur_next_dt(slot)
+    next_ts = int(next_dt.timestamp())
+    post_ts = next_ts - _OM_RECUR_POST_HOURS_BEFORE * 3600
+    emb = discord.Embed(
+        title="✅ Recurring meet slot created",
+        color=discord.Color.from_rgb(241, 196, 15),
+        description=(
+            f"**ID:** `{slot_id}`\n"
+            f"**When:** every {_OM_RECUR_DAY_LABEL[dow]} at {hour:02d}:{minute:02d} "
+            f"({tz_name.split('/')[-1].replace('_',' ')})\n"
+            f"**Theme:** {slot['theme']}\n"
+            f"**Host:** {host.mention}\n"
+            f"**Ping:** both PlayStation + Car Meet\n\n"
+            f"📅 Next occurrence: <t:{next_ts}:F>\n"
+            f"🤖 Will auto-post at <t:{post_ts}:F> (<t:{post_ts}:R>)\n\n"
+            "Manage with `!recurlist`, `!recurtoggle <id>`, `!recurremove <id>`."
+        ),
+    )
+    await ctx.reply(embed=emb, mention_author=False)
+
+
+@bot.command(name="recurlist", aliases=["recurs", "recurringmeets"])
+async def recurlist_cmd(ctx):
+    """!recurlist — show all recurring meet slots."""
+    if not ctx.guild or not _om_recur_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    data = _om_recur_load()
+    slots = data.get("slots", {})
+    if not slots:
+        return await ctx.reply(
+            "📭 No recurring meet slots configured yet.\n"
+            "Create one with `!recurmeet <day> <time> <@host> <theme>`.",
+            mention_author=False,
+        )
+    sorted_slots = sorted(slots.items(), key=lambda kv: (
+        int(kv[1].get("day_of_week", 0)),
+        int(kv[1].get("hour", 0)),
+        int(kv[1].get("minute", 0)),
+    ))
+    lines = [_om_recur_format_slot(sid, s) for sid, s in sorted_slots]
+    emb = discord.Embed(
+        title=f"🔁 Recurring Meet Slots ({len(slots)})",
+        color=discord.Color.from_rgb(241, 196, 15),
+        description="\n\n".join(lines)[:4000],
+    )
+    emb.set_footer(text="🟢 enabled  •  🔴 disabled  •  manage with !recurtoggle / !recurremove")
+    await ctx.reply(embed=emb, mention_author=False)
+
+
+@bot.command(name="recurremove", aliases=["recurdelete", "recurdel"])
+async def recurremove_cmd(ctx, slot_id: str = None):
+    """!recurremove <id> — delete a recurring slot."""
+    if not ctx.guild or not _om_recur_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if not slot_id:
+        return await ctx.reply("Usage: `!recurremove <id>` (get IDs from `!recurlist`).", mention_author=False)
+    data = _om_recur_load()
+    slots = data.get("slots", {})
+    if slot_id not in slots:
+        return await ctx.reply(f"❌ No slot with ID `{slot_id}`.", mention_author=False)
+    removed = slots.pop(slot_id)
+    _om_recur_save(data)
+    day_label = _OM_RECUR_DAY_LABEL[int(removed["day_of_week"])]
+    await ctx.reply(
+        f"🗑️ Removed slot `{slot_id}` — {day_label} {removed['hour']:02d}:{removed['minute']:02d} "
+        f"• {removed.get('theme','')}",
+        mention_author=False,
+    )
+
+
+@bot.command(name="recurtoggle", aliases=["recurpause", "recurenable"])
+async def recurtoggle_cmd(ctx, slot_id: str = None):
+    """!recurtoggle <id> — enable/disable a recurring slot."""
+    if not ctx.guild or not _om_recur_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if not slot_id:
+        return await ctx.reply("Usage: `!recurtoggle <id>`.", mention_author=False)
+    data = _om_recur_load()
+    slots = data.get("slots", {})
+    if slot_id not in slots:
+        return await ctx.reply(f"❌ No slot with ID `{slot_id}`.", mention_author=False)
+    slot = slots[slot_id]
+    slot["enabled"] = not bool(slot.get("enabled", True))
+    _om_recur_save(data)
+    state = "🟢 ENABLED" if slot["enabled"] else "🔴 DISABLED"
+    await ctx.reply(f"Slot `{slot_id}` is now {state}.", mention_author=False)
+
+
+@bot.command(name="recuredit", aliases=["recurset"])
+async def recuredit_cmd(ctx, slot_id: str = None, field: str = None, *, value: str = None):
+    """!recuredit <id> <field> <value> — edit theme, notes, entry, style, ping, or host.
+
+    Fields: theme | notes | entry | style | ping | host
+    Examples:
+      !recuredit ab12cd34 theme Stanced Only
+      !recuredit ab12cd34 ping ps5
+      !recuredit ab12cd34 host 850123456789012345
+    """
+    if not ctx.guild or not _om_recur_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if not (slot_id and field and value):
+        return await ctx.reply(
+            "Usage: `!recuredit <id> <theme|notes|entry|style|ping|host> <value>`",
+            mention_author=False,
+        )
+    data = _om_recur_load()
+    slots = data.get("slots", {})
+    if slot_id not in slots:
+        return await ctx.reply(f"❌ No slot with ID `{slot_id}`.", mention_author=False)
+    slot = slots[slot_id]
+    f = field.strip().lower()
+    if f == "theme":
+        slot["theme"] = value.strip()[:100]
+    elif f in ("notes", "note"):
+        slot["notes"] = value.strip()[:400]
+    elif f in ("entry", "entryinfo", "entry_info"):
+        slot["entry_info"] = value.strip()[:400]
+    elif f in ("style", "styledirection", "style_direction"):
+        slot["style_direction"] = value.strip()[:200]
+    elif f == "ping":
+        if value.strip().lower() not in _OM_PING_ROLES:
+            return await ctx.reply(
+                f"❌ Ping must be one of: {', '.join(_OM_PING_ROLES.keys())}",
+                mention_author=False,
+            )
+        slot["ping_key"] = value.strip().lower()
+    elif f == "host":
+        import re as _re
+        m = _re.search(r"\d{15,22}", value)
+        if not m:
+            return await ctx.reply("❌ Pass a user mention or ID.", mention_author=False)
+        new_host_id = int(m.group(0))
+        member = ctx.guild.get_member(new_host_id)
+        if not member:
+            return await ctx.reply("❌ That member isn't in the server.", mention_author=False)
+        if not any(r.id == HOST_ROLE_ID for r in member.roles):
+            return await ctx.reply(f"⚠️ {member.mention} doesn't have the **Host** role.", mention_author=False)
+        slot["host_id"] = new_host_id
+    else:
+        return await ctx.reply(
+            f"❌ Unknown field `{field}`. Options: theme, notes, entry, style, ping, host.",
+            mention_author=False,
+        )
+    _om_recur_save(data)
+    await ctx.reply(f"✅ Slot `{slot_id}` updated — `{f}`.", mention_author=False)
+
+
+@bot.command(name="recurpost", aliases=["recurnow", "forcerecur"])
+async def recurpost_cmd(ctx, slot_id: str = None):
+    """!recurpost <id> — immediately post the next occurrence of a recurring slot
+    (bypasses the 48h ahead-of-time window). Useful for testing or last-minute additions."""
+    if not ctx.guild or not _om_recur_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if not slot_id:
+        return await ctx.reply("Usage: `!recurpost <id>`.", mention_author=False)
+    data = _om_recur_load()
+    slots = data.get("slots", {})
+    if slot_id not in slots:
+        return await ctx.reply(f"❌ No slot with ID `{slot_id}`.", mention_author=False)
+    slot = slots[slot_id]
+    next_dt = _om_recur_next_dt(slot)
+    ok = await _om_recur_post_slot(slot_id, slot, next_dt)
+    if ok:
+        slot["last_posted_for_week"] = next_dt.strftime("%G-W%V")
+        slot["last_posted_at"] = int(datetime.now(timezone.utc).timestamp())
+        _om_recur_save(data)
+        await ctx.reply(
+            f"✅ Force-posted slot `{slot_id}` for <t:{int(next_dt.timestamp())}:F>.",
+            mention_author=False,
+        )
+    else:
+        await ctx.reply(f"❌ Failed to post slot `{slot_id}` — check logs.", mention_author=False)
+
+
+# =========================
 # POP-UP MEET SYSTEM
 # =========================
 
@@ -18813,6 +19296,7 @@ async def on_ready():
     bot.loop.create_task(_hrsvp_escalation_loop())
     bot.loop.create_task(_popup_auto_end_loop())
     bot.loop.create_task(_om_panel_auto_refresh_loop())
+    bot.loop.create_task(_om_recur_loop())
 
     # Re-register persistent views for every active pop-up meet so buttons
     # (Pulling Up / Edit / DM Attendees / End) survive bot restarts.
