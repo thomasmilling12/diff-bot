@@ -265,11 +265,11 @@ class NextLevelModerationSystem(commands.Cog):
         await ctx.send(file=discord.File(chart1, filename="top_hosts_chart.png"))
         await ctx.send(file=discord.File(chart2, filename="member_risk_chart.png"))
 
-    @commands.command(name="weeklyreport")
-    @commands.has_permissions(manage_guild=True)
-    async def weekly_report(self, ctx: commands.Context):
-        """Post the weekly moderation summary embed."""
-        await ctx.send(embed=self._weekly_embed())
+    # NOTE: !weeklyreport is owned by bot.py (calls _mgmt_send_weekly_report
+    # which posts the full server digest). The cog version was a stub that
+    # only sent a tiny embed and was causing CommandRegistrationError that
+    # killed this entire cog at load — taking the other 5 commands down with
+    # it. Disabled here.
 
     @commands.command(name="topsandbottoms")
     @commands.has_permissions(manage_guild=True)

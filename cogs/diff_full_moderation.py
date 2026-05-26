@@ -414,17 +414,10 @@ class FullModerationSystem(commands.Cog, name="FullModerationSystem"):
             return
         await ctx.send(embed=self._member_embed(member, profile))
 
-    @commands.command(name="hostprofile")
-    @commands.has_permissions(manage_guild=True)
-    async def host_profile(self, ctx: commands.Context, member: discord.Member):
-        """View a host's performance profile.  Usage: !hostprofile @member"""
-        data    = self._hosts()
-        profile = data.get(str(member.id))
-        if not profile:
-            await ctx.send(f"No host profile found for {member.mention} yet.\n"
-                           f"Use `!modsync hostmeet @member <count>` to start tracking.")
-            return
-        await ctx.send(embed=self._host_embed(member, profile))
+    # NOTE: !hostprofile is owned by bot.py (richer implementation that pulls
+    # from _hp_load, warnings, notes). The cog version was an early duplicate
+    # and was causing CommandRegistrationError that killed this entire cog at
+    # load time — taking the other 8 commands down with it. Disabled here.
 
     @commands.command(name="hostleaderboard")
     @commands.has_permissions(manage_guild=True)
