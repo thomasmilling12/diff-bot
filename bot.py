@@ -28147,10 +28147,10 @@ _TICKET_TYPES: dict[str, _TicketType] = {
     ),
     "support": _TicketType(
         key="support",
-        label="🚗 General Support",
-        emoji="🚗",
+        label="❓ Ask a Question",
+        emoji="❓",
         description="Get help with questions, roles, channels, or DIFF systems.",
-        title="General Support Ticket",
+        title="Ask a Question Ticket",
         long_description=(
             "Get help with server questions, meet information, crew systems, "
             "roles, channels, or anything else DIFF-related.\n\n"
@@ -28338,44 +28338,78 @@ def _supp_brand_embed(embed: discord.Embed) -> discord.Embed:
     return embed
 
 
-def _supp_build_panel_embed() -> discord.Embed:
+def _supp_build_support_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🎟️ DIFF Support Center",
         description=(
-            "Welcome to the **DIFF Support Center**. "
-            "Select the option below that best fits your situation — your ticket will be private between you and DIFF staff.\n"
-            "\u200b"
+            "Need help? Pick the option that fits your situation below — "
+            "your ticket will be private between you and DIFF staff."
         ),
         color=discord.Color.from_rgb(88, 101, 242),
     )
     embed.add_field(
-        name="📋 Support Options",
+        name="📋 What you can do here",
         value=(
             "🛡️ **Report a Member** — Rule violations, toxic behavior, meet disruptions\n"
-            "🚗 **General Support** — Questions, roles, channels, meet rules\n"
-            "📩 **Staff Application** — Join the DIFF staff team"
+            "❓ **Ask a Question** — Help with roles, channels, meets, anything DIFF\n"
+            "📩 **Apply for Staff** — Join the DIFF staff team\n"
+            "🚨 **Urgent** — Active raid, threat, or anything needing staff **now**\n"
+            "📂 **My Tickets** — Jump to any ticket you currently have open"
         ),
         inline=False,
     )
     embed.add_field(
-        name="⚖️ Appeal Center",
+        name="📜 Before opening a ticket",
+        value=f"Most questions are answered in <#{RULES_CHANNEL_ID}>.",
+        inline=False,
+    )
+    embed.set_footer(text="DIFF Support • Avg response ~2h • Reviewed by Host+ team")
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    return embed
+
+
+def _supp_build_appeals_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="⚖️ Appeal Center",
+        description=(
+            "Disagree with a staff action? Use the **dropdown below** to submit an appeal. "
+            "Be specific — include case IDs, dates, and any evidence to speed up review."
+        ),
+        color=discord.Color.from_rgb(245, 158, 11),
+    )
+    embed.add_field(
+        name="What you can appeal",
         value=(
             "⚠️ **Warning** — Appeal a warning or write-up\n"
             "⏰ **Timeout** — Appeal a timeout or mute\n"
             "🔨 **Ban** — Appeal a ban and request reinstatement\n"
             "👢 **Kick** — Request a review of a kick\n"
             "🚙 **Build Denial** — Appeal a denied build at a meet\n"
-            "🏁 **Meet Exclusion** — Appeal being excluded from a meet\n"
-            "🔍 **Check Status** — View your current open appeal ticket"
+            "🏁 **Meet Exclusion** — Appeal being excluded from a meet"
         ),
         inline=False,
     )
     embed.add_field(
-        name="\u200b",
-        value="*Use the dropdowns below. All tickets are private.*",
+        name="✅ Auto-Reversal on Acceptance",
+        value=(
+            "Warnings, timeouts, and bans are reversed automatically when accepted. "
+            "Kicks require a manual reinvite."
+        ),
         inline=False,
     )
-    return _supp_brand_embed(embed)
+    embed.set_footer(text="Different Meets • Appeal System")
+    return embed
+
+
+def _supp_build_panel_embeds() -> list[discord.Embed]:
+    """Return the two-embed support+appeals panel."""
+    return [_supp_build_support_embed(), _supp_build_appeals_embed()]
+
+
+def _supp_build_panel_embed() -> discord.Embed:
+    """Back-compat wrapper — returns the support embed only."""
+    return _supp_build_support_embed()
 
 
 def _supp_build_ticket_embed(ticket: _TicketType, user: discord.Member) -> discord.Embed:
@@ -30199,10 +30233,265 @@ class AppealDropdown(discord.ui.Select):
         )
 
 
+# ─── Support panel button-based flow (replaces SupportDropdown) ───────────────
+
+async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: str) -> None:
+    """Shared ticket-creation flow used by the Report and Ask-a-Question buttons,
+    and by the Apply picker for the generic 'apply' type."""
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        if not interaction.response.is_done():
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        return await interaction.followup.send("Server only.", ephemeral=True)
+    if ticket_key not in _TICKET_TYPES:
+        if not interaction.response.is_done():
+            return await interaction.response.send_message("Invalid ticket type.", ephemeral=True)
+        return await interaction.followup.send("Invalid ticket type.", ephemeral=True)
+    ticket = _TICKET_TYPES[ticket_key]
+
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
+    existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, support_only=True)
+    if existing:
+        ex_key = _supp_parse_topic(existing.topic, "ticket_type") or "ticket"
+        ex_t = _TICKET_TYPES.get(ex_key)
+        ex_label = ex_t.label if ex_t else "ticket"
+        return await interaction.followup.send(
+            f"You already have an open {ex_label}: {existing.mention}\n"
+            "Please close it before opening another support ticket.",
+            ephemeral=True,
+        )
+
+    channel = await _supp_create_ticket_channel(interaction, ticket)
+    if not channel:
+        return
+
+    ping = " ".join(filter(None, [interaction.user.mention, _supp_role_mention(ticket.ping_role_id)]))
+    await channel.send(
+        content=ping or None,
+        embed=_supp_build_ticket_embed(ticket, interaction.user),
+        view=SupportCloseButton(),
+    )
+
+    if ticket.key == "apply":
+        await channel.send(embed=_supp_build_questions_embed(interaction.user))
+        await channel.send(embed=_supp_build_review_embed(interaction.user), view=SupportApplicationReviewView())
+
+    logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(logs_channel, discord.TextChannel):
+        try:
+            await logs_channel.send(embed=_supp_build_log_embed("Opened", interaction.user, ticket, channel))
+        except discord.HTTPException:
+            pass
+
+    await interaction.followup.send(
+        f"Your {ticket.label} ticket has been created: {channel.mention}", ephemeral=True
+    )
+
+    # DM the user to confirm their ticket was opened
+    try:
+        open_embed = discord.Embed(
+            title="🎫 Ticket Opened",
+            description=(
+                f"You have opened a **{ticket.label}** ticket in **{interaction.guild.name}**.\n\n"
+                f"**Channel:** {channel.name}\n"
+                "A staff member will be with you shortly. Please provide as much detail as possible."
+            ),
+            color=_TICKET_COLORS.get(ticket.key, discord.Color.blurple()),
+            timestamp=datetime.now(timezone.utc),
+        )
+        open_embed.set_footer(text="Different Meets • Support System")
+        ticket_url = f"https://discord.com/channels/{interaction.guild.id}/{channel.id}"
+        open_view = discord.ui.View()
+        open_view.add_item(discord.ui.Button(
+            label="Go to Ticket", emoji="🎫",
+            style=discord.ButtonStyle.link, url=ticket_url,
+        ))
+        await interaction.user.send(embed=open_embed, view=open_view)
+    except Exception:
+        pass
+
+
+async def _supp_open_urgent_ticket(interaction: discord.Interaction) -> None:
+    """Opens a high-priority report-type ticket with leadership pinged immediately."""
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+
+    existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, support_only=True)
+    if existing:
+        return await interaction.followup.send(
+            f"You already have an open ticket: {existing.mention}\n"
+            "Please post your urgent issue there — bump it and staff will see it.",
+            ephemeral=True,
+        )
+
+    ticket = _TICKET_TYPES["report"]
+    channel = await _supp_create_ticket_channel(interaction, ticket)
+    if not channel:
+        return
+
+    # Rename for urgency visibility (best effort — ignore failures)
+    try:
+        await channel.edit(name=f"🚨-urgent-{_supp_clean_name(interaction.user.display_name)}")
+    except Exception:
+        pass
+
+    pings: list[str] = []
+    for rid in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, TICKET_SUPPORT_ROLE_ID):
+        if rid:
+            pings.append(f"<@&{rid}>")
+    pings.append(interaction.user.mention)
+
+    urgent_embed = discord.Embed(
+        title="🚨 URGENT TICKET",
+        description=(
+            f"{interaction.user.mention} has opened an **urgent** ticket. "
+            "Treat this with priority.\n\n"
+            "**Please describe the situation:**\n"
+            "• What is happening right now?\n"
+            "• Who is involved (usernames / PSN)?\n"
+            "• Where is it happening (channel / VC)?\n"
+            "• Any evidence (screenshots, links)?"
+        ),
+        color=discord.Color.red(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    urgent_embed.set_footer(text="DIFF Support • URGENT • Leadership notified")
+
+    await channel.send(
+        content=" ".join(pings),
+        embed=urgent_embed,
+        view=SupportCloseButton(),
+        allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+    )
+
+    logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(logs_channel, discord.TextChannel):
+        try:
+            await logs_channel.send(embed=_supp_build_log_embed("Opened (🚨 URGENT)", interaction.user, ticket, channel))
+        except discord.HTTPException:
+            pass
+
+    await interaction.followup.send(
+        f"🚨 Urgent ticket opened: {channel.mention}\nLeadership has been notified.",
+        ephemeral=True,
+    )
+
+
+async def _supp_show_my_tickets(interaction: discord.Interaction) -> None:
+    """Ephemeral list of every open ticket owned by the calling user."""
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        return
+
+    found: list[tuple[discord.TextChannel, _TicketType]] = []
+    for ch in interaction.guild.text_channels:
+        if not ch.topic or f"ticket_owner={interaction.user.id}" not in ch.topic:
+            continue
+        t_key = _supp_parse_topic(ch.topic, "ticket_type")
+        t = _TICKET_TYPES.get(t_key or "")
+        if t:
+            found.append((ch, t))
+
+    if not found:
+        return await interaction.followup.send(
+            "📂 You don't have any open tickets right now.\n"
+            "Use the buttons or dropdown above to open one.",
+            ephemeral=True,
+        )
+
+    lines = [f"{t.emoji} **{t.label}** — {ch.mention}" for ch, t in found]
+    embed = discord.Embed(
+        title="📂 Your Open Tickets",
+        description="\n".join(lines),
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="Click a channel above to jump to it.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class _ApplyPickerView(discord.ui.View):
+    """Ephemeral picker shown when a user clicks the Apply button."""
+    def __init__(self) -> None:
+        super().__init__(timeout=120)
+
+    @discord.ui.button(label="Staff Application", emoji="📩", style=discord.ButtonStyle.primary)
+    async def _gen(self, interaction: discord.Interaction, _btn: discord.ui.Button):
+        await _supp_open_ticket_flow(interaction, "apply")
+
+    @discord.ui.button(label="Ticket Support", emoji="🎫", style=discord.ButtonStyle.secondary)
+    async def _ts(self, interaction: discord.Interaction, _btn: discord.ui.Button):
+        await interaction.response.send_modal(_TicketSupportAppModal())
+
+    @discord.ui.button(label="Moderator", emoji="🛡️", style=discord.ButtonStyle.secondary)
+    async def _mod(self, interaction: discord.Interaction, _btn: discord.ui.Button):
+        await interaction.response.send_modal(_ModAppModal())
+
+
+class _SupportReportButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Report", emoji="🛡️", style=discord.ButtonStyle.secondary,
+                         custom_id="diff_support_btn_report", row=0)
+    async def callback(self, interaction: discord.Interaction):
+        await _supp_open_ticket_flow(interaction, "report")
+
+
+class _SupportAskQuestionButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Ask a Question", emoji="❓", style=discord.ButtonStyle.secondary,
+                         custom_id="diff_support_btn_askq", row=0)
+    async def callback(self, interaction: discord.Interaction):
+        await _supp_open_ticket_flow(interaction, "support")
+
+
+class _SupportApplyButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Apply", emoji="📩", style=discord.ButtonStyle.secondary,
+                         custom_id="diff_support_btn_apply", row=0)
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "**Which staff role are you applying for?**\nThis picker closes in 2 minutes.",
+            view=_ApplyPickerView(),
+            ephemeral=True,
+        )
+
+
+class _SupportUrgentButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Urgent", emoji="🚨", style=discord.ButtonStyle.danger,
+                         custom_id="diff_support_btn_urgent", row=0)
+    async def callback(self, interaction: discord.Interaction):
+        await _supp_open_urgent_ticket(interaction)
+
+
+class _SupportMyTicketsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="My Tickets", emoji="📂", style=discord.ButtonStyle.primary,
+                         custom_id="diff_support_btn_mytickets", row=0)
+    async def callback(self, interaction: discord.Interaction):
+        await _supp_show_my_tickets(interaction)
+
+
 class SupportDropdownView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
-        self.add_item(SupportDropdown())
+        # Row 0 — 5 support buttons
+        self.add_item(_SupportReportButton())
+        self.add_item(_SupportAskQuestionButton())
+        self.add_item(_SupportApplyButton())
+        self.add_item(_SupportUrgentButton())
+        self.add_item(_SupportMyTicketsButton())
+        # Row 1 — Appeals dropdown (unchanged)
         self.add_item(AppealDropdown())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
@@ -30875,7 +31164,7 @@ async def post_support_panel(interaction: discord.Interaction) -> None:
     except discord.NotFound:
         return
     await _wipe_old_panels(channel)
-    await channel.send(embed=_supp_build_panel_embed(), view=SupportDropdownView())
+    await channel.send(embeds=_supp_build_panel_embeds(), view=SupportDropdownView())
     await interaction.followup.send(f"✅ Support & Appeal panel posted in {channel.mention}.", ephemeral=True)
 
 
@@ -30892,7 +31181,7 @@ async def _refresh_support_panel_cmd(ctx: commands.Context):
         await ctx.send("Support panel channel not found.", delete_after=8)
         return
     await _wipe_old_panels(channel)
-    await channel.send(embed=_supp_build_panel_embed(), view=SupportDropdownView())
+    await channel.send(embeds=_supp_build_panel_embeds(), view=SupportDropdownView())
     await ctx.send(f"✅ Support & Appeal panel refreshed in {channel.mention}.", delete_after=8)
 
 
