@@ -14838,8 +14838,38 @@ class _OfficialMeetRSVPView(discord.ui.View):
                 ):
                     child.disabled = True
             await interaction.response.edit_message(view=self)
+            # Auto-cleanup: delete the original meet announcement + archive its
+            # discussion thread. The "📌 DIFF Meet Closed" summary embed posted
+            # just above stays in the channel as the permanent record.
+            _deleted = False
+            try:
+                _ch = bot.get_channel(record.channel_id)
+                if isinstance(_ch, discord.TextChannel):
+                    _msg = await _ch.fetch_message(record.message_id)
+                    try:
+                        _thr = _msg.thread
+                        if _thr is not None:
+                            try:
+                                await _thr.edit(archived=True, locked=False)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    await _msg.delete()
+                    _deleted = True
+            except Exception as _de:
+                _bot_log.warning("[OM] end cleanup — delete failed for msg %s: %s",
+                                 record.message_id, _de)
+            try:
+                _g = interaction.guild or bot.get_guild(GUILD_ID)
+                if _g:
+                    await _om_panel_post_or_refresh(_g, force_repost=True)
+            except Exception:
+                pass
             await interaction.followup.send(
-                "Meet marked as **ended**. Attendance stats saved and leaderboard updated.",
+                "Meet marked as **ended**. Attendance stats saved and leaderboard updated."
+                + ("\n🧹 Original announcement deleted; the **DIFF Meet Closed** summary stays in the channel."
+                   if _deleted else ""),
                 ephemeral=True,
             )
 
