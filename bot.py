@@ -9720,9 +9720,20 @@ class _MyApplicationStatusBtn(discord.ui.Button):
 class CrewPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(CrewInfoSelect())
-        self.add_item(_MyApplicationStatusBtn())
-        self.add_item(_WithdrawApplicationBtn())
+        # Force explicit row assignment on every item to bypass any
+        # discord.py auto-placement quirks that previously caused a
+        # "row 0 (6 > 5 width)" crash that killed on_ready.
+        # Layout: row0=info select (width 5), row1=Apply btn,
+        # row2=Status + Withdraw (width 2 total)
+        sel = CrewInfoSelect()
+        sel.row = 0
+        self.add_item(sel)
+        status_btn = _MyApplicationStatusBtn()
+        status_btn.row = 2
+        self.add_item(status_btn)
+        withdraw_btn = _WithdrawApplicationBtn()
+        withdraw_btn.row = 2
+        self.add_item(withdraw_btn)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
@@ -20162,31 +20173,40 @@ async def on_ready():
     except Exception as e:
         print(f"Global sync error: {e}")
 
-    def _safe_add_view(view, label: str = "") -> None:
+    def _safe_add_view(factory, label: str = "") -> None:
+        # Accepts either a View instance or a 0-arg callable returning a View.
+        # Wrapping construction in the try/except ensures one broken View can
+        # never abort on_ready and unregister every subsequent persistent view.
         try:
+            if callable(factory) and not isinstance(factory, discord.ui.View):
+                view = factory()
+            else:
+                view = factory
             bot.add_view(view)
         except Exception as _e:
-            print(f"[Views] Failed to register {label or type(view).__name__}: {_e}")
+            import traceback as _tb
+            print(f"[Views] Failed to register {label}: {_e!r}")
+            _tb.print_exc()
 
-    _safe_add_view(_PostmeetReceivedView(),                             "PostmeetReceivedView")
-    _safe_add_view(RulesAcceptView(GUILD_ID),                          "RulesAcceptView")
-    _safe_add_view(CrewPanelView(),                                     "CrewPanelView")
-    _safe_add_view(ReviewView(app_id="0000", applicant_id=0),           "ReviewView")
-    _safe_add_view(DeniedResultView(app_id="0000", applicant_id=0),     "DeniedResultView")
-    _safe_add_view(RespondButtonView(),                                  "RespondButtonView")
-    _safe_add_view(DIFFRecruitmentTicketView(),                         "DIFFRecruitmentTicketView")
-    _safe_add_view(DIFFDashboardView(),                                  "DIFFDashboardView")
-    _safe_add_view(MeetAttendancePanelView(),                           "MeetAttendancePanelView")
-    _safe_add_view(LeaderboardView(),                                    "LeaderboardView")
-    _safe_add_view(UnifiedCrewHubView(),                                 "UnifiedCrewHubView")
-    _safe_add_view(MeetRSVPView(meet1="Meet 1", meet2="Meet 2", meet3="Meet 3"), "MeetRSVPView")
-    _safe_add_view(ActivityDashboardView(),                              "ActivityDashboardView")
-    _safe_add_view(ColorSubmissionPanelView(),                          "ColorSubmissionPanelView")
-    _safe_add_view(SubmissionActionView(),                               "SubmissionActionView")
-    _safe_add_view(ColorTeamPanelView(),                                 "ColorTeamPanelView")
-    _safe_add_view(InterviewInfoView(),                                  "InterviewInfoView")
-    _safe_add_view(InterviewOutcomeView(),                               "InterviewOutcomeView")
-    _safe_add_view(_InterviewSessionView(),                              "InterviewSessionView")
+    _safe_add_view(lambda: _PostmeetReceivedView(),                                          "PostmeetReceivedView")
+    _safe_add_view(lambda: RulesAcceptView(GUILD_ID),                                        "RulesAcceptView")
+    _safe_add_view(lambda: CrewPanelView(),                                                  "CrewPanelView")
+    _safe_add_view(lambda: ReviewView(app_id="0000", applicant_id=0),                        "ReviewView")
+    _safe_add_view(lambda: DeniedResultView(app_id="0000", applicant_id=0),                  "DeniedResultView")
+    _safe_add_view(lambda: RespondButtonView(),                                              "RespondButtonView")
+    _safe_add_view(lambda: DIFFRecruitmentTicketView(),                                      "DIFFRecruitmentTicketView")
+    _safe_add_view(lambda: DIFFDashboardView(),                                              "DIFFDashboardView")
+    _safe_add_view(lambda: MeetAttendancePanelView(),                                        "MeetAttendancePanelView")
+    _safe_add_view(lambda: LeaderboardView(),                                                "LeaderboardView")
+    _safe_add_view(lambda: UnifiedCrewHubView(),                                             "UnifiedCrewHubView")
+    _safe_add_view(lambda: MeetRSVPView(meet1="Meet 1", meet2="Meet 2", meet3="Meet 3"),    "MeetRSVPView")
+    _safe_add_view(lambda: ActivityDashboardView(),                                          "ActivityDashboardView")
+    _safe_add_view(lambda: ColorSubmissionPanelView(),                                       "ColorSubmissionPanelView")
+    _safe_add_view(lambda: SubmissionActionView(),                                           "SubmissionActionView")
+    _safe_add_view(lambda: ColorTeamPanelView(),                                             "ColorTeamPanelView")
+    _safe_add_view(lambda: InterviewInfoView(),                                              "InterviewInfoView")
+    _safe_add_view(lambda: InterviewOutcomeView(),                                           "InterviewOutcomeView")
+    _safe_add_view(lambda: _InterviewSessionView(),                                          "InterviewSessionView")
 
     # #9 Weekly JSON backup loop
     try:
