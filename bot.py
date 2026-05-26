@@ -14561,6 +14561,8 @@ class _OmRecord:
     ended: bool = False
     one_hour_sent: bool = False
     fifteen_sent: bool = False
+    dm_24h_sent: bool = False   # #4 DM-to-RSVPers reminder at T-24h
+    dm_1h_sent: bool = False    # #4 DM-to-RSVPers reminder at T-1h
     started_at_ts: int | None = None
     ended_at_ts: int | None = None
     attendance_message_id: int | None = None
@@ -20193,6 +20195,14 @@ async def on_ready():
             print("[backup] _json_backup_loop started")
     except Exception as _e:
         print(f"[backup] failed to start loop: {_e!r}")
+
+    # #4 Smart meet DM reminder loop (T-24h + T-1h to RSVP-yes list)
+    try:
+        if not _smart_meet_dm_reminder_loop.is_running():
+            _smart_meet_dm_reminder_loop.start()
+            print("[meet] _smart_meet_dm_reminder_loop started")
+    except Exception as _e:
+        print(f"[meet] failed to start DM reminder loop: {_e!r}")
     _safe_add_view(SupportDropdownView(),                                "SupportDropdownView")
     _safe_add_view(SupportCloseButton(),                                 "SupportCloseButton")
     _safe_add_view(SupportApplicationReviewView(),                      "SupportApplicationReviewView")
@@ -39990,3 +40000,299 @@ asyncio.run(run_bot())
 print(f"[Restarting process in 3s...]")
 time.sleep(3)
 os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+# =========================================================================
+# DIFF MEET SYSTEM PASS — #4 Smart RSVP DM reminders + #7 !planmeet wizard
+# =========================================================================
+# All work on top of the existing _OmRecord / _om_load_records pipeline so
+# nothing about the live channel-reminder flow is touched.
+
+# ─── #4  DM the RSVP-yes list at T-24h and T-1h ──────────────────────────
+async def _dm_rsvp_attendees(record, kind: str) -> int:
+    """DM every member in record.rsvp_yes_ids a reminder embed.
+    `kind` is '24h' or '1h'. Returns count of successful DMs."""
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return 0
+    host = guild.get_member(record.host_id)
+    host_name = host.display_name if host else "TBD"
+    if kind == "24h":
+        title = "⏰ Reminder — DIFF Meet in 24 hours"
+        body  = ("Your meet is **tomorrow**. Make sure your setup is ready: "
+                 "headset working, GTA installed/updated, crew tag on, and your build picked.")
+        color = discord.Color.blurple()
+    else:
+        title = "🚨 Reminder — DIFF Meet in 1 hour"
+        body  = ("Your meet starts in **1 hour**. Hop in the voice channel "
+                 "5 minutes early — meets start on time.")
+        color = discord.Color.gold()
+
+    sent = 0
+    yes_list = list(record.rsvp_yes_ids or [])
+    for uid in yes_list:
+        m = guild.get_member(int(uid))
+        if not m or m.bot:
+            continue
+        embed = discord.Embed(
+            title=title, description=body,
+            color=color, timestamp=utc_now(),
+        )
+        embed.add_field(name="🎯 Theme", value=record.theme or "—", inline=True)
+        embed.add_field(name="🎤 Host",  value=host_name, inline=True)
+        embed.add_field(
+            name="🕒 When", value=f"<t:{record.timestamp}:F> (<t:{record.timestamp}:R>)",
+            inline=False,
+        )
+        embed.add_field(
+            name="🙋 Still coming?",
+            value=("If plans changed, please update your RSVP on the meet announcement "
+                   "so the host has an accurate count."),
+            inline=False,
+        )
+        embed.set_footer(text="Different Meets • Smart RSVP Reminder")
+        ok = await _safe_dm(m, embed=embed)
+        if ok:
+            sent += 1
+        await asyncio.sleep(0.3)  # gentle pacing — Discord global DM limit
+    return sent
+
+
+@tasks.loop(minutes=1)
+async def _smart_meet_dm_reminder_loop():
+    try:
+        data = _om_load_records()
+        if not data:
+            return
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        # Windows: fire 24h DM in [25h..23h] before, 1h DM in [70min..50min] before.
+        # Wide windows survive bot downtime across the 1-min loop tick.
+        for key, raw in list(data.items()):
+            try:
+                rec = _OmRecord(**{k: v for k, v in raw.items() if k in _OmRecord.__dataclass_fields__})
+            except Exception:
+                continue
+            if rec.ended or rec.started:
+                continue
+            delta = rec.timestamp - now_ts
+            if delta <= 0:
+                continue
+            # 24h window
+            if not rec.dm_24h_sent and 23 * 3600 <= delta <= 25 * 3600:
+                count = await _dm_rsvp_attendees(rec, "24h")
+                rec.dm_24h_sent = True
+                _om_upsert_record(rec)
+                try:
+                    ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
+                    if isinstance(ch, discord.TextChannel):
+                        await ch.send(
+                            f"📨 24h DM reminder sent to **{count}** RSVPers "
+                            f"for **{rec.theme}** (<t:{rec.timestamp}:F>)."
+                        )
+                except Exception:
+                    pass
+            # 1h window
+            if not rec.dm_1h_sent and 50 * 60 <= delta <= 70 * 60:
+                count = await _dm_rsvp_attendees(rec, "1h")
+                rec.dm_1h_sent = True
+                _om_upsert_record(rec)
+                try:
+                    ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
+                    if isinstance(ch, discord.TextChannel):
+                        await ch.send(
+                            f"📨 1h DM reminder sent to **{count}** RSVPers "
+                            f"for **{rec.theme}**."
+                        )
+                except Exception:
+                    pass
+    except Exception as e:
+        try:
+            print(f"[smart_dm_loop] {e!r}")
+        except Exception:
+            pass
+
+
+# ─── #7  !planmeet — friendly modal wizard wrapping the existing flow ────
+class _PlanMeetModal(discord.ui.Modal, title="📅 Plan a New DIFF Meet"):
+    theme_in = discord.ui.TextInput(
+        label="Theme (e.g. Tire Lettering, Drift Night)",
+        placeholder="What's the meet about?",
+        max_length=80, required=True,
+    )
+    date_in = discord.ui.TextInput(
+        label="Date (YYYY-MM-DD)",
+        placeholder="e.g. 2026-06-14",
+        max_length=10, required=True,
+    )
+    time_in = discord.ui.TextInput(
+        label="Time ET (HH:MM, 24-hour)",
+        placeholder="e.g. 20:00 for 8pm ET",
+        max_length=5, required=True,
+    )
+    host_in = discord.ui.TextInput(
+        label="Host User ID OR @mention text",
+        placeholder="Paste the host's user ID (right-click → Copy ID)",
+        max_length=40, required=True,
+    )
+    notes_in = discord.ui.TextInput(
+        label="Optional notes (style direction / extra info)",
+        placeholder="Anything else hosts/attendees should know",
+        style=discord.TextStyle.paragraph,
+        required=False, max_length=400,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+
+        # Resolve host
+        host_raw = str(self.host_in.value or "").strip()
+        host_id_str = "".join(c for c in host_raw if c.isdigit())
+        host = None
+        if host_id_str:
+            host = guild.get_member(int(host_id_str))
+            if host is None:
+                try:
+                    host = await guild.fetch_member(int(host_id_str))
+                except Exception:
+                    host = None
+        if host is None:
+            return await interaction.response.send_message(
+                f"❌ Couldn't find host from `{host_raw}`. Paste a valid user ID.",
+                ephemeral=True,
+            )
+
+        # Parse date/time
+        try:
+            local_dt = datetime.strptime(
+                f"{self.date_in.value} {self.time_in.value}", "%Y-%m-%d %H:%M"
+            ).replace(tzinfo=ZoneInfo(_OFFICIAL_MEET_TZ))
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Invalid date or time. Use `YYYY-MM-DD` and `HH:MM` (24h).",
+                ephemeral=True,
+            )
+        meet_ts = int(local_dt.timestamp())
+        if meet_ts <= int(datetime.now(timezone.utc).timestamp()):
+            return await interaction.response.send_message(
+                "❌ That meet time is already in the past.", ephemeral=True
+            )
+
+        # Resolve announce channel
+        channel = bot.get_channel(_OFFICIAL_MEET_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            return await interaction.response.send_message(
+                "❌ Official meet channel not configured.", ephemeral=True
+            )
+
+        theme = str(self.theme_in.value or "").strip()
+        notes = str(self.notes_in.value or "").strip()
+
+        try:
+            sent = await channel.send(
+                content=f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>",
+                embed=_om_build_embed(theme=theme, host=host, timestamp=meet_ts, notes=notes if notes else None),
+                view=_OfficialMeetRSVPView(),
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+            )
+        except Exception as e:
+            return await interaction.response.send_message(
+                f"❌ Failed to post meet: {e!r}", ephemeral=True
+            )
+
+        record = _OmRecord(
+            message_id=sent.id,
+            channel_id=channel.id,
+            host_id=host.id,
+            theme=theme,
+            timestamp=meet_ts,
+        )
+        _om_upsert_record(record)
+        try:
+            _om_schedule_reminders(record)
+        except Exception:
+            pass
+
+        # Confirm to staff
+        embed = discord.Embed(
+            title="✅ Meet Planned",
+            description=(
+                f"**Theme:** {theme}\n"
+                f"**Host:** {host.mention}\n"
+                f"**When:** <t:{meet_ts}:F> (<t:{meet_ts}:R>)\n"
+                f"**Posted in:** {channel.mention}\n\n"
+                "📨 RSVPers will get auto-DM reminders at **T-24h** and **T-1h**.\n"
+                "📣 Channel reminders fire at **T-1h** and **T-15m** (existing system)."
+            ),
+            color=discord.Color.green(), timestamp=utc_now(),
+        )
+        if notes:
+            embed.add_field(name="📝 Notes", value=notes[:1024], inline=False)
+        embed.set_footer(text="Different Meets • !planmeet")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class _PlanMeetLauncherView(discord.ui.View):
+    def __init__(self, author_id: int):
+        super().__init__(timeout=300)
+        self.author_id = author_id
+
+    @discord.ui.button(label="Open Meet Planner", emoji="📅", style=discord.ButtonStyle.primary)
+    async def open_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message(
+                "Only the staff member who ran `!planmeet` can use this.", ephemeral=True
+            )
+        await interaction.response.send_modal(_PlanMeetModal())
+
+
+@bot.command(name="planmeet", aliases=["meetplan", "newmeet"])
+async def cmd_plan_meet(ctx):
+    is_staff = (
+        ctx.author.guild_permissions.manage_guild
+        or any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", []))
+        or any(r.id in _LEADERSHIP_ROLE_IDS for r in getattr(ctx.author, "roles", []))
+    )
+    if not is_staff:
+        return await ctx.reply("Staff only.", mention_author=False)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    embed = discord.Embed(
+        title="📅 Meet Planner",
+        description=(
+            "Click the button below to open a guided form for planning a new "
+            "official DIFF meet.\n\n"
+            "**What you'll need:**\n"
+            "• Theme (e.g. *Tire Lettering*, *Drift Night*)\n"
+            "• Date (`YYYY-MM-DD`) + Time ET (`HH:MM` 24h)\n"
+            "• Host's user ID (right-click their name → Copy User ID)\n"
+            "• Optional: style notes for the announcement\n\n"
+            "Once posted, the existing channel reminders (T-1h, T-15m) **and** "
+            "the new RSVP DM reminders (T-24h, T-1h) all fire automatically."
+        ),
+        color=discord.Color.blurple(), timestamp=utc_now(),
+    )
+    embed.set_footer(text="Different Meets • Meet Planner")
+    await ctx.send(embed=embed, view=_PlanMeetLauncherView(ctx.author.id))
+
+
+# Manual test trigger — Leadership only, fires DMs for the next upcoming meet
+@bot.command(name="testmeetreminders", aliases=["testmeetdm"])
+async def cmd_test_meet_reminders(ctx, kind: str = "1h"):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    if kind not in ("24h", "1h"):
+        return await ctx.send("Usage: `!testmeetreminders 24h` or `!testmeetreminders 1h`")
+    rec = _om_next_meet()
+    if not rec:
+        return await ctx.send("No upcoming meet on record.")
+    count = await _dm_rsvp_attendees(rec, kind)
+    await ctx.send(
+        f"📨 Test {kind} reminder sent to **{count}** RSVPer(s) for "
+        f"**{rec.theme}** (<t:{rec.timestamp}:F>).\n"
+        f"*Note: idempotency flag NOT set — this won't block the auto-loop.*"
+    )
+
