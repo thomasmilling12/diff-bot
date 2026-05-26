@@ -33918,42 +33918,72 @@ def _join_sanitize_channel_name(psn: str) -> str:
     return f"join-{safe}"[:90] or "join-ps"
 
 
-def _join_build_panel_embed() -> discord.Embed:
+def _join_build_panel_embed(guild=None) -> discord.Embed:
+    verified_count = 0
+    approved_30d = 0
+    if guild is not None:
+        try:
+            stats = _compute_join_panel_stats(guild)
+            verified_count = int(stats.get("member_count", 0) or 0)
+            approved_30d = int(stats.get("approved_30d", 0) or 0)
+        except Exception:
+            pass
+
+    desc_lines = ["Welcome to **Different Meets** — a **PS5** GTA V Online car meet community."]
+    if verified_count > 0:
+        social = f"🏎️ **{verified_count:,}+ verified PS5 builders**"
+        if approved_30d > 0:
+            social += f"  •  **{approved_30d}** new this month"
+        desc_lines.append(social)
+    desc_lines.append("Pick **PlayStation 5** in the dropdown below to get started.")
+
     embed = discord.Embed(
         title="🏁 DIFF MEETS — JOIN HUB",
-        description=(
-            "Welcome to **Different Meets** — a PlayStation GTA V Online car meet community.\n"
-            "Select your platform below to get started."
-        ),
+        description="\n".join(desc_lines),
         color=discord.Color.from_str("#00439C"),
     )
     embed.add_field(
         name="🚗 Before You Join",
         value=(
-            "Only **clean, customized vehicles** are allowed at our meets.\n"
-            "No modded money cars, weaponized vehicles, or stock builds."
+            "Only **clean, customized PS5 builds** — no modded money cars, weaponized vehicles, or stock builds.\n"
+            f"📖 Full rules: <#{RULES_CHANNEL_ID}>"
         ),
         inline=False,
     )
     embed.add_field(
-        name="📋 Want to join the crew?",
-        value="Head to the crew application area after getting set up here.",
+        name="📅 When are meets?",
+        value=f"Three meets every week — check <#{UPCOMING_MEET_CHANNEL_ID}> for current dates, times, and themes.",
         inline=False,
     )
     embed.add_field(
-        name="🎮 PlayStation",
-        value="Private ticket → PSN rename → you're in.",
+        name="👇 What happens next",
+        value=(
+            "1️⃣  Pick **PlayStation 5** below\n"
+            "2️⃣  Submit your build photos in a private ticket\n"
+            "3️⃣  Get your PSN rename → verified → you're in"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎮 PlayStation 5",
+        value="Use the dropdown below to start your join ticket.",
         inline=True,
     )
     embed.add_field(
         name="🟢 Xbox  ·  💻 PC",
-        value="Handled by our partners at **MMI Meets**.",
+        value=f"Handled by our partners — [join **MMI Meets**]({_JOIN_MMI_INVITE}).",
         inline=True,
     )
-    if DIFF_LOGO_URL:
-        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.add_field(
+        name="📋 Want to host meets or join the crew?",
+        value=(
+            "Attend a few meets, get active, then apply.\n"
+            f"Pick **How to Join the Crew** in the dropdown, or apply directly at <#{_JOIN_CREW_APP_CHANNEL}>."
+        ),
+        inline=False,
+    )
     embed.set_image(url="https://media.discordapp.net/attachments/1485265848099799163/1486054805796557033/diff_classic.png?format=webp&quality=lossless")
-    embed.set_footer(text="Different Meets • GTA Car Meets")
+    embed.set_footer(text="Different Meets • PS5 GTA Car Meets")
     return embed
 
 
@@ -34280,7 +34310,7 @@ async def _join_build_transcript(
 class JoinPlatformSelect(discord.ui.Select):
     def __init__(self) -> None:
         super().__init__(
-            placeholder="🎮  Choose your platform to get started…",
+            placeholder="🎮  Start your PS5 join, ask a question, or learn more…",
             min_values=1,
             max_values=1,
             custom_id="diff_join_platform_select",
@@ -34290,18 +34320,6 @@ class JoinPlatformSelect(discord.ui.Select):
                     value="playstation",
                     description="Open a private ticket, get renamed, and join our meets.",
                     emoji="🎮",
-                ),
-                discord.SelectOption(
-                    label="Xbox Series X|S",
-                    value="xbox",
-                    description="Redirected to our Xbox partners at MMI Meets.",
-                    emoji="🟢",
-                ),
-                discord.SelectOption(
-                    label="PC",
-                    value="pc",
-                    description="Redirected to our PC partners at MMI Meets.",
-                    emoji="💻",
                 ),
                 discord.SelectOption(
                     label="How to Join the Crew",
@@ -34332,32 +34350,6 @@ class JoinPlatformSelect(discord.ui.Select):
                 )
 
             platform = self.values[0]
-
-            if platform in ("xbox", "pc"):
-                is_xbox = platform == "xbox"
-                label   = "Xbox Series X|S" if is_xbox else "PC"
-                emoji   = "🟢" if is_xbox else "💻"
-                embed = discord.Embed(
-                    title=f"{emoji} {label} — Join Info",
-                    description=(
-                        f"{label} car meets are handled by our partners at **MMI Meets**.\n"
-                        f"Join their server using the invite below, then head straight to the join channel."
-                    ),
-                    color=discord.Color.from_str("#107C10") if is_xbox else discord.Color.blurple(),
-                )
-                embed.add_field(
-                    name="1️⃣  Join MMI Meets",
-                    value=f"[Click here to join]({_JOIN_MMI_INVITE})",
-                    inline=True,
-                )
-                embed.add_field(
-                    name="2️⃣  Go to their join channel",
-                    value=f"[#join-car-meet]({_JOIN_MMI_CHANNEL})",
-                    inline=True,
-                )
-                embed.set_image(url=_JOIN_MMI_LOGO)
-                embed.set_footer(text="Different Meets • GTA Car Meets  •  Only you can see this")
-                return await interaction.response.send_message(embed=embed, ephemeral=True)
 
             if platform == "join_crew":
                 embed = discord.Embed(
@@ -34754,13 +34746,40 @@ class JoinPlatformView(discord.ui.View):
                 await interaction.user.remove_roles(role, reason="DIFF notify toggle — OFF")
             except discord.HTTPException:
                 return await interaction.response.send_message("Failed to remove role. Try again.", ephemeral=True)
-            await interaction.response.send_message("🔕 Meet notifications **OFF** — you've been removed from the notify role.", ephemeral=True)
+            remaining = max(0, len(role.members) - 1)
+            await interaction.response.send_message(
+                f"🔕 Meet notifications **OFF**.\n"
+                f"You're no longer in the notify role — **{remaining:,}** other members still are.",
+                ephemeral=True,
+            )
         else:
             try:
                 await interaction.user.add_roles(role, reason="DIFF notify toggle — ON")
             except discord.HTTPException:
                 return await interaction.response.send_message("Failed to add role. Try again.", ephemeral=True)
-            await interaction.response.send_message("🔔 Meet notifications **ON** — you'll be pinged for meets.", ephemeral=True)
+            new_count = len(role.members) + 1
+            await interaction.response.send_message(
+                f"🔔 Meet notifications **ON**.\n"
+                f"You'll be pinged when meets are announced — you're now part of a squad of **{new_count:,}**.",
+                ephemeral=True,
+            )
+
+    @discord.ui.button(
+        label="❓ Just Asking",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_join_just_asking",
+        row=1,
+    )
+    async def just_asking(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        try:
+            await interaction.response.send_message(
+                f"❓ Not joining today? No problem.\n"
+                f"Head to <#{SUPPORT_TICKETS_CHANNEL_ID}> to open a support ticket — staff respond there.\n"
+                f"Or pick **FAQ** in the dropdown above for quick answers.",
+                ephemeral=True,
+            )
+        except Exception:
+            pass
 
 
 _JOIN_DENY_PRESETS = [
@@ -35736,7 +35755,7 @@ async def post_join_panel(interaction: discord.Interaction) -> None:
                     pass
     except discord.HTTPException:
         pass
-    await channel.send(embed=_join_build_panel_embed(), view=JoinPlatformView())
+    await channel.send(embed=_join_build_panel_embed(interaction.guild), view=JoinPlatformView())
     await interaction.followup.send(f"Join Hub panel posted in {channel.mention}.", ephemeral=True)
 
 
@@ -35764,11 +35783,11 @@ async def refresh_join_panel(interaction: discord.Interaction) -> None:
         pass
     if existing:
         try:
-            await existing.edit(embed=_join_build_panel_embed(), view=JoinPlatformView())
+            await existing.edit(embed=_join_build_panel_embed(interaction.guild), view=JoinPlatformView())
             return await interaction.followup.send(f"Join Hub panel refreshed in {channel.mention}.", ephemeral=True)
         except discord.HTTPException:
             pass
-    await channel.send(embed=_join_build_panel_embed(), view=JoinPlatformView())
+    await channel.send(embed=_join_build_panel_embed(interaction.guild), view=JoinPlatformView())
     await interaction.followup.send(f"Join Hub panel reposted in {channel.mention} (no existing panel found).", ephemeral=True)
 
 
