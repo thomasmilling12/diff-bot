@@ -19256,7 +19256,21 @@ async def _cs_try_close_vote(guild: discord.Guild) -> bool:
     try:
         channel = await _cs_fetch_channel(int(current_vote["channel_id"]))
         vote_msg = await channel.fetch_message(int(current_vote["message_id"]))
-    except Exception:
+    except Exception as _fe:
+        # ORPHAN RECOVERY: vote message was deleted / channel is gone but the
+        # data file still says a vote is active. This used to deadlock the system —
+        # /force-color-vote refused to start a new vote ("already active"), while
+        # /force-color-winner refused to close it ("can't fetch message"). Clear
+        # the stuck record so the cycle can move forward.
+        _bot_log.warning(
+            "[ColorVote] Orphaned current_vote detected (msg %s in ch %s): %s — clearing.",
+            current_vote.get("message_id"), current_vote.get("channel_id"), _fe,
+        )
+        try:
+            data["current_vote"] = None
+            _cs_save(data)
+        except Exception as _se:
+            _bot_log.warning("[ColorVote] Failed to clear orphan record: %s", _se)
         return False
     candidate_ids = current_vote.get("candidate_submission_ids", [])
     candidates = [data["submissions"].get(cid) for cid in candidate_ids]
@@ -19916,11 +19930,23 @@ async def force_color_winner(interaction: discord.Interaction):
     if not isinstance(interaction.user, discord.Member) or not _cs_is_color_admin(interaction.user):
         return await interaction.response.send_message("Founders, Executives, and Server Operations only.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
+    # Snapshot state before attempting close so we can tell the difference between
+    # "no vote was ever active" and "vote was stuck and we just unstuck it".
+    _pre = _cs_load().get("current_vote")
     success = await _cs_try_close_vote(interaction.guild)
     if success:
         await interaction.followup.send("Vote closed and winner posted.", ephemeral=True)
     else:
-        await interaction.followup.send("No active vote to close.", ephemeral=True)
+        _post = _cs_load().get("current_vote")
+        if _pre and not _post:
+            # Orphan recovery happened
+            await interaction.followup.send(
+                "⚠️ Vote message was missing — the stuck vote record has been **cleared**. "
+                "You can now run `/force-color-vote` to start a fresh vote.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send("No active vote to close.", ephemeral=True)
 
 
 @bot.command(name="setcolorwinner", aliases=["manualcolorwinner", "pickcolorwinner", "colorwinner"])
