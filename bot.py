@@ -17696,13 +17696,14 @@ async def _hrsvp_auto_reset_loop() -> None:
             _hrsvp_reset()
             _hrsvp_reset_ts_save(most_recent_monday)
             await _hrsvp_update_panel(bot)
-            ch = bot.get_channel(HOST_RSVP_CHANNEL_ID)
+            # Reset notice goes to #host-team chat (not the panel channel)
+            ch = bot.get_channel(_HOST_TEAM_CHANNEL_ID)
             if isinstance(ch, discord.TextChannel):
                 host_role = ch.guild.get_role(HOST_ROLE_ID) if ch.guild else None
                 ping      = host_role.mention if host_role else "@Meet Hosts"
                 await ch.send(
                     f"{ping} 📋 **New week — availability panel reset!**\n"
-                    "Please mark your availability for Meet 1, Meet 2, and Meet 3 above. "
+                    f"Please mark your availability for Meet 1, Meet 2, and Meet 3 in <#{HOST_RSVP_CHANNEL_ID}>. "
                     "Leadership builds the schedule from your responses."
                 )
             print("[HRSVP] Startup catch-up reset applied.")
@@ -17721,13 +17722,14 @@ async def _hrsvp_auto_reset_loop() -> None:
                 _hrsvp_reset()
                 _hrsvp_reset_ts_save(today_str)
                 await _hrsvp_update_panel(bot)
-                ch = bot.get_channel(HOST_RSVP_CHANNEL_ID)
+                # Reset notice goes to #host-team chat (not the panel channel)
+                ch = bot.get_channel(_HOST_TEAM_CHANNEL_ID)
                 if isinstance(ch, discord.TextChannel):
                     host_role = ch.guild.get_role(HOST_ROLE_ID) if ch.guild else None
                     ping      = host_role.mention if host_role else "@Meet Hosts"
                     await ch.send(
                         f"{ping} 📋 **New week — availability panel reset!**\n"
-                        "Please mark your availability for Meet 1, Meet 2, and Meet 3 above. "
+                        f"Please mark your availability for Meet 1, Meet 2, and Meet 3 in <#{HOST_RSVP_CHANNEL_ID}>. "
                         "Leadership builds the schedule from your responses."
                     )
         except Exception as _e:
