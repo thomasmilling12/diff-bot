@@ -15587,21 +15587,137 @@ def _om_restore_rsvp_counts():
             pass
 
 
+_OM_DAY_ORDER = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"]
+_OM_DAY_EMOJI = {"sunday":"🌞","monday":"🌙","tuesday":"🔥","wednesday":"⚡","thursday":"💎","friday":"🎉","saturday":"🚀"}
+
+
+def _om_panel_lineup_field() -> tuple[str, str] | None:
+    """Return (name, value) for a 7-day host lineup field, or None if schedule empty."""
+    try:
+        sched = _asched_load()
+    except Exception:
+        return None
+    days = sched.get("days", {}) or {}
+    if not days:
+        return None
+    lines = []
+    filled = 0
+    for key in _OM_DAY_ORDER:
+        slot = days.get(key) or {}
+        host_id = slot.get("host_id")
+        emoji = _OM_DAY_EMOJI.get(key, "•")
+        day_label = key.capitalize()
+        if host_id:
+            filled += 1
+            theme = (slot.get("theme") or "").strip()
+            time_val = (slot.get("time") or "").strip()
+            extras = []
+            if theme and theme.upper() != "TBD":
+                extras.append(theme[:24])
+            if time_val and time_val.upper() != "TBD":
+                extras.append(time_val[:18])
+            tail = f" — {' • '.join(extras)}" if extras else ""
+            lines.append(f"{emoji} **{day_label}** — <@{host_id}>{tail}")
+        else:
+            lines.append(f"{emoji} **{day_label}** — ⚪ open slot")
+    header = f"🗓️ This Week\'s Host Lineup  ({filled}/7 filled)"
+    return header, "\n".join(lines)
+
+
+def _om_panel_stats_field() -> tuple[str, str] | None:
+    """Return (name, value) for monthly meet stats, or None if no data."""
+    try:
+        records = _om_load_records()
+    except Exception:
+        return None
+    if not records:
+        return None
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    month_ago = now_ts - 30 * 86400
+    week_ago  = now_ts - 7 * 86400
+    month_count = 0
+    week_count  = 0
+    total_yes   = 0
+    total_attended = 0
+    completed   = 0
+    for raw in records.values():
+        try:
+            ts = int(raw.get("timestamp", 0) or 0)
+        except Exception:
+            ts = 0
+        if ts >= month_ago:
+            month_count += 1
+            if ts >= week_ago:
+                week_count += 1
+            if raw.get("ended"):
+                completed += 1
+                total_yes += len(raw.get("rsvp_yes_ids") or [])
+                total_attended += len(raw.get("checked_in_ids") or [])
+    avg_att = ""
+    if total_yes > 0 and completed > 0:
+        pct = int(round((total_attended / total_yes) * 100))
+        avg_att = f"\n📈 Avg attendance (last 30d): **{pct}%**  ({total_attended}/{total_yes})"
+    if month_count == 0 and not avg_att:
+        return None
+    return (
+        "📊 Recent Activity",
+        f"🗓️ **{month_count}** meet(s) in the last 30 days  •  **{week_count}** this week{avg_att}",
+    )
+
+
+def _om_panel_recap_field() -> tuple[str, str] | None:
+    """If a meet ended in the last 24h, return a (name, value) recap field."""
+    try:
+        records = _om_load_records()
+    except Exception:
+        return None
+    if not records:
+        return None
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    cutoff = now_ts - 86400
+    recent = None
+    for raw in records.values():
+        if not raw.get("ended"):
+            continue
+        ended_at = raw.get("ended_at_ts") or raw.get("timestamp") or 0
+        try:
+            ended_at = int(ended_at)
+        except Exception:
+            continue
+        if ended_at >= cutoff and (recent is None or ended_at > recent[0]):
+            recent = (ended_at, raw)
+    if not recent:
+        return None
+    _, raw = recent
+    theme = (raw.get("theme") or "Official Meet")[:60]
+    host_id = raw.get("host_id") or 0
+    attended = len(raw.get("checked_in_ids") or [])
+    yes_count = len(raw.get("rsvp_yes_ids") or [])
+    return (
+        "🏁 Last Meet Recap",
+        (
+            f"**{theme}** — hosted by <@{host_id}>\n"
+            f"✅ **{attended}** attended  •  📋 **{yes_count}** RSVPed yes  •  ended <t:{int(recent[0])}:R>"
+        ),
+    )
+
+
 def _om_panel_build_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🏁 DIFF Official Meet Hub",
         description=(
-            f"Use the **Schedule Official Meet** button below to post an official meet "
-            f"announcement to <#{_OFFICIAL_MEET_CHANNEL_ID}>."
+            "Your live dashboard for scheduled DIFF meets — upcoming meet, this week\'s host lineup, "
+            "and a recap of recent activity. Posts land in "
+            f"<#{_OFFICIAL_MEET_CHANNEL_ID}>."
         ),
-        color=discord.Color.dark_gold(),
+        color=discord.Color.from_rgb(241, 196, 15),
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
 
-    # Show next scheduled meet if one exists
+    # ── Next meet ───────────────────────────────────────────────────────
     next_meet = _om_next_meet()
     if next_meet:
-        status = "🟢 Live" if next_meet.started else "📅 Upcoming"
+        status = "🟢 Live Now" if next_meet.started else "📅 Upcoming"
         embed.add_field(
             name=f"{status} — Next Official Meet",
             value=(
@@ -15614,28 +15730,44 @@ def _om_panel_build_embed() -> discord.Embed:
     else:
         embed.add_field(
             name="📅 Next Official Meet",
-            value="No meet currently scheduled.",
+            value="No meet currently scheduled — staff can use the button below to post one.",
             inline=False,
         )
 
+    # ── 7-day host lineup ──────────────────────────────────────────────
+    lineup = _om_panel_lineup_field()
+    if lineup:
+        embed.add_field(name=lineup[0], value=lineup[1], inline=False)
+
+    # ── Last meet recap (only if ended in last 24h) ────────────────────
+    recap = _om_panel_recap_field()
+    if recap:
+        embed.add_field(name=recap[0], value=recap[1], inline=False)
+
+    # ── Host walkthrough (replaces the old generic "What Gets Posted") ─
     embed.add_field(
-        name="📋 What Gets Posted",
+        name="🛠️ For Hosts & Staff (2 steps)",
         value=(
-            "• Full meet announcement with role pings\n"
-            "• Auto-converting Discord timestamp\n"
-            "• Entry info, custom notes, and style direction\n"
-            "• RSVP buttons for members\n"
-            "• Start / End / Cancel meet controls for staff\n"
-            "• Automatic 1-hour and 15-minute reminders"
+            "**1.** Tap **📋 Schedule Official Meet** below → pick the host from the dropdown\n"
+            "**2.** Fill the modal — theme, date & time (e.g. `April 5 9:00 PM EST`), entry info, notes, style direction\n"
+            "Bot posts the full announcement with role pings, an auto-converting timestamp, RSVP buttons, "
+            "staff controls (Start / End / Cancel), and fires 1h + 15min reminders automatically."
         ),
         inline=False,
     )
+
+    # ── Recent activity stats ──────────────────────────────────────────
+    stats = _om_panel_stats_field()
+    if stats:
+        embed.add_field(name=stats[0], value=stats[1], inline=False)
+
     embed.add_field(
         name="🔒 Access",
-        value="Restricted to **staff and assigned hosts** only.",
+        value="Scheduling is restricted to **staff and assigned hosts**. Members can RSVP on any posted meet.",
         inline=False,
     )
-    embed.set_footer(text="DIFF Official Meet System")
+
+    embed.set_footer(text="DIFF Official Meet System • Panel refreshes hourly • Pinned guide has the full walkthrough")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
@@ -15822,8 +15954,28 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
 class _OfficialMeetPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        # ── Row 1: quick links for members (always visible) ──────────────
+        try:
+            self.add_item(discord.ui.Button(
+                label="Official Meets", style=discord.ButtonStyle.link, emoji="📅",
+                url=build_channel_link(GUILD_ID, _OFFICIAL_MEET_CHANNEL_ID), row=1,
+            ))
+            self.add_item(discord.ui.Button(
+                label="Rules", style=discord.ButtonStyle.link, emoji="📜",
+                url=build_channel_link(GUILD_ID, MEET_RULES_CHANNEL_ID), row=1,
+            ))
+            self.add_item(discord.ui.Button(
+                label="Pop-Up Meets", style=discord.ButtonStyle.link, emoji="⚡",
+                url=build_channel_link(GUILD_ID, _POPUP_PANEL_CHANNEL_ID), row=1,
+            ))
+            self.add_item(discord.ui.Button(
+                label="Join Meets Hub", style=discord.ButtonStyle.link, emoji="📥",
+                url=build_channel_link(GUILD_ID, JOIN_MEETS_CHANNEL_ID), row=1,
+            ))
+        except Exception:
+            pass
 
-    @discord.ui.button(label="📋 Schedule Official Meet", style=discord.ButtonStyle.primary, custom_id="diff_om_panel:schedule")
+    @discord.ui.button(label="📋 Schedule Official Meet", style=discord.ButtonStyle.primary, custom_id="diff_om_panel:schedule", row=0)
     async def schedule_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         member = interaction.user
         if not isinstance(member, discord.Member):
@@ -15843,6 +15995,81 @@ class _OfficialMeetPanelView(discord.ui.View):
         )
         embed.set_footer(text="DIFF Official Meet System • Step 1 of 2")
         await interaction.response.send_message(embed=embed, view=_HostPickerView(), ephemeral=True)
+
+    @discord.ui.button(label="🗓️ Full Schedule", style=discord.ButtonStyle.secondary, custom_id="diff_om_panel:schedule_view", row=0)
+    async def schedule_view_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Ephemeral 7-day host lineup snapshot for anyone who clicks."""
+        try:
+            sched = _asched_load()
+        except Exception:
+            sched = {}
+        days = sched.get("days", {}) or {}
+        if not days:
+            return await interaction.response.send_message(
+                "📭 No schedule data is loaded yet.", ephemeral=True
+            )
+        lines = []
+        for key in _OM_DAY_ORDER:
+            slot = days.get(key) or {}
+            host_id = slot.get("host_id")
+            emoji = _OM_DAY_EMOJI.get(key, "•")
+            day_label = key.capitalize()
+            if host_id:
+                theme = (slot.get("theme") or "").strip()
+                time_val = (slot.get("time") or "").strip()
+                day_val = (slot.get("day") or "").strip()
+                ts = None
+                try:
+                    if day_val and time_val and time_val.upper() != "TBD":
+                        ts = _parse_meet_ts(day_val, time_val)
+                except Exception:
+                    ts = None
+                tail_bits = []
+                if theme and theme.upper() != "TBD":
+                    tail_bits.append(f"_{theme}_")
+                if ts:
+                    tail_bits.append(f"<t:{ts}:t> (<t:{ts}:R>)")
+                elif time_val and time_val.upper() != "TBD":
+                    tail_bits.append(time_val)
+                tail = "  •  ".join(tail_bits)
+                lines.append(f"{emoji} **{day_label}** — <@{host_id}>" + (f"\n   {tail}" if tail else ""))
+            else:
+                lines.append(f"{emoji} **{day_label}** — ⚪ open slot")
+        emb = discord.Embed(
+            title="🗓️ This Week\'s Host Schedule",
+            description="\n".join(lines),
+            color=discord.Color.from_rgb(241, 196, 15),
+            timestamp=datetime.now(timezone.utc),
+        )
+        emb.set_footer(text="DIFF Official Meet System")
+        await interaction.response.send_message(embed=emb, ephemeral=True)
+
+    @discord.ui.button(label="📊 Weekly Digest", style=discord.ButtonStyle.secondary, custom_id="diff_om_panel:weekly_digest", row=0)
+    async def weekly_digest_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Staff-only ephemeral snapshot of recent activity stats."""
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        is_staff = member.guild_permissions.manage_guild or any(r.id in _JOIN_STAFF_ROLE_IDS for r in member.roles)
+        if not is_staff:
+            return await interaction.response.send_message("Staff only — full digest is in #staff-logs.", ephemeral=True)
+        stats = _om_panel_stats_field()
+        recap = _om_panel_recap_field()
+        lineup = _om_panel_lineup_field()
+        emb = discord.Embed(
+            title="📊 DIFF Official Meets — Quick Digest",
+            color=discord.Color.from_rgb(241, 196, 15),
+            timestamp=datetime.now(timezone.utc),
+        )
+        emb.add_field(name=(stats[0] if stats else "📊 Recent Activity"),
+                      value=(stats[1] if stats else "No recent meet data yet."),
+                      inline=False)
+        if lineup:
+            emb.add_field(name=lineup[0], value=lineup[1], inline=False)
+        if recap:
+            emb.add_field(name=recap[0], value=recap[1], inline=False)
+        emb.set_footer(text="Run !weeklydigest for the full report in #staff-logs.")
+        await interaction.response.send_message(embed=emb, ephemeral=True)
 
 
 async def _om_panel_post_or_refresh(guild: discord.Guild, force_repost: bool = False):
@@ -15922,6 +16149,113 @@ async def _cmd_postofficialmeetpanel(ctx: commands.Context):
     except Exception:
         pass
     await _om_panel_post_or_refresh(ctx.guild)
+
+
+async def _om_panel_auto_refresh_loop() -> None:
+    """Re-render the Official Meet Hub embed once an hour so the next-meet timer,
+    lineup, and stats stay fresh without any user action."""
+    await bot.wait_until_ready()
+    await asyncio.sleep(60)  # let startup settle
+    while not bot.is_closed():
+        try:
+            for g in bot.guilds:
+                try:
+                    await _om_panel_post_or_refresh(g, force_repost=False)
+                except Exception as _ge:
+                    _bot_log.warning("[OM panel] refresh failed in %s: %s", g.id, _ge)
+        except Exception as _e:
+            _bot_log.warning("[OM panel] auto-refresh loop error: %s", _e)
+        await asyncio.sleep(3600)
+
+
+@bot.command(name="postofficialguide", aliases=["officialguide", "officialhowto"])
+async def postofficialguide_cmd(ctx):
+    """!postofficialguide — staff: post (and pin) the full how-to-host-an-official-meet guide
+    in the official meets channel."""
+    if not ctx.guild:
+        return
+    is_auth = (
+        ctx.author.guild_permissions.administrator
+        or (ctx.guild and ctx.guild.owner_id == ctx.author.id)
+        or any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", []))
+    )
+    if not is_auth:
+        return await ctx.reply("Staff only.", mention_author=False)
+    ch = ctx.guild.get_channel(_OFFICIAL_MEET_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return await ctx.reply("Official meets channel not found.", mention_author=False)
+
+    emb = discord.Embed(
+        title="📖 How to Schedule an Official Meet",
+        color=discord.Color.from_rgb(241, 196, 15),
+        description=(
+            "Official meets are the scheduled weekly DIFF events — full announcement, role pings, "
+            "RSVPs, attendance tracking, and automatic reminders. Here\'s the full walkthrough."
+        ),
+    )
+    emb.set_thumbnail(url=DIFF_LOGO_URL)
+    emb.add_field(
+        name="① Open the scheduler",
+        value=(
+            "Tap **📋 Schedule Official Meet** on the panel. A private host picker opens — "
+            "select the assigned host from the dropdown. Only members with the **Host** role appear."
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="② Fill the meet modal",
+        value=(
+            "**Theme** — e.g. *Clean Euros*, *JDM Night*, *Off-Road*\n"
+            "**Date & Time** — natural language, e.g.\n"
+            "  • `April 5 9:00 PM EST` • `04/05 9PM CST`\n"
+            "  • `2026-04-05 21:00 UTC` • `April 5, 2026 9 PM`\n"
+            "**Entry info** — meeting spot, lobby code, etc.\n"
+            "**Notes** — anything members should know\n"
+            "**Style direction** — clean / aggressive / cinematic / etc."
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="③ What posts automatically",
+        value=(
+            "• Full embed with role pings + auto-converting Discord timestamp\n"
+            "• ✅ Yes / 🤔 Maybe / ❌ No RSVP buttons for everyone\n"
+            "• Staff controls: ▶️ Start • 🏁 End • ❌ Cancel\n"
+            "• 1-hour and 15-minute reminders auto-fire before start\n"
+            "• Attendance tracking when you tap Start"
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="④ Running the meet",
+        value=(
+            "• Tap **▶️ Start** when you go live — pings RSVPed members + opens check-in\n"
+            "• Members confirm with ✅ Check In or ❌ Can\'t Make It (with reason)\n"
+            "• Tap **🏁 End** when finished — posts the attendance summary\n"
+            "• Use **❌ Cancel** before start only if the meet won\'t happen"
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="🔒 Access",
+        value="Scheduling: **staff + assigned hosts**. RSVPing & checking in: **all members**.",
+        inline=False,
+    )
+    emb.set_footer(text="DIFF Official Meet System")
+
+    try:
+        msg = await ch.send(embed=emb)
+        try:
+            await msg.pin(reason=f"Official meet host guide posted by {ctx.author}")
+        except Exception as _pe:
+            return await ctx.reply(
+                f"✅ Guide posted in {ch.mention} but couldn\'t pin it ({_pe}). "
+                "Pin it manually or free up a pin slot.",
+                mention_author=False,
+            )
+        await ctx.reply(f"✅ Official-meet host guide posted and pinned in {ch.mention}.", mention_author=False)
+    except Exception as _se:
+        await ctx.reply(f"❌ Failed to post guide: {_se}", mention_author=False)
 
 
 # =========================
@@ -18154,6 +18488,7 @@ async def on_ready():
     bot.loop.create_task(_hrsvp_auto_reset_loop())
     bot.loop.create_task(_hrsvp_escalation_loop())
     bot.loop.create_task(_popup_auto_end_loop())
+    bot.loop.create_task(_om_panel_auto_refresh_loop())
 
     # Re-register persistent views for every active pop-up meet so buttons
     # (Pulling Up / Edit / DM Attendees / End) survive bot restarts.
