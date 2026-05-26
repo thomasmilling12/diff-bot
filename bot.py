@@ -8828,17 +8828,26 @@ class RSVPView(discord.ui.View):
 _application_data = {}  # user_id -> {"step1": {...}, "step2": {...}}
 
 
-class CrewAppStep1Modal(discord.ui.Modal, title="DIFF Crew Application — Part 1 of 3"):
-    age = discord.ui.TextInput(label="How old are you? (Must be 18+)", required=True, max_length=3)
-    timezone = discord.ui.TextInput(label="What timezone do you live in?", placeholder="e.g. Eastern, Central, Pacific, GMT", required=True, max_length=100)
-    gamertag = discord.ui.TextInput(label="PlayStation or PC Gamertag", required=True, max_length=100)
-    gta_rank = discord.ui.TextInput(label="What is your GTA Rank?", required=True, max_length=50)
-    prior_history = discord.ui.TextInput(
-        label="Any warnings or bans in DIFF? Explain.",
-        placeholder="None / Yes — explain here...",
-        required=True,
-        max_length=300,
-        style=discord.TextStyle.short,
+class CrewAppStep1Modal(discord.ui.Modal, title="DIFF Application ●○○ (1 of 3)"):
+    age = discord.ui.TextInput(
+        label="How old are you? (Must be 18+)",
+        placeholder="e.g. 21",
+        required=True, max_length=3,
+    )
+    timezone = discord.ui.TextInput(
+        label="What timezone do you live in?",
+        placeholder="e.g. Eastern, Central, Pacific, GMT",
+        required=True, max_length=100,
+    )
+    gamertag = discord.ui.TextInput(
+        label="PSN ID (PS5 only)",
+        placeholder="e.g. SLEDGE_GTA_24  —  PlayStation only",
+        required=True, max_length=100,
+    )
+    gta_rank = discord.ui.TextInput(
+        label="What is your GTA Rank?",
+        placeholder="e.g. Rank 120 / Career Lvl 45",
+        required=True, max_length=50,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -8853,13 +8862,25 @@ class CrewAppStep1Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
             return await interaction.response.send_message(
                 "❌ You must be **18 or older** to apply to DIFF.", ephemeral=True
             )
+
+        # Quality-flag a GTA Rank answer that's empty / 0 / placeholder so staff
+        # can spot lazy/spam apps at a glance in the review embed.
+        _rank_raw = (self.gta_rank.value or "").strip()
+        _rank_lc  = _rank_raw.lower()
+        if _rank_lc in ("", "0", "none", "n/a", "na", "null", "-", "."):
+            _rank_stored = f"⚠️ LOW-QUALITY ANSWER — '{_rank_raw or '(blank)'}'"
+            _rank_flagged = True
+        else:
+            _rank_stored = _rank_raw
+            _rank_flagged = False
+
         _application_data[interaction.user.id] = {
             "step1": {
                 "age": age_str,
                 "timezone": self.timezone.value,
                 "gamertag": self.gamertag.value,
-                "gta_rank": self.gta_rank.value,
-                "prior_history": self.prior_history.value,
+                "gta_rank": _rank_stored,
+                "_rank_flagged": _rank_flagged,
             }
         }
         await interaction.response.send_message(
@@ -8881,7 +8902,7 @@ class CrewAppStep2View(discord.ui.View):
         await interaction.response.send_modal(CrewAppStep2Modal())
 
 
-class CrewAppStep2Modal(discord.ui.Modal, title="DIFF Crew Application — Part 2 of 3"):
+class CrewAppStep2Modal(discord.ui.Modal, title="DIFF Application ●●○ (2 of 3)"):
     how_heard = discord.ui.TextInput(label="How did you hear about us?", placeholder="Community Advertisement, From a Friend, or Attending a Car Meet", required=True, max_length=200)
     days_available = discord.ui.TextInput(label="Days you are most available", placeholder="e.g. Monday, Wednesday, Friday, Saturday", required=True, max_length=200)
     personal_skills = discord.ui.TextInput(label="Describe your personal skills", style=discord.TextStyle.paragraph, required=True, max_length=500)
@@ -8918,9 +8939,14 @@ class CrewAppStep3View(discord.ui.View):
         await interaction.response.send_modal(CrewAppStep3Modal())
 
 
-class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 3 of 3"):
+class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Application ●●● (3 of 3)"):
     why_join = discord.ui.TextInput(label="Why do you have potential to join DIFF?", style=discord.TextStyle.paragraph, required=True, max_length=500)
     what_bring = discord.ui.TextInput(label="What can you bring to the crew?", placeholder="e.g. Car Photography, Content Creation, Crew Colors", style=discord.TextStyle.paragraph, required=True, max_length=300)
+    prior_history = discord.ui.TextInput(
+        label="Any warnings or bans in DIFF? Explain.",
+        placeholder="None  /  Yes — explain here...",
+        required=True, max_length=300, style=discord.TextStyle.short,
+    )
     understand = discord.ui.TextInput(label='Type "I Understand" to confirm', placeholder="I Understand", required=True, max_length=20)
     comments = discord.ui.TextInput(label="Questions, comments, or concerns?", style=discord.TextStyle.paragraph, required=False, max_length=500)
 
@@ -8964,7 +8990,7 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
             "timezone": s1["timezone"],
             "gamertag": s1["gamertag"],
             "gta_rank": s1["gta_rank"],
-            "prior_history": s1["prior_history"],
+            "prior_history": self.prior_history.value,
             "how_heard": s2["how_heard"],
             "days_available": s2["days_available"],
             "personal_skills": s2["personal_skills"],
@@ -8973,6 +8999,7 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
             "why_join": self.why_join.value,
             "what_bring": self.what_bring.value,
             "comments": self.comments.value or "",
+            "_rank_flagged": bool(s1.get("_rank_flagged", False)),
         }
         app_id = create_next_app_id()
         overwrites = {
@@ -9043,6 +9070,52 @@ class CrewAppStep3Modal(discord.ui.Modal, title="DIFF Crew Application — Part 
             "Please upload clear pictures of your cars there. Staff will review your application and garage, then reach out with a decision. Good luck!",
             ephemeral=True,
         )
+
+        # "What happens next" auto-DM — sets expectations + cuts ghost-applicants
+        try:
+            dm_embed = discord.Embed(
+                title=f"🏁 DIFF Application #{app_id} — Received",
+                description=(
+                    f"Thanks for applying to **Different Meets**, {interaction.user.mention}!"
+                ),
+                color=discord.Color.green(),
+                timestamp=utc_now(),
+            )
+            dm_embed.add_field(
+                name="📅 What happens next",
+                value=(
+                    f"**1.** Upload **{MIN_GARAGE_PHOTOS}+ clear garage/car photos** in "
+                    f"{ticket_channel.mention} within **{GARAGE_TIMEOUT_HOURS}h** "
+                    "(or the app auto-expires).\n"
+                    "**2.** Staff review your answers + garage.\n"
+                    "**3.** You'll get a Discord VC interview if shortlisted.\n"
+                    "**4.** Final decision delivered in this DM."
+                ),
+                inline=False,
+            )
+            dm_embed.add_field(
+                name="⏱ Typical timeline",
+                value="Most apps get a first response in **24-48 hours**.",
+                inline=False,
+            )
+            dm_embed.add_field(
+                name="💡 While you wait",
+                value=(
+                    "• Attend a meet (you only need 3-5 attended)\n"
+                    "• Say hi in the chat channels\n"
+                    "• Make sure your headset works"
+                ),
+                inline=False,
+            )
+            dm_embed.set_footer(text="DIFF Recruitment • You can withdraw any time from #join-crew")
+            try:
+                if DIFF_LOGO_URL:
+                    dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
+            except Exception:
+                pass
+            await interaction.user.send(embed=dm_embed)
+        except Exception:
+            pass  # DMs closed — non-fatal
 
 
 def _build_crew_topic_embed(topic: str) -> discord.Embed:
@@ -9372,10 +9445,258 @@ class CrewInfoSelect(discord.ui.Select):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+
+# ─── Join-panel helpers — quality gates, lookup, stats ──────────────────────
+_JOIN_MIN_ACCOUNT_AGE_DAYS = 7
+_JOIN_REQUIRE_AVATAR = True
+_WITHDRAW_COOLDOWN_DAYS = 7
+
+
+def _get_user_pending_app(user_id: int):
+    """Return (app_id, payload) for the user's most recent Pending app, else (None, None)."""
+    try:
+        apps = load_apps().get("applications", {})
+    except Exception:
+        return None, None
+    cands = [(aid, a) for aid, a in apps.items()
+             if int(a.get("user_id", 0)) == int(user_id) and a.get("status") == "Pending"]
+    if not cands:
+        return None, None
+    cands.sort(key=lambda x: x[1].get("submitted_at", ""), reverse=True)
+    return cands[0]
+
+
+def _get_user_latest_app(user_id: int):
+    """Return (app_id, payload) for the user's most recent app of any status."""
+    try:
+        apps = load_apps().get("applications", {})
+    except Exception:
+        return None, None
+    cands = [(aid, a) for aid, a in apps.items()
+             if int(a.get("user_id", 0)) == int(user_id)]
+    if not cands:
+        return None, None
+    cands.sort(key=lambda x: x[1].get("submitted_at", ""), reverse=True)
+    return cands[0]
+
+
+def _compute_join_panel_stats(guild) -> dict:
+    """Live counts surfaced on the welcome embed — builds trust."""
+    member_count = 0
+    try:
+        verified = guild.get_role(VERIFIED_ROLE_ID) if guild else None
+        if verified:
+            member_count = len(verified.members)
+        else:
+            member_count = guild.member_count or 0 if guild else 0
+    except Exception:
+        member_count = 0
+    approved_30d = 0
+    review_hours = []
+    try:
+        apps = load_apps().get("applications", {}).values()
+    except Exception:
+        apps = []
+    now = datetime.now(timezone.utc)
+    month_ago = now - timedelta(days=30)
+    for a in apps:
+        try:
+            sub_dt = datetime.fromisoformat(a.get("submitted_at", "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        try:
+            rev_str = a.get("reviewed_at")
+            if rev_str:
+                rev_dt = datetime.fromisoformat(rev_str.replace("Z", "+00:00"))
+                hrs = (rev_dt - sub_dt).total_seconds() / 3600.0
+                if 0 < hrs < 30 * 24:
+                    review_hours.append(hrs)
+        except Exception:
+            pass
+        if a.get("status") == "Approved" and sub_dt >= month_ago:
+            approved_30d += 1
+    avg_review = (sum(review_hours) / len(review_hours)) if review_hours else None
+    return {
+        "member_count": member_count,
+        "approved_30d": approved_30d,
+        "avg_review_hours": avg_review,
+    }
+
+
+def _join_quality_gate(user: "discord.Member | discord.User") -> str | None:
+    """Returns a friendly refusal string if the user should NOT be allowed to apply.
+    Blocks raid bots: account < 7 days old, or no avatar set."""
+    try:
+        created = user.created_at
+        age_days = (datetime.now(timezone.utc) - created).days
+    except Exception:
+        age_days = 9999
+    if age_days < _JOIN_MIN_ACCOUNT_AGE_DAYS:
+        return (
+            f"❌ Your Discord account is only **{age_days} day(s)** old.\n"
+            f"To prevent spam, accounts must be at least **{_JOIN_MIN_ACCOUNT_AGE_DAYS} days old** to apply.\n"
+            "Come back in a few days — you can hang out in the chat channels meanwhile."
+        )
+    if _JOIN_REQUIRE_AVATAR:
+        try:
+            has_avatar = bool(user.avatar)
+        except Exception:
+            has_avatar = True
+        if not has_avatar:
+            return (
+                "❌ Please set a **Discord profile picture** before applying.\n"
+                "DIFF requires a profile pic on every applicant — it helps staff verify and reduces spam apps."
+            )
+    return None
+
+
+# ─── Withdraw-application button ────────────────────────────────────────────
+class _WithdrawApplicationBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Withdraw My Application",
+            emoji="🚪",
+            style=discord.ButtonStyle.secondary,
+            custom_id="crew_withdraw_btn",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        app_id, app = _get_user_pending_app(interaction.user.id)
+        if not app_id:
+            return await interaction.response.send_message(
+                "You don't have a pending application to withdraw. "
+                "Use **🔍 My Status** to check the state of your most recent application.",
+                ephemeral=True,
+            )
+        try:
+            update_app(app_id, status="Withdrawn",
+                       reviewed_at=utc_now().isoformat(),
+                       reviewed_by="self-withdraw")
+        except Exception:
+            pass
+        # Cooldown so people don't immediately spam-resubmit
+        try:
+            data = _load_diff_json(COOLDOWN_FILE)
+            expires_at = (datetime.now(timezone.utc) + timedelta(days=_WITHDRAW_COOLDOWN_DAYS)).isoformat()
+            data[str(interaction.user.id)] = {
+                "expires_at": expires_at,
+                "set_at": datetime.now(timezone.utc).isoformat(),
+                "reason": "self-withdraw",
+            }
+            _save_diff_json(COOLDOWN_FILE, data)
+        except Exception:
+            pass
+        # Lock + archive the garage ticket (preserves record-keeping)
+        try:
+            tc_id = int(app.get("ticket_channel_id") or 0)
+            if tc_id and interaction.guild:
+                tc = interaction.guild.get_channel(tc_id)
+                if isinstance(tc, discord.TextChannel):
+                    try:
+                        await tc.send(embed=discord.Embed(
+                            title="🚪 Application Withdrawn by Applicant",
+                            description=f"{interaction.user.mention} withdrew their application.",
+                            color=discord.Color.dark_grey(), timestamp=utc_now(),
+                        ))
+                    except Exception:
+                        pass
+                    try:
+                        await tc.edit(
+                            overwrites={interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False)},
+                            reason=f"Application #{app_id} self-withdrawn",
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # Staff-log
+        try:
+            log_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID) if interaction.guild else None
+            if isinstance(log_ch, discord.TextChannel):
+                log_emb = discord.Embed(
+                    title="🚪 Application Self-Withdrawn",
+                    description=f"{interaction.user.mention} withdrew application **#{app_id}**.",
+                    color=discord.Color.dark_grey(), timestamp=utc_now(),
+                )
+                log_emb.add_field(name="Reapply cooldown", value=f"{_WITHDRAW_COOLDOWN_DAYS} days", inline=True)
+                await log_ch.send(embed=log_emb)
+        except Exception:
+            pass
+        await interaction.response.send_message(
+            f"✅ Application **#{app_id}** withdrawn.\n"
+            f"You can reapply in **{_WITHDRAW_COOLDOWN_DAYS} days**.",
+            ephemeral=True,
+        )
+
+
+# ─── My-status button ───────────────────────────────────────────────────────
+class _MyApplicationStatusBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="My Application Status",
+            emoji="🔍",
+            style=discord.ButtonStyle.secondary,
+            custom_id="crew_my_status_btn",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        app_id, app = _get_user_latest_app(interaction.user.id)
+        if not app_id:
+            return await interaction.response.send_message(
+                "You haven't submitted an application yet. Press **📝 Apply to DIFF** when ready!",
+                ephemeral=True,
+            )
+        status = app.get("status", "Pending")
+        sub_at = app.get("submitted_at", "")
+        try:
+            sub_dt = datetime.fromisoformat(sub_at.replace("Z", "+00:00"))
+            sub_disp = f"<t:{int(sub_dt.timestamp())}:R>"
+        except Exception:
+            sub_disp = "Unknown"
+        color = {
+            "Pending":   discord.Color.gold(),
+            "Approved":  discord.Color.green(),
+            "Denied":    discord.Color.red(),
+            "Withdrawn": discord.Color.dark_grey(),
+        }.get(status, discord.Color.blurple())
+        emoji = {"Pending": "⏳", "Approved": "✅", "Denied": "❌", "Withdrawn": "🚪"}.get(status, "❔")
+        emb = discord.Embed(
+            title=f"{emoji} Application #{app_id} — {status}",
+            color=color, timestamp=utc_now(),
+        )
+        emb.add_field(name="Submitted", value=sub_disp, inline=True)
+        rev_at = app.get("reviewed_at")
+        if rev_at:
+            try:
+                rev_dt = datetime.fromisoformat(rev_at.replace("Z", "+00:00"))
+                emb.add_field(name="Decision", value=f"<t:{int(rev_dt.timestamp())}:R>", inline=True)
+            except Exception:
+                pass
+        tc_id = app.get("ticket_channel_id")
+        if status == "Pending" and tc_id:
+            emb.add_field(name="Your garage ticket", value=f"<#{int(tc_id)}>", inline=False)
+            emb.add_field(
+                name="Next step",
+                value=f"Upload **{MIN_GARAGE_PHOTOS}+ garage photos** in your ticket if you haven't yet.",
+                inline=False,
+            )
+        elif status == "Pending":
+            emb.add_field(name="Next step", value="Staff are reviewing your application.", inline=False)
+        cd = get_reapply_cooldown_text(interaction.user.id)
+        if cd and status in ("Denied", "Withdrawn"):
+            emb.add_field(name="Reapply cooldown", value=cd, inline=False)
+        emb.set_footer(text="Different Meets • Application Status")
+        await interaction.response.send_message(embed=emb, ephemeral=True)
+
+
 class CrewPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(CrewInfoSelect())
+        self.add_item(_MyApplicationStatusBtn())
+        self.add_item(_WithdrawApplicationBtn())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
@@ -9392,9 +9713,23 @@ class CrewPanelView(discord.ui.View):
         emoji="📝",
         style=discord.ButtonStyle.success,
         custom_id="crew_application_btn",
-        row=1,
+        row=0,
     )
     async def crew_application(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 1) Anti-spam quality gate (account age + avatar)
+        gate = _join_quality_gate(interaction.user)
+        if gate:
+            return await interaction.response.send_message(gate, ephemeral=True)
+        # 2) Block duplicate-pending — guide them to the Status button instead
+        existing_id, _existing = _get_user_pending_app(interaction.user.id)
+        if existing_id:
+            return await interaction.response.send_message(
+                f"❌ You already have a pending application: **#{existing_id}**.\n"
+                "Use **🔍 My Application Status** to check its progress, or "
+                "**🚪 Withdraw My Application** if you want to start over.",
+                ephemeral=True,
+            )
+        # 3) Reapply cooldown (denied/withdrawn previously)
         cooldown_text = get_reapply_cooldown_text(interaction.user.id)
         if cooldown_text:
             return await interaction.response.send_message(
@@ -9411,50 +9746,75 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
     if channel is None:
         return False, "Crew panel channel not found."
 
+    # Live community stats — builds trust + sets review expectations
+    _stats = _compute_join_panel_stats(guild)
+    _avg_h = _stats["avg_review_hours"]
+    if _avg_h is None:
+        _avg_str = "~24-48h (estimate)"
+    elif _avg_h < 24:
+        _avg_str = f"~{int(_avg_h)}h"
+    else:
+        _avg_str = f"~{_avg_h/24:.1f}d"
+    _stats_line = (
+        f"👥 **{_stats['member_count']}** verified members  "
+        f"•  ✅ **{_stats['approved_30d']}** approved this month  "
+        f"•  ⏱ Avg review: **{_avg_str}**"
+    )
+
     embed = discord.Embed(
         title="🏁 Join DIFF — Different Meets",
         description=(
-            "**Different Meets (DIFF)** is a structured, community-driven PS5 GTA car meet crew built "
-            "on realism, quality builds, and consistency.\n\n"
-            "We're looking for dedicated members who love cars, understand proper meet etiquette, "
-            "and want to be part of a serious and growing community.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━"
+            "**Different Meets (DIFF)** — a structured, realism-first **PS5 GTA** car meet crew.\n"
+            f"{_stats_line}"
         ),
         color=discord.Color.blue(),
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(
-        name="✅ Requirements at a Glance",
+        name="🤝 Who we are",
         value=(
-            "• 18+ only\n"
+            "Dedicated PS5 builders running weekly meets, themed events, and a "
+            "tight, accountable community. Quality > quantity."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="✅ What we want",
+        value=(
+            "• 18+\n"
             "• Clean & realistic builds\n"
-            "• Active on Discord & GTA\n"
             "• Working headset\n"
-            "• Attend at least 1 meet per week"
+            "• Active on Discord + in GTA\n"
+            "• At least 1 meet per week"
         ),
         inline=True,
     )
     embed.add_field(
-        name="🔄 The Process",
+        name="🔄 What happens next",
         value=(
-            "1. Attend 3–5 meets\n"
-            "2. Submit your application\n"
-            "3. Staff review\n"
-            "4. Discord VC interview\n"
-            "5. Final decision"
+            "1. Attend 3-5 meets\n"
+            "2. Press **📝 Apply to DIFF**\n"
+            "3. Upload garage photos\n"
+            "4. Staff review + VC interview\n"
+            "5. Decision in DMs"
         ),
         inline=True,
     )
     embed.add_field(
-        name="📖 Want to Learn More?",
+        name="📖 Learn more",
         value=(
-            "Use the **dropdown below** to read about:\n"
-            "• Crew requirements\n"
-            "• Application process\n"
-            "• Crew positions\n"
-            "• Perks & benefits\n"
-            "• Rules & expectations\n"
-            "• FAQ"
+            "Use the **dropdown below** for full requirements, perks, rules, "
+            "positions, process details, and FAQ — or open the pinned "
+            "**📖 DIFF Handbook** thread."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎛 Buttons below",
+        value=(
+            "📝 **Apply to DIFF** — start the 3-part application\n"
+            "🔍 **My Application Status** — check where your app stands\n"
+            "🚪 **Withdraw My Application** — pull a pending app cleanly"
         ),
         inline=False,
     )
@@ -9483,6 +9843,36 @@ async def send_or_refresh_crew_panel(guild: discord.Guild):
         target_message = await channel.send(embed=embed, view=CrewPanelView())
 
     data["crew_panel_message_id"] = target_message.id
+
+    # Ensure a pinned 📖 DIFF Handbook thread on the panel — created once,
+    # reused thereafter. Posts every topic from CrewInfoSelect so members get
+    # a single permanent reference next to the apply panel.
+    try:
+        existing_thread_id = data.get("crew_handbook_thread_id")
+        handbook_thread = None
+        if existing_thread_id:
+            try:
+                handbook_thread = await bot.fetch_channel(int(existing_thread_id))
+            except Exception:
+                handbook_thread = None
+        if handbook_thread is None:
+            try:
+                handbook_thread = await target_message.create_thread(
+                    name="📖 DIFF Handbook",
+                    auto_archive_duration=10080,  # 7 days
+                    reason="DIFF Handbook — pinned reference thread",
+                )
+                for _topic in ("requirements", "process", "positions", "offers", "rules", "faq"):
+                    try:
+                        await handbook_thread.send(embed=_build_crew_topic_embed(_topic))
+                    except Exception:
+                        pass
+                data["crew_handbook_thread_id"] = handbook_thread.id
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     save_data(data)
     return True, channel.mention
 
