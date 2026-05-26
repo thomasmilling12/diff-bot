@@ -215,6 +215,8 @@ ACTIVITY_MEETS_FILE    = os.path.join(DATA_FOLDER, "diff_activity_meets.json")
 _APPEAL_DENIAL_FILE    = os.path.join(DATA_FOLDER, "diff_appeal_denials.json")
 _TICKET_PERF_FILE      = os.path.join(DATA_FOLDER, "diff_ticket_perf.json")
 _FAQ_FILE              = os.path.join(DATA_FOLDER, "diff_faq.json")
+_CSAT_FILE             = os.path.join(DATA_FOLDER, "diff_csat.json")
+_TICKET_HISTORY_FILE   = os.path.join(DATA_FOLDER, "diff_ticket_history.json")
 _CREW_LB_CHANNEL_ID    = 1485282044392243290   # reuse leaderboard channel
 _PHOTO_SUBMIT_CHANNEL_ID = 1485274945473871903  # member-database channel for now; override in cog
 _raid_join_times: list = []   # rolling timestamps for anti-raid detection
@@ -29384,6 +29386,419 @@ class _ModAppModal(discord.ui.Modal, title="Moderator Application"):
         )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Member-context embed + FAQ deflection + CSAT + ticket-history helpers
+# (auto-injected on ticket open + close)
+# ─────────────────────────────────────────────────────────────────────────────
+def _csat_load() -> dict:
+    try:
+        with open(_CSAT_FILE, "r") as _f:
+            return json.load(_f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _csat_save(_d: dict) -> None:
+    _atomic_json_save(_CSAT_FILE, _d)
+
+def _csat_record(staff_id: int, rating: int, *, ticket_label: str = "",
+                 owner_id: "int | None" = None, comment: str = "") -> None:
+    _d = _csat_load()
+    _s = _d.setdefault(str(staff_id), {"ratings": [], "comments": []})
+    _s["ratings"].append({
+        "rating": int(rating),
+        "label": ticket_label,
+        "owner_id": owner_id,
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+    if comment.strip():
+        _s["comments"].append({
+            "comment": comment.strip()[:500],
+            "rating": int(rating),
+            "at": datetime.now(timezone.utc).isoformat(),
+        })
+    _csat_save(_d)
+
+def _thist_load() -> dict:
+    try:
+        with open(_TICKET_HISTORY_FILE, "r") as _f:
+            return json.load(_f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _thist_save(_d: dict) -> None:
+    _atomic_json_save(_TICKET_HISTORY_FILE, _d)
+
+def _thist_record_close(owner_id: int, ticket_key: str, channel_name: str,
+                        closed_by_id: int) -> None:
+    _d = _thist_load()
+    _ticket = _TICKET_TYPES.get(ticket_key, _TICKET_TYPES.get("support"))
+    _label = _ticket.label if _ticket else ticket_key
+    _arr = _d.setdefault(str(owner_id), [])
+    _arr.append({
+        "ticket_key": ticket_key,
+        "label": _label,
+        "channel_name": channel_name,
+        "closed_by": int(closed_by_id),
+        "closed_at": datetime.now(timezone.utc).isoformat(),
+    })
+    _d[str(owner_id)] = _arr[-25:]
+    _thist_save(_d)
+
+def _supp_active_warning_summary(user_id: int) -> "tuple[int, str | None]":
+    """Returns (count_last_30d, most_recent_iso) of warnings against this user."""
+    try:
+        _data = _warnings_load()
+        _arr = _data.get(str(user_id), []) or []
+        if not _arr:
+            return (0, None)
+        from datetime import timedelta as _td
+        _cutoff = datetime.now(_EST_TZ) - _td(days=30)
+        _recent: list = []
+        for _w in _arr:
+            _ts = _w.get("timestamp")
+            if not _ts:
+                continue
+            try:
+                _dt = datetime.fromisoformat(_ts)
+                if _dt >= _cutoff:
+                    _recent.append(_dt)
+            except Exception:
+                pass
+        if not _recent:
+            return (0, None)
+        _recent.sort(reverse=True)
+        return (len(_recent), _recent[0].isoformat())
+    except Exception:
+        return (0, None)
+
+def _supp_member_health_row(user_id: int) -> "tuple":
+    """Returns (score, tier) from member_activity, or (None, None)."""
+    try:
+        with _activity_db() as _conn:
+            _conn.row_factory = sqlite3.Row
+            _row = _conn.execute(
+                "SELECT last_health_score, health_tier, last_message, last_vc "
+                "FROM member_activity WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if not _row:
+                return (None, None, None, None)
+            return (_row["last_health_score"], _row["health_tier"],
+                    _row["last_message"], _row["last_vc"])
+    except Exception:
+        return (None, None, None, None)
+
+def _supp_build_member_context_embed(member: discord.Member) -> discord.Embed:
+    """Sent as a 2nd message in every new ticket — instant context for staff."""
+    _embed = discord.Embed(
+        title="📇 Member Context",
+        description=f"Quick snapshot for {member.mention} — auto-posted on open.",
+        color=discord.Color.greyple(),
+    )
+
+    if member.joined_at:
+        _embed.add_field(name="📅 Joined Server",
+                         value=f"<t:{int(member.joined_at.timestamp())}:R>", inline=True)
+    else:
+        _embed.add_field(name="📅 Joined Server", value="Unknown", inline=True)
+
+    _embed.add_field(name="🆔 Account Age",
+                     value=f"<t:{int(member.created_at.timestamp())}:R>", inline=True)
+
+    _roles = [r for r in member.roles if r.name != "@everyone"]
+    _roles.sort(key=lambda r: r.position, reverse=True)
+    _role_str = ", ".join(r.mention for r in _roles[:6]) or "None"
+    if len(_roles) > 6:
+        _role_str += f" *+{len(_roles)-6} more*"
+    _embed.add_field(name=f"🎖️ Roles ({len(_roles)})",
+                     value=_role_str[:1000], inline=False)
+
+    _score, _tier, _last_msg, _last_vc = _supp_member_health_row(member.id)
+    if _score is not None:
+        _embed.add_field(name="💚 Health Score",
+                         value=f"**{_score}/100** · {_tier or '—'}", inline=True)
+    else:
+        _embed.add_field(name="💚 Health Score", value="*not yet scored*", inline=True)
+
+    _warn_data = _warnings_load().get(str(member.id), []) or []
+    _warn_recent_n, _ = _supp_active_warning_summary(member.id)
+    if _warn_data:
+        _w_line = f"**{len(_warn_data)}** total"
+        if _warn_recent_n:
+            _w_line += f" · ⚠️ **{_warn_recent_n}** in last 30d"
+        _embed.add_field(name="⚠️ Warnings", value=_w_line, inline=True)
+    else:
+        _embed.add_field(name="⚠️ Warnings", value="✅ Clean record", inline=True)
+
+    _bits: list = []
+    if _last_msg:
+        try:
+            _bits.append(f"💬 <t:{int(float(_last_msg))}:R>")
+        except Exception:
+            pass
+    if _last_vc:
+        try:
+            _bits.append(f"🎙️ <t:{int(float(_last_vc))}:R>")
+        except Exception:
+            pass
+    if _bits:
+        _embed.add_field(name="🕒 Last Activity", value=" · ".join(_bits), inline=False)
+
+    _past = _thist_load().get(str(member.id), []) or []
+    if _past:
+        _embed.add_field(name="📂 Past Tickets",
+                         value=f"**{len(_past)}** closed (history file)", inline=True)
+
+    _embed.set_footer(text="Different Meets • Member Context (staff view)")
+    if member.display_avatar:
+        _embed.set_thumbnail(url=member.display_avatar.url)
+    return _embed
+
+
+# ── FAQ deflection (Ask-a-Question pre-flight) ───────────────────────────────
+_FAQ_DEFLECT_ENTRIES: "list" = [
+    (
+        "How do I get verified?",
+        "🪪",
+        ("**To get verified:**\n"
+         "1. Head to the verification channel and follow the prompts there.\n"
+         "2. Submit your PSN ID and answer the short questions.\n"
+         "3. A staff member will review and add the Verified role (usually within a few hours).\n\n"
+         "Stuck for more than 24 hours? Click **Open Ticket Anyway** below and we'll help directly."),
+    ),
+    (
+        "When is the next meet?",
+        "📅",
+        ("**Meet schedule:**\n"
+         "Meets are announced in the announcements / host-call-out channels every week.\n"
+         "Check the **pinned messages** there for the current week's schedule.\n"
+         "PS5 only. RSVPs open in **#host-rsvp** once posted."),
+    ),
+    (
+        "How do I join a crew?",
+        "👥",
+        ("**Crew recruitment:**\n"
+         "Check the crew-recruitment channel — listings include the crew's vibe and how to apply.\n"
+         "You can also DM the crew leader (name will be on their listing).\n"
+         "If a listing has no instructions, comment in it or open a ticket and we'll connect you."),
+    ),
+    (
+        "Build / car rules?",
+        "🚗",
+        ("**Build & car rules:**\n"
+         "Full rules are pinned in the rules channel. Quick highlights:\n"
+         "• PS5 only — never PS4.\n"
+         "• No overpowered builds at chill / cruise meets.\n"
+         "• Always read the meet description — some meets have specific build limits.\n\n"
+         "Unsure about a specific car? Open a ticket."),
+    ),
+    (
+        "How do I contact a host?",
+        "🎙️",
+        ("**Contacting a host:**\n"
+         "• @mention the host in their meet's announcement thread.\n"
+         "• For private matters, use the support ticket system — staff will route it.\n"
+         "• Please do **not** DM hosts unsolicited about meet logistics."),
+    ),
+    (
+        "I was warned — what now?",
+        "⚠️",
+        ("**If you received a warning:**\n"
+         "Warnings can be appealed via the **⚖️ Appeals** dropdown — choose **Warning Appeal**.\n"
+         "Be honest, give context, and don't argue the original reason — leadership reviews fairly.\n\n"
+         "You can also see your active warnings any time with `!mystats`."),
+    ),
+]
+
+
+class _FaqDeflectAnswerButton(discord.ui.Button):
+    def __init__(self, index: int, title: str, emoji: str):
+        super().__init__(label=title[:75], emoji=emoji,
+                         style=discord.ButtonStyle.secondary, row=index // 3)
+        self._idx = index
+
+    async def callback(self, interaction: discord.Interaction):
+        if self._idx < 0 or self._idx >= len(_FAQ_DEFLECT_ENTRIES):
+            return await interaction.response.send_message("FAQ not found.", ephemeral=True)
+        _title, _emoji, _body = _FAQ_DEFLECT_ENTRIES[self._idx]
+        _embed = discord.Embed(
+            title=f"{_emoji} {_title}",
+            description=_body,
+            color=discord.Color.blurple(),
+        )
+        _embed.set_footer(text="Different Meets • FAQ — if this didn't help, click 'Open Ticket Anyway'.")
+        await interaction.response.send_message(embed=_embed, ephemeral=True)
+
+
+class _FaqDeflectOpenTicketButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Open Ticket Anyway", emoji="🎫",
+                         style=discord.ButtonStyle.primary, row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        await _supp_open_ticket_flow(interaction, "support")
+
+
+class _FaqDeflectAppealButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Open Warning Appeal", emoji="⚖️",
+                         style=discord.ButtonStyle.danger, row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        _ticket = _TICKET_TYPES.get("warning")
+        if not _ticket or not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message(
+                "Use the **Appeals** dropdown on the support panel to file a warning appeal.",
+                ephemeral=True,
+            )
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+        _existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, appeal_only=True)
+        if _existing:
+            return await interaction.followup.send(
+                f"You already have an open appeal: {_existing.mention}", ephemeral=True
+            )
+        _channel = await _supp_create_ticket_channel(interaction, _ticket)
+        if not _channel:
+            return
+        _ping = " ".join(filter(None, [interaction.user.mention, _supp_role_mention(_ticket.ping_role_id)]))
+        await _channel.send(content=_ping or None,
+                            embed=_supp_build_ticket_embed(_ticket, interaction.user),
+                            view=SupportCloseButton())
+        try:
+            await _channel.send(embed=_supp_build_member_context_embed(interaction.user))
+        except Exception:
+            pass
+        try:
+            await _channel.send(embed=_supp_build_appeal_review_embed(_ticket, interaction.user),
+                                view=_AppealActionView())
+        except Exception:
+            pass
+        await interaction.followup.send(f"⚖️ Warning appeal opened: {_channel.mention}", ephemeral=True)
+
+
+class _FaqDeflectView(discord.ui.View):
+    def __init__(self, *, show_appeal_suggestion: bool = False):
+        super().__init__(timeout=180)
+        for _i, (_title, _emoji, _body) in enumerate(_FAQ_DEFLECT_ENTRIES[:6]):
+            self.add_item(_FaqDeflectAnswerButton(_i, _title, _emoji))
+        if show_appeal_suggestion:
+            self.add_item(_FaqDeflectAppealButton())
+        self.add_item(_FaqDeflectOpenTicketButton())
+
+
+# ── CSAT rating (post-close DM) ──────────────────────────────────────────────
+class _CsatCommentModal(discord.ui.Modal, title="Leave a Comment (optional)"):
+    comment = discord.ui.TextInput(
+        label="What can we improve?",
+        placeholder="Optional feedback for the staff member or system...",
+        max_length=400,
+        required=False,
+        style=discord.TextStyle.paragraph,
+    )
+
+    def __init__(self, *, staff_id: int, rating: int, ticket_label: str, owner_id: int):
+        super().__init__()
+        self._staff_id = staff_id
+        self._rating = rating
+        self._label = ticket_label
+        self._owner_id = owner_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            _csat_record(self._staff_id, self._rating, ticket_label=self._label,
+                         owner_id=self._owner_id, comment=str(self.comment.value or ""))
+        except Exception:
+            pass
+        try:
+            await interaction.response.send_message("Thanks — feedback recorded! 🙏", ephemeral=True)
+        except Exception:
+            pass
+
+
+class _CsatCommentLauncher(discord.ui.View):
+    def __init__(self, staff_id: int, rating: int, label: str, owner_id: int):
+        super().__init__(timeout=300)
+        self._staff_id = staff_id
+        self._rating = rating
+        self._label = label
+        self._owner_id = owner_id
+
+    @discord.ui.button(label="Add Comment", emoji="✍️", style=discord.ButtonStyle.primary)
+    async def add_comment(self, interaction: discord.Interaction, _btn: discord.ui.Button):
+        await interaction.response.send_modal(
+            _CsatCommentModal(staff_id=self._staff_id, rating=self._rating,
+                              ticket_label=self._label, owner_id=self._owner_id)
+        )
+
+
+class _CsatRatingView(discord.ui.View):
+    def __init__(self, *, staff_id: int, ticket_label: str, owner_id: int):
+        super().__init__(timeout=86400)  # 24h
+        self._staff_id = staff_id
+        self._label = ticket_label
+        self._owner_id = owner_id
+        for _i in range(1, 6):
+            self.add_item(self._make_btn(_i))
+
+    def _make_btn(self, value: int) -> discord.ui.Button:
+        _emojis = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣"}
+        _btn = discord.ui.Button(label=str(value), emoji=_emojis[value],
+                                 style=discord.ButtonStyle.secondary)
+        _view_ref = self
+        async def _cb(interaction: discord.Interaction, _v=value):
+            try:
+                _csat_record(_view_ref._staff_id, _v, ticket_label=_view_ref._label,
+                             owner_id=_view_ref._owner_id, comment="")
+            except Exception:
+                pass
+            try:
+                for _it in _view_ref.children:
+                    if isinstance(_it, discord.ui.Button):
+                        _it.disabled = True
+                await interaction.response.edit_message(
+                    content=f"✅ Thanks! You rated **{_v}/5**.",
+                    view=_view_ref,
+                )
+                await interaction.followup.send(
+                    "Want to add a quick comment? (totally optional)",
+                    view=_CsatCommentLauncher(_view_ref._staff_id, _v,
+                                              _view_ref._label, _view_ref._owner_id),
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
+        _btn.callback = _cb
+        return _btn
+
+
+async def _supp_send_csat_dm(owner_id: int, staff_id: int, ticket_label: str) -> None:
+    """Try to DM the ticket owner with a 1–5 rating prompt."""
+    if not owner_id or not staff_id:
+        return
+    try:
+        _user = await bot.fetch_user(owner_id)
+        if not _user:
+            return
+        _embed = discord.Embed(
+            title="🌟 How was your support experience?",
+            description=(
+                f"Your **{ticket_label}** ticket was just closed.\n"
+                "Please rate the help you received — it only takes a second."
+            ),
+            color=discord.Color.gold(),
+        )
+        _embed.set_footer(text="Different Meets • 1 = Poor · 5 = Excellent")
+        await _user.send(
+            embed=_embed,
+            view=_CsatRatingView(staff_id=staff_id, ticket_label=ticket_label, owner_id=owner_id),
+        )
+    except Exception:
+        pass
+
+
 class SupportCloseButton(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -29440,6 +29855,26 @@ class SupportCloseButton(discord.ui.View):
         claimer_id = _supp_parse_topic(channel.topic, "ticket_claimed_by")
         if claimer_id and claimer_id.isdigit():
             _tperf_record_close(int(claimer_id), channel.name)
+
+        # Record into per-owner ticket history (for My Tickets "recently closed")
+        try:
+            if owner_id and str(owner_id).isdigit():
+                _thist_record_close(int(owner_id), ticket_key, channel.name, member.id)
+        except Exception:
+            pass
+
+        # DM the owner a CSAT rating prompt (best effort — staff-closed only,
+        # and only when a staff member handled it, to avoid self-rating noise)
+        try:
+            if (owner_id and str(owner_id).isdigit()
+                and claimer_id and claimer_id.isdigit()
+                and int(owner_id) != int(claimer_id)
+                and int(owner_id) != member.id):
+                asyncio.create_task(
+                    _supp_send_csat_dm(int(owner_id), int(claimer_id), ticket.label)
+                )
+        except Exception:
+            pass
 
         transcript_file = await _supp_export_transcript(channel)
         logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
@@ -30191,6 +30626,12 @@ class AppealDropdown(discord.ui.Select):
             view=SupportCloseButton(),
         )
 
+        # Auto-context embed for staff
+        try:
+            await channel.send(embed=_supp_build_member_context_embed(interaction.user))
+        except Exception:
+            pass
+
         # Post the staff review panel with Accept/Deny/Need-Info buttons
         await channel.send(
             embed=_supp_build_appeal_review_embed(ticket, interaction.user),
@@ -30275,6 +30716,12 @@ async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: s
         embed=_supp_build_ticket_embed(ticket, interaction.user),
         view=SupportCloseButton(),
     )
+
+    # Auto-context embed for staff (warnings/health/roles/joined/activity)
+    try:
+        await channel.send(embed=_supp_build_member_context_embed(interaction.user))
+    except Exception:
+        pass
 
     if ticket.key == "apply":
         await channel.send(embed=_supp_build_questions_embed(interaction.user))
@@ -30372,6 +30819,12 @@ async def _supp_open_urgent_ticket(interaction: discord.Interaction) -> None:
         allowed_mentions=discord.AllowedMentions(roles=True, users=True),
     )
 
+    # Auto-context embed for staff
+    try:
+        await channel.send(embed=_supp_build_member_context_embed(interaction.user))
+    except Exception:
+        pass
+
     logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if isinstance(logs_channel, discord.TextChannel):
         try:
@@ -30413,9 +30866,33 @@ async def _supp_show_my_tickets(interaction: discord.Interaction) -> None:
     lines = [f"{t.emoji} **{t.label}** — {ch.mention}" for ch, t in found]
     embed = discord.Embed(
         title="📂 Your Open Tickets",
-        description="\n".join(lines),
+        description="\n".join(lines) if lines else "*None open right now.*",
         color=discord.Color.blurple(),
     )
+
+    # Recently closed section (from local ticket-history file)
+    try:
+        _past = _thist_load().get(str(interaction.user.id), []) or []
+        if _past:
+            _recent = _past[-3:][::-1]  # newest 3, newest-first
+            _past_lines = []
+            for _entry in _recent:
+                _label = _entry.get("label", "Ticket")
+                _ts = _entry.get("closed_at")
+                try:
+                    _dt = datetime.fromisoformat(_ts)
+                    _ts_str = f"<t:{int(_dt.timestamp())}:R>"
+                except Exception:
+                    _ts_str = "recently"
+                _past_lines.append(f"• **{_label}** — closed {_ts_str}")
+            embed.add_field(
+                name="🗂️ Recently Closed",
+                value="\n".join(_past_lines),
+                inline=False,
+            )
+    except Exception:
+        pass
+
     embed.set_footer(text="Click a channel above to jump to it.")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -30451,7 +30928,36 @@ class _SupportAskQuestionButton(discord.ui.Button):
         super().__init__(label="Ask a Question", emoji="❓", style=discord.ButtonStyle.secondary,
                          custom_id="diff_support_btn_askq", row=0)
     async def callback(self, interaction: discord.Interaction):
-        await _supp_open_ticket_flow(interaction, "support")
+        # Predictive opening: if user has an active warning in last 30d, suggest
+        # an Appeal path alongside the FAQ deflection.
+        _warn_n, _ = _supp_active_warning_summary(interaction.user.id)
+        _show_appeal = _warn_n > 0
+        _desc = (
+            "**Before opening a ticket** — check if your question is already answered below.\n"
+            "Click a topic to read the answer (only you can see it).\n\n"
+            "If none of these help, hit **Open Ticket Anyway** at the bottom."
+        )
+        if _show_appeal:
+            _desc = (
+                f"⚠️ **You have {_warn_n} active warning(s) in the last 30 days.**\n"
+                "If you want to dispute one, use **Open Warning Appeal** below instead — appeals are routed to leadership.\n\n"
+                + _desc
+            )
+        try:
+            await interaction.response.send_message(
+                _desc,
+                view=_FaqDeflectView(show_appeal_suggestion=_show_appeal),
+                ephemeral=True,
+            )
+        except Exception:
+            try:
+                await interaction.followup.send(
+                    _desc,
+                    view=_FaqDeflectView(show_appeal_suggestion=_show_appeal),
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
 
 
 class _SupportApplyButton(discord.ui.Button):
@@ -30485,12 +30991,12 @@ class _SupportMyTicketsButton(discord.ui.Button):
 class SupportDropdownView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
-        # Row 0 — 5 support buttons
-        self.add_item(_SupportReportButton())
+        # Row 0 — 5 support buttons (MyTickets first → most-used; Urgent last)
+        self.add_item(_SupportMyTicketsButton())
         self.add_item(_SupportAskQuestionButton())
+        self.add_item(_SupportReportButton())
         self.add_item(_SupportApplyButton())
         self.add_item(_SupportUrgentButton())
-        self.add_item(_SupportMyTicketsButton())
         # Row 1 — Appeals dropdown (unchanged)
         self.add_item(AppealDropdown())
 
@@ -30692,6 +31198,66 @@ async def _ticket_stats_cmd(ctx: commands.Context) -> None:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
 
     await ctx.send(embed=embed, delete_after=60)
+
+
+@bot.command(name="csatreport", aliases=("csat", "csatstats"))
+async def _csat_report_cmd(ctx: commands.Context) -> None:
+    """Per-staff CSAT averages from post-ticket DM ratings."""
+    if not isinstance(ctx.author, discord.Member):
+        return
+    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    _data = _csat_load()
+    if not _data:
+        return await ctx.send("No CSAT ratings recorded yet.", delete_after=15)
+
+    _rows: list = []
+    for _sid, _payload in _data.items():
+        _ratings = [r.get("rating", 0) for r in _payload.get("ratings", []) if r.get("rating")]
+        if not _ratings:
+            continue
+        _avg = sum(_ratings) / len(_ratings)
+        _rows.append((_sid, _avg, len(_ratings), len(_payload.get("comments", []) or [])))
+
+    if not _rows:
+        return await ctx.send("No CSAT ratings recorded yet.", delete_after=15)
+
+    _rows.sort(key=lambda r: (r[1], r[2]), reverse=True)
+
+    embed = discord.Embed(
+        title="🌟 Staff CSAT Report",
+        description="Average rating from member feedback after closed tickets.",
+        color=discord.Color.gold(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    _lines: list = []
+    for _sid, _avg, _n, _c_n in _rows[:15]:
+        _stars = "★" * round(_avg) + "☆" * (5 - round(_avg))
+        _lines.append(f"<@{_sid}> — `{_stars}` **{_avg:.2f}/5** · {_n} rating(s)"
+                      + (f" · 💬 {_c_n} comment(s)" if _c_n else ""))
+    embed.add_field(name="📊 Leaderboard", value="\n".join(_lines), inline=False)
+
+    # Server-wide average
+    _all_ratings = []
+    for _sid, _payload in _data.items():
+        for _r in _payload.get("ratings", []):
+            if _r.get("rating"):
+                _all_ratings.append(_r["rating"])
+    if _all_ratings:
+        _global_avg = sum(_all_ratings) / len(_all_ratings)
+        embed.add_field(name="🌐 Server-wide Avg",
+                        value=f"**{_global_avg:.2f}/5** across {len(_all_ratings)} rating(s)",
+                        inline=False)
+
+    embed.set_footer(text="Different Meets • CSAT — DMs sent on close to ticket owners")
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    await ctx.send(embed=embed, delete_after=120)
 
 
 # ── Staff note command — post a styled note inside any ticket channel ─────────
