@@ -14158,6 +14158,9 @@ class _OmRecord:
     unable_ids: list = field(default_factory=list)
     no_show_ids: list = field(default_factory=list)
     unable_reasons: dict = field(default_factory=dict)  # {uid_str: reason}
+    reminder_message_ids: list = field(default_factory=list)  # 1h + 15m reminder embed msg ids
+    live_message_id: int | None = None                         # "Meet Live" announcement msg id
+    close_message_id: int | None = None                        # "DIFF Meet Closed" summary msg id
 
 
 def _om_load_records() -> dict:
@@ -14759,11 +14762,16 @@ class _OfficialMeetRSVPView(discord.ui.View):
                 )
                 live_embed.set_thumbnail(url=DIFF_LOGO_URL)
                 live_embed.set_footer(text="DIFF Meets • Session Live")
-                await ch.send(
+                _sent_live = await ch.send(
                     content=f"<@&{PS5_ROLE_ID}> <@&{NOTIFY_ROLE_ID}>",
                     embed=live_embed,
                     allowed_mentions=discord.AllowedMentions(roles=True, users=True),
                 )
+                try:
+                    record.live_message_id = int(_sent_live.id)
+                    _om_upsert_record(record)
+                except Exception:
+                    pass
             await _om_staff_log("Meet Started", record, interaction.user)
             for child in self.children:
                 if isinstance(child, discord.ui.Button) and child.custom_id == "diff_om_ctrl:start":
@@ -14826,7 +14834,12 @@ class _OfficialMeetRSVPView(discord.ui.View):
                 )
                 close_embed.set_thumbnail(url=DIFF_LOGO_URL)
                 close_embed.set_footer(text="DIFF Meets • Session Closed")
-                await ch.send(embed=close_embed)
+                _close_sent = await ch.send(embed=close_embed)
+                try:
+                    record.close_message_id = int(_close_sent.id)
+                    _om_upsert_record(record)
+                except Exception:
+                    pass
             await _om_staff_log("Meet Ended", record, interaction.user)
             try:
                 await _om_post_or_update_leaderboard()
@@ -14838,13 +14851,16 @@ class _OfficialMeetRSVPView(discord.ui.View):
                 ):
                     child.disabled = True
             await interaction.response.edit_message(view=self)
-            # Auto-cleanup: delete the original meet announcement + archive its
-            # discussion thread. The "📌 DIFF Meet Closed" summary embed posted
-            # just above stays in the channel as the permanent record.
+            # Auto-cleanup: delete the original meet announcement, the 1h + 15min
+            # reminder embeds, the "DIFF Meet Live" announcement (if any), and
+            # archive the discussion thread. The "📌 DIFF Meet Closed" summary
+            # embed posted just above stays in the channel as the permanent record.
             _deleted = False
-            try:
-                _ch = bot.get_channel(record.channel_id)
-                if isinstance(_ch, discord.TextChannel):
+            _deleted_extras = 0
+            _ch = bot.get_channel(record.channel_id)
+            if isinstance(_ch, discord.TextChannel):
+                # main announcement + its thread
+                try:
                     _msg = await _ch.fetch_message(record.message_id)
                     try:
                         _thr = _msg.thread
@@ -14857,18 +14873,39 @@ class _OfficialMeetRSVPView(discord.ui.View):
                         pass
                     await _msg.delete()
                     _deleted = True
-            except Exception as _de:
-                _bot_log.warning("[OM] end cleanup — delete failed for msg %s: %s",
-                                 record.message_id, _de)
+                except Exception as _de:
+                    _bot_log.warning("[OM] end cleanup — delete announcement %s failed: %s",
+                                     record.message_id, _de)
+                # 1h + 15min reminder embeds
+                for _rid in list(record.reminder_message_ids or []):
+                    try:
+                        _rmsg = await _ch.fetch_message(int(_rid))
+                        await _rmsg.delete()
+                        _deleted_extras += 1
+                    except Exception as _re:
+                        _bot_log.warning("[OM] end cleanup — delete reminder %s failed: %s",
+                                         _rid, _re)
+                # "DIFF Meet Live" announcement, if start was pressed
+                if record.live_message_id:
+                    try:
+                        _live = await _ch.fetch_message(int(record.live_message_id))
+                        await _live.delete()
+                        _deleted_extras += 1
+                    except Exception as _le:
+                        _bot_log.warning("[OM] end cleanup — delete live notice %s failed: %s",
+                                         record.live_message_id, _le)
             try:
                 _g = interaction.guild or bot.get_guild(GUILD_ID)
                 if _g:
                     await _om_panel_post_or_refresh(_g, force_repost=True)
             except Exception:
                 pass
+            _extras_line = ""
+            if _deleted_extras:
+                _extras_line = f" Plus {_deleted_extras} reminder/live notice{'s' if _deleted_extras != 1 else ''} cleaned up."
             await interaction.followup.send(
                 "Meet marked as **ended**. Attendance stats saved and leaderboard updated."
-                + ("\n🧹 Original announcement deleted; the **DIFF Meet Closed** summary stays in the channel."
+                + ((f"\n🧹 Original announcement deleted; the **DIFF Meet Closed** summary stays in the channel.{_extras_line}")
                    if _deleted else ""),
                 ephemeral=True,
             )
@@ -15041,8 +15078,12 @@ async def _om_reminder_task(msg_id: int, delay_secs: int, reminder_type: str) ->
                 )
                 embed.set_thumbnail(url=DIFF_LOGO_URL)
                 embed.set_footer(text="DIFF Meets • 1 Hour Reminder")
-                await ch.send(embed=embed)
+                _sent_rem = await ch.send(embed=embed)
                 record.one_hour_sent = True
+                try:
+                    record.reminder_message_ids.append(int(_sent_rem.id))
+                except Exception:
+                    pass
             else:
                 embed = discord.Embed(
                     title="🚨 DIFF Meet Starting Soon — 15 Minutes",
@@ -15057,8 +15098,12 @@ async def _om_reminder_task(msg_id: int, delay_secs: int, reminder_type: str) ->
                 )
                 embed.set_thumbnail(url=DIFF_LOGO_URL)
                 embed.set_footer(text="DIFF Meets • Starting Soon")
-                await ch.send(embed=embed)
+                _sent_rem = await ch.send(embed=embed)
                 record.fifteen_sent = True
+                try:
+                    record.reminder_message_ids.append(int(_sent_rem.id))
+                except Exception:
+                    pass
             _om_upsert_record(record)
     except asyncio.CancelledError:
         pass
