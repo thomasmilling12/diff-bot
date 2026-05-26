@@ -335,7 +335,7 @@ async def _setup_hook():
         "cogs.diff_community_features",
         "cogs.diff_advanced_features",
         "cogs.diff_extras",
-        "cogs.diff_host_posters",
+        # cogs.diff_host_posters removed — sole command (postmeet) duplicated bot.py's richer impl
         "cogs.diff_postmeet",
         "cogs.cleanup",
     ]
