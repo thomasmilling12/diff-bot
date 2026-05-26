@@ -29587,7 +29587,7 @@ _FAQ_DEFLECT_ENTRIES: "list" = [
         "🚗",
         ("**Build & car rules:**\n"
          "Full rules are pinned in the rules channel. Quick highlights:\n"
-         "• PS5 only — never PS4.\n"
+         "• PS5 platform only.\n"
          "• No overpowered builds at chill / cruise meets.\n"
          "• Always read the meet description — some meets have specific build limits.\n\n"
          "Unsure about a specific car? Open a ticket."),
@@ -29655,6 +29655,18 @@ class _FaqDeflectAppealButton(discord.ui.Button):
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return
+
+        # Same cooldown check as AppealDropdown (don't allow bypass via this button)
+        _remaining_cd = _appeal_denial_check(interaction.user.id, "warning")
+        if _remaining_cd is not None:
+            _days_left = int(_remaining_cd.total_seconds() // 86400) + 1
+            return await interaction.followup.send(
+                f"⏳ Your **{_ticket.label}** was recently denied.\n"
+                f"You may resubmit in **{_days_left} day(s)**.\n"
+                "If you believe this is a mistake, contact a DIFF leader directly.",
+                ephemeral=True,
+            )
+
         _existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, appeal_only=True)
         if _existing:
             return await interaction.followup.send(
@@ -29676,6 +29688,36 @@ class _FaqDeflectAppealButton(discord.ui.Button):
                                 view=_AppealActionView())
         except Exception:
             pass
+
+        # Log to staff-logs (parity with AppealDropdown)
+        _logs_ch = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(_logs_ch, discord.TextChannel):
+            try:
+                await _logs_ch.send(embed=_supp_build_log_embed("Opened", interaction.user, _ticket, _channel))
+            except discord.HTTPException:
+                pass
+
+        # Mod-hub alert (parity with AppealDropdown)
+        _mod_hub = interaction.guild.get_channel(MOD_HUB_CHANNEL_ID)
+        if isinstance(_mod_hub, discord.TextChannel):
+            try:
+                _leader_mention = f"<@&{LEADER_ROLE_ID}>"
+                _alert = discord.Embed(
+                    title=f"⚖️ New {_ticket.label} Submitted",
+                    description=(
+                        f"{interaction.user.mention} has opened a **{_ticket.label}**.\n\n"
+                        f"Review it here: {_channel.mention}"
+                    ),
+                    color=_TICKET_COLORS.get(_ticket.key, discord.Color.orange()),
+                    timestamp=datetime.now(_EST_TZ),
+                )
+                _alert.add_field(name="👤 Member", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
+                _alert.add_field(name="📋 Type", value=_ticket.label, inline=True)
+                _alert.set_footer(text="Different Meets • Appeal System")
+                await _mod_hub.send(content=_leader_mention, embed=_alert)
+            except Exception:
+                pass
+
         await interaction.followup.send(f"⚖️ Warning appeal opened: {_channel.mention}", ephemeral=True)
 
 
