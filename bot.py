@@ -18163,6 +18163,38 @@ class _PopupEndMeetBtn(discord.ui.Button):
                     await _live_msg.delete()
             except Exception:
                 pass
+
+        # Auto-cleanup: after a 60s grace window (so people see the red "Ended"
+        # state) delete the original embed + archive its discussion thread.
+        # All attendance info is preserved in the thread summary already posted.
+        _meet_id_cap = self.meet_id
+        _chan_id_cap = interaction.channel.id if interaction.channel else 0
+        _msg_id_cap  = interaction.message.id if interaction.message else 0
+        _thread_id_cap = int(_popup_meet_col(meet, "thread_id") or 0)
+        async def _popup_end_cleanup_task():
+            try:
+                await asyncio.sleep(60)
+                ch = bot.get_channel(_chan_id_cap)
+                if isinstance(ch, discord.TextChannel) and _msg_id_cap:
+                    try:
+                        _emsg = await ch.fetch_message(int(_msg_id_cap))
+                        await _emsg.delete()
+                    except Exception as _de:
+                        try:
+                            _bot_log.warning("[Popup] end cleanup — delete embed %s failed: %s",
+                                             _msg_id_cap, _de)
+                        except Exception:
+                            pass
+                if _thread_id_cap:
+                    try:
+                        _thr = bot.get_channel(int(_thread_id_cap))
+                        if isinstance(_thr, discord.Thread):
+                            await _thr.edit(archived=True, locked=False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        asyncio.create_task(_popup_end_cleanup_task())
         # Post a thank-you summary in the discussion thread if one exists
         await _popup_post_thread_summary(
             interaction.guild, meet, self.meet_id, counts, reason="manually ended"
