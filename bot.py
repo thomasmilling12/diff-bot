@@ -17781,9 +17781,9 @@ def _popup_build_meet_embed(
             attendance_line += f"  •  {cantmake_count} couldn't make it"
         description = f"This meet has ended. Hosted by <@{host_id}>.\n{attendance_line}"
     else:
-        title = "⚡ DIFF Pop-Up Meet — Live Now"
+        title = "⚡ DIFF Pop-Up Meet"
         color = discord.Color.from_rgb(255, 140, 0)
-        description = f"A spontaneous meet is live — <@{host_id}> is hosting. Pull up!"
+        description = f"<@{host_id}> is hosting a pop-up meet. Pull up!"
 
     embed = discord.Embed(
         title=title,
