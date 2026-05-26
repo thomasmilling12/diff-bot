@@ -20158,6 +20158,7 @@ async def on_ready():
     _safe_add_view(ColorTeamPanelView(),                                 "ColorTeamPanelView")
     _safe_add_view(InterviewInfoView(),                                  "InterviewInfoView")
     _safe_add_view(InterviewOutcomeView(),                               "InterviewOutcomeView")
+    _safe_add_view(_InterviewSessionView(),                              "InterviewSessionView")
     _safe_add_view(SupportDropdownView(),                                "SupportDropdownView")
     _safe_add_view(SupportCloseButton(),                                 "SupportCloseButton")
     _safe_add_view(SupportApplicationReviewView(),                      "SupportApplicationReviewView")
@@ -23991,65 +23992,69 @@ class InterviewTopicSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=[
+                # Stage 1: OPENING 🟢
                 discord.SelectOption(
                     label="Interview Speech",
                     value="speech",
                     emoji="🗣️",
-                    description="Open with the official DIFF introduction script.",
+                    description="🟢 OPENING — Official DIFF introduction script.",
                 ),
+                # Stage 2: MAIN 🟡
                 discord.SelectOption(
                     label="Interview Questions",
                     value="questions",
                     emoji="❓",
-                    description="All required questions — must cover every one.",
+                    description="🟡 MAIN — All required questions to ask.",
                 ),
                 discord.SelectOption(
                     label="Crew Events",
                     value="events",
                     emoji="🎉",
-                    description="Events, meetings, and attendance expectations.",
+                    description="🟡 MAIN — Events, meetings, attendance.",
                 ),
                 discord.SelectOption(
                     label="Crew Positions",
                     value="positions",
                     emoji="📌",
-                    description="Roles members can work toward in the crew.",
-                ),
-                discord.SelectOption(
-                    label="End of Interview",
-                    value="end",
-                    emoji="✅",
-                    description="Closing script — wrap up professionally.",
-                ),
-                discord.SelectOption(
-                    label="Leadership Team",
-                    value="leadership",
-                    emoji="👑",
-                    description="Who applicants can contact after the interview.",
+                    description="🟡 MAIN — Roles members can work toward.",
                 ),
                 discord.SelectOption(
                     label="Rules & Strike System",
                     value="rules",
                     emoji="📜",
-                    description="Walk the applicant through expectations and consequences.",
+                    description="🟡 MAIN — Expectations and consequences.",
                 ),
                 discord.SelectOption(
                     label="Crew Colors & Color Lab",
                     value="colors",
                     emoji="🎨",
-                    description="How the weekly crew color vote and Color Lab work.",
+                    description="🟡 MAIN — Weekly color vote + Color Lab.",
                 ),
+                discord.SelectOption(
+                    label="Leadership Team",
+                    value="leadership",
+                    emoji="👑",
+                    description="🟡 MAIN — Who applicants can contact.",
+                ),
+                # Stage 3: CLOSING 🔵
+                discord.SelectOption(
+                    label="End of Interview",
+                    value="end",
+                    emoji="✅",
+                    description="🔵 CLOSING — Wrap up professionally.",
+                ),
+                # Staff reference ⚪⚫
                 discord.SelectOption(
                     label="Green Flags (Staff Only)",
                     value="greenflags",
-                    emoji="✅",
-                    description="Positive signs of a strong candidate.",
+                    emoji="🟢",
+                    description="⚪ STAFF REF — Signs of a strong candidate.",
                 ),
                 discord.SelectOption(
                     label="Red Flags (Staff Only)",
                     value="redflags",
-                    emoji="⚠️",
-                    description="Signs to watch for and when to escalate.",
+                    emoji="🔴",
+                    description="⚫ STAFF REF — Warning signs + escalation.",
                 ),
             ],
             row=0,
@@ -24064,6 +24069,34 @@ class InterviewInfoView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(InterviewTopicSelect())
+
+    @discord.ui.button(
+        label="Start Interview",
+        emoji="🎤",
+        style=discord.ButtonStyle.success,
+        custom_id="diff_interview_start",
+        row=1,
+    )
+    async def start_interview(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _open_start_interview_picker(interaction)
+
+    @discord.ui.button(
+        label="Interview History",
+        emoji="📜",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_interview_history",
+        row=1,
+    )
+    async def history_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member) or not _interview_can_run(interaction.user):
+            return await interaction.response.send_message(
+                "Only Leadership can view interview history.", ephemeral=True
+            )
+        await interaction.response.send_message(
+            "Use `!interviewhistory @member` in any channel to view a member's "
+            "past interview sessions (rubric scores, flags, notes).",
+            ephemeral=True,
+        )
 
 
 async def _post_or_refresh_interview_panel() -> None:
@@ -24440,6 +24473,726 @@ class InterviewOutcomeView(discord.ui.View):
             "• Use this panel only after the interview is fully completed"
         )
         await interaction.response.send_message(text, ephemeral=True)
+
+
+
+# =========================================================================
+# DIFF CREW INTERVIEW — LIVE SESSION WORKFLOW (Improvements #1-10)
+# =========================================================================
+#  Storage:  diff_data/diff_interview_sessions.json
+#    { "sessions": {channel_id: SessionDict},
+#      "history":  {applicant_id: [session_id, ...]} }
+#  Persistent view _InterviewSessionView reads session by interaction.channel.id
+#  at click-time, so it survives bot restarts without state.
+
+INTERVIEW_SESSIONS_FILE = os.path.join(DATA_FOLDER, "diff_interview_sessions.json")
+
+# Question checklist used by the "✅ Mark Q Done" button + final outcome embed.
+_INTERVIEW_QUESTIONS = [
+    "Why do you want to join DIFF specifically?",
+    "What kind of cars and builds do you run?",
+    "Have you attended any DIFF meets — which ones?",
+    "Are you willing to follow meet etiquette and host instructions?",
+    "Do you have a working headset for VC?",
+    "Are you active on Discord and in GTA weekly?",
+    "Have you been banned or warned in another crew? Explain.",
+    "What's your typical weekly availability?",
+    "What can YOU bring to the crew?",
+    "Do you understand the Rules & Strike system you just heard?",
+]
+_INTERVIEW_SOFT_WARN_MIN = 15  # ephemeral "halfway" reminder
+_INTERVIEW_HARD_WARN_MIN = 25  # "wrap it up" reminder
+
+
+def _isess_load() -> dict:
+    data = _load_diff_json(INTERVIEW_SESSIONS_FILE) or {}
+    data.setdefault("sessions", {})
+    data.setdefault("history", {})
+    return data
+
+
+def _isess_save(data: dict) -> None:
+    _save_diff_json(INTERVIEW_SESSIONS_FILE, data)
+
+
+def _isess_get_by_channel(channel_id: int) -> dict | None:
+    data = _isess_load()
+    return data["sessions"].get(str(channel_id))
+
+
+def _isess_get_by_id(session_id: str) -> dict | None:
+    data = _isess_load()
+    for sess in data["sessions"].values():
+        if sess.get("session_id") == session_id:
+            return sess
+    return None
+
+
+def _isess_put(channel_id: int, sess: dict) -> None:
+    data = _isess_load()
+    data["sessions"][str(channel_id)] = sess
+    _isess_save(data)
+
+
+def _isess_archive(channel_id: int) -> None:
+    """Move an ended session out of active and into per-applicant history."""
+    data = _isess_load()
+    sess = data["sessions"].pop(str(channel_id), None)
+    if not sess:
+        return
+    aid = str(sess.get("applicant_id") or 0)
+    data["history"].setdefault(aid, [])
+    # store the full session inside history list (keeps it self-contained)
+    data["history"][aid].append(sess)
+    # cap history per-applicant at 20 to keep file small
+    data["history"][aid] = data["history"][aid][-20:]
+    _isess_save(data)
+
+
+def _interview_can_run(member: discord.Member) -> bool:
+    """Same allow-list as the outcome panel — Leadership only."""
+    try:
+        return any(r.id in INTERVIEW_OUTCOME_ALLOWED_ROLES for r in member.roles)
+    except Exception:
+        return False
+
+
+def _build_applicant_card_embed(
+    guild: discord.Guild, applicant: discord.Member, app: dict, sess: dict
+) -> discord.Embed:
+    """Live applicant card shown in the interview session panel."""
+    started = sess.get("started_at", "")
+    try:
+        st_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        st_disp = f"<t:{int(st_dt.timestamp())}:R>"
+    except Exception:
+        st_disp = "Just now"
+
+    q_done = int(sess.get("questions_done", 0))
+    q_total = len(_INTERVIEW_QUESTIONS)
+    pct = int((q_done / q_total) * 100) if q_total else 0
+    bar_filled = "█" * int(pct / 10)
+    bar_empty = "░" * (10 - len(bar_filled))
+
+    flags = sess.get("flags", [])
+    g = sum(1 for f in flags if f.get("type") == "green")
+    y = sum(1 for f in flags if f.get("type") == "yellow")
+    r = sum(1 for f in flags if f.get("type") == "red")
+
+    interviewers = sess.get("interviewer_ids", [])
+    int_mentions = ", ".join(f"<@{i}>" for i in interviewers) or "—"
+
+    acc_age = (datetime.now(timezone.utc) - applicant.created_at).days
+    join_age = (
+        (datetime.now(timezone.utc) - applicant.joined_at).days
+        if applicant.joined_at else 0
+    )
+
+    color = discord.Color.gold() if sess.get("status") == "active" else discord.Color.light_grey()
+    embed = discord.Embed(
+        title=f"🎤 Interview in Progress — {applicant.display_name}",
+        description=(
+            f"**Applicant:** {applicant.mention}  •  `{applicant.id}`\n"
+            f"**Started:** {st_disp}\n"
+            f"**Interviewer(s):** {int_mentions}"
+        ),
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    try:
+        embed.set_thumbnail(url=applicant.display_avatar.url)
+    except Exception:
+        pass
+
+    # Application snapshot — the answers staff need at a glance.
+    if app:
+        ans_lines = []
+        for key, lbl in (
+            ("age", "Age"),
+            ("timezone", "Timezone"),
+            ("gamertag", "PSN ID"),
+            ("gta_rank", "GTA Rank"),
+            ("days_available", "Available days"),
+            ("how_heard", "How heard"),
+        ):
+            v = app.get(key)
+            if v:
+                ans_lines.append(f"**{lbl}:** {str(v)[:80]}")
+        if ans_lines:
+            embed.add_field(
+                name="📋 Application",
+                value="\n".join(ans_lines)[:1024],
+                inline=False,
+            )
+        why = (app.get("why_join") or "").strip()
+        if why:
+            embed.add_field(name="💬 Why DIFF", value=why[:300], inline=False)
+
+    embed.add_field(name="👤 Account age", value=f"{acc_age}d", inline=True)
+    embed.add_field(name="🏠 In server", value=f"{join_age}d", inline=True)
+    embed.add_field(name="🎟 App #", value=f"#{sess.get('app_id', '—')}", inline=True)
+
+    embed.add_field(
+        name=f"✅ Questions covered ({q_done}/{q_total} • {pct}%)",
+        value=f"`{bar_filled}{bar_empty}`",
+        inline=False,
+    )
+    embed.add_field(
+        name="🚩 Flags so far",
+        value=f"🟢 **{g}** Green • 🟡 **{y}** Yellow • 🔴 **{r}** Red",
+        inline=False,
+    )
+
+    # Last 3 flag notes — fast situational awareness
+    if flags:
+        recent = flags[-3:]
+        lines = []
+        for f in recent:
+            t = f.get("type", "?")
+            emoji = {"green": "🟢", "yellow": "🟡", "red": "🔴"}.get(t, "•")
+            note = (f.get("note") or "").strip()[:140]
+            by = f.get("by_name", "staff")
+            lines.append(f"{emoji} *{by}*: {note}" if note else f"{emoji} *{by}*")
+        embed.add_field(name="📝 Recent notes", value="\n".join(lines)[:1024], inline=False)
+
+    embed.set_footer(text=f"Session {sess.get('session_id', '?')} • Different Meets Interview")
+    return embed
+
+
+# ─── Persistent session view (all buttons look up state at click time) ──
+class _InterviewSessionView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _get_active_sess_or_reject(self, interaction):
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Server only.", ephemeral=True)
+            return None
+        if not _interview_can_run(interaction.user):
+            await interaction.response.send_message(
+                "Only Leadership can use the interview session controls.", ephemeral=True
+            )
+            return None
+        sess = _isess_get_by_channel(interaction.channel.id)
+        if not sess or sess.get("status") != "active":
+            await interaction.response.send_message(
+                "There's no active interview session in this channel.", ephemeral=True
+            )
+            return None
+        return sess
+
+    async def _refresh_panel(self, interaction, sess):
+        guild = interaction.guild
+        if not guild:
+            return
+        applicant = guild.get_member(int(sess["applicant_id"]))
+        if not applicant:
+            return
+        try:
+            app = get_app(sess.get("app_id")) or {}
+        except Exception:
+            app = {}
+        try:
+            ch = guild.get_channel(int(interaction.channel.id))
+            msg = await ch.fetch_message(int(sess["panel_message_id"]))
+            await msg.edit(embed=_build_applicant_card_embed(guild, applicant, app, sess))
+        except Exception:
+            pass
+
+    # ── Question Done counter ────────────────────────────────────────────
+    @discord.ui.button(
+        label="Mark Question Done", emoji="✅",
+        style=discord.ButtonStyle.success,
+        custom_id="isess_q_done", row=0,
+    )
+    async def q_done(self, interaction, button):
+        sess = await self._get_active_sess_or_reject(interaction)
+        if not sess:
+            return
+        sess["questions_done"] = min(int(sess.get("questions_done", 0)) + 1, len(_INTERVIEW_QUESTIONS))
+        _isess_put(interaction.channel.id, sess)
+        await self._refresh_panel(interaction, sess)
+        # Show what to ask next
+        idx = int(sess["questions_done"])
+        if idx >= len(_INTERVIEW_QUESTIONS):
+            nxt = "🎉 All required questions covered!"
+        else:
+            nxt = f"**Next:** {_INTERVIEW_QUESTIONS[idx]}"
+        await interaction.response.send_message(
+            f"✅ Question {idx} marked done.\n{nxt}", ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="View Question List", emoji="📋",
+        style=discord.ButtonStyle.secondary,
+        custom_id="isess_q_list", row=0,
+    )
+    async def q_list(self, interaction, button):
+        sess = await self._get_active_sess_or_reject(interaction)
+        if not sess:
+            return
+        done = int(sess.get("questions_done", 0))
+        lines = []
+        for i, q in enumerate(_INTERVIEW_QUESTIONS, start=1):
+            mark = "✅" if i <= done else "⬜"
+            lines.append(f"{mark} **Q{i}.** {q}")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    # ── Flag buttons ────────────────────────────────────────────────────
+    @discord.ui.button(
+        label="Green Flag", emoji="🟢",
+        style=discord.ButtonStyle.success,
+        custom_id="isess_flag_green", row=1,
+    )
+    async def flag_green(self, interaction, button):
+        sess = await self._get_active_sess_or_reject(interaction)
+        if not sess:
+            return
+        await interaction.response.send_modal(_FlagNoteModal("green"))
+
+    @discord.ui.button(
+        label="Yellow Flag", emoji="🟡",
+        style=discord.ButtonStyle.secondary,
+        custom_id="isess_flag_yellow", row=1,
+    )
+    async def flag_yellow(self, interaction, button):
+        sess = await self._get_active_sess_or_reject(interaction)
+        if not sess:
+            return
+        await interaction.response.send_modal(_FlagNoteModal("yellow"))
+
+    @discord.ui.button(
+        label="Red Flag", emoji="🔴",
+        style=discord.ButtonStyle.danger,
+        custom_id="isess_flag_red", row=1,
+    )
+    async def flag_red(self, interaction, button):
+        sess = await self._get_active_sess_or_reject(interaction)
+        if not sess:
+            return
+        await interaction.response.send_modal(_FlagNoteModal("red"))
+
+    # ── Add Co-interviewer ──────────────────────────────────────────────
+    @discord.ui.button(
+        label="Add Co-Interviewer", emoji="👥",
+        style=discord.ButtonStyle.secondary,
+        custom_id="isess_add_co", row=2,
+    )
+    async def add_co(self, interaction, button):
+        sess = await self._get_active_sess_or_reject(interaction)
+        if not sess:
+            return
+        uid = interaction.user.id
+        if uid in sess.get("interviewer_ids", []):
+            return await interaction.response.send_message(
+                "You're already listed as an interviewer on this session.", ephemeral=True
+            )
+        sess.setdefault("interviewer_ids", []).append(uid)
+        _isess_put(interaction.channel.id, sess)
+        await self._refresh_panel(interaction, sess)
+        await interaction.response.send_message(
+            f"👥 {interaction.user.mention} added as co-interviewer.", ephemeral=False
+        )
+
+    # ── End Interview ───────────────────────────────────────────────────
+    @discord.ui.button(
+        label="End Interview", emoji="🏁",
+        style=discord.ButtonStyle.primary,
+        custom_id="isess_end", row=2,
+    )
+    async def end_button(self, interaction, button):
+        sess = await self._get_active_sess_or_reject(interaction)
+        if not sess:
+            return
+        await interaction.response.send_modal(_InterviewEndModal())
+
+
+class _FlagNoteModal(discord.ui.Modal):
+    note = discord.ui.TextInput(
+        label="One-line note (optional)",
+        placeholder="e.g. Great answer about meet etiquette",
+        required=False, max_length=200,
+    )
+
+    def __init__(self, kind: str):
+        self.kind = kind
+        title_map = {"green": "🟢 Green Flag", "yellow": "🟡 Yellow Flag", "red": "🔴 Red Flag"}
+        super().__init__(title=title_map.get(kind, "Flag"))
+
+    async def on_submit(self, interaction):
+        sess = _isess_get_by_channel(interaction.channel.id)
+        if not sess or sess.get("status") != "active":
+            return await interaction.response.send_message("Session no longer active.", ephemeral=True)
+        sess.setdefault("flags", []).append({
+            "type": self.kind,
+            "note": str(self.note.value or "").strip(),
+            "ts": utc_now().isoformat(),
+            "by_id": interaction.user.id,
+            "by_name": interaction.user.display_name,
+        })
+        _isess_put(interaction.channel.id, sess)
+        # Refresh the live card
+        guild = interaction.guild
+        try:
+            applicant = guild.get_member(int(sess["applicant_id"]))
+            app = get_app(sess.get("app_id")) or {}
+            ch = guild.get_channel(int(interaction.channel.id))
+            msg = await ch.fetch_message(int(sess["panel_message_id"]))
+            await msg.edit(embed=_build_applicant_card_embed(guild, applicant, app, sess))
+        except Exception:
+            pass
+        emoji = {"green": "🟢", "yellow": "🟡", "red": "🔴"}[self.kind]
+        await interaction.response.send_message(
+            f"{emoji} Flag logged.", ephemeral=True
+        )
+
+
+class _InterviewEndModal(discord.ui.Modal, title="🏁 End Interview — Outcome + Rubric"):
+    outcome = discord.ui.TextInput(
+        label="Outcome (pass / follow-up / fail)",
+        placeholder="pass  /  followup  /  fail",
+        required=True, max_length=20,
+    )
+    rubric = discord.ui.TextInput(
+        label="Rubric 1-5 — Vibe Knowledge Attitude Commit",
+        placeholder="e.g. 4 5 4 5  (four numbers separated by spaces)",
+        required=True, max_length=20,
+    )
+    summary = discord.ui.TextInput(
+        label="Summary / final notes",
+        placeholder="One paragraph for the record",
+        style=discord.TextStyle.paragraph,
+        required=True, max_length=1000,
+    )
+
+    async def on_submit(self, interaction):
+        sess = _isess_get_by_channel(interaction.channel.id)
+        if not sess or sess.get("status") != "active":
+            return await interaction.response.send_message("Session no longer active.", ephemeral=True)
+        guild = interaction.guild
+        if not guild:
+            return
+
+        # Parse outcome
+        out_raw = str(self.outcome.value or "").strip().lower()
+        if out_raw in ("pass", "accept", "accepted", "approve", "approved", "p"):
+            outcome = "Pass"
+        elif out_raw in ("followup", "follow-up", "follow up", "f", "review"):
+            outcome = "Follow-up"
+        elif out_raw in ("fail", "deny", "denied", "reject", "rejected", "no"):
+            outcome = "Fail"
+        else:
+            return await interaction.response.send_message(
+                "Outcome must be one of: pass / followup / fail.", ephemeral=True
+            )
+
+        # Parse rubric
+        try:
+            parts = [int(x) for x in str(self.rubric.value).split()]
+            if len(parts) != 4 or any(p < 1 or p > 5 for p in parts):
+                raise ValueError
+            scores = {"vibe": parts[0], "knowledge": parts[1], "attitude": parts[2], "commitment": parts[3]}
+        except Exception:
+            return await interaction.response.send_message(
+                "Rubric must be 4 numbers 1-5 separated by spaces (e.g. `4 5 4 5`).", ephemeral=True
+            )
+        avg = round(sum(scores.values()) / 4, 2)
+
+        sess["status"] = "ended"
+        sess["ended_at"] = utc_now().isoformat()
+        sess["outcome"] = outcome
+        sess["scores"] = scores
+        sess["avg_score"] = avg
+        sess["final_notes"] = str(self.summary.value or "").strip()
+        sess["ended_by_id"] = interaction.user.id
+        _isess_put(interaction.channel.id, sess)
+
+        applicant = guild.get_member(int(sess["applicant_id"]))
+        if not applicant:
+            await interaction.response.send_message("Applicant left the server.", ephemeral=True)
+            _isess_archive(interaction.channel.id)
+            return
+
+        # Build the final session embed
+        color = {"Pass": discord.Color.green(), "Follow-up": discord.Color.gold(), "Fail": discord.Color.red()}[outcome]
+        emoji = {"Pass": "✅", "Follow-up": "🟡", "Fail": "❌"}[outcome]
+        flags = sess.get("flags", [])
+        g = sum(1 for f in flags if f.get("type") == "green")
+        y = sum(1 for f in flags if f.get("type") == "yellow")
+        r = sum(1 for f in flags if f.get("type") == "red")
+        end_embed = discord.Embed(
+            title=f"{emoji} Interview Ended — {outcome}",
+            description=(
+                f"**Applicant:** {applicant.mention}\n"
+                f"**Outcome:** {outcome}\n"
+                f"**Avg score:** {avg}/5"
+            ),
+            color=color, timestamp=utc_now(),
+        )
+        end_embed.add_field(
+            name="📊 Rubric",
+            value=(
+                f"Vibe **{scores['vibe']}/5**  •  Knowledge **{scores['knowledge']}/5**\n"
+                f"Attitude **{scores['attitude']}/5**  •  Commitment **{scores['commitment']}/5**"
+            ),
+            inline=False,
+        )
+        end_embed.add_field(
+            name="🚩 Flags",
+            value=f"🟢 {g} • 🟡 {y} • 🔴 {r}",
+            inline=True,
+        )
+        end_embed.add_field(
+            name="✅ Questions",
+            value=f"{int(sess.get('questions_done', 0))}/{len(_INTERVIEW_QUESTIONS)}",
+            inline=True,
+        )
+        end_embed.add_field(name="📝 Final notes", value=(sess["final_notes"] or "—")[:1024], inline=False)
+        ints = ", ".join(f"<@{i}>" for i in sess.get("interviewer_ids", []))
+        end_embed.add_field(name="👥 Interviewers", value=ints or "—", inline=False)
+
+        await interaction.response.send_message(embed=end_embed)
+
+        # Staff log
+        try:
+            log_ch = guild.get_channel(INTERVIEW_OUTCOME_LOG_CHANNEL_ID)
+            if isinstance(log_ch, discord.TextChannel):
+                await log_ch.send(embed=end_embed)
+        except Exception:
+            pass
+
+        # Pass → auto-accept (uses existing accept flow); Fail → auto-deny.
+        try:
+            if outcome == "Pass":
+                await _interview_outcome_process_accept(interaction, applicant, sess["final_notes"])
+            elif outcome == "Fail":
+                await _interview_outcome_process_deny(interaction, applicant, sess["final_notes"])
+            # Follow-up: leave application Pending; staff will decide later
+        except Exception as e:
+            print(f"[interview] outcome forward failed: {e!r}")
+
+        # Archive to per-applicant history
+        _isess_archive(interaction.channel.id)
+
+
+# ─── Start-interview applicant picker (ephemeral, one-shot) ──────────────
+class _StartInterviewApplicantSelect(discord.ui.Select):
+    def __init__(self, options: list[discord.SelectOption]):
+        super().__init__(
+            placeholder="Choose a pending applicant...",
+            min_values=1, max_values=1, options=options,
+        )
+
+    async def callback(self, interaction):
+        try:
+            app_id = self.values[0]
+        except Exception:
+            return await interaction.response.send_message("Bad selection.", ephemeral=True)
+        await _start_interview_session(interaction, app_id)
+
+
+class _StartInterviewPickerView(discord.ui.View):
+    def __init__(self, options: list[discord.SelectOption]):
+        super().__init__(timeout=180)
+        self.add_item(_StartInterviewApplicantSelect(options))
+
+
+async def _start_interview_session(interaction: discord.Interaction, app_id: str) -> None:
+    guild = interaction.guild
+    if not guild:
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    app = get_app(app_id)
+    if not app:
+        return await interaction.response.send_message("That application no longer exists.", ephemeral=True)
+    applicant = guild.get_member(int(app["user_id"]))
+    if applicant is None:
+        try:
+            applicant = await guild.fetch_member(int(app["user_id"]))
+        except Exception:
+            applicant = None
+    if applicant is None:
+        return await interaction.response.send_message(
+            "Applicant is no longer in the server.", ephemeral=True
+        )
+
+    # Prefer the applicant's existing garage ticket as the session channel,
+    # otherwise fall back to the current channel.
+    target_ch = interaction.channel
+    try:
+        tc_id = int(app.get("ticket_channel_id") or 0)
+        if tc_id:
+            tc = guild.get_channel(tc_id)
+            if isinstance(tc, discord.TextChannel):
+                target_ch = tc
+    except Exception:
+        pass
+
+    existing = _isess_get_by_channel(target_ch.id)
+    if existing and existing.get("status") == "active":
+        return await interaction.response.send_message(
+            f"There's already an active interview session in {target_ch.mention}.",
+            ephemeral=True,
+        )
+
+    sess = {
+        "session_id": f"INT-{int(datetime.now(timezone.utc).timestamp())}",
+        "applicant_id": applicant.id,
+        "app_id": app_id,
+        "interviewer_ids": [interaction.user.id],
+        "started_at": utc_now().isoformat(),
+        "ended_at": None,
+        "status": "active",
+        "flags": [],
+        "questions_done": 0,
+        "scores": {},
+        "outcome": None,
+        "final_notes": "",
+        "panel_message_id": None,
+        "panel_channel_id": target_ch.id,
+    }
+
+    embed = _build_applicant_card_embed(guild, applicant, app, sess)
+    try:
+        panel_msg = await target_ch.send(
+            content=(
+                f"🎤 **Interview session started** — {applicant.mention} "
+                f"(interviewer: {interaction.user.mention})"
+            ),
+            embed=embed,
+            view=_InterviewSessionView(),
+        )
+    except Exception as e:
+        return await interaction.response.send_message(
+            f"Failed to post session panel: {e!r}", ephemeral=True
+        )
+
+    sess["panel_message_id"] = panel_msg.id
+    _isess_put(target_ch.id, sess)
+
+    # Auto-DM the applicant — sets expectation, cuts no-shows.
+    try:
+        dm = discord.Embed(
+            title="🎤 Your DIFF Interview is Starting",
+            description=(
+                f"Hey {applicant.mention} — staff have started your interview "
+                f"in **{guild.name}**.\n\n"
+                "**Action:** join the interview voice channel now if you haven't. "
+                "Bring your headset and be ready to answer questions about your "
+                "builds, availability, and meet experience.\n\n"
+                "Good luck!"
+            ),
+            color=discord.Color.gold(), timestamp=utc_now(),
+        )
+        dm.set_footer(text="Different Meets • Crew Interview")
+        await applicant.send(embed=dm)
+    except Exception:
+        pass
+
+    # Schedule soft + hard warnings (best-effort — they die on bot restart).
+    async def _warn(after_min: int, kind: str):
+        try:
+            await asyncio.sleep(after_min * 60)
+            cur = _isess_get_by_channel(target_ch.id)
+            if not cur or cur.get("status") != "active" or cur.get("session_id") != sess["session_id"]:
+                return
+            try:
+                if kind == "soft":
+                    txt = f"⏱ **{after_min}-minute mark** — keep the pace, you're halfway."
+                else:
+                    txt = f"⏰ **{after_min}-minute mark** — wrap up and capture an outcome."
+                await target_ch.send(txt, delete_after=120)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    asyncio.create_task(_warn(_INTERVIEW_SOFT_WARN_MIN, "soft"))
+    asyncio.create_task(_warn(_INTERVIEW_HARD_WARN_MIN, "hard"))
+
+    await interaction.response.send_message(
+        f"✅ Interview session created in {target_ch.mention}.",
+        ephemeral=True,
+    )
+
+
+# ─── Public command: !interviewhistory @user ────────────────────────────
+@bot.command(name="interviewhistory", aliases=["interviewhist", "ihistory"])
+async def interview_history_cmd(ctx, member: discord.Member = None):
+    if not isinstance(ctx.author, discord.Member) or not _interview_can_run(ctx.author):
+        return await ctx.send("Only Leadership can view interview history.")
+    if member is None:
+        return await ctx.send("Usage: `!interviewhistory @member`")
+    data = _isess_load()
+    history = data["history"].get(str(member.id), [])
+    if not history:
+        return await ctx.send(f"No interview history for {member.mention}.")
+    embed = discord.Embed(
+        title=f"📜 Interview History — {member.display_name}",
+        description=f"{len(history)} session(s) on record.",
+        color=discord.Color.blurple(), timestamp=utc_now(),
+    )
+    for sess in history[-5:][::-1]:  # newest 5 first
+        try:
+            st = datetime.fromisoformat(sess.get("started_at", "").replace("Z", "+00:00"))
+            when = f"<t:{int(st.timestamp())}:D>"
+        except Exception:
+            when = "?"
+        out = sess.get("outcome", "—")
+        avg = sess.get("avg_score", "—")
+        ints = ", ".join(f"<@{i}>" for i in sess.get("interviewer_ids", [])) or "—"
+        notes = (sess.get("final_notes") or "—")[:300]
+        flags = sess.get("flags", [])
+        g = sum(1 for f in flags if f.get("type") == "green")
+        y = sum(1 for f in flags if f.get("type") == "yellow")
+        r = sum(1 for f in flags if f.get("type") == "red")
+        embed.add_field(
+            name=f"{when} — {out} (avg {avg}/5)",
+            value=(
+                f"**Interviewers:** {ints}\n"
+                f"**Flags:** 🟢 {g} • 🟡 {y} • 🔴 {r}\n"
+                f"**Notes:** {notes}"
+            ),
+            inline=False,
+        )
+    embed.set_footer(text=f"Showing up to last 5 of {len(history)} sessions")
+    await ctx.send(embed=embed)
+
+
+# ─── Start-Interview button (added to InterviewInfoView) ────────────────
+async def _open_start_interview_picker(interaction: discord.Interaction):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("Server only.", ephemeral=True)
+    if not _interview_can_run(interaction.user):
+        return await interaction.response.send_message(
+            "Only Leadership can start interview sessions.", ephemeral=True
+        )
+    try:
+        apps = load_apps().get("applications", {})
+    except Exception:
+        apps = {}
+    pending = [(aid, a) for aid, a in apps.items() if a.get("status") == "Pending"]
+    pending.sort(key=lambda x: x[1].get("submitted_at", ""), reverse=True)
+    pending = pending[:25]  # Discord select hard cap
+    if not pending:
+        return await interaction.response.send_message(
+            "No pending applications to interview right now.", ephemeral=True
+        )
+    options = []
+    for aid, a in pending:
+        uid = a.get("user_id")
+        member = interaction.guild.get_member(int(uid)) if uid else None
+        name = member.display_name if member else a.get("username", "Unknown")
+        sub = a.get("submitted_at", "")[:10]
+        options.append(discord.SelectOption(
+            label=f"#{aid} — {name[:60]}",
+            value=str(aid),
+            description=f"PSN: {str(a.get('gamertag', '—'))[:40]}  •  Submitted {sub}",
+        ))
+    await interaction.response.send_message(
+        f"Pick a pending applicant ({len(options)} available):",
+        view=_StartInterviewPickerView(options),
+        ephemeral=True,
+    )
 
 
 async def _post_or_refresh_interview_outcome_panel(channel: discord.TextChannel) -> None:
