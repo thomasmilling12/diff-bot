@@ -17068,6 +17068,252 @@ async def recurpost_cmd(ctx, slot_id: str = None):
 
 
 # =========================
+# OFFICIAL MEET — AUTO-POST FROM WEEKLY SCHEDULE
+# =========================
+# Watches the Auto Host Schedule (Meet 1/2/3) and, when a Confirmed slot is
+# within _OM_AUTOPOST_HOURS_BEFORE of its kickoff time, posts a full Official
+# Meet announcement to #official-meets — same flow as a manual schedule
+# (embed + role pings + RSVP buttons + 1h/15min reminders + 💬 thread).
+#
+# Dedup is fingerprint-based: if the slot's date/time/host/class change after
+# auto-posting, the loop will repost (because the meet effectively changed).
+
+_OM_AUTOPOST_HOURS_BEFORE = 24
+_OM_AUTOPOST_LOOP_INTERVAL_SECS = 60 * 60  # hourly
+
+
+def _om_autopost_fingerprint(date_val, time_val, host_id, class_val) -> str:
+    return f"{date_val}|{time_val}|{host_id}|{class_val}".strip().lower()
+
+
+async def _om_autopost_one(day_key: str, entry: dict, meet_ts: int) -> int | None:
+    """Post the official meet for one schedule slot. Returns the sent message id, or None."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return None
+    host_id = entry.get("host_id")
+    if not host_id:
+        return None
+    host_member = guild.get_member(int(host_id))
+    if not host_member:
+        try:
+            host_member = await guild.fetch_member(int(host_id))
+        except Exception:
+            _bot_log.warning("[OM autopost %s] host %s not found", day_key, host_id)
+            return None
+    channel = bot.get_channel(_OFFICIAL_MEET_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return None
+
+    theme = entry.get("class") or "Official Meet"
+    ping_key = "both"
+    role_ids = _OM_PING_ROLES.get(ping_key, [])
+    ping_line = " ".join(f"<@&{rid}>" for rid in role_ids) if role_ids else ""
+
+    try:
+        sent = await channel.send(
+            content=ping_line if ping_line else None,
+            embed=_om_build_embed(
+                theme=theme, host=host_member, timestamp=meet_ts, notes="",
+                entry_info=None, style_direction=None,
+            ),
+            view=_OfficialMeetRSVPView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True),
+        )
+    except Exception as _e:
+        _bot_log.warning("[OM autopost %s] send failed: %s", day_key, _e)
+        return None
+
+    record = _OmRecord(
+        message_id=sent.id, channel_id=channel.id,
+        host_id=host_member.id, theme=theme, timestamp=meet_ts,
+    )
+    _om_upsert_record(record)
+    try:
+        data = _om_load_records()
+        raw = data.get(str(sent.id), {})
+        raw["ping_key"] = ping_key
+        raw["from_auto_schedule"] = True
+        raw["auto_schedule_day_key"] = day_key
+        data[str(sent.id)] = raw
+        _om_save_records(data)
+    except Exception:
+        pass
+    _om_schedule_reminders(record)
+
+    try:
+        await sent.create_thread(
+            name=f"💬 {theme[:60]} — discussion",
+            auto_archive_duration=1440,
+            reason=f"Auto-posted from weekly schedule ({day_key})",
+        )
+    except Exception:
+        pass
+
+    try:
+        await _om_panel_post_or_refresh(guild, force_repost=True)
+    except Exception:
+        pass
+
+    try:
+        staff_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(staff_ch, discord.TextChannel):
+            await staff_ch.send(
+                f"📅 Auto-posted **{theme}** for <t:{meet_ts}:F> "
+                f"(host <@{host_member.id}>, from `{day_key}` in the weekly schedule)."
+            )
+    except Exception:
+        pass
+
+    return sent.id
+
+
+async def _om_autopost_from_schedule_loop():
+    """Every hour, scan the auto-host schedule. For each Confirmed slot whose
+    kickoff is within _OM_AUTOPOST_HOURS_BEFORE hours, post it to #official-meets
+    unless we already posted for that fingerprint."""
+    await bot.wait_until_ready()
+    await asyncio.sleep(120)
+    while not bot.is_closed():
+        try:
+            schedule = _asched_load()
+            days = schedule.get("days", {})
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            changed = False
+            for day_key in _HRSVP_DAYS:
+                entry = days.get(day_key)
+                if not isinstance(entry, dict):
+                    continue
+                host_id = entry.get("host_id")
+                if not host_id:
+                    continue
+                if (entry.get("host_status") or "").lower() not in ("confirmed", "assigned"):
+                    continue
+                date_val = entry.get("day") or entry.get("date") or "TBD"
+                time_val = entry.get("time") or "TBD"
+                class_val = entry.get("class") or "TBD"
+                if str(date_val).upper() == "TBD" or str(time_val).upper() == "TBD":
+                    continue
+                if str(class_val).upper() == "TBD":
+                    continue
+                meet_ts = _parse_meet_ts(date_val, time_val)
+                if not meet_ts:
+                    continue
+                hours_until = (meet_ts - now_ts) / 3600
+                if hours_until < 0.25 or hours_until > _OM_AUTOPOST_HOURS_BEFORE:
+                    continue
+                fp = _om_autopost_fingerprint(date_val, time_val, host_id, class_val)
+                if entry.get("auto_posted_fingerprint") == fp and entry.get("auto_posted_message_id"):
+                    continue
+                msg_id = await _om_autopost_one(day_key, entry, meet_ts)
+                if msg_id:
+                    entry["auto_posted_message_id"] = msg_id
+                    entry["auto_posted_fingerprint"] = fp
+                    entry["auto_posted_at"] = now_ts
+                    changed = True
+            if changed:
+                _asched_save(schedule)
+        except Exception as _e:
+            _bot_log.warning("[OM autopost-from-schedule] loop error: %s", _e)
+        await asyncio.sleep(_OM_AUTOPOST_LOOP_INTERVAL_SECS)
+
+
+@bot.command(name="autopostnow", aliases=["forceautopost", "schedautopost"])
+async def autopostnow_cmd(ctx):
+    """!autopostnow — run a full pass of the auto-post-from-schedule scan immediately.
+    Staff-only. Useful for testing or if a slot was just confirmed and you don't want
+    to wait the up-to-1-hour loop tick."""
+    if not ctx.guild or not _om_recur_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    schedule = _asched_load()
+    days = schedule.get("days", {})
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    results = []
+    changed = False
+    for day_key in _HRSVP_DAYS:
+        entry = days.get(day_key) or {}
+        host_id = entry.get("host_id")
+        if not host_id or (entry.get("host_status") or "").lower() not in ("confirmed", "assigned"):
+            results.append(f"• `{day_key}` — skipped (not Confirmed)")
+            continue
+        date_val = entry.get("day") or entry.get("date") or "TBD"
+        time_val = entry.get("time") or "TBD"
+        class_val = entry.get("class") or "TBD"
+        if "TBD" in (str(date_val).upper(), str(time_val).upper(), str(class_val).upper()):
+            results.append(f"• `{day_key}` — skipped (TBD fields)")
+            continue
+        meet_ts = _parse_meet_ts(date_val, time_val)
+        if not meet_ts:
+            results.append(f"• `{day_key}` — skipped (couldn\'t parse `{date_val} {time_val}`)")
+            continue
+        hours_until = (meet_ts - now_ts) / 3600
+        if hours_until < 0.25:
+            results.append(f"• `{day_key}` — skipped (meet has already started/passed)")
+            continue
+        if hours_until > _OM_AUTOPOST_HOURS_BEFORE:
+            results.append(
+                f"• `{day_key}` — too early ({hours_until:.1f}h away; loop posts within "
+                f"{_OM_AUTOPOST_HOURS_BEFORE}h)"
+            )
+            continue
+        fp = _om_autopost_fingerprint(date_val, time_val, host_id, class_val)
+        if entry.get("auto_posted_fingerprint") == fp and entry.get("auto_posted_message_id"):
+            results.append(f"• `{day_key}` — already auto-posted (msg `{entry['auto_posted_message_id']}`)")
+            continue
+        msg_id = await _om_autopost_one(day_key, entry, meet_ts)
+        if msg_id:
+            entry["auto_posted_message_id"] = msg_id
+            entry["auto_posted_fingerprint"] = fp
+            entry["auto_posted_at"] = now_ts
+            changed = True
+            results.append(f"✅ `{day_key}` — POSTED ({class_val}, msg `{msg_id}`)")
+        else:
+            results.append(f"❌ `{day_key}` — post failed (check logs)")
+    if changed:
+        _asched_save(schedule)
+    emb = discord.Embed(
+        title="📅 Auto-post pass — results",
+        color=discord.Color.from_rgb(241, 196, 15),
+        description="\n".join(results) or "_no slots evaluated_",
+    )
+    emb.set_footer(text=f"Window: posts up to {_OM_AUTOPOST_HOURS_BEFORE}h before kickoff")
+    await ctx.reply(embed=emb, mention_author=False)
+
+
+@bot.command(name="autopostreset", aliases=["clearautopost"])
+async def autopostreset_cmd(ctx, day_key: str = None):
+    """!autopostreset [Meet 1|Meet 2|Meet 3|all] — clear the auto-post stamp for a slot
+    so the loop will re-evaluate it. Useful if a wrong meet was posted and you want
+    to re-fire after editing the schedule."""
+    if not ctx.guild or not _om_recur_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if not day_key:
+        return await ctx.reply(
+            "Usage: `!autopostreset <Meet 1|Meet 2|Meet 3|all>`", mention_author=False
+        )
+    schedule = _asched_load()
+    days = schedule.get("days", {})
+    target = day_key.strip().lower()
+    cleared = []
+    for k in _HRSVP_DAYS:
+        if target == "all" or k.lower() == target:
+            e = days.get(k)
+            if isinstance(e, dict) and (e.get("auto_posted_message_id") or e.get("auto_posted_fingerprint")):
+                e.pop("auto_posted_message_id", None)
+                e.pop("auto_posted_fingerprint", None)
+                e.pop("auto_posted_at", None)
+                cleared.append(k)
+    if cleared:
+        _asched_save(schedule)
+        await ctx.reply(
+            f"🧹 Cleared auto-post stamp on: {', '.join(f'`{c}`' for c in cleared)}.",
+            mention_author=False,
+        )
+    else:
+        await ctx.reply("Nothing to clear.", mention_author=False)
+
+
+# =========================
 # POP-UP MEET SYSTEM
 # =========================
 
@@ -19299,6 +19545,7 @@ async def on_ready():
     bot.loop.create_task(_popup_auto_end_loop())
     bot.loop.create_task(_om_panel_auto_refresh_loop())
     bot.loop.create_task(_om_recur_loop())
+    bot.loop.create_task(_om_autopost_from_schedule_loop())
 
     # Re-register persistent views for every active pop-up meet so buttons
     # (Pulling Up / Edit / DM Attendees / End) survive bot restarts.
