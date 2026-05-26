@@ -24801,7 +24801,23 @@ async def _post_alt_alert(member: discord.Member, reason: str) -> None:
 
 # ─── #9  Weekly JSON backup loop ─────────────────────────────────────────
 BACKUP_INTERVAL_HOURS = 168  # 7 days
-_last_backup_ts: float = 0.0
+_BACKUP_STATE_FILE = os.path.join(DATA_FOLDER, "diff_backup_state.json")
+
+def _backup_state_load_ts() -> float:
+    """Read last backup timestamp from disk — survives restarts (prevents spam loop)."""
+    try:
+        with open(_BACKUP_STATE_FILE) as _f:
+            return float(json.load(_f).get("last_backup_ts", 0.0))
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
+        return 0.0
+
+def _backup_state_save_ts(ts: float) -> None:
+    try:
+        _atomic_json_save(_BACKUP_STATE_FILE, {"last_backup_ts": float(ts)})
+    except Exception as _e:
+        print(f"[backup] failed to persist state: {_e!r}")
+
+_last_backup_ts: float = _backup_state_load_ts()
 
 async def _run_json_backup_once() -> bool:
     """Zip up diff_data/*.json and post to STAFF_LOGS as an attachment."""
@@ -24842,12 +24858,15 @@ async def _run_json_backup_once() -> bool:
 @tasks.loop(hours=6)
 async def _json_backup_loop():
     global _last_backup_ts
+    # Always re-read from disk in case another instance / earlier boot wrote it
+    _last_backup_ts = max(_last_backup_ts, _backup_state_load_ts())
     now = datetime.now(timezone.utc).timestamp()
     if now - _last_backup_ts < BACKUP_INTERVAL_HOURS * 3600:
         return
     ok = await _run_json_backup_once()
     if ok:
         _last_backup_ts = now
+        _backup_state_save_ts(now)
 
 
 # Manual trigger
@@ -24860,6 +24879,7 @@ async def cmd_backup_now(ctx):
     global _last_backup_ts
     if ok:
         _last_backup_ts = datetime.now(timezone.utc).timestamp()
+        _backup_state_save_ts(_last_backup_ts)
         await msg.edit(content="✅ Backup posted to staff logs.")
     else:
         await msg.edit(content="❌ Backup failed — check console.")
