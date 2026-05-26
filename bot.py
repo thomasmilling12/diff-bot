@@ -20320,7 +20320,13 @@ async def on_ready():
     bot.loop.create_task(_season_loop())
     bot.loop.create_task(_hrsvp_auto_reset_loop())
     bot.loop.create_task(_hrsvp_escalation_loop())
-    bot.loop.create_task(_popup_auto_end_loop())
+    # Singleton guard — on_ready can fire multiple times on reconnect; without
+    # this, each reconnect would spawn another auto-end worker and cause
+    # duplicate close actions / host DMs.
+    global _popup_auto_end_task
+    _t = globals().get("_popup_auto_end_task")
+    if _t is None or _t.done():
+        _popup_auto_end_task = bot.loop.create_task(_popup_auto_end_loop())
     bot.loop.create_task(_om_panel_auto_refresh_loop())
     bot.loop.create_task(_om_recur_loop())
     bot.loop.create_task(_om_autopost_from_schedule_loop())
@@ -24835,7 +24841,11 @@ def _backup_state_load_ts() -> float:
     try:
         with open(_BACKUP_STATE_FILE) as _f:
             return float(json.load(_f).get("last_backup_ts", 0.0))
-    except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
+    except FileNotFoundError:
+        return 0.0
+    except (json.JSONDecodeError, ValueError, TypeError, OSError) as _e:
+        # Permissions / filesystem / corruption — degrade gracefully, don't crash the loop.
+        print(f"[backup] state load failed ({_e!r}); treating as no prior backup")
         return 0.0
 
 def _backup_state_save_ts(ts: float) -> None:
