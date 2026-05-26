@@ -17034,7 +17034,7 @@ def _popup_build_panel_embed() -> discord.Embed:
             "• Tap **🚗 Pulling Up!** on any meet card to RSVP\n"
             "• If the meet is full you\'ll be **waitlisted** + auto-promoted (with DM) when a spot opens\n"
             "• Each meet has a 💬 discussion thread — chat, meet up, drop pics there\n"
-            "• Want pings? Grab the **PlayStation** and **Car Meet** roles in <#1141434729133047848>"
+            "• Want pings? Grab the **PlayStation** and **Car Meet** roles in " + f"<#{JOIN_MEETS_CHANNEL_ID}>"
         ),
         inline=False,
     )
