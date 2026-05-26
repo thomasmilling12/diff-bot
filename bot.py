@@ -16085,34 +16085,107 @@ _POPUP_TZ_MAP = {
     "UTC": "UTC", "GMT": "UTC",
 }
 
+# ── Pop-Up Meet system config (editable) ─────────────────────────────────────
+_POPUP_AUTO_END_HOURS = 3        # auto-end any pop-up older than N hours
+_POPUP_MAX_ACTIVE     = 5        # cap simultaneous active pop-ups per guild
+_POPUP_NOTIFY_OPTIONS = [
+    ("both",    "🔔 Both — PlayStation + Car Meet"),
+    ("ps5",     "🎮 PlayStation only"),
+    ("carmeet", "🚗 Car Meet only"),
+    ("none",    "🤫 No pings (silent post)"),
+]
+
+
+def _popup_sanitize(text: str) -> str:
+    """Defang @everyone / @here so a host can't mass-ping via the modal."""
+    if not text:
+        return text
+    return (text
+            .replace("@everyone", "@\u200beveryone")
+            .replace("@here", "@\u200bhere"))
+
 
 def _popup_parse_time(raw: str) -> str:
-    """Convert '8pm EST' / '8:30pm CST' / '20:00 ET' to a Discord timestamp string.
-    Falls back to the original string if parsing fails."""
+    """Convert a flexible time string into a Discord timestamp pair (`<t:..:F> — <t:..:R>`).
+    Falls back to the original string if parsing fails.
+
+    Accepts:
+      • Existing Discord timestamps: `<t:1234567890:F>` → preserved
+      • Relative: `now`, `in 30 min`, `in 2 hours`, `in 1h`, `+45m`
+      • Absolute clock: `8pm`, `8:30pm`, `20:00`, `8pm ET`, `8:30pm CST`
+      • With "tonight" / "tomorrow" prefix: `tonight 9`, `tomorrow 7pm ET`
+      • If past today and no "tomorrow" hint, auto-rolls to tomorrow.
+    """
     import re
     from datetime import timedelta
+    s = (raw or "").strip()
+    if not s:
+        return raw
+
+    # Pass-through any existing Discord timestamp
+    if re.search(r"<t:\d+(?::[a-zA-Z])?>", s):
+        return s
+
+    sl = s.lower()
+
+    # "now"
+    if sl in ("now", "right now", "asap"):
+        ts = int(datetime.now(timezone.utc).timestamp())
+        return f"<t:{ts}:F> — <t:{ts}:R>"
+
+    # Relative: "in 30 min", "in 2 hours", "in 1h", "+45m", "+2h"
+    m_rel = re.match(
+        r"^(?:in\s+|\+)\s*(\d{1,3})\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\.?$",
+        sl,
+    )
+    if m_rel:
+        n = int(m_rel.group(1))
+        unit = m_rel.group(2)
+        delta = timedelta(hours=n) if unit.startswith("h") else timedelta(minutes=n)
+        ts = int((datetime.now(timezone.utc) + delta).timestamp())
+        return f"<t:{ts}:F> — <t:{ts}:R>"
+
+    # "tonight" / "tomorrow" prefix
+    day_offset = 0
+    force_pm = False
+    s_strip = sl
+    if s_strip.startswith("tomorrow"):
+        day_offset = 1
+        s_strip = s_strip[len("tomorrow"):].strip(" ,")
+    elif s_strip.startswith("tonight"):
+        force_pm = True
+        s_strip = s_strip[len("tonight"):].strip(" ,")
+
+    # Absolute clock: (H)(:MM)? (am|pm)? (TZ)?
     m = re.search(
-        r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*([A-Za-z]{2,4})?',
-        raw.strip(), re.IGNORECASE
+        r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*([A-Za-z]{2,4})?",
+        s_strip, re.IGNORECASE,
     )
     if not m:
         return raw
     hour = int(m.group(1))
     minute = int(m.group(2)) if m.group(2) else 0
     meridiem = m.group(3).lower() if m.group(3) else None
-    tz_abbr = m.group(4).upper() if m.group(4) else "EST"
+    tz_abbr = m.group(4).upper() if m.group(4) else "ET"
     tz_name = _POPUP_TZ_MAP.get(tz_abbr, "America/New_York")
+
     if meridiem == "pm" and hour != 12:
         hour += 12
     elif meridiem == "am" and hour == 12:
         hour = 0
+    elif force_pm and hour < 12 and meridiem is None:
+        # "tonight 9" → 9pm
+        hour += 12
     if hour > 23 or minute > 59:
         return raw
+
     try:
         tz = ZoneInfo(tz_name)
         now = datetime.now(tz)
         local_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if local_dt <= now:
+        if day_offset:
+            local_dt += timedelta(days=day_offset)
+        elif local_dt <= now:
             local_dt += timedelta(days=1)
         ts = int(local_dt.timestamp())
         return f"<t:{ts}:F> — <t:{ts}:R>"
@@ -16326,7 +16399,7 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
     )
     time_field = discord.ui.TextInput(
         label="Time",
-        placeholder="e.g. 8pm ET  or  8:30pm CT  or  <t:1234567890:F>",
+        placeholder="8pm ET  •  in 30 min  •  tonight 9  •  tomorrow 7pm CT",
         required=True,
         max_length=300,
     )
@@ -16337,12 +16410,10 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
         required=False,
         max_length=500,
     )
-    ping_field = discord.ui.TextInput(
-        label="Who to Notify",
-        placeholder="both  |  ps5  |  carmeet  |  none",
-        required=True,
-        max_length=30,
-    )
+
+    def __init__(self, notify_target: str = "both"):
+        super().__init__()
+        self.notify_target = notify_target if notify_target in {"both","ps5","carmeet","none"} else "both"
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -16359,14 +16430,28 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
             await interaction.response.send_message("Pop-up meet channel not found.", ephemeral=True)
             return
 
-        raw_ping = self.ping_field.value.strip().lower()
-        ping_ps = any(w in raw_ping for w in ("playstation", "ps5", "ps", "both", "all"))
-        ping_cm = any(w in raw_ping for w in ("carmeet", "car meet", "car", "both", "all", "notify"))
+        # Active pop-up cap (anti-spam / channel-flood protection)
+        try:
+            active_count = len(_popup_db.get_active_meets(guild.id))
+        except Exception:
+            active_count = 0
+        if active_count >= _POPUP_MAX_ACTIVE:
+            return await interaction.response.send_message(
+                f"⚠️ The server already has **{active_count} active pop-ups** "
+                f"(cap is {_POPUP_MAX_ACTIVE}). Wait for one to end before starting another.",
+                ephemeral=True,
+            )
 
-        theme = self.theme_field.value.strip()
-        location = self.location_field.value.strip()
-        time_text = _popup_parse_time(self.time_field.value.strip())
-        notes = self.notes_field.value.strip()
+        # Notify target comes from the dropdown the host picked BEFORE the modal
+        nt = self.notify_target
+        ping_ps = nt in ("both", "ps5")
+        ping_cm = nt in ("both", "carmeet")
+
+        # Sanitize all free-text fields against @everyone / @here mass-ping abuse
+        theme     = _popup_sanitize(self.theme_field.value.strip())
+        location  = _popup_sanitize(self.location_field.value.strip())
+        time_text = _popup_sanitize(_popup_parse_time(self.time_field.value.strip()))
+        notes     = _popup_sanitize(self.notes_field.value.strip())
 
         avatar_url = str(user.display_avatar.url)
         meet_id = _popup_db.add_meet(
@@ -16397,7 +16482,9 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
             content=ping_text,
             embed=embed,
             view=meet_view,
-            allowed_mentions=discord.AllowedMentions(roles=True, users=False),
+            allowed_mentions=discord.AllowedMentions(
+                roles=True, users=False, everyone=False
+            ),
         )
         _popup_db.set_message_id(meet_id, meet_msg.id)
 
@@ -16440,7 +16527,80 @@ class _PopupCreateBtn(discord.ui.Button):
             return await interaction.response.send_message(
                 "Only users with the **Host** role can create pop-up meets.", ephemeral=True
             )
-        await interaction.response.send_modal(_PopupMeetModal())
+        # Step 1 of 2: show the "Who to Notify" dropdown first.
+        # Step 2 (Continue button) opens the modal with the chosen target.
+        view = _PopupNotifySelectView(user.id)
+        await interaction.response.send_message(
+            "**Step 1 of 2 — Who should be pinged?**\nPick a target, then tap **Continue** to fill in the meet details.",
+            view=view,
+            ephemeral=True,
+        )
+
+
+class _PopupNotifySelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label=lbl, value=val, default=(val == "both"))
+            for val, lbl in _POPUP_NOTIFY_OPTIONS
+        ]
+        super().__init__(
+            placeholder="🔔 Who to notify…",
+            options=options,
+            min_values=1,
+            max_values=1,
+            custom_id="diff_popup:notify_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        # Persist the chosen value on the parent view so Continue can read it.
+        if isinstance(self.view, _PopupNotifySelectView):
+            self.view.notify_target = self.values[0]
+        # ACK with a tiny update so Discord doesn't show "interaction failed"
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception:
+            pass
+
+
+class _PopupNotifyContinueBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Continue →",
+            style=discord.ButtonStyle.success,
+            custom_id="diff_popup:notify_continue",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        # Only the host who opened it can advance
+        if isinstance(view, _PopupNotifySelectView) and interaction.user.id != view.invoker_id:
+            return await interaction.response.send_message(
+                "Only the host who opened this can continue.", ephemeral=True
+            )
+        nt = getattr(view, "notify_target", "both") or "both"
+        try:
+            await interaction.response.send_modal(_PopupMeetModal(notify_target=nt))
+        except Exception as _e:
+            _bot_log.warning("[Popup] send_modal failed: %s", _e)
+            try:
+                await interaction.followup.send(
+                    "Couldn't open the form. Try clicking Create Pop-Up Meet again.",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
+
+
+class _PopupNotifySelectView(discord.ui.View):
+    """Ephemeral 2-min view: dropdown for notify target + Continue button.
+    NOT persistent — auto-times-out so we don't leak views on bot restart."""
+    def __init__(self, invoker_id: int):
+        super().__init__(timeout=120)
+        self.invoker_id = invoker_id
+        self.notify_target = "both"  # matches default-selected option
+        self.add_item(_PopupNotifySelect())
+        self.add_item(_PopupNotifyContinueBtn())
 
 
 class _PopupMeetPanelView(discord.ui.View):
@@ -16465,9 +16625,10 @@ def _popup_build_panel_embed() -> discord.Embed:
         name="📋 How It Works",
         value=(
             "• Host clicks **Create Pop-Up Meet** below\n"
-            "• Fills out theme, location, and time\n"
-            "• Bot posts the meet card with role pings\n"
-            "• Members see it and join fast"
+            "• Picks who to ping (PlayStation / Car Meet / Both / None)\n"
+            "• Fills in theme, location & time (accepts `in 30 min`, `tonight 9`, etc.)\n"
+            "• Bot posts the meet card — members click **🚗 Pulling Up!** to RSVP\n"
+            "• Meets auto-close after 3 hours if the host forgets"
         ),
         inline=False,
     )
@@ -16489,6 +16650,64 @@ def _popup_build_panel_embed() -> discord.Embed:
     embed.set_footer(text="DIFF Pop-Up Meet System")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
+
+
+async def _popup_auto_end_loop() -> None:
+    """Every 10 min: end any pop-up meet older than _POPUP_AUTO_END_HOURS.
+    Edits the meet message in place (greyed out, ended state) and DMs the host."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            now_utc = datetime.now(timezone.utc)
+            for g in bot.guilds:
+                try:
+                    actives = _popup_db.get_active_meets(g.id)
+                except Exception:
+                    continue
+                for meet in actives:
+                    try:
+                        created_iso = meet["created_at"]
+                        created = datetime.fromisoformat(created_iso)
+                        if created.tzinfo is None:
+                            created = created.replace(tzinfo=timezone.utc)
+                    except Exception:
+                        continue
+                    age_h = (now_utc - created).total_seconds() / 3600.0
+                    if age_h < _POPUP_AUTO_END_HOURS:
+                        continue
+                    meet_id = int(meet["id"])
+                    try:
+                        _popup_db.end_meet(meet_id)
+                        counts = _popup_db.get_rsvp_counts(g.id, meet_id)
+                        ended_embed = _popup_build_meet_embed(
+                            meet["theme"] or "", meet["location"], meet["time_text"],
+                            meet["extra_notes"] or "", meet_id, meet["host_user_id"],
+                            meet["host_display_name"] or "", meet["host_avatar_url"],
+                            counts["pullup"], counts["cantmake"], is_ended=True,
+                        )
+                        ch = g.get_channel(_POPUP_PANEL_CHANNEL_ID)
+                        if isinstance(ch, discord.TextChannel) and meet["message_id"]:
+                            try:
+                                msg = await ch.fetch_message(int(meet["message_id"]))
+                                await msg.edit(embed=ended_embed, view=None)
+                            except Exception:
+                                pass
+                        # DM the host so they know it auto-closed
+                        try:
+                            host_mem = g.get_member(int(meet["host_user_id"]))
+                            if host_mem:
+                                await host_mem.send(
+                                    f"⏱ Your pop-up meet (ID #{meet_id}) was auto-closed after "
+                                    f"{_POPUP_AUTO_END_HOURS} hours. "
+                                    f"Final RSVPs: {counts['pullup']} pulled up, {counts['cantmake']} couldn't make it."
+                                )
+                        except Exception:
+                            pass
+                    except Exception as _ie:
+                        _bot_log.warning("[PopupAutoEnd] meet %s: %s", meet["id"], _ie)
+        except Exception as _le:
+            _bot_log.warning("[PopupAutoEnd] loop error: %s", _le)
+        await asyncio.sleep(600)  # 10 min
 
 
 async def _popup_post_or_refresh(guild: discord.Guild):
@@ -17179,6 +17398,7 @@ async def on_ready():
     bot.loop.create_task(_season_loop())
     bot.loop.create_task(_hrsvp_auto_reset_loop())
     bot.loop.create_task(_hrsvp_escalation_loop())
+    bot.loop.create_task(_popup_auto_end_loop())
     bot.loop.create_task(_rc_auto_archive_loop())
     bot.loop.create_task(_rc_saturday_reminder_loop())
     bot.loop.create_task(_rc_pruning_report_loop())
