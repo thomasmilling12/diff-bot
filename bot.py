@@ -40023,26 +40023,6 @@ async def _cmd_diff_help(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
-from logging.handlers import RotatingFileHandler as _RotatingFileHandler
-_log_handler = _RotatingFileHandler(
-    filename='discord.log', encoding='utf-8',
-    maxBytes=5 * 1024 * 1024, backupCount=3,
-)
-_log_handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
-_discord_logger = logging.getLogger('discord')
-_discord_logger.setLevel(logging.WARNING)
-_discord_logger.addHandler(_log_handler)
-with open('discord.log', 'a', encoding='utf-8') as _lf:
-    _lf.write(f"\n{'='*60}\n[BOT STARTED] {datetime.now(_EST_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}\n{'='*60}\n")
-
-asyncio.run(run_bot())
-
-print(f"[Restarting process in 3s...]")
-time.sleep(3)
-os.execv(sys.executable, [sys.executable] + sys.argv)
-
-
-# =========================================================================
 # DIFF MEET SYSTEM PASS — #4 Smart RSVP DM reminders + #7 !planmeet wizard
 # =========================================================================
 # All work on top of the existing _OmRecord / _om_load_records pipeline so
@@ -40338,3 +40318,24 @@ async def cmd_test_meet_reminders(ctx, kind: str = "1h"):
         f"*Note: idempotency flag NOT set — this won't block the auto-loop.*"
     )
 
+
+from logging.handlers import RotatingFileHandler as _RotatingFileHandler
+_log_handler = _RotatingFileHandler(
+    filename='discord.log', encoding='utf-8',
+    maxBytes=5 * 1024 * 1024, backupCount=3,
+)
+_log_handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+_discord_logger = logging.getLogger('discord')
+_discord_logger.setLevel(logging.WARNING)
+_discord_logger.addHandler(_log_handler)
+with open('discord.log', 'a', encoding='utf-8') as _lf:
+    _lf.write(f"\n{'='*60}\n[BOT STARTED] {datetime.now(_EST_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}\n{'='*60}\n")
+
+asyncio.run(run_bot())
+
+print(f"[Restarting process in 3s...]")
+time.sleep(3)
+os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+# =========================================================================
