@@ -16516,6 +16516,10 @@ class _PopupEndMeetBtn(discord.ui.Button):
             await interaction.message.unpin(reason=f"Pop-up meet #{self.meet_id} ended")
         except Exception:
             pass
+        # Post a thank-you summary in the discussion thread if one exists
+        await _popup_post_thread_summary(
+            interaction.guild, meet, self.meet_id, counts, reason="manually ended"
+        )
 
 
 def _popup_is_host_or_staff(meet, member) -> bool:
@@ -16785,6 +16789,12 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
             voice_channel_id=self.voice_channel_id,
             capacity=capacity,
         )
+        # Auto-add the host as a confirmed pullup — they\'re always going to
+        # their own meet. Safe to swallow errors; the host can still re-RSVP.
+        try:
+            _popup_db.set_rsvp(guild.id, meet_id, user.id, "pullup")
+        except Exception as _re:
+            _bot_log.warning("[Popup] host auto-RSVP failed for #%s: %s", meet_id, _re)
 
         ping_parts = []
         if ping_ps:
@@ -16801,7 +16811,7 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
         embed = _popup_build_meet_embed(
             theme, location, time_text, notes, meet_id,
             user.id, user.display_name, avatar_url,
-            pullup_count=0, cantmake_count=0,
+            pullup_count=1, cantmake_count=0,
             voice_channel_id=self.voice_channel_id,
             capacity=capacity,
             waitlist_count=0,
@@ -17120,6 +17130,10 @@ async def _popup_auto_end_loop() -> None:
                                     pass
                             except Exception:
                                 pass
+                        # Thread thank-you for auto-ended meets too
+                        await _popup_post_thread_summary(
+                            g, meet, meet_id, counts, reason=f"auto-closed after {_POPUP_AUTO_END_HOURS}h"
+                        )
                         # DM the host so they know it auto-closed
                         try:
                             host_mem = g.get_member(int(meet["host_user_id"]))
@@ -17187,6 +17201,145 @@ async def popupinfo_cmd(ctx, meet_id: int = 0):
     if cantmakes:
         emb.add_field(name=f"❌ Can't Make It ({counts['cantmake']})", value=_fmt(cantmakes), inline=False)
     emb.set_footer(text=f"Created {meet['created_at'][:19].replace('T',' ')} UTC")
+    await ctx.reply(embed=emb, mention_author=False)
+
+
+async def _popup_post_thread_summary(guild, meet, meet_id: int, counts: dict, reason: str = "ended"):
+    """Post a thank-you summary inside the meet\'s discussion thread, if it has one.
+    Silent no-op if the thread is gone, archived, or never existed."""
+    thread_id = int(_popup_meet_col(meet, "thread_id") or 0)
+    if not thread_id or not guild:
+        return
+    try:
+        thread = guild.get_thread(thread_id) or await guild.fetch_channel(thread_id)
+    except Exception:
+        return
+    if not isinstance(thread, discord.Thread):
+        return
+    try:
+        if thread.archived:
+            await thread.edit(archived=False)
+    except Exception:
+        pass
+    summary = discord.Embed(
+        title=f"🏁 Pop-Up Meet #{meet_id} — wrapped",
+        color=discord.Color.from_rgb(231, 76, 60),
+        description=(
+            f"Thanks to everyone who pulled up! Meet **{reason}**.\n\n"
+            f"🚗 **{counts.get('pullup',0)}** confirmed  •  "
+            f"❌ **{counts.get('cantmake',0)}** couldn\'t make it  •  "
+            f"📋 **{counts.get('waitlist',0)}** on waitlist"
+        ),
+        timestamp=datetime.now(timezone.utc),
+    )
+    summary.set_footer(text="DIFF Pop-Up Meets — drop feedback in this thread")
+    try:
+        await thread.send(embed=summary)
+    except Exception as _se:
+        _bot_log.warning("[Popup] thread summary failed for #%s: %s", meet_id, _se)
+
+
+def _popup_is_staff(member) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    if member.guild_permissions.administrator:
+        return True
+    return any(r.id in _POPUP_STAFF_ROLES for r in member.roles)
+
+
+@bot.command(name="endpopup", aliases=["forceendpopup", "killpopup"])
+async def endpopup_cmd(ctx, meet_id: int = 0):
+    """!endpopup <id> — staff: force-end a pop-up meet from anywhere.
+    Useful when the host has gone offline without ending."""
+    if not ctx.guild or meet_id <= 0:
+        return await ctx.reply("Usage: `!endpopup <meet_id>`", mention_author=False)
+    if not _popup_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    meet = _popup_db.get_meet(meet_id)
+    if not meet or meet["guild_id"] != ctx.guild.id:
+        return await ctx.reply(f"No pop-up meet found with ID `#{meet_id}`.", mention_author=False)
+    if meet["is_ended"]:
+        return await ctx.reply(f"Pop-up #{meet_id} is already ended.", mention_author=False)
+
+    _popup_db.end_meet(meet_id)
+    counts = _popup_db.get_rsvp_counts(ctx.guild.id, meet_id)
+    end_emb = _popup_build_meet_embed(
+        meet["theme"] or "", meet["location"], meet["time_text"],
+        meet["extra_notes"] or "", meet_id, meet["host_user_id"],
+        meet["host_display_name"] or "", meet["host_avatar_url"],
+        counts["pullup"], counts["cantmake"], is_ended=True,
+        voice_channel_id=_popup_meet_col(meet, "voice_channel_id"),
+        capacity=_popup_meet_col(meet, "capacity"),
+        waitlist_count=counts.get("waitlist", 0),
+    )
+    # Edit the panel message + unpin
+    ch = ctx.guild.get_channel(_POPUP_PANEL_CHANNEL_ID)
+    if isinstance(ch, discord.TextChannel) and meet["message_id"]:
+        try:
+            msg = await ch.fetch_message(int(meet["message_id"]))
+            await msg.edit(embed=end_emb, view=None)
+            try:
+                await msg.unpin(reason=f"Pop-up #{meet_id} force-ended by {ctx.author}")
+            except Exception:
+                pass
+        except Exception as _e:
+            _bot_log.warning("[Popup] endpopup edit failed for #%s: %s", meet_id, _e)
+
+    await _popup_post_thread_summary(
+        ctx.guild, meet, meet_id, counts, reason=f"force-ended by {ctx.author.display_name}"
+    )
+    # DM the host so they know
+    try:
+        host_mem = ctx.guild.get_member(int(meet["host_user_id"]))
+        if host_mem and host_mem.id != ctx.author.id:
+            await host_mem.send(
+                f"ℹ️ Staff member **{ctx.author.display_name}** ended your pop-up meet (#{meet_id}). "
+                f"Final RSVPs: {counts['pullup']} pulled up, {counts['cantmake']} couldn\'t make it."
+            )
+    except Exception:
+        pass
+    await ctx.reply(f"✅ Pop-up #{meet_id} ended. {counts['pullup']} confirmed attendees.", mention_author=False)
+
+
+@bot.command(name="popuplist", aliases=["popups", "activepopups"])
+async def popuplist_cmd(ctx):
+    """!popuplist — staff: list all currently-active pop-up meets in this guild."""
+    if not ctx.guild:
+        return
+    if not _popup_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    actives = _popup_db.get_active_meets(ctx.guild.id)
+    if not actives:
+        return await ctx.reply("No active pop-up meets right now.", mention_author=False)
+    emb = discord.Embed(
+        title=f"⚡ Active Pop-Up Meets ({len(actives)})",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    for m in actives[:15]:
+        mid    = int(m["id"])
+        counts = _popup_db.get_rsvp_counts(ctx.guild.id, mid)
+        cap    = int(_popup_meet_col(m, "capacity") or 0)
+        cap_str = f"{counts['pullup']}/{cap}" if cap > 0 else f"{counts['pullup']}"
+        try:
+            created = datetime.fromisoformat(m["created_at"])
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age_min = int((datetime.now(timezone.utc) - created).total_seconds() / 60)
+            age_str = f"{age_min}m old" if age_min < 60 else f"{age_min // 60}h {age_min % 60}m old"
+        except Exception:
+            age_str = "—"
+        emb.add_field(
+            name=f"#{mid} — {(m['theme'] or 'Open Class')[:40]}",
+            value=(
+                f"👤 <@{m['host_user_id']}>  •  📍 {(m['location'] or 'TBD')[:60]}\n"
+                f"🕒 {(m['time_text'] or '—')[:80]}\n"
+                f"🚗 {cap_str} confirmed  •  📋 {counts.get('waitlist',0)} waitlist  •  ⏱ {age_str}"
+            ),
+            inline=False,
+        )
+    if len(actives) > 15:
+        emb.set_footer(text=f"…and {len(actives) - 15} more")
     await ctx.reply(embed=emb, mention_author=False)
 
 
@@ -17879,6 +18032,28 @@ async def on_ready():
     bot.loop.create_task(_hrsvp_auto_reset_loop())
     bot.loop.create_task(_hrsvp_escalation_loop())
     bot.loop.create_task(_popup_auto_end_loop())
+
+    # Re-register persistent views for every active pop-up meet so buttons
+    # (Pulling Up / Edit / DM Attendees / End) survive bot restarts.
+    try:
+        _rehydrated = 0
+        for _g in bot.guilds:
+            try:
+                for _meet in _popup_db.get_active_meets(_g.id):
+                    try:
+                        bot.add_view(
+                            _PopupMeetView(int(_meet["id"])),
+                            message_id=int(_meet["message_id"]),
+                        )
+                        _rehydrated += 1
+                    except Exception:
+                        pass
+            except Exception:
+                continue
+        if _rehydrated:
+            print(f"[Popup] Re-hydrated {_rehydrated} active meet view(s) on startup.")
+    except Exception as _re:
+        print(f"[Popup] view rehydration error: {_re}")
     bot.loop.create_task(_rc_auto_archive_loop())
     bot.loop.create_task(_rc_saturday_reminder_loop())
     bot.loop.create_task(_rc_pruning_report_loop())
