@@ -9558,7 +9558,7 @@ class _WithdrawApplicationBtn(discord.ui.Button):
             emoji="🚪",
             style=discord.ButtonStyle.secondary,
             custom_id="crew_withdraw_btn",
-            row=1,
+            row=2,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -9638,7 +9638,7 @@ class _MyApplicationStatusBtn(discord.ui.Button):
             emoji="🔍",
             style=discord.ButtonStyle.secondary,
             custom_id="crew_my_status_btn",
-            row=1,
+            row=2,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -9713,7 +9713,7 @@ class CrewPanelView(discord.ui.View):
         emoji="📝",
         style=discord.ButtonStyle.success,
         custom_id="crew_application_btn",
-        row=0,
+        row=1,
     )
     async def crew_application(self, interaction: discord.Interaction, button: discord.ui.Button):
         # 1) Anti-spam quality gate (account age + avatar)
