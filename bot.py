@@ -17343,6 +17343,110 @@ async def popuplist_cmd(ctx):
     await ctx.reply(embed=emb, mention_author=False)
 
 
+@bot.command(name="postpopupguide", aliases=["popupguide", "popuphowto"])
+async def postpopupguide_cmd(ctx):
+    """!postpopupguide — staff: post (and pin) the full how-to-host guide in #popup-meets."""
+    if not ctx.guild:
+        return
+    if not _popup_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    ch = ctx.guild.get_channel(_POPUP_PANEL_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return await ctx.reply("Pop-up meets channel not found.", mention_author=False)
+
+    emb = discord.Embed(
+        title="📖 How to Host a Pop-Up Meet",
+        color=discord.Color.from_rgb(255, 140, 0),
+        description=(
+            "Pop-ups are spontaneous PS5 meets that go live without advance notice. "
+            "Anyone with the **Host** role can drop one anytime — here\'s the full walkthrough."
+        ),
+    )
+    emb.set_thumbnail(url=DIFF_LOGO_URL)
+
+    emb.add_field(
+        name="① Start the meet",
+        value=(
+            "Tap **⚡ Create Pop-Up Meet** on the panel above. A private setup screen opens with three quick dropdowns:\n"
+            "• 🔔 **Who to ping** — PlayStation only / Car Meet only / Both / No pings\n"
+            "• 🎨 **Quick-pick theme** — JDM, Clean Euros, Supers, Off-Road, Cinematic, Muscle, Tuners, Open Class, or Custom\n"
+            "• 🔊 **Voice channel** (optional) — attach a VC so members know where to drop\n"
+            "Defaults are fine for most meets. Tap **Continue →** when ready."
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="② Fill in the details",
+        value=(
+            "**Meet Theme** (required) — pre-filled from your dropdown pick; edit if you want\n"
+            "**Location** (optional) — leave blank if TBD\n"
+            "**Time** (required) — smart parser accepts:\n"
+            "  • `in 30 min` • `in 1 hour` • `+45m`\n"
+            "  • `tonight 9` • `tomorrow 7pm CT` • `now`\n"
+            "  • bare `8pm` (auto-rolls to tomorrow if past)\n"
+            "**Notes** (optional) — clean builds only / first come first served / etc.\n"
+            "**Capacity** (optional) — leave blank for unlimited, or set 1–50"
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="③ Manage your meet",
+        value=(
+            "Every live meet card has 5 buttons:\n"
+            "🚗 **Pulling Up!** / ❌ **Can\'t Make It** — members tap to RSVP\n"
+            "✏️ **Edit** — update theme / location / time / notes anytime\n"
+            "📣 **DM Attendees** — blast a message to every confirmed pullup\n"
+            "🏁 **End Meet** — manually close it"
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="④ What happens automatically",
+        value=(
+            "• You\'re auto-RSVPed as the first pullup\n"
+            "• Card is auto-pinned + a discussion thread is auto-created\n"
+            "• At capacity, new pullups go to a **waitlist** and get auto-promoted (with DM) when a spot opens\n"
+            "• You\'ll get a DM **30 min before** the 3-hour auto-close\n"
+            "• Meets auto-close after 3h with a thank-you summary in the thread"
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="⚠️ Limits",
+        value=(
+            "• **1 active pop-up per host** — end yours before starting another\n"
+            "• **5 active pop-ups per server** total\n"
+            "• PS5 only • Clean builds only • Follow host instructions"
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="🛡️ Staff Commands",
+        value=(
+            "`!popuplist` — all active pop-ups\n"
+            "`!popupinfo <id>` — full RSVP breakdown (host can also use)\n"
+            "`!endpopup <id>` — force-end from anywhere (DMs host)"
+        ),
+        inline=False,
+    )
+    emb.set_footer(text="DIFF Pop-Up Meets — questions? Drop them in the host channel.")
+
+    try:
+        msg = await ch.send(embed=emb)
+        try:
+            await msg.pin(reason=f"Pop-up host guide posted by {ctx.author}")
+        except Exception as _pe:
+            await ctx.reply(
+                f"✅ Guide posted in {ch.mention} but couldn\'t pin it ({_pe}). "
+                "Pin it manually or free up a pin slot.",
+                mention_author=False,
+            )
+            return
+        await ctx.reply(f"✅ Host guide posted and pinned in {ch.mention}.", mention_author=False)
+    except Exception as _se:
+        await ctx.reply(f"❌ Failed to post guide: {_se}", mention_author=False)
+
+
 async def _popup_post_or_refresh(guild: discord.Guild):
     channel = guild.get_channel(_POPUP_PANEL_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
