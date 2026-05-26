@@ -18456,7 +18456,7 @@ class _PopupMeetModal(discord.ui.Modal, title="⚡ Create Pop-Up Meet"):
             ping_parts.append(r.mention if r else "@CarMeet")
         ping_text = " ".join(ping_parts) or None
 
-        meet_view = _PopupMeetView(meet_id)
+        meet_view = _PopupMeetView(meet_id, is_started=False, is_ended=False)
         bot.add_view(meet_view)   # register immediately so buttons work after restart
 
         embed = _popup_build_meet_embed(
@@ -19818,7 +19818,7 @@ async def on_ready():
                 for _meet in _popup_db.get_active_meets(_g.id):
                     try:
                         bot.add_view(
-                            _PopupMeetView(int(_meet["id"])),
+                            _PopupMeetView(int(_meet["id"]), is_started=bool(int(_meet["is_started"] or 0)), is_ended=bool(int(_meet["is_ended"] or 0))),
                             message_id=int(_meet["message_id"]),
                         )
                         _rehydrated += 1
@@ -19857,7 +19857,7 @@ async def on_ready():
     for _guild in bot.guilds:
         try:
             for _pm in _popup_db.get_active_meets(_guild.id):
-                _safe_add_view(_PopupMeetView(int(_pm["id"])), f"_PopupMeetView({_pm['id']})")
+                _safe_add_view(_PopupMeetView(int(_pm["id"]), is_started=bool(int(_pm["is_started"] or 0)), is_ended=bool(int(_pm["is_ended"] or 0))), f"_PopupMeetView({_pm['id']})")
         except Exception as _pe:
             print(f"[Popup] Could not re-register meet views for guild {_guild.id}: {_pe}")
     # Auto-refresh the official meet panel on startup (edit in place, never duplicates)
