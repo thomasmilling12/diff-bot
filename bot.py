@@ -17187,7 +17187,7 @@ async def _om_autopost_from_schedule_loop():
                 host_id = entry.get("host_id")
                 if not host_id:
                     continue
-                if (entry.get("host_status") or "").lower() not in ("confirmed", "assigned"):
+                if (entry.get("host_status") or "").lower() not in ("yes", "confirmed", "assigned"):
                     continue
                 date_val = entry.get("day") or entry.get("date") or "TBD"
                 time_val = entry.get("time") or "TBD"
@@ -17233,8 +17233,8 @@ async def autopostnow_cmd(ctx):
     for day_key in _HRSVP_DAYS:
         entry = days.get(day_key) or {}
         host_id = entry.get("host_id")
-        if not host_id or (entry.get("host_status") or "").lower() not in ("confirmed", "assigned"):
-            results.append(f"• `{day_key}` — skipped (not Confirmed)")
+        if not host_id or (entry.get("host_status") or "").lower() not in ("yes", "confirmed", "assigned"):
+            results.append(f"• `{day_key}` — skipped (not Confirmed: host_status=`{entry.get('host_status')}`)")
             continue
         date_val = entry.get("day") or entry.get("date") or "TBD"
         time_val = entry.get("time") or "TBD"
