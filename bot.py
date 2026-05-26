@@ -31713,17 +31713,6 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
     """Global prefix-command error handler."""
-    # [DEBUG-PLANMEET] Log EVERY error for planmeet-family — even CommandNotFound / CheckFailure
-    try:
-        if ctx.message.content and ctx.message.content.lower().startswith(
-            ("!planmeet", "!newmeet", "!meetplan")
-        ):
-            print(f"[DEBUG-PLANMEET] on_command_error: {type(error).__name__}: {error!r} "
-                  f"(content={ctx.message.content!r})", flush=True)
-            import traceback as _tb_dbg
-            _tb_dbg.print_exception(type(error), error, error.__traceback__)
-    except Exception:
-        pass
     if isinstance(error, commands.CommandNotFound):
         return
     if isinstance(error, commands.CheckFailure):
@@ -31823,15 +31812,6 @@ async def _update_join_ticket_complete(channel: discord.TextChannel) -> None:
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
-    # [DEBUG-PLANMEET] Trace any planmeet-family invocation through the pipeline.
-    try:
-        if message.content and message.content.lower().startswith(
-            ("!planmeet", "!newmeet", "!meetplan")
-        ):
-            print(f"[DEBUG-PLANMEET] on_message received: '{message.content!r}' "
-                  f"from {message.author} ({message.author.id}) in #{getattr(message.channel,'name','?')}", flush=True)
-    except Exception:
-        pass
     await bot.process_commands(message)
 
     if not message.guild or message.author.bot:
@@ -40269,8 +40249,6 @@ class _PlanMeetLauncherView(discord.ui.View):
 
 @bot.command(name="planmeet", aliases=["meetplan", "newmeet"])
 async def cmd_plan_meet(ctx):
-    print(f"[DEBUG-PLANMEET] cmd_plan_meet FIRED — invoked_with={ctx.invoked_with!r} "
-          f"by {ctx.author} in #{getattr(ctx.channel,'name','?')}", flush=True)
     is_staff = (
         ctx.author.guild_permissions.manage_guild
         or any(r.id in _JOIN_STAFF_ROLE_IDS for r in getattr(ctx.author, "roles", []))
