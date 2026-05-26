@@ -5,11 +5,15 @@
 **Deployed on:** Raspberry Pi 5 at `~/diff-bot/`  
 **Venv:** `/home/thomas/diff-bot/.venv/bin/python`  
 **Service:** `different-meets-v2` (systemd)  
-**Deploy:**
+**Deploy (preferred):**
 ```bash
-cd ~/diff-bot && git fetch origin && git reset --hard origin/main && sudo systemctl restart different-meets-v2
+cd ~/diff-bot && bash deploy.sh
 ```
+…which runs the equivalent of `git fetch origin && git reset --hard origin/main && sudo systemctl restart different-meets-v2`.
+
 Data files are permanently untracked — `git reset --hard` is safe and never touches live data.
+
+**Agent push workflow:** local working copy lives at `/tmp/bot.py` (re-fetch via `curl` + `GITHUB_TOKEN` from raw GitHub if sandbox resets). Pushes are made via GitHub Git Data API (blob → tree → commit → PATCH ref) using `python3 + urllib`. Always `py_compile` before push. Repo: `thomasmilling12/diff-bot`. Secrets in env: `DISCORD_TOKEN`, `GITHUB_TOKEN`.
 
 ## Critical Rules
 - Timezone: always `ZoneInfo("America/New_York")` — never `"US/Eastern"`
@@ -33,16 +37,24 @@ Data files are permanently untracked — `git reset --hard` is safe and never to
 ## Architecture
 
 ### Main file
-`bot.py` — ~30,400 lines. All core logic, all prefix commands, all event handlers.
+`bot.py` — ~41,300 lines. All core logic, all prefix commands, all event handlers.
 
-### Cogs
-- `cogs/diff_color_lab.py` — Color Lab
-- `cogs/diff_automod.py` — AutoMod
+### Cogs (loaded via `_cogs` list in `_setup_hook`)
+Many cogs under `cogs/`. Notable ones: `diff_color_lab`, `diff_automod`, `diff_meet_host_system`, `diff_mod_hub`, `diff_full_moderation`, `diff_next_level_moderation`, `diff_postmeet`, `cleanup`, etc.
+
+**Known disabled command stubs (own name in bot.py, leave the stub commented in the cog so the cog still loads):**
+- `cogs/diff_full_moderation.py` → `hostprofile` (bot.py owns the richer version)
+- `cogs/diff_next_level_moderation.py` → `weeklyreport` (bot.py owns the richer version)
+- `cogs/diff_host_posters.py` was DELETED in May 26 2026 (its only command, `postmeet`, was a duplicate of bot.py's 90-line version). Loader entry also removed from `_cogs`.
 
 ### Data files
 - `diff_data/diff_activity.db` — SQLite (member_activity, member_leaves, leave_surveys, health_score_history)
 - `diff_data/diff_partner_panel.json` — partnership panels
 - `diff_data/diff_partnerships.json` — partnership records
+- `diff_data/diff_csat.json` — ticket CSAT ratings (post-close DM survey)
+- `diff_data/diff_ticket_history.json` — recently-closed tickets per user (for "My Tickets")
+- `diff_data/diff_backup_state.json` — persists `_last_backup_ts` across restarts so the weekly backup loop is idempotent (prevents spam when bot is redeployed several times in a row)
+- `diff_data/diff_popup_meets.db` — SQLite, Pop-Up Meet system (meets, RSVPs, threads)
 
 ### Logs
 - `logs/bot.log`
@@ -167,6 +179,29 @@ All loops use:
 - `_loop_fail_counts` / `_loop_alerted` / `_loop_last_run` tracking
 - `run_with_timeout()` wrapper
 - `trigger_system_restart()` global failsafe (5 unique loops failing in 60s → `os._exit(1)`)
+
+### Restart-resilient state (important pattern)
+Module-level timestamps used by `@tasks.loop` gating MUST be persisted to disk, otherwise every redeploy resets them to 0 and re-fires the loop body immediately. Reference impl: `diff_backup_state.json` + `_backup_state_load_ts()`/`_backup_state_save_ts()`. Same pattern should be used for any future "fire at most every N hours" loop.
+
+### `on_ready` is not single-shot
+Discord reconnects fire `on_ready` again. Any `bot.loop.create_task(_loop())` in `on_ready` must be guarded by a module-level task handle (`if _task is None or _task.done(): _task = bot.loop.create_task(...)`) — otherwise reconnects spawn duplicate workers (and duplicate DMs / actions). Reference impl: `_popup_auto_end_task` guard in `on_ready`.
+
+## Pop-Up Meet System
+- `cogs/diff_meet_host_system.py` panel + bot.py `_popup_*` core
+- SQLite at `diff_data/diff_popup_meets.db` (table `popup_meets` with `is_started`, `started_at`, `is_ended`, etc.)
+- Auto-close uses **two separate caps** (May 26 2026 fix):
+  - **Live meets** (`is_started=1`) → `_POPUP_AUTO_END_HOURS` (3h) measured from `started_at`
+  - **Never-started meets** → `_POPUP_ABANDON_HOURS` (24h) measured from `created_at`
+  - Last-call DM (`~30 min before close`) only fires for live meets
+- Pop-up views are re-hydrated on startup (`[Popup] Re-hydrated N active meet view(s)`)
+
+## Support Ticket Panel UX (May 26 2026)
+- Buttons order: **My Tickets / Ask Q / Report / Apply / Urgent**
+- New tickets auto-post a context embed (member age, recent warning, etc.)
+- **Ask a Question** runs FAQ deflection first (6 default entries, build-rules text is PS5-only)
+- On close → CSAT DM to the ticket opener (rating saved to `diff_data/diff_csat.json`, reportable via `!csatreport`)
+- **My Tickets** lists recently-closed tickets from `diff_data/diff_ticket_history.json`
+- Appeal predictive suggestion when member has an active warning <30d old (`_FaqDeflectAppealButton` runs `_appeal_denial_check`, posts staff-logs, alerts mod-hub — parity with `AppealDropdown`)
 
 ## Removed: PSN Host Status Board (May 22 2026)
 The PSN integration (psnawp + `_psn_*` helpers + `_psn_board_refresh_loop` + `!setpsn`/`!removepsn`/`!psnboard`/`!refreshpsnboard`/`!psntest`/`!psnlist` commands) was removed because Sony's PSN API was starving the default asyncio thread pool when it hung, freezing the entire event loop and causing silent bot offlines that required physical Pi reboots (systemd couldn't recover because the process was still alive). The `host_board_auto_refresh_loop` now always renders the static `build_status_embed()` instead of live PSN presence. The `psnawp` package was removed from `requirements.txt`. Data file `diff_data/diff_psn_map.json` is untouched and can be safely deleted on the Pi.
