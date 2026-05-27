@@ -32574,13 +32574,7 @@ async def cmd_new_ticket(ctx: commands.Context, member: discord.Member = None, *
     )
     welcome.set_footer(text=f"Opened by staff: {ctx.author} • {ctx.author.id}")
     try:
-        from_view = SupportCloseButton() if "SupportCloseButton" in globals() else None
-        if from_view is not None:
-            view = discord.ui.View(timeout=None)
-            view.add_item(from_view)
-            await channel.send(content=member.mention, embed=welcome, view=view)
-        else:
-            await channel.send(content=member.mention, embed=welcome)
+        await channel.send(content=member.mention, embed=welcome, view=SupportCloseButton())
     except Exception:
         try:
             await channel.send(content=member.mention, embed=welcome)
