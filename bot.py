@@ -33104,10 +33104,11 @@ async def _supp_create_ticket_channel_for(
 ) -> "discord.TextChannel | None":
     """Minimal channel-creation helper that does NOT require a discord.Interaction.
     Used by the DM-based Reopen button (which has no guild/interaction context)."""
-    panel_channel = guild.get_channel(SUPPORT_PANEL_CHANNEL_ID)
-    category = None
-    if isinstance(panel_channel, discord.TextChannel):
-        category = panel_channel.category
+    category = guild.get_channel(SUPPORT_TICKET_CATEGORY_ID) if SUPPORT_TICKET_CATEGORY_ID else None
+    if not isinstance(category, discord.CategoryChannel):
+        panel_channel = guild.get_channel(SUPPORT_PANEL_CHANNEL_ID)
+        if isinstance(panel_channel, discord.TextChannel):
+            category = panel_channel.category
     if not isinstance(category, discord.CategoryChannel):
         return None
     overwrites: dict = {
