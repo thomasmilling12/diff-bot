@@ -14030,6 +14030,14 @@ class _RcMyRsvpBtn(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
+        # Defer IMMEDIATELY — building the embed reads sqlite twice and can blow past
+        # Discord's 3s ack window on a loaded Pi, causing "This interaction failed."
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=False)
+        except discord.InteractionResponded:
+            pass
+        except Exception as _de:
+            print(f"[RcMyRsvp] defer failed for {interaction.user}: {_de}")
         try:
             uid          = interaction.user.id
             guild        = interaction.guild
@@ -14088,14 +14096,14 @@ class _RcMyRsvpBtn(discord.ui.Button):
                 )
 
             embed.set_footer(text="Update anytime by clicking the buttons above  •  Only you can see this")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         except discord.InteractionResponded:
             pass
         except Exception as e:
             print(f"[RcMyRsvp] Error for {interaction.user}: {e}")
             import traceback; traceback.print_exc()
             try:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Something went wrong fetching your RSVP. Please try again.", ephemeral=True
                 )
             except Exception:
