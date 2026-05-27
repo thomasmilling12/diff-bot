@@ -31215,6 +31215,14 @@ class _FaqDeflectOpenTicketButton(discord.ui.Button):
                          style=discord.ButtonStyle.primary, row=2)
 
     async def callback(self, interaction: discord.Interaction):
+        # AI-first: if OpenAI is available, ask the user to describe their question
+        # in a modal so we can attempt an instant answer before creating a ticket.
+        # Falls back silently to the plain ticket open if AI is disabled.
+        try:
+            if _ai_enabled():
+                return await interaction.response.send_modal(_AiAskQuestionModal())
+        except Exception:
+            pass
         await _supp_open_ticket_flow(interaction, "support")
 
 
@@ -32404,9 +32412,11 @@ class AppealDropdown(discord.ui.Select):
 
 # ─── Support panel button-based flow (replaces SupportDropdown) ───────────────
 
-async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: str) -> None:
+async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: str, description: str = "") -> None:
     """Shared ticket-creation flow used by the Report and Ask-a-Question buttons,
-    and by the Apply picker for the generic 'apply' type."""
+    and by the Apply picker for the generic 'apply' type.
+    `description` is an optional pre-collected user blurb (from AI modals) — when
+    present it's posted into the new ticket and used for AI auto-tag/route."""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         if not interaction.response.is_done():
             return await interaction.response.send_message("Server only.", ephemeral=True)
@@ -32438,9 +32448,16 @@ async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: s
     if not channel:
         return
 
-    # Auto-tag channel by ticket type / label keywords so staff can grep at a glance.
+    # Auto-tag channel — AI tag if we have a description, else keyword fallback.
     try:
-        _ti_tag = _ti_auto_tag_for_text(f"{ticket.key} {ticket.label}")
+        _ti_tag = None
+        if description:
+            try:
+                _ti_tag = await _ai_tag_for(description)
+            except Exception:
+                _ti_tag = None
+        if not _ti_tag:
+            _ti_tag = _ti_auto_tag_for_text(f"{ticket.key} {ticket.label} {description}")
         if _ti_tag and not channel.name.startswith(f"{_ti_tag}-"):
             await channel.edit(name=f"{_ti_tag}-{channel.name}"[:90])
     except Exception:
@@ -32463,6 +32480,37 @@ async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: s
         await channel.send(embed=_supp_build_member_context_embed(interaction.user))
     except Exception:
         pass
+
+    # If a description was pre-collected (AI flows), post it + AI route suggestion.
+    if description:
+        try:
+            _desc_embed = discord.Embed(
+                title="📝 Member's Description",
+                description=description[:2000],
+                color=discord.Color.blurple(),
+            )
+            _desc_embed.set_footer(text="Pre-collected before ticket open • AI-triaged")
+            await channel.send(embed=_desc_embed)
+        except Exception:
+            pass
+        try:
+            _route = await _ai_route_ticket(description, ticket.key)
+            _suggested = _route.get("suggested_type")
+            if _suggested and _suggested != ticket.key:
+                _t_other = _TICKET_TYPES.get(_suggested)
+                _label = _t_other.label if _t_other else _suggested
+                _r_embed = discord.Embed(
+                    title="🤖 AI Routing Note",
+                    description=(
+                        f"This may be a better fit as **{_label}** ticket.\n"
+                        f"> _{_route.get('reason', '')}_"
+                    ),
+                    color=discord.Color.orange(),
+                )
+                _r_embed.set_footer(text="Staff: re-route manually if you agree.")
+                await channel.send(embed=_r_embed)
+        except Exception:
+            pass
 
     if ticket.key == "apply":
         await channel.send(embed=_supp_build_questions_embed(interaction.user))
@@ -32554,14 +32602,18 @@ async def _supp_urgent_escalation_check(channel_id: int, owner_id: int) -> None:
         pass
 
 
-async def _supp_open_urgent_ticket(interaction: discord.Interaction) -> None:
-    """Opens a high-priority report-type ticket with leadership pinged immediately."""
+async def _supp_open_urgent_ticket(interaction: discord.Interaction, description: str = "") -> None:
+    """Opens a high-priority report-type ticket with leadership pinged immediately.
+    `description` is an optional pre-collected blurb from the AI severity-check modal."""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await interaction.response.send_message("Server only.", ephemeral=True)
-    try:
-        await interaction.response.defer(ephemeral=True)
-    except discord.NotFound:
-        return
+        if not interaction.response.is_done():
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        return await interaction.followup.send("Server only.", ephemeral=True)
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
 
     existing = await _supp_find_any_open_ticket(interaction.guild, interaction.user, support_only=True)
     if existing:
@@ -32593,11 +32645,15 @@ async def _supp_open_urgent_ticket(interaction: discord.Interaction) -> None:
         description=(
             f"{interaction.user.mention} has opened an **urgent** ticket. "
             "Treat this with priority.\n\n"
-            "**Please describe the situation:**\n"
-            "• What is happening right now?\n"
-            "• Who is involved (usernames / PSN)?\n"
-            "• Where is it happening (channel / VC)?\n"
-            "• Any evidence (screenshots, links)?"
+            + (
+                f"**Member's description (pre-collected, AI-triaged):**\n>>> {description[:1500]}"
+                if description else
+                "**Please describe the situation:**\n"
+                "• What is happening right now?\n"
+                "• Who is involved (usernames / PSN)?\n"
+                "• Where is it happening (channel / VC)?\n"
+                "• Any evidence (screenshots, links)?"
+            )
         ),
         color=discord.Color.red(),
         timestamp=datetime.now(timezone.utc),
@@ -32772,6 +32828,13 @@ class _SupportUrgentButton(discord.ui.Button):
         super().__init__(label="Urgent", emoji="🚨", style=discord.ButtonStyle.danger,
                          custom_id="diff_support_btn_urgent", row=0)
     async def callback(self, interaction: discord.Interaction):
+        # AI severity check first — if OpenAI is configured, ask for a brief
+        # description so we can filter non-emergencies before pinging leadership.
+        try:
+            if _ai_enabled():
+                return await interaction.response.send_modal(_AiUrgentDescribeModal())
+        except Exception:
+            pass
         await _supp_open_urgent_ticket(interaction)
 
 
@@ -33341,6 +33404,334 @@ def _ti_close_log_load() -> list:
 
 def _ti_close_log_save(data: list) -> None:
     _atomic_json_save(_TI_CLOSE_LOG_FILE, data[-_TI_CLOSE_LOG_MAX:])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AI Pre-Ticket Triage (May 27 2026)
+# OpenAI-powered question deflection, ticket routing, smart tagging, and
+# urgent-severity check. Every call is wrapped in try/except — if the API
+# is unavailable, slow, or returns garbage, the bot silently falls back
+# to the existing keyword/manual flows. Never auto-denies anyone.
+# ═══════════════════════════════════════════════════════════════════════════
+_AI_MODEL = "gpt-4o-mini"
+_AI_TIMEOUT_S = 8
+_AI_MAX_INPUT_CHARS = 1500
+_AI_CLIENT = None
+_AI_CLIENT_ERR = False
+
+
+def _ai_enabled() -> bool:
+    global _AI_CLIENT, _AI_CLIENT_ERR
+    if _AI_CLIENT_ERR:
+        return False
+    if _AI_CLIENT is not None:
+        return True
+    if not os.environ.get("OPENAI_API_KEY"):
+        return False
+    try:
+        from openai import OpenAI
+        _AI_CLIENT = OpenAI(timeout=_AI_TIMEOUT_S)
+        return True
+    except Exception as _e:
+        log.warning(f"[AI] openai import/init failed: {_e}; AI features disabled")
+        _AI_CLIENT_ERR = True
+        return False
+
+
+def _ai_chat_sync(system: str, user: str, json_mode: bool = True, max_tokens: int = 350) -> "str|None":
+    if not _ai_enabled():
+        return None
+    try:
+        kw = dict(
+            model=_AI_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user[:_AI_MAX_INPUT_CHARS]},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.2,
+        )
+        if json_mode:
+            kw["response_format"] = {"type": "json_object"}
+        resp = _AI_CLIENT.chat.completions.create(**kw)
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as _e:
+        log.warning(f"[AI] chat call failed: {_e}")
+        return None
+
+
+async def _ai_chat(system: str, user: str, json_mode: bool = True, max_tokens: int = 350) -> "str|None":
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_ai_chat_sync, system, user, json_mode, max_tokens),
+            timeout=_AI_TIMEOUT_S + 2,
+        )
+    except Exception:
+        return None
+
+
+def _ai_faq_corpus() -> str:
+    try:
+        bullets = []
+        for (_t, _e, _b) in _FAQ_DEFLECT_ENTRIES[:12]:
+            bullets.append(f"- {_t}: {_b[:280]}")
+        return "\n".join(bullets) if bullets else "(no FAQ entries loaded)"
+    except Exception:
+        return "(no FAQ entries available)"
+
+
+_AI_BASE_CTX = (
+    "DIFF Meets is a PS5-only GTA Online car-meet Discord community. "
+    "Platform is PS5 (NEVER PS4). Meets are weekly. Members need to be Verified to participate. "
+    "Support panel buttons: Report (member behavior), Ask a Question, Apply (staff/host), "
+    "Urgent (active emergency only), My Tickets. "
+    "Warnings can be appealed through the Appeals dropdown."
+)
+
+
+async def _ai_answer_question(question: str) -> "dict":
+    """Returns {'answer': str|None, 'confidence': 'high'|'medium'|'low', 'should_open_ticket': bool}."""
+    sys = (
+        f"You are a helpful Discord support assistant for DIFF Meets.\n{_AI_BASE_CTX}\n\n"
+        f"Community FAQ (authoritative):\n{_ai_faq_corpus()}\n\n"
+        "Answer concisely (max 4 short sentences). "
+        "If clearly covered by the FAQ or base info, set confidence='high' and should_open_ticket=false. "
+        "If you can partially help but the user likely still needs a human (account-specific), "
+        "set confidence='medium' and should_open_ticket=true. "
+        "If you cannot answer with confidence (needs staff judgment, member-specific action, "
+        "report of another user), return answer=null, confidence='low', should_open_ticket=true. "
+        "NEVER guess about warnings, bans, or specific members. NEVER auto-deny anyone. "
+        "Reply ONLY with JSON: {\"answer\": string|null, \"confidence\": \"high\"|\"medium\"|\"low\", \"should_open_ticket\": bool}."
+    )
+    raw = await _ai_chat(sys, question)
+    if not raw:
+        return {"answer": None, "confidence": "low", "should_open_ticket": True}
+    try:
+        d = json.loads(raw)
+        ans = d.get("answer")
+        conf = str(d.get("confidence", "low")).lower()
+        if conf not in ("high", "medium", "low"):
+            conf = "low"
+        ot = bool(d.get("should_open_ticket", True))
+        if not ans:
+            ans = None
+        return {"answer": ans, "confidence": conf, "should_open_ticket": ot}
+    except Exception:
+        return {"answer": None, "confidence": "low", "should_open_ticket": True}
+
+
+_AI_TICKET_TYPE_HINTS = {
+    "support": "general questions, info, how-to, lost roles, channel access",
+    "report": "reporting another member's behavior, rule violations, harassment",
+    "apply": "applying for staff/host roles",
+    "warning": "appealing a warning",
+    "ban": "appealing a ban",
+    "kick": "appealing a kick",
+    "timeout": "appealing a timeout",
+    "build": "appealing a build/car rejection",
+    "exclusion": "appealing exclusion from a meet",
+}
+
+
+async def _ai_route_ticket(description: str, current_type: str) -> "dict":
+    """Returns {'suggested_type': str|None, 'reason': str}."""
+    if not description.strip():
+        return {"suggested_type": None, "reason": ""}
+    hints = "\n".join(f"- {k}: {v}" for k, v in _AI_TICKET_TYPE_HINTS.items())
+    sys = (
+        f"You route Discord support tickets for DIFF Meets.\n{_AI_BASE_CTX}\n\n"
+        f"Available ticket types:\n{hints}\n\n"
+        f"The user picked: '{current_type}'. Decide if a different type fits better. "
+        "If the current pick is fine OR you're unsure, suggested_type=null. "
+        "Only suggest changes when the mismatch is obvious. "
+        "Reply ONLY with JSON: {\"suggested_type\": string|null, \"reason\": string}."
+    )
+    raw = await _ai_chat(sys, description, max_tokens=120)
+    if not raw:
+        return {"suggested_type": None, "reason": ""}
+    try:
+        d = json.loads(raw)
+        st = d.get("suggested_type")
+        if st and st not in _AI_TICKET_TYPE_HINTS:
+            st = None
+        if st == current_type:
+            st = None
+        return {"suggested_type": st, "reason": str(d.get("reason", ""))[:200]}
+    except Exception:
+        return {"suggested_type": None, "reason": ""}
+
+
+async def _ai_tag_for(text: str) -> "str|None":
+    """AI-picked short tag (<=12 chars, lowercase). None on failure."""
+    if not text.strip():
+        return None
+    sys = (
+        "You generate a single short tag for a Discord support ticket. "
+        "Pick the most fitting word from: banned, kicked, timeout, appeal, refund, technical, "
+        "account, behavior, rules, verification, build, meet, crew, role, payment, harassment, "
+        "report, partnership — or invent a new one only if none fit. "
+        "Lowercase, alphanumeric/hyphens, max 12 chars. "
+        "Reply ONLY with JSON: {\"tag\": string}."
+    )
+    raw = await _ai_chat(sys, text, max_tokens=40)
+    if not raw:
+        return None
+    try:
+        tag = str(json.loads(raw).get("tag", "")).strip().lower()
+        tag = re.sub(r"[^a-z0-9-]", "", tag)[:12]
+        return tag or None
+    except Exception:
+        return None
+
+
+async def _ai_check_urgent(text: str) -> "dict":
+    """Returns {'is_urgent': bool, 'reason': str}. Defaults to True on failure."""
+    if not text.strip():
+        return {"is_urgent": True, "reason": ""}
+    sys = (
+        f"You filter 'urgent' support requests for a Discord community.\n{_AI_BASE_CTX}\n\n"
+        "TRULY URGENT: active raid/harassment NOW, threats, doxxing, "
+        "active rule-breaking in a live meet, immediate safety concerns. "
+        "NOT URGENT: general questions, past events, role requests, application status, "
+        "warning appeals, complaints about old incidents, build rule questions. "
+        "Default to is_urgent=true if unsure — never block a real emergency. "
+        "Reply ONLY with JSON: {\"is_urgent\": bool, \"reason\": string}."
+    )
+    raw = await _ai_chat(sys, text, max_tokens=120)
+    if not raw:
+        return {"is_urgent": True, "reason": ""}
+    try:
+        d = json.loads(raw)
+        return {"is_urgent": bool(d.get("is_urgent", True)), "reason": str(d.get("reason", ""))[:200]}
+    except Exception:
+        return {"is_urgent": True, "reason": ""}
+
+
+# ── AI-powered modals ───────────────────────────────────────────────────────
+class _AiAskQuestionModal(discord.ui.Modal, title="Ask DIFF Support"):
+    question = discord.ui.TextInput(
+        label="What's your question?",
+        style=discord.TextStyle.paragraph,
+        placeholder="Type your question — we'll try to answer instantly. If we can't, we'll open a ticket.",
+        max_length=1000,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.NotFound:
+            return
+        q = str(self.question.value or "").strip()
+        if not q:
+            return await interaction.followup.send("Please type a question.", ephemeral=True)
+
+        ai = await _ai_answer_question(q)
+        if ai["answer"] and ai["confidence"] in ("high", "medium") and not ai["should_open_ticket"]:
+            _embed = discord.Embed(
+                title="🤖 Quick Answer",
+                description=ai["answer"],
+                color=discord.Color.green(),
+            )
+            _embed.add_field(
+                name="Still need help?",
+                value="Hit the button below to open a regular support ticket.",
+                inline=False,
+            )
+            _embed.set_footer(text="AI-generated • If this didn't help, open a ticket and staff will reply.")
+            return await interaction.followup.send(
+                embed=_embed,
+                view=_AiAnswerFollowupView(question=q),
+                ephemeral=True,
+            )
+        # Low confidence or AI failed → open ticket directly with the question pre-posted.
+        await _supp_open_ticket_flow(interaction, "support", description=q)
+
+
+class _AiAnswerFollowupView(discord.ui.View):
+    def __init__(self, question: str):
+        super().__init__(timeout=600)
+        self._question = question
+        self.add_item(_AiOpenTicketAnywayButton(question))
+
+
+class _AiOpenTicketAnywayButton(discord.ui.Button):
+    def __init__(self, question: str):
+        super().__init__(label="Open Ticket Anyway", emoji="🎫",
+                         style=discord.ButtonStyle.primary)
+        self._q = question
+
+    async def callback(self, interaction: discord.Interaction):
+        await _supp_open_ticket_flow(interaction, "support", description=self._q)
+
+
+class _AiUrgentDescribeModal(discord.ui.Modal, title="🚨 Urgent — Describe Now"):
+    desc = discord.ui.TextInput(
+        label="What's happening right now?",
+        style=discord.TextStyle.paragraph,
+        placeholder="Who is involved? Where? When did it start? Any evidence?",
+        max_length=1000,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.NotFound:
+            return
+        text = str(self.desc.value or "").strip()
+        if not text:
+            return await interaction.followup.send("Please describe the situation.", ephemeral=True)
+
+        ai = await _ai_check_urgent(text)
+        if not ai["is_urgent"]:
+            _embed = discord.Embed(
+                title="Sounds non-urgent",
+                description=(
+                    f"AI triage thinks this might not need leadership pinged right now:\n"
+                    f"> _{ai['reason'] or 'No clear emergency signals.'}_\n\n"
+                    "**Urgent** is for active emergencies (raids, threats, live incidents). "
+                    "If this can wait, use **Report** or **Ask a Question** instead.\n\n"
+                    "If you disagree, hit **Send Urgent Anyway** below."
+                ),
+                color=discord.Color.orange(),
+            )
+            _embed.set_footer(text="AI-assisted triage • Final call is always yours.")
+            return await interaction.followup.send(
+                embed=_embed,
+                view=_AiUrgentOverrideView(description=text),
+                ephemeral=True,
+            )
+        # AI confirmed urgent (or AI failed → defaulted true) → standard urgent flow.
+        await _supp_open_urgent_ticket(interaction, description=text)
+
+
+class _AiUrgentOverrideView(discord.ui.View):
+    def __init__(self, description: str):
+        super().__init__(timeout=600)
+        self._desc = description
+        self.add_item(_AiUrgentSendAnywayButton(description))
+        self.add_item(_AiUrgentDowngradeButton(description))
+
+
+class _AiUrgentSendAnywayButton(discord.ui.Button):
+    def __init__(self, description: str):
+        super().__init__(label="Send Urgent Anyway", emoji="🚨",
+                         style=discord.ButtonStyle.danger)
+        self._desc = description
+
+    async def callback(self, interaction: discord.Interaction):
+        await _supp_open_urgent_ticket(interaction, description=self._desc)
+
+
+class _AiUrgentDowngradeButton(discord.ui.Button):
+    def __init__(self, description: str):
+        super().__init__(label="Open as Report Instead", emoji="🛡️",
+                         style=discord.ButtonStyle.secondary)
+        self._desc = description
+
+    async def callback(self, interaction: discord.Interaction):
+        await _supp_open_ticket_flow(interaction, "report", description=self._desc)
 
 
 def _ti_close_log_append(staff_id: int, ticket_key: str, duration_s: float) -> None:
