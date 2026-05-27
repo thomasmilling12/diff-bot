@@ -8322,53 +8322,203 @@ def build_meet_info_embed() -> discord.Embed:
     embed = discord.Embed(
         title="📘 DIFF Meets — Meet Info",
         description=(
-            "Everything you need to know before joining a **DIFF Car Meet**.\n"
-            "Read each section carefully — these apply to every session.\n\n"
+            "Everything you need to know before joining a **DIFF Car Meet**.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🔑 **The 3 things every member MUST know**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🎮 **PS5 only** — no PS4, no PC, no exceptions.\n"
+            "🪪 **Discord name = PSN** — hosts won't add you otherwise.\n"
+            "⚠️ **Two warnings = ban** — appeal only after 30 days.\n"
             "━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=0xC9A227,
     )
     embed.add_field(
-        name="🎙️ Voice Channel",
+        name="🚗 How to Join a Meet",
         value=(
-            "▢ Check the VC name before joining to make sure you're in the correct session.\n"
-            "▢ **Hosts can mute or kick you if you talk over them or break meet rules.**"
+            "• Be in this Discord server (you already are 👍)\n"
+            f"• Set your **Discord name = PSN ID** (follow {join_meets_mention})\n"
+            f"• When a meet is live, add the hosts listed in {diff_hosts_mention}\n"
+            f"• Track updates in {upcoming_meet_mention}\n"
+            "• 🎥 **Re-adds require a screen recording of your garages** — hosts will not add you back without one"
         ),
         inline=False,
     )
     embed.add_field(
-        name="🛠️ Report a Player",
+        name="🎙️ At the Meet",
         value=(
-            f"▢ Having an issue with someone at the meet or on the server?\n"
-            f"▢ Open a ticket in {support_tickets_mention} — the DIFF Management team will assist you."
+            "• Join the meet **voice channel** *before* the meet starts — check the VC name matches the session\n"
+            "• **Hosts can mute or kick you** if you talk over them or break meet rules\n"
+            f"• Full rules: {meet_rules_mention}"
         ),
         inline=False,
     )
     embed.add_field(
-        name="⚠️ Warnings & Bans",
+        name="⚠️ Warnings · Bans · Appeals",
         value=(
-            f"▢ Warnings are issued for breaking rules listed in {meet_rules_mention}.\n"
-            "▢ **Two warnings = ban** from the server and all meets.\n"
-            "▢ You'll receive a DM from a Server Operations explaining the reason.\n"
-            "▢ **Ban Appeals:** you may appeal after **30 days**. Hosts & Management vote on every appeal."
+            f"• Warnings = issued for breaking rules in {meet_rules_mention}\n"
+            "• **2 warnings = ban** from the server and all meets\n"
+            "• You'll receive a DM from Server Operations with the reason\n"
+            "• **Ban appeals**: open one **after 30 days** — Hosts & Management vote on every appeal"
         ),
         inline=False,
     )
     embed.add_field(
-        name="🚗 How to Join the Meets",
+        name="📅 Meet Schedule",
         value=(
-            "▢ You must be in our Discord server.\n"
-            "▢ Your Discord name must match your PSN.\n"
-            f"▢ Complete the steps in {join_meets_mention} to get access and update your name.\n"
-            f"▢ When a meet is live, add the hosts listed in {diff_hosts_mention} and track updates in {upcoming_meet_mention}.\n"
-            "▢ Hosts will only add you back if you send a **screen recording of your garages**."
+            f"• All scheduled meets are posted in {upcoming_meet_mention}\n"
+            "• Tap **📅 Next Meet** below to see the soonest upcoming meet right now"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🚨 Issues & Support",
+        value=(
+            f"• **Report a player** or open any other ticket → {support_tickets_mention}\n"
+            "• Or use the **📮 Feedback / Suggestions / Reports** dropdown below"
         ),
         inline=False,
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_image(url=DIFF_BANNER_URL)
-    embed.set_footer(text="DIFF Meets • Read everything before joining")
+    embed.set_footer(text="DIFF Meets • Read everything before joining • Use the buttons below to jump to any channel")
     return embed
+
+
+# ── Meet Info — extra ephemeral buttons ──────────────────────────────────────
+class _MeetInfoFirstTimeButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="First time here?",
+            emoji="❓",
+            style=discord.ButtonStyle.success,
+            custom_id="diff_meetinfo_first_time_v1",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        emb = discord.Embed(
+            title="👋 Welcome to DIFF Meets — 60-second walkthrough",
+            description=(
+                "Follow these 5 steps in order and you'll be in your first meet in no time.\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=0x2ECC71,
+        )
+        emb.add_field(
+            name="1️⃣ Verify you're on PS5",
+            value="DIFF Meets is **PS5 only** — no PS4, no PC. If you're not on PS5, this community isn't for you.",
+            inline=False,
+        )
+        emb.add_field(
+            name="2️⃣ Match your name",
+            value="Change your Discord nickname to your **exact PSN ID**. Hosts won't add you to meets otherwise.",
+            inline=False,
+        )
+        emb.add_field(
+            name="3️⃣ Get access",
+            value=f"Head to <#{JOIN_MEETS_CHANNEL_ID}> and complete the steps there.",
+            inline=False,
+        )
+        emb.add_field(
+            name="4️⃣ Find a meet",
+            value=f"Check <#{UPCOMING_MEET_CHANNEL_ID}> or tap **📅 Next Meet** on the panel above.",
+            inline=False,
+        )
+        emb.add_field(
+            name="5️⃣ Add the hosts & join VC",
+            value=(
+                f"Add the hosts listed in <#{DIFF_HOSTS_CHANNEL_ID}>, then **join the meet voice channel before it starts**.\n"
+                "🎥 If you've been kicked/removed before, you'll need to send a **screen recording of your garages** to be re-added."
+            ),
+            inline=False,
+        )
+        emb.add_field(
+            name="❓ Stuck?",
+            value=f"Open a ticket in <#{SUPPORT_TICKETS_CHANNEL_ID}> — pick **Ask a Question**.",
+            inline=False,
+        )
+        emb.set_footer(text="DIFF Meets • First-time walkthrough")
+        if DIFF_LOGO_URL:
+            emb.set_thumbnail(url=DIFF_LOGO_URL)
+        await interaction.response.send_message(embed=emb, ephemeral=True)
+
+
+class _MeetInfoNextMeetButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Next Meet",
+            emoji="📅",
+            style=discord.ButtonStyle.primary,
+            custom_id="diff_meetinfo_next_meet_v1",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        # Scan the host-posters store for the soonest future meet_ts
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        try:
+            store = _hp_load_all()
+        except Exception:
+            store = {}
+        candidates: list = []
+        for _mid, _state in (store or {}).items():
+            if not isinstance(_state, dict):
+                continue
+            _ts = _state.get("meet_ts")
+            if isinstance(_ts, (int, float)) and int(_ts) >= now_ts:
+                candidates.append((int(_ts), str(_mid), _state))
+        candidates.sort(key=lambda c: c[0])
+
+        if not candidates:
+            emb = discord.Embed(
+                title="📅 No Upcoming Meets Found",
+                description=(
+                    f"There aren't any scheduled meets in the host-posters system right now.\n\n"
+                    f"Keep an eye on <#{UPCOMING_MEET_CHANNEL_ID}> — meets are usually announced a few days ahead."
+                ),
+                color=0xE67E22,
+            )
+            emb.set_footer(text="DIFF Meets • Next Meet")
+            return await interaction.response.send_message(embed=emb, ephemeral=True)
+
+        ts, mid, state = candidates[0]
+        theme = (state.get("theme") or "").strip()
+        jump = state.get("jump_url") or state.get("message_jump_url")
+        hosts: list = state.get("hosts") or state.get("assigned_hosts") or []
+        host_line = ""
+        if hosts:
+            try:
+                host_line = " · ".join(f"<@{int(h)}>" for h in hosts[:6])
+            except Exception:
+                host_line = ""
+
+        emb = discord.Embed(
+            title="📅 Next DIFF Meet",
+            description=(
+                (f"**{theme}**\n\n" if theme else "")
+                + f"🕒 <t:{ts}:F>\n⏳ <t:{ts}:R>"
+            ),
+            color=0x3498DB,
+        )
+        if host_line:
+            emb.add_field(name="🎙️ Hosts", value=host_line, inline=False)
+        if jump:
+            emb.add_field(name="🔗 Poster", value=f"[Jump to the host poster]({jump})", inline=False)
+        emb.add_field(
+            name="✅ Be ready",
+            value=(
+                f"• Discord name matches your PSN\n"
+                f"• Hosts from <#{DIFF_HOSTS_CHANNEL_ID}> added on PS5\n"
+                f"• Join the meet voice channel **before** it starts"
+            ),
+            inline=False,
+        )
+        emb.set_footer(text="DIFF Meets • Next Meet (auto-detected from host posters)")
+        if DIFF_LOGO_URL:
+            emb.set_thumbnail(url=DIFF_LOGO_URL)
+        await interaction.response.send_message(embed=emb, ephemeral=True,
+                                                 allowed_mentions=discord.AllowedMentions.none())
 
 
 # ------------------------------------------------------------------
@@ -8552,12 +8702,53 @@ class MeetInfoView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         guild_id = GUILD_ID
+        # Row 0 — 5 channel link buttons (max per row)
         self.add_item(discord.ui.Button(label="General Rules",   style=discord.ButtonStyle.link, emoji="📜", url=build_channel_link(guild_id, MEET_RULES_CHANNEL_ID),      row=0))
         self.add_item(discord.ui.Button(label="Join Meets",      style=discord.ButtonStyle.link, emoji="📥", url=build_channel_link(guild_id, JOIN_MEETS_CHANNEL_ID),       row=0))
         self.add_item(discord.ui.Button(label="Upcoming Meet",   style=discord.ButtonStyle.link, emoji="📅", url=build_channel_link(guild_id, UPCOMING_MEET_CHANNEL_ID),    row=0))
         self.add_item(discord.ui.Button(label="Support Tickets", style=discord.ButtonStyle.link, emoji="🎟️", url=build_channel_link(guild_id, SUPPORT_TICKETS_CHANNEL_ID), row=0))
         self.add_item(discord.ui.Button(label="Hosts",           style=discord.ButtonStyle.link, emoji="👥", url=build_channel_link(guild_id, DIFF_HOSTS_CHANNEL_ID),       row=0))
+        # Row 1 — interactive helpers
+        self.add_item(_MeetInfoNextMeetButton())
+        self.add_item(_MeetInfoFirstTimeButton())
+        # Row 2 — feedback select (selects always take a full row)
         self.add_item(_MeetInfoFeedbackSelect())
+
+
+@bot.command(name="editmeetinfo", aliases=("refreshmeetinfo", "meetinforefresh"))
+async def _editmeetinfo_cmd(ctx: commands.Context) -> None:
+    """Re-render the meet-info panel in place using the current build_meet_info_embed() copy.
+    Useful after editing the embed text in code without re-posting (preserves jump links / reactions)."""
+    if not isinstance(ctx.author, discord.Member) or not is_staff_reviewer(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    guild = ctx.guild or bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    channel = guild.get_channel(MEET_INFO_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return await ctx.send("❌ Meet-info channel not found.", delete_after=15)
+    msg_id = data.get("meet_info_message_id")
+    target_msg = None
+    if msg_id:
+        try:
+            target_msg = await channel.fetch_message(int(msg_id))
+        except (discord.NotFound, discord.HTTPException):
+            target_msg = None
+    if target_msg is None:
+        return await ctx.send(
+            f"❌ No tracked meet-info message in {channel.mention}. "
+            "Use `/sendmeetinfo` to post it first.",
+            delete_after=20,
+        )
+    try:
+        await target_msg.edit(embed=build_meet_info_embed(), view=build_meet_info_view(guild.id))
+        await ctx.send(f"✅ Meet-info panel refreshed in {channel.mention}.", delete_after=15)
+    except discord.HTTPException as _e:
+        await ctx.send(f"❌ Edit failed: `{_e}`", delete_after=20)
 
 
 def build_meet_info_view(guild_id: int = GUILD_ID) -> MeetInfoView:
