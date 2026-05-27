@@ -32433,8 +32433,25 @@ async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: s
         if not interaction.response.is_done():
             return await interaction.response.send_message("Server only.", ephemeral=True)
         return await interaction.followup.send("Server only.", ephemeral=True)
+    # Ack interaction FIRST so the 3s response window never races the lock.
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+        except Exception:
+            pass
     # Wrap the rest under a per-user lock to atomicize existing-ticket-check + creation.
-    async with _supp_open_lock_for(interaction.user.id):
+    lk = _supp_open_lock_for(interaction.user.id)
+    if lk.locked():
+        try:
+            return await interaction.followup.send(
+                "⏳ Already opening a ticket for you — give it a sec.",
+                ephemeral=True,
+            )
+        except Exception:
+            return
+    async with lk:
         await _supp_open_ticket_flow_inner(interaction, ticket_key, description)
 
 
@@ -32627,7 +32644,24 @@ async def _supp_open_urgent_ticket(interaction: discord.Interaction, description
         if not interaction.response.is_done():
             return await interaction.response.send_message("Server only.", ephemeral=True)
         return await interaction.followup.send("Server only.", ephemeral=True)
-    async with _supp_open_lock_for(interaction.user.id):
+    # Ack interaction FIRST so the 3s response window never races the lock.
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+        except Exception:
+            pass
+    lk = _supp_open_lock_for(interaction.user.id)
+    if lk.locked():
+        try:
+            return await interaction.followup.send(
+                "⏳ Already opening a ticket for you — give it a sec.",
+                ephemeral=True,
+            )
+        except Exception:
+            return
+    async with lk:
         await _supp_open_urgent_ticket_inner(interaction, description)
 
 
