@@ -31640,6 +31640,14 @@ class _SupportMyTicketsButton(discord.ui.Button):
 
 # ── Reopen-ticket flow (7-day DM button) ─────────────────────────────────────
 _REOPEN_WINDOW_DAYS = 7
+_REOPEN_USER_LOCKS: "dict[int, asyncio.Lock]" = {}
+
+def _reopen_lock_for(user_id: int) -> "asyncio.Lock":
+    _lk = _REOPEN_USER_LOCKS.get(user_id)
+    if _lk is None:
+        _lk = asyncio.Lock()
+        _REOPEN_USER_LOCKS[user_id] = _lk
+    return _lk
 
 async def _supp_create_ticket_channel_for(
     guild: "discord.Guild", member: "discord.Member", ticket: "_TicketType"
@@ -31713,48 +31721,62 @@ class _ReopenTicketButton(discord.ui.Button):
                 "❌ You are no longer a member of the server, so this ticket can't be reopened.",
                 ephemeral=True,
             )
-        # Enforce 7-day reopen window using _thist_load history
+        # Enforce 7-day reopen window using _thist_load history — DENY by default.
+        # If history is unloadable, missing, or unparseable, we refuse rather than
+        # falling through into an unrestricted create.
         try:
             _hist = _thist_load().get(str(interaction.user.id), [])
-            _last = None
-            for _entry in reversed(_hist):
-                if _entry.get("ticket_key") == ticket_key:
-                    _ts_raw = _entry.get("closed_at") or _entry.get("at")
-                    if not _ts_raw:
-                        continue
-                    try:
-                        _last = datetime.fromisoformat(str(_ts_raw))
-                        if _last.tzinfo is None:
-                            _last = _last.replace(tzinfo=timezone.utc)
-                        break
-                    except Exception:
-                        continue
-            if _last:
-                _age = (datetime.now(timezone.utc) - _last).total_seconds() / 86400.0
-                if _age > _REOPEN_WINDOW_DAYS:
-                    return await interaction.response.send_message(
-                        f"⏰ The {_REOPEN_WINDOW_DAYS}-day reopen window has expired "
-                        "for this ticket. Please open a new ticket via the support panel "
-                        f"in **{guild.name}**.",
-                        ephemeral=True,
-                    )
         except Exception:
-            pass
-        # Reject duplicate open ticket of same type
-        for _ch in guild.text_channels:
-            _topic = _ch.topic or ""
-            if f"ticket_owner={member.id}" in _topic and f"ticket_type={ticket_key}" in _topic:
-                return await interaction.response.send_message(
-                    f"You already have an open {ticket.label} ticket: {_ch.mention}",
-                    ephemeral=True,
-                )
-        await interaction.response.defer(ephemeral=True)
-        new_ch = await _supp_create_ticket_channel_for(guild, member, ticket)
-        if not new_ch:
-            return await interaction.followup.send(
-                "❌ Could not create the ticket channel. Please use the support panel instead.",
+            return await interaction.response.send_message(
+                "❌ Couldn't verify your recent ticket history. Please open a new ticket "
+                "via the support panel instead.",
                 ephemeral=True,
             )
+        _last = None
+        for _entry in reversed(_hist):
+            if _entry.get("ticket_key") != ticket_key:
+                continue
+            _ts_raw = _entry.get("closed_at") or _entry.get("at")
+            if not _ts_raw:
+                continue
+            try:
+                _last = datetime.fromisoformat(str(_ts_raw))
+                if _last.tzinfo is None:
+                    _last = _last.replace(tzinfo=timezone.utc)
+                break
+            except Exception:
+                continue
+        if _last is None:
+            return await interaction.response.send_message(
+                "❌ No recent closed ticket of this type was found, so it can't be reopened. "
+                "Please open a fresh ticket from the support panel.",
+                ephemeral=True,
+            )
+        _age = (datetime.now(timezone.utc) - _last).total_seconds() / 86400.0
+        if _age > _REOPEN_WINDOW_DAYS:
+            return await interaction.response.send_message(
+                f"⏰ The {_REOPEN_WINDOW_DAYS}-day reopen window has expired "
+                "for this ticket. Please open a new ticket via the support panel "
+                f"in **{guild.name}**.",
+                ephemeral=True,
+            )
+        # Defer first (3s ack budget), then serialize duplicate-check + create
+        # under a per-user lock so rapid double-clicks can't create two channels.
+        await interaction.response.defer(ephemeral=True)
+        async with _reopen_lock_for(interaction.user.id):
+            for _ch in guild.text_channels:
+                _topic = _ch.topic or ""
+                if f"ticket_owner={member.id}" in _topic and f"ticket_type={ticket_key}" in _topic:
+                    return await interaction.followup.send(
+                        f"You already have an open {ticket.label} ticket: {_ch.mention}",
+                        ephemeral=True,
+                    )
+            new_ch = await _supp_create_ticket_channel_for(guild, member, ticket)
+            if not new_ch:
+                return await interaction.followup.send(
+                    "❌ Could not create the ticket channel. Please use the support panel instead.",
+                    ephemeral=True,
+                )
         try:
             await new_ch.send(
                 content=member.mention,
@@ -31804,6 +31826,8 @@ class _ReopenOnlyView(discord.ui.View):
 
 # ── Anonymous tip / report system ────────────────────────────────────────────
 _ANON_REPORTS_FILE = os.path.join(DATA_FOLDER, "diff_anon_reports.json")
+_ANON_REPORTS_MAX  = 500   # cap stored reports — oldest pruned on save
+_ANON_WRITE_LOCK   = asyncio.Lock()
 
 def _anon_load() -> dict:
     try:
@@ -31813,10 +31837,21 @@ def _anon_load() -> dict:
         return {}
 
 def _anon_save(_d: dict) -> None:
+    """Cap-and-prune the store before persisting. Oldest entries (by `at`) drop first."""
     try:
+        if len(_d) > _ANON_REPORTS_MAX:
+            _items = sorted(_d.items(), key=lambda kv: str(kv[1].get("at", "")))
+            _d = dict(_items[-_ANON_REPORTS_MAX:])
         _atomic_json_save(_ANON_REPORTS_FILE, _d)
     except Exception:
         pass
+
+async def _anon_record(report_id: str, payload: dict) -> None:
+    """Serialized read-modify-write so concurrent submissions don't lose entries."""
+    async with _ANON_WRITE_LOCK:
+        _store = _anon_load()
+        _store[report_id] = payload
+        _anon_save(_store)
 
 
 class _AnonReportModal(discord.ui.Modal, title="🙊 Anonymous Tip / Report"):
@@ -31845,14 +31880,12 @@ class _AnonReportModal(discord.ui.Modal, title="🙊 Anonymous Tip / Report"):
                 ephemeral=True,
             )
         try:
-            _store = _anon_load()
-            _store[rid] = {
+            await _anon_record(rid, {
                 "user_id": interaction.user.id,
                 "category": cat,
                 "details": det[:1500],
                 "at": datetime.now(timezone.utc).isoformat(),
-            }
-            _anon_save(_store)
+            })
         except Exception:
             pass
         guild = interaction.guild or bot.get_guild(GUILD_ID)
