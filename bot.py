@@ -32412,6 +32412,18 @@ class AppealDropdown(discord.ui.Select):
 
 # ─── Support panel button-based flow (replaces SupportDropdown) ───────────────
 
+# Per-user lock so rapid double-clicks (or AI modal + Open-Anyway race) can't
+# spawn duplicate tickets. Lazy-allocated, never pruned (cheap in memory).
+_SUPP_OPEN_USER_LOCKS: "dict[int, asyncio.Lock]" = {}
+
+def _supp_open_lock_for(user_id: int) -> "asyncio.Lock":
+    lk = _SUPP_OPEN_USER_LOCKS.get(user_id)
+    if lk is None:
+        lk = asyncio.Lock()
+        _SUPP_OPEN_USER_LOCKS[user_id] = lk
+    return lk
+
+
 async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: str, description: str = "") -> None:
     """Shared ticket-creation flow used by the Report and Ask-a-Question buttons,
     and by the Apply picker for the generic 'apply' type.
@@ -32421,6 +32433,12 @@ async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: s
         if not interaction.response.is_done():
             return await interaction.response.send_message("Server only.", ephemeral=True)
         return await interaction.followup.send("Server only.", ephemeral=True)
+    # Wrap the rest under a per-user lock to atomicize existing-ticket-check + creation.
+    async with _supp_open_lock_for(interaction.user.id):
+        await _supp_open_ticket_flow_inner(interaction, ticket_key, description)
+
+
+async def _supp_open_ticket_flow_inner(interaction: discord.Interaction, ticket_key: str, description: str = "") -> None:
     if ticket_key not in _TICKET_TYPES:
         if not interaction.response.is_done():
             return await interaction.response.send_message("Invalid ticket type.", ephemeral=True)
@@ -32609,6 +32627,11 @@ async def _supp_open_urgent_ticket(interaction: discord.Interaction, description
         if not interaction.response.is_done():
             return await interaction.response.send_message("Server only.", ephemeral=True)
         return await interaction.followup.send("Server only.", ephemeral=True)
+    async with _supp_open_lock_for(interaction.user.id):
+        await _supp_open_urgent_ticket_inner(interaction, description)
+
+
+async def _supp_open_urgent_ticket_inner(interaction: discord.Interaction, description: str = "") -> None:
     if not interaction.response.is_done():
         try:
             await interaction.response.defer(ephemeral=True)
@@ -33420,6 +33443,22 @@ _AI_CLIENT = None
 _AI_CLIENT_ERR = False
 
 
+def _ai_parse_bool(v, default: bool = False) -> bool:
+    """Strict bool coercion that handles model-returned strings like 'false'/'no'/'0'.
+    Plain bool(\"false\") == True in Python, which would silently misroute urgent triage."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("true", "yes", "1", "y", "t"):
+            return True
+        if s in ("false", "no", "0", "n", "f", ""):
+            return False
+    return default
+
+
 def _ai_enabled() -> bool:
     global _AI_CLIENT, _AI_CLIENT_ERR
     if _AI_CLIENT_ERR:
@@ -33512,7 +33551,7 @@ async def _ai_answer_question(question: str) -> "dict":
         conf = str(d.get("confidence", "low")).lower()
         if conf not in ("high", "medium", "low"):
             conf = "low"
-        ot = bool(d.get("should_open_ticket", True))
+        ot = _ai_parse_bool(d.get("should_open_ticket", True), default=True)
         if not ans:
             ans = None
         return {"answer": ans, "confidence": conf, "should_open_ticket": ot}
@@ -33602,7 +33641,7 @@ async def _ai_check_urgent(text: str) -> "dict":
         return {"is_urgent": True, "reason": ""}
     try:
         d = json.loads(raw)
-        return {"is_urgent": bool(d.get("is_urgent", True)), "reason": str(d.get("reason", ""))[:200]}
+        return {"is_urgent": _ai_parse_bool(d.get("is_urgent", True), default=True), "reason": str(d.get("reason", ""))[:200]}
     except Exception:
         return {"is_urgent": True, "reason": ""}
 
