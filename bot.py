@@ -20340,6 +20340,31 @@ async def __join_micro_bump_logic():
                     pass
             # First reminder is silent (bumps the channel). 2nd and 3rd ping @Ticket Support.
             ping_mention = (ts_role.mention if ts_role else None) if micro_count >= 1 else None
+            # On the 2nd reminder, also DM the least-busy reviewer personally so
+            # the workload gets routed instead of just spammed at the role.
+            if micro_count == 1 and not entry.get("rr_dm_sent"):
+                try:
+                    _rr_picked = _ti_pick_least_busy_staff(guild)
+                    if _rr_picked:
+                        _rr_emb = discord.Embed(
+                            title="🙏 Review Nudge — Join Application",
+                            description=(
+                                f"You're the least-busy reviewer right now. A join application in {ch.mention} "
+                                "has been waiting for action and needs a fresh pair of eyes.\n\n"
+                                "Click **Claim Review** in the ticket to take it."
+                            ),
+                            color=discord.Color.blurple(),
+                            timestamp=now_utc,
+                        )
+                        _rr_emb.set_footer(text="Different Meets • Round-Robin Reviewer")
+                        try:
+                            await _rr_picked.send(embed=_rr_emb)
+                            entry["rr_dm_sent"] = True
+                            entry["rr_dm_target"] = _rr_picked.id
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             emb = discord.Embed(
                 title="🔔 Review Reminder",
                 description=(
@@ -31438,6 +31463,27 @@ async def _perform_ticket_close(channel: "discord.TextChannel", closer: "discord
             _tperf_record_close(int(claimer_id), channel.name)
         except Exception:
             pass
+        # Per-close timestamped log for 7-day rolling ETA averages
+        try:
+            _tp_now = _tperf_load().get(str(claimer_id), {})
+            _last_dur = 0.0
+            try:
+                # _tperf_record_close just added duration to total_seconds; we don't have the
+                # exact per-call elapsed, so reconstruct via avg-of-one fallback if needed.
+                _ct = _tp_now.get("claim_times", {}).get(channel.name)
+                if _ct:
+                    _last_dur = (datetime.now(timezone.utc) - datetime.fromisoformat(_ct)).total_seconds()
+            except Exception:
+                pass
+            if _last_dur <= 0:
+                # Use channel age as a coarse upper-bound
+                try:
+                    _last_dur = (datetime.now(timezone.utc) - channel.created_at).total_seconds()
+                except Exception:
+                    _last_dur = 0.0
+            _ti_close_log_append(int(claimer_id), ticket_key, _last_dur)
+        except Exception:
+            pass
 
     if owner_id and str(owner_id).isdigit():
         try:
@@ -32392,10 +32438,23 @@ async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: s
     if not channel:
         return
 
+    # Auto-tag channel by ticket type / label keywords so staff can grep at a glance.
+    try:
+        _ti_tag = _ti_auto_tag_for_text(f"{ticket.key} {ticket.label}")
+        if _ti_tag and not channel.name.startswith(f"{_ti_tag}-"):
+            await channel.edit(name=f"{_ti_tag}-{channel.name}"[:90])
+    except Exception:
+        pass
+
     ping = " ".join(filter(None, [interaction.user.mention, _supp_role_mention(ticket.ping_role_id)]))
+    _open_embed = _supp_build_ticket_embed(ticket, interaction.user)
+    try:
+        _open_embed.add_field(name="⏱️ Response ETA", value=_ti_eta_text(ticket.key), inline=False)
+    except Exception:
+        pass
     await channel.send(
         content=ping or None,
-        embed=_supp_build_ticket_embed(ticket, interaction.user),
+        embed=_open_embed,
         view=SupportCloseButton(),
     )
 
@@ -32408,6 +32467,12 @@ async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: s
     if ticket.key == "apply":
         await channel.send(embed=_supp_build_questions_embed(interaction.user))
         await channel.send(embed=_supp_build_review_embed(interaction.user), view=SupportApplicationReviewView())
+
+    # Warm-up DM: if still unclaimed in 30 min, ping the opener with reassurance/tips.
+    try:
+        bot.loop.create_task(_ti_warmup_dm_task(channel.id, interaction.user.id, ticket.label))
+    except Exception:
+        pass
 
     logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if isinstance(logs_channel, discord.TextChannel):
@@ -33229,6 +33294,327 @@ def _digest_save_ts(ts: float) -> None:
     except Exception:
         pass
 
+# =========================
+# TICKET IMPROVEMENTS V2 (May 27 2026)
+# Round-robin reviewer DMs, ETA, warmup DMs, auto-tagging, quick-reply
+# presets, staff load command, claimer pings on stale.
+# =========================
+
+_TI_CLOSE_LOG_FILE = os.path.join(DIFF_DATA_DIR, "diff_ticket_close_log.json")
+_TI_CLOSE_LOG_MAX = 300
+_TI_WARMUP_AFTER_SEC = 30 * 60   # 30 min
+_TI_RECENT_WINDOW_DAYS = 7
+
+# Keyword -> short tag prefix prepended to channel name on open.
+_TI_AUTO_TAGS = [
+    ("ban",          "banned"),
+    ("unban",        "appeal"),
+    ("appeal",       "appeal"),
+    ("warn",         "warn"),
+    ("warning",      "warn"),
+    ("refund",       "refund"),
+    ("payment",      "billing"),
+    ("billing",      "billing"),
+    ("crew",         "crew"),
+    ("partner",      "partner"),
+    ("host",         "host"),
+    ("photo",        "photos"),
+    ("psn",          "psn"),
+    ("verif",        "verify"),
+    ("rsvp",         "rsvp"),
+    ("meet",         "meet"),
+    ("report",       "report"),
+    ("staff",        "staff"),
+]
+
+
+def _ti_close_log_load() -> list:
+    try:
+        with open(_TI_CLOSE_LOG_FILE, "r") as _f:
+            d = json.load(_f)
+            return d if isinstance(d, list) else []
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _ti_close_log_save(data: list) -> None:
+    _atomic_json_save(_TI_CLOSE_LOG_FILE, data[-_TI_CLOSE_LOG_MAX:])
+
+
+def _ti_close_log_append(staff_id: int, ticket_key: str, duration_s: float) -> None:
+    try:
+        log = _ti_close_log_load()
+        log.append({
+            "staff_id": int(staff_id),
+            "ticket_key": ticket_key or "support",
+            "duration_s": max(0.0, float(duration_s)),
+            "ts": datetime.now(timezone.utc).isoformat(),
+        })
+        _ti_close_log_save(log)
+    except Exception as _e:
+        print(f"[TI] close_log_append err: {_e}")
+
+
+def _ti_recent_avg_seconds(ticket_key: "str|None" = None) -> "float|None":
+    """Avg claim→close duration over last 7d. Falls back to all-time tperf if log empty."""
+    log = _ti_close_log_load()
+    if log:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=_TI_RECENT_WINDOW_DAYS)
+        durs = []
+        for e in log:
+            try:
+                t = datetime.fromisoformat(e.get("ts", ""))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+                if t < cutoff:
+                    continue
+                if ticket_key and e.get("ticket_key") != ticket_key:
+                    continue
+                durs.append(float(e.get("duration_s", 0)))
+            except Exception:
+                continue
+        if durs:
+            return sum(durs) / len(durs)
+    # Fallback: all-time avg across staff
+    try:
+        tp = _tperf_load()
+        total_s = sum(int(s.get("total_seconds", 0)) for s in tp.values())
+        total_c = sum(int(s.get("closed", 0)) for s in tp.values())
+        if total_c > 0:
+            return total_s / total_c
+    except Exception:
+        pass
+    return None
+
+
+def _ti_eta_text(ticket_key: "str|None" = None) -> str:
+    """Human-readable ETA string for the welcome embed."""
+    secs = _ti_recent_avg_seconds(ticket_key)
+    if not secs or secs < 60:
+        return "Typically replied to within the hour."
+    mins = int(secs // 60)
+    if mins < 60:
+        return f"⏱️ Recent average response time: **~{mins} min**"
+    hrs = mins / 60
+    if hrs < 24:
+        return f"⏱️ Recent average response time: **~{hrs:.1f} hr**"
+    return f"⏱️ Recent average response time: **~{hrs / 24:.1f} days**"
+
+
+def _ti_staff_open_loads(guild: "discord.Guild") -> "dict[int,int]":
+    """{staff_id: open_claimed_count} across the guild."""
+    loads: dict = {}
+    for ch in guild.text_channels:
+        topic = ch.topic or ""
+        if "ticket_claimed_by=" in topic:
+            cid = _supp_parse_topic(topic, "ticket_claimed_by")
+            if cid and cid.isdigit():
+                loads[int(cid)] = loads.get(int(cid), 0) + 1
+        if "join_claimed_by=" in topic:
+            cid = topic.split("join_claimed_by=")[-1].split("|")[0].strip()
+            if cid.isdigit():
+                loads[int(cid)] = loads.get(int(cid), 0) + 1
+    return loads
+
+
+def _ti_pick_least_busy_staff(guild: "discord.Guild") -> "discord.Member|None":
+    """Pick the least-busy Ticket Support / Leadership member (excludes bots)."""
+    role_ids = {TICKET_SUPPORT_ROLE_ID, LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    role_ids = {r for r in role_ids if r}
+    candidates: list = []
+    for m in guild.members:
+        if m.bot:
+            continue
+        if any(r.id in role_ids for r in m.roles):
+            candidates.append(m)
+    if not candidates:
+        return None
+    loads = _ti_staff_open_loads(guild)
+    candidates.sort(key=lambda m: (loads.get(m.id, 0), random.random()))
+    return candidates[0]
+
+
+def _ti_auto_tag_for_text(text: str) -> "str|None":
+    if not text:
+        return None
+    t = text.lower()
+    for kw, tag in _TI_AUTO_TAGS:
+        if kw in t:
+            return tag
+    return None
+
+
+async def _ti_warmup_dm_task(channel_id: int, owner_id: int, ticket_label: str) -> None:
+    """30 min after open, if still unclaimed, DM the opener helpful tips so they don't feel ignored."""
+    try:
+        await asyncio.sleep(_TI_WARMUP_AFTER_SEC)
+        channel = bot.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+        topic = channel.topic or ""
+        if "ticket_claimed_by=" in topic or "join_claimed_by=" in topic:
+            return
+        guild = channel.guild
+        if guild is None:
+            return
+        member = guild.get_member(owner_id)
+        if not member:
+            return
+        emb = discord.Embed(
+            title="👋 Still waiting on staff?",
+            description=(
+                f"Your **{ticket_label}** ticket has been open for **30 minutes**.\n\n"
+                "Staff have been notified and will be with you as soon as possible.\n"
+                "While you wait, here's how you can speed things up:"
+            ),
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        emb.add_field(
+            name="📝 Add detail",
+            value="Post screenshots, PSN, or context now — staff can act faster the moment they read it.",
+            inline=False,
+        )
+        emb.add_field(
+            name="⏰ Be patient",
+            value="We're a small staff team. Please don't ping individual staff members in DMs.",
+            inline=False,
+        )
+        emb.set_footer(text="Different Meets • Support System")
+        try:
+            await safe_dm(member, "")
+        except Exception:
+            pass
+        try:
+            await member.send(embed=emb)
+        except Exception:
+            pass
+    except Exception as _e:
+        print(f"[TI] warmup_dm err: {_e}")
+
+
+# ── JOIN QUICK-REPLY PRESETS ────────────────────────────────────────────────
+_TI_JOIN_QUICK_PRESETS = [
+    ("accept_welcome",  "✅ Accept + welcome DM",
+     "Welcome to DIFF Meets! 🎉 Your application has been approved. Be sure to read the rules and we'll see you at the next meet."),
+    ("deny_not_ps5",    "❌ Deny — not on PS5",
+     "Hey! Unfortunately DIFF Meets is a PS5-only community. We can't approve your application at this time."),
+    ("deny_too_new",    "❌ Deny — Discord too new",
+     "Hey! Your Discord account is very new. Please come back in a few weeks and reapply — this is a security policy, not personal."),
+    ("deny_photos",     "❌ Deny — photo quality",
+     "Hey! The submitted garage photos aren't clear enough for us to verify. Please reapply with cleaner in-game screenshots from PS5."),
+    ("deny_inactive",   "❌ Deny — inactive applicant",
+     "Hey! We didn't get a response on the questions we asked, so this application is being denied. Feel free to reapply when you're more available."),
+    ("info_psn",        "📋 Request — PSN ID",
+     "Hey! Could you post your **PS5 PSN ID** in this ticket so we can verify your account?"),
+    ("info_more_pics",  "📋 Request — more pictures",
+     "Hey! Could you upload **a few more in-game garage pictures** so we can complete your verification?"),
+]
+
+
+class _JoinQuickReplySelect(discord.ui.Select):
+    def __init__(self) -> None:
+        opts = [discord.SelectOption(label=lbl[:100], value=k) for k, lbl, _ in _TI_JOIN_QUICK_PRESETS]
+        super().__init__(placeholder="Pick a templated reply…", min_values=1, max_values=1, options=opts)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.user, discord.Member) or not _join_is_staff(interaction.user):
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Channel error.", ephemeral=True)
+        key = self.values[0]
+        preset = next((p for p in _TI_JOIN_QUICK_PRESETS if p[0] == key), None)
+        if not preset:
+            return await interaction.response.send_message("Preset not found.", ephemeral=True)
+        _, label, body = preset
+        uid_raw = _join_parse_user_id(interaction.channel.topic or "")
+        ping = f"<@{uid_raw}>" if uid_raw and uid_raw.isdigit() else ""
+        emb = discord.Embed(
+            title=label,
+            description=body,
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        emb.set_footer(text=f"Different Meets • Sent by {interaction.user.display_name}")
+        try:
+            await interaction.channel.send(
+                content=ping or None,
+                embed=emb,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+            await interaction.response.send_message("✅ Sent.", ephemeral=True)
+        except Exception as _e:
+            try:
+                await interaction.response.send_message(f"Failed to send: {_e}", ephemeral=True)
+            except Exception:
+                pass
+
+
+class _JoinQuickReplyView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=180)
+        self.add_item(_JoinQuickReplySelect())
+
+
+# ── !staffload command ──────────────────────────────────────────────────────
+@bot.command(name="staffload")
+async def _staffload_cmd(ctx: commands.Context) -> None:
+    """Show open-ticket workload + lifetime avg close time per staff member."""
+    if not isinstance(ctx.author, discord.Member):
+        return
+    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("This command is staff-only.", mention_author=False)
+    guild = ctx.guild
+    if guild is None:
+        return
+    loads = _ti_staff_open_loads(guild)
+    tp = _tperf_load()
+    rows: list[tuple] = []
+    seen: set = set()
+    role_ids = {TICKET_SUPPORT_ROLE_ID, LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID}
+    role_ids = {r for r in role_ids if r}
+    for m in guild.members:
+        if m.bot:
+            continue
+        if not any(r.id in role_ids for r in m.roles):
+            continue
+        sid = m.id
+        seen.add(sid)
+        s = tp.get(str(sid), {})
+        closed = int(s.get("closed", 0))
+        total_s = int(s.get("total_seconds", 0))
+        avg_m = (total_s / closed / 60) if closed else None
+        rows.append((loads.get(sid, 0), -closed, m.display_name, sid, closed, avg_m))
+    # also include staff in tperf who lost the role
+    for sid_s, s in tp.items():
+        if not sid_s.isdigit():
+            continue
+        sid = int(sid_s)
+        if sid in seen:
+            continue
+        closed = int(s.get("closed", 0))
+        total_s = int(s.get("total_seconds", 0))
+        avg_m = (total_s / closed / 60) if closed else None
+        rows.append((loads.get(sid, 0), -closed, f"<@{sid}>", sid, closed, avg_m))
+    rows.sort(reverse=True)
+    if not rows:
+        return await ctx.reply("No staff data available.", mention_author=False)
+    lines = []
+    for open_n, _neg_closed, name, sid, closed, avg_m in rows[:25]:
+        avg_str = f"{avg_m:.0f}m" if avg_m else "—"
+        lines.append(f"• **{name}** — `{open_n}` open · `{closed}` closed lifetime · avg `{avg_str}`")
+    total_open = sum(r[0] for r in rows)
+    emb = discord.Embed(
+        title="🧑‍✈️ Staff Ticket Load",
+        description=f"**{total_open}** ticket(s) currently claimed across **{len([r for r in rows if r[0] > 0])}** staff.\n\n" + "\n".join(lines),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    emb.set_footer(text="Different Meets • Ticket Workload")
+    await ctx.reply(embed=emb, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+
+
 async def __ticket_daily_digest_logic():
     now_est = datetime.now(_EST_TZ)
     if now_est.hour != 9:
@@ -33317,9 +33703,12 @@ async def __ticket_daily_digest_logic():
 
     stale = [t for t in open_tickets if (t["last_active_hrs"] or 0) >= 24]
     if stale:
+        def _stale_fmt(t):
+            who = f" — claimed by <@{t['claimer_id']}>" if t.get("claimed") and t.get("claimer_id") else " — **unclaimed**"
+            return f"{t['ch'].mention} ({t['last_active_hrs']:.0f}h){who}"
         embed.add_field(
             name=f"⏰ Stale (24h+ silent) — {len(stale)}",
-            value="\n".join(f"{t['ch'].mention} ({t['last_active_hrs']:.0f}h)" for t in stale[:8]),
+            value="\n".join(_stale_fmt(t) for t in stale[:8]),
             inline=False,
         )
 
@@ -35424,6 +35813,32 @@ async def on_message(message: discord.Message) -> None:
                     )
                     review_embed.add_field(name="📸 Valid Photos",  value=f"{capped}/{MIN_GARAGE_PHOTOS}", inline=True)
                     review_embed.add_field(name="📋 Channel",       value=message.channel.mention,        inline=True)
+                    # Auto pre-screen: cheap metadata-only quality stats so reviewers
+                    # know upfront if photos are likely usable.
+                    try:
+                        _all_imgs = []
+                        for _hm in history:
+                            if _hm.author.id == message.author.id:
+                                for _a in _hm.attachments:
+                                    if _a.content_type and _a.content_type.startswith("image/"):
+                                        _all_imgs.append(_a)
+                        _sizes_kb = [int(getattr(a, "size", 0) or 0) // 1024 for a in _all_imgs]
+                        _dims = [(getattr(a, "width", 0) or 0, getattr(a, "height", 0) or 0) for a in _all_imgs]
+                        _tiny_kb   = sum(1 for s in _sizes_kb if 0 < s < 50)
+                        _small_dim = sum(1 for w, h in _dims if w and h and (w < 400 or h < 400))
+                        _avg_kb    = (sum(_sizes_kb) // len(_sizes_kb)) if _sizes_kb else 0
+                        _quality_bits = [f"avg `{_avg_kb} KB`"]
+                        if _tiny_kb:   _quality_bits.append(f"⚠️ {_tiny_kb} tiny file{'s' if _tiny_kb != 1 else ''}")
+                        if _small_dim: _quality_bits.append(f"⚠️ {_small_dim} low-res")
+                        if not _tiny_kb and not _small_dim:
+                            _quality_bits.append("✅ no auto flags")
+                        review_embed.add_field(
+                            name="🔍 Auto Pre-Screen",
+                            value=" · ".join(_quality_bits),
+                            inline=False,
+                        )
+                    except Exception:
+                        pass
                     review_embed.set_thumbnail(url=message.author.display_avatar.url)
                     review_embed.set_footer(text="Different Meets • Application System")
                     await message.channel.send(
@@ -37524,6 +37939,18 @@ class JoinTicketView(discord.ui.View):
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Channel error.", ephemeral=True)
         await interaction.response.send_modal(JoinRequestInfoModal())
+
+    @discord.ui.button(label="Quick Reply", emoji="⚡", style=discord.ButtonStyle.secondary, custom_id="diff_join_quick_reply", row=1)
+    async def quick_reply(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not self._staff_check(interaction):
+            return await interaction.response.send_message("Only Leader / Executive / Manager can use this button.", ephemeral=True)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("Channel error.", ephemeral=True)
+        await interaction.response.send_message(
+            "Pick a templated reply — it will be posted in this ticket and ping the applicant:",
+            view=_JoinQuickReplyView(),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="diff_join_close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
