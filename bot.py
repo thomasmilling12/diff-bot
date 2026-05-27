@@ -8634,7 +8634,7 @@ class _MeetInfoFeedbackSelect(discord.ui.Select):
                     description="Quick answers to the most common meet questions.",
                 ),
             ],
-            row=1,
+            row=2,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
