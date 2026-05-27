@@ -32418,6 +32418,112 @@ class AppealDropdown(discord.ui.Select):
         )
 
 
+# ─── Ticket member management (!add / !remove) ────────────────────────────────
+
+def _ti_is_ticket_channel(channel: "discord.abc.GuildChannel | None") -> bool:
+    """A channel is a ticket if its topic carries `ticket_owner=` or `join_owner=`."""
+    if not isinstance(channel, discord.TextChannel):
+        return False
+    t = channel.topic or ""
+    return ("ticket_owner=" in t) or ("join_owner=" in t)
+
+def _ti_get_ticket_owner_id(channel: "discord.TextChannel") -> "int | None":
+    t = channel.topic or ""
+    raw = _supp_parse_topic(t, "ticket_owner") or _supp_parse_topic(t, "join_owner")
+    if raw and raw.isdigit():
+        return int(raw)
+    return None
+
+def _ti_can_manage_ticket(member: "discord.Member", channel: "discord.TextChannel") -> bool:
+    """Staff (Leadership/Host/Ticket Support) or the ticket owner can add/remove members."""
+    if member.guild_permissions.manage_channels or member.guild_permissions.administrator:
+        return True
+    role_ids = {r.id for r in member.roles}
+    if role_ids & (_LEADERSHIP_ROLE_IDS | {HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID}):
+        return True
+    owner_id = _ti_get_ticket_owner_id(channel)
+    return owner_id is not None and member.id == owner_id
+
+@bot.command(name="add", aliases=["ticketadd", "adduser"])
+async def cmd_ticket_add(ctx: commands.Context, member: "discord.Member" = None) -> None:
+    """Add a member to the current ticket. Staff or the ticket owner only.
+    Usage: `!add @user`"""
+    if not isinstance(ctx.channel, discord.TextChannel) or ctx.guild is None:
+        return
+    if not _ti_is_ticket_channel(ctx.channel):
+        return await ctx.reply("This isn't a ticket channel.", delete_after=10, mention_author=False)
+    if not isinstance(ctx.author, discord.Member) or not _ti_can_manage_ticket(ctx.author, ctx.channel):
+        return await ctx.reply("Only staff or the ticket owner can add members here.", delete_after=10, mention_author=False)
+    if member is None:
+        return await ctx.reply("Usage: `!add @user`", delete_after=10, mention_author=False)
+    if member.bot:
+        return await ctx.reply("Can't add bots.", delete_after=10, mention_author=False)
+    perms = ctx.channel.permissions_for(member)
+    if perms.read_messages and perms.send_messages:
+        return await ctx.reply(f"{member.mention} already has access here.", delete_after=10, mention_author=False)
+    try:
+        await ctx.channel.set_permissions(
+            member,
+            read_messages=True,
+            send_messages=True,
+            attach_files=True,
+            embed_links=True,
+            read_message_history=True,
+            reason=f"Added to ticket by {ctx.author} ({ctx.author.id})",
+        )
+    except discord.Forbidden:
+        return await ctx.reply("Missing permissions to update this channel.", mention_author=False)
+    except discord.HTTPException as e:
+        return await ctx.reply(f"Failed to add member: `{e}`", mention_author=False)
+    await ctx.reply(
+        embed=discord.Embed(
+            description=f"✅ {member.mention} was added to this ticket by {ctx.author.mention}.",
+            color=discord.Color.green(),
+        ),
+        mention_author=False,
+    )
+
+@bot.command(name="remove", aliases=["ticketremove", "removeuser", "kickuser"])
+async def cmd_ticket_remove(ctx: commands.Context, member: "discord.Member" = None) -> None:
+    """Remove a member from the current ticket. Staff only.
+    Usage: `!remove @user`"""
+    if not isinstance(ctx.channel, discord.TextChannel) or ctx.guild is None:
+        return
+    if not _ti_is_ticket_channel(ctx.channel):
+        return await ctx.reply("This isn't a ticket channel.", delete_after=10, mention_author=False)
+    if not isinstance(ctx.author, discord.Member):
+        return
+    # Staff-only for remove (don't let ticket owner kick staff out of their own ticket)
+    role_ids = {r.id for r in ctx.author.roles}
+    is_staff = bool(role_ids & (_LEADERSHIP_ROLE_IDS | {HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID})) \
+               or ctx.author.guild_permissions.manage_channels
+    if not is_staff:
+        return await ctx.reply("Only staff can remove members from a ticket.", delete_after=10, mention_author=False)
+    if member is None:
+        return await ctx.reply("Usage: `!remove @user`", delete_after=10, mention_author=False)
+    if member.id == _ti_get_ticket_owner_id(ctx.channel):
+        return await ctx.reply("Can't remove the ticket owner — close the ticket instead.", delete_after=10, mention_author=False)
+    if member.bot:
+        return await ctx.reply("Can't remove bots.", delete_after=10, mention_author=False)
+    try:
+        await ctx.channel.set_permissions(
+            member,
+            overwrite=None,
+            reason=f"Removed from ticket by {ctx.author} ({ctx.author.id})",
+        )
+    except discord.Forbidden:
+        return await ctx.reply("Missing permissions to update this channel.", mention_author=False)
+    except discord.HTTPException as e:
+        return await ctx.reply(f"Failed to remove member: `{e}`", mention_author=False)
+    await ctx.reply(
+        embed=discord.Embed(
+            description=f"🚪 {member.mention} was removed from this ticket by {ctx.author.mention}.",
+            color=discord.Color.orange(),
+        ),
+        mention_author=False,
+    )
+
+
 # ─── Support panel button-based flow (replaces SupportDropdown) ───────────────
 
 # Per-user lock so rapid double-clicks (or AI modal + Open-Anyway race) can't
