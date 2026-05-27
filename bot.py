@@ -17081,9 +17081,12 @@ class _OfficialMeetPanelView(discord.ui.View):
 
     @discord.ui.button(label="🗓️ Full Schedule", style=discord.ButtonStyle.secondary, custom_id="diff_om_panel:schedule_view", row=0)
     async def schedule_view_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Ephemeral 7-day host lineup snapshot for anyone who clicks."""
+        """Ephemeral host lineup snapshot for anyone who clicks.
+        Reads the Auto Host Schedule, which is keyed by Meet 1/2/3 slots — NOT by
+        weekday name (the older lookup pattern caused every row to render as 'open
+        slot' because days.get('sunday') / etc was always None)."""
         try:
-            sched = _asched_load()
+            sched = _asched_load() or {}
         except Exception:
             sched = {}
         days = sched.get("days", {}) or {}
@@ -17091,41 +17094,58 @@ class _OfficialMeetPanelView(discord.ui.View):
             return await interaction.response.send_message(
                 "📭 No schedule data is loaded yet.", ephemeral=True
             )
+
         lines = []
-        for key in _OM_DAY_ORDER:
-            slot = days.get(key) or {}
-            host_id = slot.get("host_id")
-            emoji = _OM_DAY_EMOJI.get(key, "•")
-            day_label = key.capitalize()
+        for idx, slot_key in enumerate(_HRSVP_DAYS, start=1):
+            entry      = days.get(slot_key) or {}
+            host_id    = entry.get("host_id")
+            host_state = (entry.get("host_status") or "").lower()
+            theme      = (entry.get("class") or entry.get("theme") or "").strip()
+            time_val   = (entry.get("time") or "").strip()
+            day_val    = (entry.get("day") or "").strip()
+
+            # Pick the weekday emoji from the parsed day string ("Friday" → 🎉)
+            wd_key = day_val.lower().split()[0] if day_val else ""
+            emoji = _OM_DAY_EMOJI.get(wd_key, "🗓️")
+
+            # Header line — slot number, weekday (if known), status badge
+            day_label = day_val.title() if day_val else slot_key
             if host_id:
-                theme = (slot.get("theme") or "").strip()
-                time_val = (slot.get("time") or "").strip()
-                day_val = (slot.get("day") or "").strip()
-                ts = None
+                badge = "🟢 Confirmed" if host_state != "maybe" else "🟡 Tentative"
+            else:
+                badge = "🔴 Open slot"
+            header = f"{emoji} **{slot_key}** — {day_label}  ·  {badge}"
+
+            sub_lines = []
+            if host_id:
+                sub_lines.append(f"👤 <@{host_id}>")
+            ts = None
+            if day_val and time_val and time_val.upper() != "TBD":
                 try:
-                    if day_val and time_val and time_val.upper() != "TBD":
-                        ts = _parse_meet_ts(day_val, time_val)
+                    ts = _parse_meet_ts(day_val, time_val)
                 except Exception:
                     ts = None
-                tail_bits = []
-                if theme and theme.upper() != "TBD":
-                    tail_bits.append(f"_{theme}_")
-                if ts:
-                    tail_bits.append(f"<t:{ts}:t> (<t:{ts}:R>)")
-                elif time_val and time_val.upper() != "TBD":
-                    tail_bits.append(time_val)
-                tail = "  •  ".join(tail_bits)
-                lines.append(f"{emoji} **{day_label}** — <@{host_id}>" + (f"\n   {tail}" if tail else ""))
-            else:
-                lines.append(f"{emoji} **{day_label}** — ⚪ open slot")
+            if ts:
+                sub_lines.append(f"🕒 <t:{ts}:F> (<t:{ts}:R>)")
+            elif time_val and time_val.upper() != "TBD":
+                sub_lines.append(f"🕒 {time_val}")
+            if theme and theme.upper() != "TBD":
+                sub_lines.append(f"🎮 _{theme}_")
+
+            block = header + ("\n" + "\n".join(f"   {ln}" for ln in sub_lines) if sub_lines else "")
+            lines.append(block)
+
         emb = discord.Embed(
-            title="🗓️ This Week\'s Host Schedule",
-            description="\n".join(lines),
+            title="🗓️ This Week's Host Schedule",
+            description="\n\n".join(lines) or "No meets scheduled yet.",
             color=discord.Color.from_rgb(241, 196, 15),
             timestamp=datetime.now(timezone.utc),
         )
-        emb.set_footer(text="DIFF Official Meet System")
-        await interaction.response.send_message(embed=emb, ephemeral=True)
+        emb.set_footer(text="DIFF Official Meet System • Built from host availability")
+        await interaction.response.send_message(
+            embed=emb, ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @discord.ui.button(label="📊 Weekly Digest", style=discord.ButtonStyle.secondary, custom_id="diff_om_panel:weekly_digest", row=0)
     async def weekly_digest_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
