@@ -349,6 +349,19 @@ async def _setup_hook():
         bot.add_view(HostBoardRefreshView())
     except Exception as _e:
         print(f"[Views] FAILED to register HostBoardRefreshView: {_e}")
+    # Persistent ticket Reopen buttons — one template per ticket_key so DM clicks
+    # keep routing after a bot restart for the full _REOPEN_WINDOW_DAYS window.
+    try:
+        for _tk in _TICKET_TYPES:
+            bot.add_view(_ReopenOnlyView(_tk))
+        print(f"[Views] Registered {len(_TICKET_TYPES)} _ReopenOnlyView template(s)")
+    except Exception as _e:
+        print(f"[Views] FAILED to register _ReopenOnlyView: {_e}")
+    # Persistent Anonymous-tip Reveal button (Leadership-gated)
+    try:
+        bot.add_view(_AnonRevealView())
+    except Exception as _e:
+        print(f"[Views] FAILED to register _AnonRevealView: {_e}")
 
 bot.setup_hook = _setup_hook
 
@@ -28730,8 +28743,9 @@ class _TicketRatingButton(discord.ui.Button):
 
 
 class _TicketRatingView(discord.ui.View):
-    """Adds a View Transcript link button + ⭐1–⭐5 rating buttons to the ticket-closed DM."""
-    def __init__(self, channel_name: str, ticket_type: str, transcript_url: str | None = None):
+    """Adds a View Transcript link button + ⭐1–⭐5 rating buttons + optional Reopen button to the ticket-closed DM."""
+    def __init__(self, channel_name: str, ticket_type: str, transcript_url: str | None = None,
+                 ticket_key: "str | None" = None):
         super().__init__(timeout=None)
         import uuid as _uuid
         uid = _uuid.uuid4().hex[:10]
@@ -28752,6 +28766,9 @@ class _TicketRatingView(discord.ui.View):
         ]
         for star in range(1, 6):
             self.add_item(_TicketRatingButton(star, _styles[star - 1], uid, channel_name, ticket_type))
+        # Optional Reopen button — only added when a known ticket_key is supplied
+        if ticket_key and ticket_key in _TICKET_TYPES:
+            self.add_item(_ReopenTicketButton(ticket_key))
 
 
 def _supp_brand_embed(embed: discord.Embed) -> discord.Embed:
@@ -30421,7 +30438,7 @@ async def _perform_ticket_close(channel: "discord.TextChannel", closer: "discord
                     timestamp=datetime.now(timezone.utc),
                 )
                 dm_embed.set_footer(text="Different Meets • Support System")
-                close_view = _TicketRatingView(channel_name=channel.name, ticket_type=ticket.label, transcript_url=_transcript_url)
+                close_view = _TicketRatingView(channel_name=channel.name, ticket_type=ticket.label, transcript_url=_transcript_url, ticket_key=ticket.key)
                 try:
                     await owner.send(embed=dm_embed, view=close_view)
                 except Exception:
@@ -31621,6 +31638,320 @@ class _SupportMyTicketsButton(discord.ui.Button):
         await _supp_show_my_tickets(interaction)
 
 
+# ── Reopen-ticket flow (7-day DM button) ─────────────────────────────────────
+_REOPEN_WINDOW_DAYS = 7
+
+async def _supp_create_ticket_channel_for(
+    guild: "discord.Guild", member: "discord.Member", ticket: "_TicketType"
+) -> "discord.TextChannel | None":
+    """Minimal channel-creation helper that does NOT require a discord.Interaction.
+    Used by the DM-based Reopen button (which has no guild/interaction context)."""
+    panel_channel = guild.get_channel(SUPPORT_PANEL_CHANNEL_ID)
+    category = None
+    if isinstance(panel_channel, discord.TextChannel):
+        category = panel_channel.category
+    if not isinstance(category, discord.CategoryChannel):
+        return None
+    overwrites: dict = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        member: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True,
+            attach_files=True, embed_links=True,
+        ),
+    }
+    me = guild.me
+    if me:
+        overwrites[me] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True,
+            manage_channels=True, manage_messages=True,
+            attach_files=True, embed_links=True,
+        )
+    for _rid in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID,
+                 HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID):
+        _role = guild.get_role(_rid)
+        if _role:
+            overwrites[_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                manage_messages=True, attach_files=True, embed_links=True,
+            )
+    name = f"{ticket.channel_prefix}-{_supp_clean_name(member.name)}"
+    topic = f"ticket_owner={member.id} | ticket_type={ticket.key} | reopened=1"
+    try:
+        return await guild.create_text_channel(
+            name=name, category=category, overwrites=overwrites, topic=topic,
+            reason=f"Ticket reopened by {member} within {_REOPEN_WINDOW_DAYS}d window",
+        )
+    except Exception:
+        return None
+
+
+class _ReopenTicketButton(discord.ui.Button):
+    """Persistent button (custom_id encodes ticket_key) — clickable from DM for 7 days post-close."""
+    def __init__(self, ticket_key: str):
+        super().__init__(
+            label="🔁 Reopen Ticket",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"diff_treopen_{ticket_key}",
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        ticket_key = (self.custom_id or "").replace("diff_treopen_", "", 1)
+        ticket = _TICKET_TYPES.get(ticket_key)
+        if not ticket:
+            return await interaction.response.send_message(
+                "❌ This ticket type is no longer available.", ephemeral=True,
+            )
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            return await interaction.response.send_message(
+                "❌ Server unavailable right now — please try again later.", ephemeral=True,
+            )
+        member = guild.get_member(interaction.user.id)
+        if not member:
+            return await interaction.response.send_message(
+                "❌ You are no longer a member of the server, so this ticket can't be reopened.",
+                ephemeral=True,
+            )
+        # Enforce 7-day reopen window using _thist_load history
+        try:
+            _hist = _thist_load().get(str(interaction.user.id), [])
+            _last = None
+            for _entry in reversed(_hist):
+                if _entry.get("ticket_key") == ticket_key:
+                    _ts_raw = _entry.get("closed_at") or _entry.get("at")
+                    if not _ts_raw:
+                        continue
+                    try:
+                        _last = datetime.fromisoformat(str(_ts_raw))
+                        if _last.tzinfo is None:
+                            _last = _last.replace(tzinfo=timezone.utc)
+                        break
+                    except Exception:
+                        continue
+            if _last:
+                _age = (datetime.now(timezone.utc) - _last).total_seconds() / 86400.0
+                if _age > _REOPEN_WINDOW_DAYS:
+                    return await interaction.response.send_message(
+                        f"⏰ The {_REOPEN_WINDOW_DAYS}-day reopen window has expired "
+                        "for this ticket. Please open a new ticket via the support panel "
+                        f"in **{guild.name}**.",
+                        ephemeral=True,
+                    )
+        except Exception:
+            pass
+        # Reject duplicate open ticket of same type
+        for _ch in guild.text_channels:
+            _topic = _ch.topic or ""
+            if f"ticket_owner={member.id}" in _topic and f"ticket_type={ticket_key}" in _topic:
+                return await interaction.response.send_message(
+                    f"You already have an open {ticket.label} ticket: {_ch.mention}",
+                    ephemeral=True,
+                )
+        await interaction.response.defer(ephemeral=True)
+        new_ch = await _supp_create_ticket_channel_for(guild, member, ticket)
+        if not new_ch:
+            return await interaction.followup.send(
+                "❌ Could not create the ticket channel. Please use the support panel instead.",
+                ephemeral=True,
+            )
+        try:
+            await new_ch.send(
+                content=member.mention,
+                embed=discord.Embed(
+                    title="🔁 Ticket Reopened",
+                    description=(
+                        f"{member.mention} reopened a recently-closed **{ticket.label}** ticket "
+                        f"(within the {_REOPEN_WINDOW_DAYS}-day window).\n\n"
+                        "The previous transcript is in the ticket-transcripts channel for context."
+                    ),
+                    color=_TICKET_COLORS.get(ticket.key, discord.Color.blurple()),
+                    timestamp=datetime.now(timezone.utc),
+                ),
+                view=SupportCloseButton(),
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+        except Exception:
+            pass
+        # Notify staff-logs
+        try:
+            _logs = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(_logs, discord.TextChannel):
+                await _logs.send(
+                    embed=discord.Embed(
+                        title=f"🔁 Ticket Reopened — {ticket.label}",
+                        description=f"{member.mention} reopened via DM button.\nNew channel: {new_ch.mention}",
+                        color=discord.Color.blurple(),
+                        timestamp=datetime.now(timezone.utc),
+                    ),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+        except Exception:
+            pass
+        await interaction.followup.send(
+            f"✅ Reopened — your new ticket channel is {new_ch.mention}",
+            ephemeral=True,
+        )
+
+
+class _ReopenOnlyView(discord.ui.View):
+    """Persistent view template — one per ticket_key — registered in setup_hook so the
+    Reopen button's custom_id keeps routing after a bot restart."""
+    def __init__(self, ticket_key: str):
+        super().__init__(timeout=None)
+        self.add_item(_ReopenTicketButton(ticket_key))
+
+
+# ── Anonymous tip / report system ────────────────────────────────────────────
+_ANON_REPORTS_FILE = os.path.join(DATA_FOLDER, "diff_anon_reports.json")
+
+def _anon_load() -> dict:
+    try:
+        with open(_ANON_REPORTS_FILE, "r") as _f:
+            return json.load(_f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _anon_save(_d: dict) -> None:
+    try:
+        _atomic_json_save(_ANON_REPORTS_FILE, _d)
+    except Exception:
+        pass
+
+
+class _AnonReportModal(discord.ui.Modal, title="🙊 Anonymous Tip / Report"):
+    category = discord.ui.TextInput(
+        label="Category",
+        placeholder="e.g. member, staff, bug, rule violation",
+        max_length=60,
+        required=True,
+    )
+    details = discord.ui.TextInput(
+        label="Details",
+        placeholder="Describe what happened — who, where, when, any evidence. Be factual.",
+        style=discord.TextStyle.paragraph,
+        max_length=1500,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        import uuid as _uuid
+        rid = _uuid.uuid4().hex[:8].upper()
+        cat = (str(self.category.value or "").strip() or "uncategorized")[:60]
+        det = str(self.details.value or "").strip()
+        if len(det) < 10:
+            return await interaction.response.send_message(
+                "❌ Details too short — please provide at least 10 characters of context.",
+                ephemeral=True,
+            )
+        try:
+            _store = _anon_load()
+            _store[rid] = {
+                "user_id": interaction.user.id,
+                "category": cat,
+                "details": det[:1500],
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+            _anon_save(_store)
+        except Exception:
+            pass
+        guild = interaction.guild or bot.get_guild(GUILD_ID)
+        logs = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
+        if isinstance(logs, discord.TextChannel):
+            try:
+                embed = discord.Embed(
+                    title="🙊 Anonymous Tip Received",
+                    description=f"**Category:** {cat}\n\n{det}",
+                    color=discord.Color.dark_purple(),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                embed.set_footer(text=f"Report ID: {rid} • Reporter identity hidden (Leadership reveal available)")
+                await logs.send(embed=embed, view=_AnonRevealView(),
+                                allowed_mentions=discord.AllowedMentions.none())
+            except Exception:
+                pass
+        await interaction.response.send_message(
+            f"✅ Your tip was submitted anonymously.\n"
+            f"Reference ID: `{rid}` (keep this if you need to follow up).\n\n"
+            "Note: Leadership can request reporter identity for safety/abuse review only.",
+            ephemeral=True,
+        )
+
+
+class _AnonRevealView(discord.ui.View):
+    """Persistent view for the Reveal Reporter button.
+    Reads report ID from the message embed footer at click time so a single static custom_id works."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Reveal Reporter (Leadership)",
+        emoji="🔓",
+        style=discord.ButtonStyle.danger,
+        custom_id="diff_anon_reveal",
+    )
+    async def reveal_btn(self, interaction: discord.Interaction, _btn: discord.ui.Button) -> None:
+        if (not isinstance(interaction.user, discord.Member)
+            or not any(r.id in _LEADERSHIP_ROLE_IDS for r in interaction.user.roles)):
+            return await interaction.response.send_message(
+                "❌ Only Leadership can reveal anonymous reporters.", ephemeral=True,
+            )
+        msg = interaction.message
+        if not msg or not msg.embeds or not msg.embeds[0].footer:
+            return await interaction.response.send_message(
+                "❌ Couldn't parse report ID from this message.", ephemeral=True,
+            )
+        import re as _re
+        m = _re.search(r"Report ID:\s*([A-Z0-9]+)", msg.embeds[0].footer.text or "")
+        if not m:
+            return await interaction.response.send_message(
+                "❌ Report ID not found in footer.", ephemeral=True,
+            )
+        rid = m.group(1)
+        rec = _anon_load().get(rid)
+        if not rec:
+            return await interaction.response.send_message(
+                f"❌ Report `{rid}` not in store (may have been pruned).", ephemeral=True,
+            )
+        uid = rec.get("user_id")
+        await interaction.response.send_message(
+            f"🔓 **Report `{rid}` reporter:** <@{uid}> (`{uid}`)\n"
+            f"Revealed by {interaction.user.mention} — this action has been logged.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        # Audit trail in staff-logs
+        try:
+            if isinstance(interaction.channel, discord.TextChannel):
+                await interaction.channel.send(
+                    embed=discord.Embed(
+                        description=(
+                            f"🔓 {interaction.user.mention} revealed the reporter of anonymous "
+                            f"tip `{rid}`."
+                        ),
+                        color=discord.Color.orange(),
+                        timestamp=datetime.now(timezone.utc),
+                    ),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+        except Exception:
+            pass
+
+
+class _SupportAnonReportButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Anonymous Tip",
+            emoji="🙊",
+            style=discord.ButtonStyle.secondary,
+            custom_id="diff_support_btn_anon",
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(_AnonReportModal())
+
+
 class SupportDropdownView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -31632,6 +31963,9 @@ class SupportDropdownView(discord.ui.View):
         self.add_item(_SupportUrgentButton())
         # Row 1 — Appeals dropdown (unchanged)
         self.add_item(AppealDropdown())
+        # Row 2 — Anonymous Tip (separated from "Report" because no channel is created
+        # and reporter identity is hidden by default)
+        self.add_item(_SupportAnonReportButton())
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
