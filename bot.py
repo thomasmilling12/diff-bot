@@ -20575,6 +20575,10 @@ class _HostPosterActionsView(discord.ui.View):
         self.add_item(_HostPosterAttendingBtn())
         self.add_item(_HostPosterDeclineBtn())
         self.add_item(_HostPosterHelpBtn())
+        try:
+            self.add_item(_LobbyPicUploadBtn())
+        except Exception:
+            pass
 
 # --- LEGACY back-compat: pre-upgrade messages still have the old custom_id
 # button. Keep it registered so old clicks don't silently fail.
@@ -20618,6 +20622,804 @@ async def _hp_dm_mirror(guild, state: dict, jump_url: str) -> None:
         def _mut(s):
             s["dm_sent_to"] = sorted(set(s.get("dm_sent_to", []) + sent))
         _hp_update(state["bot_msg_id"], _mut)
+
+# =========================
+# LOBBY PICTURES SYSTEM
+# =========================
+_LP_DATA_FILE            = "diff_data/diff_lobby_pictures.json"
+_LP_GALLERY_STATE_FILE   = "diff_data/diff_lobby_gallery_state.json"
+_LP_WATERMARK_PREFS_FILE = "diff_data/diff_lobby_wm_prefs.json"
+_LP_MATCH_WINDOW_HOURS   = 6
+_LP_PIN_DAYS             = 7
+_LP_RETENTION_DAYS       = 30
+_LP_GALLERY_DOW          = 0   # Monday
+_LP_GALLERY_HOUR_ET      = 10
+_LP_UPLOAD_PROMPT_WINDOW_SEC = 600  # 10 min
+
+# Optional OCR + watermark deps — best-effort, skip silently if missing
+try:
+    import pytesseract as _lp_pytess  # type: ignore
+    _LP_OCR_AVAILABLE = True
+except Exception:
+    _lp_pytess = None
+    _LP_OCR_AVAILABLE = False
+
+try:
+    from PIL import Image as _LpImage, ImageDraw as _LpDraw, ImageFont as _LpFont  # type: ignore
+    _LP_PIL_AVAILABLE = True
+except Exception:
+    _LpImage = _LpDraw = _LpFont = None
+    _LP_PIL_AVAILABLE = False
+
+# user_id -> (meet_key, expires_ts) — armed by Upload button on HP embed
+_lp_pending_uploads: dict[int, tuple[str, float]] = {}
+
+import re as _re_lp
+_LP_CREW_TAG_RE     = _re_lp.compile(r"\b([A-Z0-9]{3,5})\b")
+_LP_PSN_LIKE_RE     = _re_lp.compile(r"\b([A-Za-z0-9_\-]{3,16})\b")
+_LP_KNOWN_CREW_TAGS = {
+    "DIFF", "KACK", "FLSH", "BPSF", "TOAS", "FNST", "AUTO",
+    "XXXX", "PURE", "ELT", "LUX", "OG", "PSN", "GTA",
+}
+
+def _lp_load_all() -> dict:
+    if not os.path.exists(_LP_DATA_FILE):
+        return {}
+    try:
+        with open(_LP_DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+def _lp_save_all(d: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    _atomic_json_save(_LP_DATA_FILE, d)
+
+def _lp_put(msg_id, state: dict) -> None:
+    d = _lp_load_all()
+    d[str(msg_id)] = state
+    _lp_save_all(d)
+
+def _lp_get(msg_id) -> dict | None:
+    return _lp_load_all().get(str(msg_id))
+
+def _lp_update(msg_id, mutator) -> dict | None:
+    d = _lp_load_all()
+    k = str(msg_id)
+    s = d.get(k)
+    if s is None:
+        return None
+    mutator(s)
+    d[k] = s
+    _lp_save_all(d)
+    return s
+
+def _lp_delete(msg_id) -> None:
+    d = _lp_load_all()
+    if d.pop(str(msg_id), None) is not None:
+        _lp_save_all(d)
+
+def _lp_wm_prefs() -> dict:
+    if not os.path.exists(_LP_WATERMARK_PREFS_FILE):
+        return {}
+    try:
+        with open(_LP_WATERMARK_PREFS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+def _lp_wm_set(uid: int, enabled: bool) -> None:
+    d = _lp_wm_prefs()
+    d[str(uid)] = bool(enabled)
+    os.makedirs("diff_data", exist_ok=True)
+    _atomic_json_save(_LP_WATERMARK_PREFS_FILE, d)
+
+def _lp_wm_enabled_for(uid: int) -> bool:
+    return bool(_lp_wm_prefs().get(str(uid), False))
+
+def _lp_is_verified(member) -> bool:
+    try:
+        return any(r.id == VERIFIED_ROLE_ID for r in getattr(member, "roles", []))
+    except Exception:
+        return False
+
+def _lp_psn_map() -> dict:
+    """Inverted PSN map: psn(lower) -> user_id (int)."""
+    try:
+        with open("diff_data/diff_psn_map.json", "r", encoding="utf-8") as f:
+            m = json.load(f) or {}
+        out = {}
+        for uid, psn in m.items():
+            if psn:
+                out[str(psn).lower()] = int(uid)
+        return out
+    except Exception:
+        return {}
+
+def _lp_find_meet_for_timestamp(now_ts: float) -> dict | None:
+    """Find the meet whose start time is closest to now_ts, within
+    _LP_MATCH_WINDOW_HOURS. Scans Host Posters first, then auto-schedule."""
+    best = None
+    best_diff = _LP_MATCH_WINDOW_HOURS * 3600 + 1
+
+    # 1) Host Posters
+    try:
+        for key, st in (_hp_load_all() or {}).items():
+            mts = st.get("meet_ts")
+            if not mts:
+                continue
+            diff = abs(now_ts - float(mts))
+            if diff < best_diff:
+                guild_id = st.get("guild_id", GUILD_ID)
+                ch_id = st.get("channel_id", _POSTMEET_HOST_POSTERS_ID)
+                bot_msg_id = st.get("bot_msg_id") or st.get("host_msg_id")
+                jump = (
+                    f"https://discord.com/channels/{guild_id}/{ch_id}/{bot_msg_id}"
+                    if bot_msg_id else ""
+                )
+                best = {
+                    "key": f"hp:{key}",
+                    "source": "host_poster",
+                    "meet_ts": int(mts),
+                    "theme": st.get("theme") or "DIFF Meet",
+                    "hosts": list(st.get("assigned_host_ids") or []),
+                    "jump_url": jump,
+                    "channel_id": ch_id,
+                    "msg_id": bot_msg_id,
+                }
+                best_diff = diff
+    except Exception:
+        pass
+
+    # 2) Auto-scheduled (Meet 1/2/3)
+    try:
+        sched = _asched_load() or {}
+        for slot_name, entry in (sched.get("days") or {}).items():
+            mts = _parse_meet_ts(entry.get("day") or "", entry.get("time") or "")
+            if not mts:
+                continue
+            diff = abs(now_ts - float(mts))
+            if diff < best_diff:
+                hid = entry.get("host_id")
+                hosts = [int(hid)] if hid else []
+                best = {
+                    "key": f"sched:{slot_name}:{mts}",
+                    "source": "auto_schedule",
+                    "meet_ts": int(mts),
+                    "theme": entry.get("class") or slot_name,
+                    "hosts": hosts,
+                    "jump_url": "",
+                    "channel_id": None,
+                    "msg_id": None,
+                }
+                best_diff = diff
+    except Exception:
+        pass
+
+    return best
+
+async def _lp_reject_post(message, reason: str) -> None:
+    try:
+        await message.delete()
+    except Exception:
+        return
+    try:
+        await message.author.send(
+            f"Hey! Your post in <#{LOBBY_PICTURES_CHANNEL_ID}> was removed: **{reason}**.\n"
+            "That channel is for **lobby screenshots only** (image attachments).\n"
+            f"Chat in <#{EVERYONE_CHAT_CHANNEL_ID}> instead. 🏁"
+        )
+    except discord.Forbidden:
+        pass
+    except Exception:
+        pass
+
+async def _lp_ocr_image(url: str) -> str | None:
+    if not _LP_OCR_AVAILABLE or not _LP_PIL_AVAILABLE:
+        return None
+    try:
+        import aiohttp as _aio, io as _io
+        async with _aio.ClientSession() as sess:
+            async with sess.get(url, timeout=15) as r:
+                if r.status != 200:
+                    return None
+                buf = await r.read()
+        img = _LpImage.open(_io.BytesIO(buf))
+        text = await asyncio.to_thread(_lp_pytess.image_to_string, img)
+        return text or None
+    except Exception as _e:
+        print(f"[lobby-pics] OCR failed: {_e!r}")
+        return None
+
+def _lp_parse_ocr(text: str) -> tuple[list[str], list[str]]:
+    psns: list[str] = []
+    tags: list[str] = []
+    seen_psn: set[str] = set()
+    for raw in (text or "").splitlines():
+        ln = raw.strip()
+        if len(ln) < 3:
+            continue
+        tok_m = _LP_PSN_LIKE_RE.search(ln)
+        if tok_m:
+            psn = tok_m.group(1)
+            low = psn.lower()
+            if low not in seen_psn and len(psn) >= 4 and not psn.isdigit():
+                psns.append(psn)
+                seen_psn.add(low)
+        for ct in _LP_CREW_TAG_RE.findall(ln):
+            if ct in _LP_KNOWN_CREW_TAGS:
+                tags.append(ct)
+    return psns, tags
+
+async def _lp_watermark_image(url: str, label: str) -> bytes | None:
+    if not _LP_PIL_AVAILABLE:
+        return None
+    try:
+        import aiohttp as _aio, io as _io
+        async with _aio.ClientSession() as sess:
+            async with sess.get(url, timeout=15) as r:
+                if r.status != 200:
+                    return None
+                buf = await r.read()
+        def _do_wm():
+            im = _LpImage.open(_io.BytesIO(buf)).convert("RGBA")
+            overlay = _LpImage.new("RGBA", im.size, (0, 0, 0, 0))
+            d = _LpDraw.Draw(overlay)
+            try:
+                font = _LpFont.truetype(
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                    max(14, im.size[0] // 40),
+                )
+            except Exception:
+                font = _LpFont.load_default()
+            text = f"DIFF • {label}"
+            bbox = d.textbbox((0, 0), text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            pad = max(8, im.size[0] // 100)
+            x = im.size[0] - tw - pad * 2
+            y = im.size[1] - th - pad * 2
+            d.rectangle((x - pad, y - pad, x + tw + pad, y + th + pad), fill=(0, 0, 0, 140))
+            d.text((x, y), text, font=font, fill=(255, 255, 255, 230))
+            merged = _LpImage.alpha_composite(im, overlay).convert("RGB")
+            out = _io.BytesIO()
+            merged.save(out, format="JPEG", quality=90)
+            return out.getvalue()
+        return await asyncio.to_thread(_do_wm)
+    except Exception as _e:
+        print(f"[lobby-pics] watermark failed: {_e!r}")
+        return None
+
+def _lp_render_reply_embed(meet: dict | None, ocr: dict | None = None) -> discord.Embed:
+    if meet is None:
+        emb = discord.Embed(
+            title="📸 Lobby Screenshot",
+            description=(
+                "Couldn't auto-match this to a meet within the last "
+                f"{_LP_MATCH_WINDOW_HOURS} hours — but it's logged."
+            ),
+            color=0x95A5A6,
+        )
+        emb.set_footer(text="DIFF Meets • Lobby Pictures")
+        return emb
+    emb = discord.Embed(
+        title=f"📸 Lobby — {meet.get('theme') or 'DIFF Meet'}",
+        color=0x2ECC71,
+    )
+    if meet.get("meet_ts"):
+        emb.add_field(
+            name="⏰ Meet",
+            value=f"<t:{meet['meet_ts']}:F>\n<t:{meet['meet_ts']}:R>",
+            inline=False,
+        )
+    if meet.get("hosts"):
+        emb.add_field(
+            name="🎤 Hosts",
+            value=" ".join(f"<@{h}>" for h in meet["hosts"]),
+            inline=False,
+        )
+    if meet.get("jump_url"):
+        emb.add_field(
+            name="🔗 Meet Post",
+            value=f"[Jump to host poster]({meet['jump_url']})",
+            inline=False,
+        )
+    if ocr and (ocr.get("attended") or ocr.get("crew_counts")):
+        att = ocr.get("attended") or []
+        if att:
+            emb.add_field(
+                name=f"✅ Detected attendees ({len(att)})",
+                value=", ".join(f"<@{u}>" for u in att[:20]),
+                inline=False,
+            )
+        cc = ocr.get("crew_counts") or {}
+        if cc:
+            ranked = sorted(cc.items(), key=lambda x: -x[1])
+            emb.add_field(
+                name="🏷️ Crews in lobby",
+                value=", ".join(f"**{k}** × {v}" for k, v in ranked),
+                inline=False,
+            )
+    emb.set_footer(text="DIFF Meets • Lobby Pictures")
+    return emb
+
+async def _lp_handle_lobby_post(message: discord.Message) -> None:
+    """Main handler — called from on_message for #lobby-pictures."""
+    if message.author.bot:
+        return
+    if not isinstance(message.author, discord.Member):
+        return
+
+    images = [
+        a for a in message.attachments
+        if a.content_type and a.content_type.startswith("image/")
+    ]
+
+    if not images:
+        await _lp_reject_post(message, "no image attached")
+        return
+
+    if not _lp_is_verified(message.author):
+        await _lp_reject_post(message, "you need the Verified role first")
+        return
+
+    try:
+        await message.add_reaction("✅")
+    except Exception:
+        pass
+
+    now_ts = time.time()
+    forced_meet_key = None
+    pend = _lp_pending_uploads.get(message.author.id)
+    if pend:
+        meet_key, expires = pend
+        if expires >= now_ts:
+            forced_meet_key = meet_key
+        _lp_pending_uploads.pop(message.author.id, None)
+
+    meet = None
+    if forced_meet_key and forced_meet_key.startswith("hp:"):
+        hp_id = forced_meet_key[3:]
+        st = _hp_load_all().get(hp_id)
+        if st and st.get("meet_ts"):
+            bot_msg_id = st.get("bot_msg_id") or st.get("host_msg_id")
+            ch_id = st.get("channel_id", _POSTMEET_HOST_POSTERS_ID)
+            jump = (
+                f"https://discord.com/channels/{st.get('guild_id', GUILD_ID)}/{ch_id}/{bot_msg_id}"
+                if bot_msg_id else ""
+            )
+            meet = {
+                "key": forced_meet_key,
+                "source": "host_poster_forced",
+                "meet_ts": int(st["meet_ts"]),
+                "theme": st.get("theme") or "DIFF Meet",
+                "hosts": list(st.get("assigned_host_ids") or []),
+                "jump_url": jump,
+                "channel_id": ch_id,
+                "msg_id": bot_msg_id,
+            }
+    if meet is None:
+        meet = _lp_find_meet_for_timestamp(now_ts)
+
+    reply_msg = None
+    try:
+        reply_msg = await message.reply(
+            embed=_lp_render_reply_embed(meet), mention_author=False
+        )
+    except Exception as _e:
+        print(f"[lobby-pics] reply failed: {_e!r}")
+
+    state = {
+        "guild_id": message.guild.id if message.guild else GUILD_ID,
+        "channel_id": message.channel.id,
+        "msg_id": message.id,
+        "poster_id": message.author.id,
+        "posted_at": now_ts,
+        "image_urls": [a.url for a in images],
+        "reply_msg_id": reply_msg.id if reply_msg else None,
+        "meet_key": meet["key"] if meet else None,
+        "meet_ts": meet["meet_ts"] if meet else None,
+        "meet_theme": meet["theme"] if meet else None,
+        "ocr": None,
+        "pinned_until": None,
+    }
+    _lp_put(message.id, state)
+
+    # Award attender role to poster
+    try:
+        if meet:
+            role = message.guild.get_role(MEET_ATTENDER_ROLE_ID)
+            if role and role not in message.author.roles:
+                await message.author.add_roles(
+                    role, reason="Posted lobby pic for matched meet"
+                )
+    except Exception:
+        pass
+
+    asyncio.create_task(_lp_ocr_followup(message.id, images[0].url, reply_msg))
+
+    if _lp_wm_enabled_for(message.author.id):
+        asyncio.create_task(_lp_watermark_repost(message, meet, images[0].url))
+
+async def _lp_ocr_followup(msg_id: int, url: str, reply_msg) -> None:
+    text = await _lp_ocr_image(url)
+    if not text:
+        return
+    psns, tags = _lp_parse_ocr(text)
+    if not psns and not tags:
+        return
+    psn_map = _lp_psn_map()
+    attended_uids: list[int] = []
+    for p in psns:
+        uid = psn_map.get(p.lower())
+        if uid and uid not in attended_uids:
+            attended_uids.append(uid)
+    crew_counts: dict[str, int] = {}
+    for t in tags:
+        crew_counts[t] = crew_counts.get(t, 0) + 1
+
+    def _mut(s):
+        s["ocr"] = {
+            "attended": attended_uids,
+            "crew_counts": crew_counts,
+            "ocr_raw_lines": len((text or "").splitlines()),
+        }
+
+    s = _lp_update(msg_id, _mut) or {}
+    if reply_msg is not None and s:
+        try:
+            meet = None
+            if s.get("meet_ts"):
+                meet = {
+                    "key": s.get("meet_key"),
+                    "meet_ts": s["meet_ts"],
+                    "theme": s.get("meet_theme") or "DIFF Meet",
+                    "hosts": [],
+                    "jump_url": "",
+                }
+            await reply_msg.edit(embed=_lp_render_reply_embed(meet, s["ocr"]))
+        except Exception:
+            pass
+
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        role = guild.get_role(MEET_ATTENDER_ROLE_ID) if guild else None
+        if role and attended_uids:
+            for uid in attended_uids:
+                m = guild.get_member(uid)
+                if m and role not in m.roles:
+                    try:
+                        await m.add_roles(
+                            role, reason="Detected in lobby screenshot via OCR"
+                        )
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+async def _lp_watermark_repost(orig_msg, meet, url: str) -> None:
+    if not _LP_PIL_AVAILABLE:
+        return
+    label = "Lobby"
+    if meet and meet.get("meet_ts"):
+        try:
+            from zoneinfo import ZoneInfo as _Z
+            dt = datetime.fromtimestamp(meet["meet_ts"], tz=_Z("America/New_York"))
+            label = dt.strftime("%b %d, %Y")
+        except Exception:
+            pass
+    data_bytes = await _lp_watermark_image(url, label)
+    if not data_bytes:
+        return
+    try:
+        import io as _io
+        f = discord.File(_io.BytesIO(data_bytes), filename=f"diff_lobby_{orig_msg.id}.jpg")
+        repost = await orig_msg.channel.send(
+            content=f"📸 {orig_msg.author.mention}'s lobby pic *(watermarked)*",
+            file=f,
+            allowed_mentions=discord.AllowedMentions(users=False),
+        )
+        try:
+            await orig_msg.delete()
+        except Exception:
+            pass
+        old = _lp_get(orig_msg.id)
+        if old:
+            _lp_delete(orig_msg.id)
+            old["msg_id"] = repost.id
+            old["image_urls"] = [a.url for a in repost.attachments]
+            _lp_put(repost.id, old)
+    except Exception as _e:
+        print(f"[lobby-pics] wm repost failed: {_e!r}")
+
+@tasks.loop(minutes=20)
+async def _lobby_top_pic_loop():
+    try:
+        await run_with_timeout("_lobby_top_pic_loop", _lobby_top_pic_logic(), timeout=60)
+    except Exception as _e:
+        print(f"[lobby-pics] top-pic loop error: {_e!r}")
+
+async def _lobby_top_pic_logic():
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    ch = guild.get_channel(LOBBY_PICTURES_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return
+
+    d = _lp_load_all()
+    now_ts = time.time()
+
+    # 1) Unpin expired
+    for k, s in list(d.items()):
+        pu = s.get("pinned_until")
+        if pu and now_ts >= pu:
+            try:
+                m = await ch.fetch_message(int(k))
+                if m.pinned:
+                    await m.unpin(reason="DIFF lobby auto-pin expired")
+            except Exception:
+                pass
+            def _clear(ss):
+                ss["pinned_until"] = None
+            _lp_update(int(k), _clear)
+
+    # 2) For each meet_key with no active auto-pin, find top-reacted 6-30h-old pic
+    already_pinned_meets = {
+        s.get("meet_key") for s in d.values()
+        if s.get("pinned_until") and s.get("meet_key")
+    }
+    per_meet: dict[str, list] = {}
+    for k, s in d.items():
+        mk = s.get("meet_key")
+        if not mk or mk in already_pinned_meets:
+            continue
+        age_h = (now_ts - float(s.get("posted_at") or 0)) / 3600.0
+        if age_h < 6 or age_h > 30:
+            continue
+        per_meet.setdefault(mk, []).append((k, s))
+
+    for meet_key, items in per_meet.items():
+        scored = []
+        for k, s in items:
+            try:
+                m = await ch.fetch_message(int(k))
+                rc = sum(r.count for r in m.reactions) if m.reactions else 0
+                scored.append((rc, k, m))
+            except Exception:
+                continue
+        if not scored:
+            continue
+        scored.sort(key=lambda x: -x[0])
+        top_rc, top_k, top_m = scored[0]
+        if top_rc < 1:
+            continue
+        try:
+            await top_m.pin(reason=f"DIFF top lobby pic for {meet_key}")
+        except Exception:
+            continue
+        def _pin(ss, until=now_ts + _LP_PIN_DAYS * 86400, rc=top_rc):
+            ss["pinned_until"] = until
+            ss["top_reaction_count"] = rc
+        _lp_update(int(top_k), _pin)
+
+@tasks.loop(minutes=15)
+async def _lobby_weekly_gallery_loop():
+    try:
+        await run_with_timeout(
+            "_lobby_weekly_gallery_loop", _lobby_weekly_gallery_logic(), timeout=60
+        )
+    except Exception as _e:
+        print(f"[lobby-pics] weekly gallery error: {_e!r}")
+
+async def _lobby_weekly_gallery_logic():
+    from zoneinfo import ZoneInfo as _Z
+    now_et = datetime.now(_Z("America/New_York"))
+    if now_et.weekday() != _LP_GALLERY_DOW or now_et.hour != _LP_GALLERY_HOUR_ET:
+        return
+
+    state = {}
+    if os.path.exists(_LP_GALLERY_STATE_FILE):
+        try:
+            with open(_LP_GALLERY_STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f) or {}
+        except Exception:
+            state = {}
+    today_key = now_et.strftime("%Y-%m-%d")
+    if state.get("last_sent_day") == today_key:
+        return
+
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    ch = guild.get_channel(LOBBY_PICTURES_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return
+
+    d = _lp_load_all()
+    seven_d_ago = time.time() - 7 * 86400
+    scored = []
+    for k, s in d.items():
+        if float(s.get("posted_at") or 0) < seven_d_ago:
+            continue
+        try:
+            m = await ch.fetch_message(int(k))
+            rc = sum(r.count for r in m.reactions) if m.reactions else 0
+            scored.append((rc, m, s))
+        except Exception:
+            continue
+    if not scored:
+        return
+    scored.sort(key=lambda x: -x[0])
+    top = scored[:5]
+
+    emb = discord.Embed(
+        title="📰 Meets in Review — past 7 days",
+        description=f"Top {len(top)} lobby pics by reactions",
+        color=0xF1C40F,
+    )
+    for rank, (rc, m, s) in enumerate(top, 1):
+        theme = s.get("meet_theme") or "—"
+        emb.add_field(
+            name=f"#{rank} • {theme}  ({rc} reactions)",
+            value=f"[Jump to pic]({m.jump_url}) — by <@{s.get('poster_id')}>",
+            inline=False,
+        )
+    if top:
+        first_img = (top[0][2].get("image_urls") or [None])[0]
+        if first_img:
+            emb.set_image(url=first_img)
+
+    target_id = data.get("lobby_highlights_channel_id") or STAFF_LOGS_CHANNEL_ID
+    target_ch = guild.get_channel(int(target_id)) or ch
+    try:
+        await target_ch.send(embed=emb)
+    except Exception as _e:
+        print(f"[lobby-pics] gallery send error: {_e!r}")
+    state["last_sent_day"] = today_key
+    os.makedirs("diff_data", exist_ok=True)
+    _atomic_json_save(_LP_GALLERY_STATE_FILE, state)
+
+@tasks.loop(hours=12)
+async def _lobby_pics_retention_loop():
+    try:
+        cutoff = time.time() - _LP_RETENTION_DAYS * 86400
+        d = _lp_load_all()
+        changed = False
+        for k, s in list(d.items()):
+            if float(s.get("posted_at") or 0) < cutoff:
+                d.pop(k, None)
+                changed = True
+        if changed:
+            _lp_save_all(d)
+    except Exception as _e:
+        print(f"[lobby-pics] retention loop error: {_e!r}")
+
+class _LobbyPicUploadBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label="📸 Upload Lobby Pic",
+            custom_id="diff_lp_upload",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        msg_id = interaction.message.id if interaction.message else 0
+        state = _hp_get(msg_id) if msg_id else None
+        if not state:
+            return await interaction.response.send_message(
+                "Couldn't tie this button to a meet — drop your pic in "
+                f"<#{LOBBY_PICTURES_CHANNEL_ID}> directly.", ephemeral=True,
+            )
+        _lp_pending_uploads[interaction.user.id] = (
+            f"hp:{msg_id}", time.time() + _LP_UPLOAD_PROMPT_WINDOW_SEC,
+        )
+        await interaction.response.send_message(
+            f"Got it! Drop your lobby screenshot in <#{LOBBY_PICTURES_CHANNEL_ID}> "
+            f"within the next 10 minutes — I'll tag it to "
+            f"**{state.get('theme') or 'this meet'}** automatically.",
+            ephemeral=True,
+        )
+
+@bot.command(name="setlobbypics")
+@commands.guild_only()
+async def cmd_set_lobby_pics(ctx, channel: discord.TextChannel = None):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if channel is None:
+        cur = data.get("lobby_highlights_channel_id")
+        cur_s = f"<#{cur}>" if cur else f"<#{STAFF_LOGS_CHANNEL_ID}> (default)"
+        return await ctx.reply(
+            f"Lobby pics channel: <#{LOBBY_PICTURES_CHANNEL_ID}>\n"
+            f"Weekly highlights post to: {cur_s}\n"
+            "Pass a channel to change the highlights destination.",
+            mention_author=False,
+        )
+    data["lobby_highlights_channel_id"] = channel.id
+    save_data(data)
+    await ctx.reply(
+        f"✅ Weekly gallery will now post to {channel.mention}.",
+        mention_author=False,
+    )
+
+@bot.command(name="lobbystats")
+async def cmd_lobby_stats(ctx):
+    d = _lp_load_all()
+    if not d:
+        return await ctx.reply("No lobby pic data yet.", mention_author=False)
+    now_ts = time.time()
+    week  = [s for s in d.values() if (now_ts - float(s.get("posted_at") or 0)) <= 7 * 86400]
+    month = [s for s in d.values() if (now_ts - float(s.get("posted_at") or 0)) <= 30 * 86400]
+    matched = [s for s in month if s.get("meet_key")]
+    posters: dict[int, int] = {}
+    for s in month:
+        pid = int(s.get("poster_id") or 0)
+        if pid:
+            posters[pid] = posters.get(pid, 0) + 1
+    top_posters = sorted(posters.items(), key=lambda x: -x[1])[:5]
+    emb = discord.Embed(title="📸 Lobby Pictures — stats", color=0x3498DB)
+    emb.add_field(name="Past 7 days",  value=str(len(week)),  inline=True)
+    emb.add_field(name="Past 30 days", value=str(len(month)), inline=True)
+    emb.add_field(
+        name="Auto-matched to meet",
+        value=f"{len(matched)}/{len(month)}",
+        inline=True,
+    )
+    if top_posters:
+        emb.add_field(
+            name="Top posters (30d)",
+            value="\n".join(f"<@{u}> — {n}" for u, n in top_posters),
+            inline=False,
+        )
+    emb.set_footer(
+        text=f"OCR: {'on' if _LP_OCR_AVAILABLE else 'off'}  •  "
+             f"Watermark: {'on' if _LP_PIL_AVAILABLE else 'off'}"
+    )
+    await ctx.reply(embed=emb, mention_author=False)
+
+@bot.command(name="crewboard")
+async def cmd_crewboard(ctx):
+    d = _lp_load_all()
+    now_ts = time.time()
+    counts: dict[str, int] = {}
+    for s in d.values():
+        if (now_ts - float(s.get("posted_at") or 0)) > 30 * 86400:
+            continue
+        cc = (s.get("ocr") or {}).get("crew_counts") or {}
+        for tag, n in cc.items():
+            counts[tag] = counts.get(tag, 0) + int(n)
+    if not counts:
+        return await ctx.reply(
+            "No crew data yet — OCR may be disabled or no pics processed.",
+            mention_author=False,
+        )
+    ranked = sorted(counts.items(), key=lambda x: -x[1])[:10]
+    emb = discord.Embed(
+        title="🏷️ Crew Attendance — past 30 days",
+        description="\n".join(
+            f"`#{i+1}` **{t}** — {n}" for i, (t, n) in enumerate(ranked)
+        ),
+        color=0x9B59B6,
+    )
+    emb.set_footer(text="Counts are sums of crew tags seen across all lobby pics.")
+    await ctx.reply(embed=emb, mention_author=False)
+
+@bot.command(name="lobbywatermark", aliases=["lobbywm"])
+async def cmd_lobby_wm(ctx, choice: str = ""):
+    choice = (choice or "").strip().lower()
+    if choice not in ("on", "off"):
+        cur = _lp_wm_enabled_for(ctx.author.id)
+        return await ctx.reply(
+            f"Your lobby watermark is currently **{'ON' if cur else 'OFF'}**. "
+            "Use `!lobbywatermark on` or `!lobbywatermark off`.",
+            mention_author=False,
+        )
+    _lp_wm_set(ctx.author.id, choice == "on")
+    suffix = "" if _LP_PIL_AVAILABLE else "  *(note: PIL not installed — feature inactive)*"
+    await ctx.reply(
+        f"✅ Lobby watermark turned **{choice.upper()}**{suffix}",
+        mention_author=False,
+    )
 
 # =========================
 # EVENTS
@@ -20717,6 +21519,15 @@ async def on_ready():
         if not _host_posters_reminder_loop.is_running():
             _host_posters_reminder_loop.start()
             print("[host-posters] _host_posters_reminder_loop started")
+        if not _lobby_top_pic_loop.is_running():
+            _lobby_top_pic_loop.start()
+            print("[lobby-pics] _lobby_top_pic_loop started")
+        if not _lobby_weekly_gallery_loop.is_running():
+            _lobby_weekly_gallery_loop.start()
+            print("[lobby-pics] _lobby_weekly_gallery_loop started")
+        if not _lobby_pics_retention_loop.is_running():
+            _lobby_pics_retention_loop.start()
+            print("[lobby-pics] _lobby_pics_retention_loop started")
     except Exception as _e:
         print(f"[backup] failed to start loop: {_e!r}")
 
@@ -34326,17 +35137,13 @@ async def on_message(message: discord.Message) -> None:
     except Exception:
         pass
 
-    # --- Lobby-pictures auto-react ---
+    # --- Lobby-pictures: full pipeline (match meet, OCR, watermark, gate) ---
     if message.channel.id == LOBBY_PICTURES_CHANNEL_ID:
-        has_image = any(
-            a.content_type and a.content_type.startswith("image/")
-            for a in message.attachments
-        )
-        if has_image:
-            try:
-                await message.add_reaction("✅")
-            except Exception:
-                pass
+        try:
+            await _lp_handle_lobby_post(message)
+        except Exception as _lp_err:
+            print(f"[lobby-pics] handler error: {_lp_err!r}")
+        return
 
     # --- Everyone-chat meet Q&A auto-responder ---
     if message.channel.id == EVERYONE_CHAT_CHANNEL_ID:
