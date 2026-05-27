@@ -21731,8 +21731,13 @@ async def sendmeetinfo(interaction: discord.Interaction):
 
     channel = interaction.guild.get_channel(MEET_INFO_CHANNEL_ID)
     if channel is None:
-        await interaction.response.send_message("Meet info channel not found.", ephemeral=True)
-        return
+        return await interaction.response.send_message("Meet info channel not found.", ephemeral=True)
+
+    # Defer first — fetch/edit can easily blow past Discord's 3s ACK window
+    try:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+    except discord.HTTPException:
+        pass
 
     embed = build_meet_info_embed()
     view = build_meet_info_view(interaction.guild.id)
@@ -21743,8 +21748,9 @@ async def sendmeetinfo(interaction: discord.Interaction):
             try:
                 message = await channel.fetch_message(meet_info_message_id)
                 await message.edit(embed=embed, view=view)
-                await interaction.response.send_message(f"Meet info panel updated in {channel.mention}.", ephemeral=True)
-                return
+                return await interaction.followup.send(
+                    f"Meet info panel updated in {channel.mention}.", ephemeral=True
+                )
             except discord.NotFound:
                 data["meet_info_message_id"] = None
                 save_data(data)
@@ -21752,9 +21758,14 @@ async def sendmeetinfo(interaction: discord.Interaction):
         new_message = await channel.send(embed=embed, view=view)
         data["meet_info_message_id"] = new_message.id
         save_data(data)
-        await interaction.response.send_message(f"Meet info panel posted in {channel.mention}.", ephemeral=True)
+        await interaction.followup.send(
+            f"Meet info panel posted in {channel.mention}.", ephemeral=True
+        )
     except Exception as e:
-        await interaction.response.send_message(f"Error posting meet info panel: {e}", ephemeral=True)
+        try:
+            await interaction.followup.send(f"Error posting meet info panel: `{e}`", ephemeral=True)
+        except Exception:
+            pass
 
 
 @bot.tree.command(name="refreshrules", description="Post or refresh all rules panels in the rules channel")
