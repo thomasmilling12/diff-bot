@@ -8455,26 +8455,62 @@ class _MeetInfoNextMeetButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        # Scan the host-posters store for the soonest future meet_ts
+        # Pull soonest future meet from BOTH data sources:
+        #   (1) Host posters store — exists once a poster has been uploaded
+        #   (2) Auto Host Schedule — populated days/weeks ahead from host RSVPs
+        # Schema for candidates: (ts, source, payload_dict)
         now_ts = int(datetime.now(timezone.utc).timestamp())
+        candidates: list = []
+
+        # Source 1: host-posters store
         try:
-            store = _hp_load_all()
+            store = _hp_load_all() or {}
         except Exception:
             store = {}
-        candidates: list = []
-        for _mid, _state in (store or {}).items():
+        for _mid, _state in store.items():
             if not isinstance(_state, dict):
                 continue
             _ts = _state.get("meet_ts")
             if isinstance(_ts, (int, float)) and int(_ts) >= now_ts:
-                candidates.append((int(_ts), str(_mid), _state))
+                candidates.append((int(_ts), "poster", {
+                    "theme":   (_state.get("theme") or "").strip(),
+                    "jump":    _state.get("jump_url") or _state.get("message_jump_url"),
+                    "hosts":   _state.get("hosts") or _state.get("assigned_hosts") or [],
+                    "status":  None,
+                }))
+
+        # Source 2: auto host schedule (Meet 1/2/3)
+        try:
+            schedule = _asched_load() or {}
+            for day in _HRSVP_DAYS:
+                entry = (schedule.get("days") or {}).get(day) or {}
+                if not entry:
+                    continue
+                # Only surface real meets — skip unassigned slots
+                status = (entry.get("host_status") or "").lower()
+                if status not in ("yes", "confirmed", "assigned", "maybe"):
+                    continue
+                _ts = _parse_meet_ts(entry.get("day") or "", entry.get("time") or "")
+                if not _ts or _ts < now_ts:
+                    continue
+                hosts_list = [entry["host_id"]] if entry.get("host_id") else []
+                candidates.append((int(_ts), "schedule", {
+                    "theme":  (entry.get("class") or "").strip(),
+                    "jump":   None,
+                    "hosts":  hosts_list,
+                    "status": status,
+                    "slot":   day,
+                }))
+        except Exception:
+            pass
+
         candidates.sort(key=lambda c: c[0])
 
         if not candidates:
             emb = discord.Embed(
                 title="📅 No Upcoming Meets Found",
                 description=(
-                    f"There aren't any scheduled meets in the host-posters system right now.\n\n"
+                    f"There aren't any scheduled meets right now.\n\n"
                     f"Keep an eye on <#{UPCOMING_MEET_CHANNEL_ID}> — meets are usually announced a few days ahead."
                 ),
                 color=0xE67E22,
@@ -8482,10 +8518,10 @@ class _MeetInfoNextMeetButton(discord.ui.Button):
             emb.set_footer(text="DIFF Meets • Next Meet")
             return await interaction.response.send_message(embed=emb, ephemeral=True)
 
-        ts, mid, state = candidates[0]
-        theme = (state.get("theme") or "").strip()
-        jump = state.get("jump_url") or state.get("message_jump_url")
-        hosts: list = state.get("hosts") or state.get("assigned_hosts") or []
+        ts, source, payload = candidates[0]
+        theme = payload.get("theme") or ""
+        jump  = payload.get("jump")
+        hosts: list = payload.get("hosts") or []
         host_line = ""
         if hosts:
             try:
@@ -8493,8 +8529,19 @@ class _MeetInfoNextMeetButton(discord.ui.Button):
             except Exception:
                 host_line = ""
 
+        # Source-aware title / status badge
+        if source == "poster":
+            title = "📅 Next DIFF Meet"
+            source_note = "auto-detected from host posters"
+        else:
+            slot = payload.get("slot") or "Meet"
+            status = payload.get("status") or ""
+            badge = "🟢 Confirmed" if status in ("yes", "confirmed", "assigned") else "🟡 Tentative"
+            title = f"📅 Next DIFF Meet — {slot} · {badge}"
+            source_note = "auto-detected from the weekly schedule"
+
         emb = discord.Embed(
-            title="📅 Next DIFF Meet",
+            title=title,
             description=(
                 (f"**{theme}**\n\n" if theme else "")
                 + f"🕒 <t:{ts}:F>\n⏳ <t:{ts}:R>"
@@ -8502,7 +8549,7 @@ class _MeetInfoNextMeetButton(discord.ui.Button):
             color=0x3498DB,
         )
         if host_line:
-            emb.add_field(name="🎙️ Hosts", value=host_line, inline=False)
+            emb.add_field(name="🎙️ Host", value=host_line, inline=False)
         if jump:
             emb.add_field(name="🔗 Poster", value=f"[Jump to the host poster]({jump})", inline=False)
         emb.add_field(
@@ -8514,7 +8561,7 @@ class _MeetInfoNextMeetButton(discord.ui.Button):
             ),
             inline=False,
         )
-        emb.set_footer(text="DIFF Meets • Next Meet (auto-detected from host posters)")
+        emb.set_footer(text=f"DIFF Meets • Next Meet ({source_note})")
         if DIFF_LOGO_URL:
             emb.set_thumbnail(url=DIFF_LOGO_URL)
         await interaction.response.send_message(embed=emb, ephemeral=True,
