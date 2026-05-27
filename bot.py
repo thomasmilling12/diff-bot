@@ -31459,26 +31459,26 @@ async def _perform_ticket_close(channel: "discord.TextChannel", closer: "discord
     claimer_id = _supp_parse_topic(topic, "ticket_claimed_by")
 
     if claimer_id and claimer_id.isdigit():
+        # Capture elapsed BEFORE _tperf_record_close, since that helper pops
+        # claim_times[channel.name] and we'd otherwise always fall back to channel age.
+        _last_dur = 0.0
+        try:
+            _ct = _tperf_load().get(str(claimer_id), {}).get("claim_times", {}).get(channel.name)
+            if _ct:
+                _last_dur = (datetime.now(timezone.utc) - datetime.fromisoformat(_ct)).total_seconds()
+        except Exception:
+            pass
         try:
             _tperf_record_close(int(claimer_id), channel.name)
         except Exception:
             pass
-        # Per-close timestamped log for 7-day rolling ETA averages
         try:
-            _tp_now = _tperf_load().get(str(claimer_id), {})
-            _last_dur = 0.0
-            try:
-                # _tperf_record_close just added duration to total_seconds; we don't have the
-                # exact per-call elapsed, so reconstruct via avg-of-one fallback if needed.
-                _ct = _tp_now.get("claim_times", {}).get(channel.name)
-                if _ct:
-                    _last_dur = (datetime.now(timezone.utc) - datetime.fromisoformat(_ct)).total_seconds()
-            except Exception:
-                pass
             if _last_dur <= 0:
-                # Use channel age as a coarse upper-bound
                 try:
-                    _last_dur = (datetime.now(timezone.utc) - channel.created_at).total_seconds()
+                    _ch_dt = channel.created_at
+                    if _ch_dt.tzinfo is None:
+                        _ch_dt = _ch_dt.replace(tzinfo=timezone.utc)
+                    _last_dur = (datetime.now(timezone.utc) - _ch_dt).total_seconds()
                 except Exception:
                     _last_dur = 0.0
             _ti_close_log_append(int(claimer_id), ticket_key, _last_dur)
@@ -33300,16 +33300,18 @@ def _digest_save_ts(ts: float) -> None:
 # presets, staff load command, claimer pings on stale.
 # =========================
 
-_TI_CLOSE_LOG_FILE = os.path.join(DIFF_DATA_DIR, "diff_ticket_close_log.json")
+_TI_CLOSE_LOG_FILE = os.path.join(DATA_FOLDER, "diff_ticket_close_log.json")
 _TI_CLOSE_LOG_MAX = 300
 _TI_WARMUP_AFTER_SEC = 30 * 60   # 30 min
 _TI_RECENT_WINDOW_DAYS = 7
 
 # Keyword -> short tag prefix prepended to channel name on open.
 _TI_AUTO_TAGS = [
-    ("ban",          "banned"),
+    # NOTE: order matters — first-match wins via substring check, so more
+    # specific keywords must precede their shorter substrings ("unban" before "ban").
     ("unban",        "appeal"),
     ("appeal",       "appeal"),
+    ("ban",          "banned"),
     ("warn",         "warn"),
     ("warning",      "warn"),
     ("refund",       "refund"),
