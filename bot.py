@@ -32445,7 +32445,7 @@ def _ti_can_manage_ticket(member: "discord.Member", channel: "discord.TextChanne
     return owner_id is not None and member.id == owner_id
 
 @bot.command(name="add", aliases=["ticketadd", "adduser"])
-async def cmd_ticket_add(ctx: commands.Context, member: "discord.Member" = None) -> None:
+async def cmd_ticket_add(ctx: commands.Context, member: discord.Member = None) -> None:
     """Add a member to the current ticket. Staff or the ticket owner only.
     Usage: `!add @user`"""
     if not isinstance(ctx.channel, discord.TextChannel) or ctx.guild is None:
@@ -32484,7 +32484,7 @@ async def cmd_ticket_add(ctx: commands.Context, member: "discord.Member" = None)
     )
 
 @bot.command(name="remove", aliases=["ticketremove", "removeuser", "kickuser"])
-async def cmd_ticket_remove(ctx: commands.Context, member: "discord.Member" = None) -> None:
+async def cmd_ticket_remove(ctx: commands.Context, member: discord.Member = None) -> None:
     """Remove a member from the current ticket. Staff only.
     Usage: `!remove @user`"""
     if not isinstance(ctx.channel, discord.TextChannel) or ctx.guild is None:
@@ -32519,6 +32519,77 @@ async def cmd_ticket_remove(ctx: commands.Context, member: "discord.Member" = No
         embed=discord.Embed(
             description=f"🚪 {member.mention} was removed from this ticket by {ctx.author.mention}.",
             color=discord.Color.orange(),
+        ),
+        mention_author=False,
+    )
+
+@bot.command(name="newticket", aliases=["createticket", "openticket"])
+async def cmd_new_ticket(ctx: commands.Context, member: discord.Member = None, *, reason: str = "") -> None:
+    """Staff-only: open a new support ticket on behalf of a member.
+    Usage: `!newticket @user [reason]`  •  Type defaults to support; add `report:` or `apply:` prefix to reason to pick another type."""
+    if ctx.guild is None or not isinstance(ctx.author, discord.Member):
+        return
+    role_ids = {r.id for r in ctx.author.roles}
+    is_staff = bool(role_ids & (_LEADERSHIP_ROLE_IDS | {HOST_ROLE_ID, TICKET_SUPPORT_ROLE_ID})) \
+               or ctx.author.guild_permissions.manage_channels
+    if not is_staff:
+        return await ctx.reply("Only staff can open a ticket for another member.", delete_after=10, mention_author=False)
+    if member is None:
+        return await ctx.reply("Usage: `!newticket @user [reason]`", delete_after=10, mention_author=False)
+    if member.bot:
+        return await ctx.reply("Can't open a ticket for a bot.", delete_after=10, mention_author=False)
+    # Choose ticket type from optional prefix
+    ticket_key = "support"
+    if reason.lower().startswith("report:"):
+        ticket_key, reason = "report", reason.split(":", 1)[1].strip()
+    elif reason.lower().startswith("apply:"):
+        ticket_key, reason = "apply", reason.split(":", 1)[1].strip()
+    elif reason.lower().startswith("support:"):
+        reason = reason.split(":", 1)[1].strip()
+    ticket = _TICKET_TYPES.get(ticket_key)
+    if not ticket:
+        return await ctx.reply("Unknown ticket type.", mention_author=False)
+    # Prevent duplicate open tickets for that member
+    existing = await _supp_find_any_open_ticket(ctx.guild, member, support_only=True)
+    if existing:
+        return await ctx.reply(
+            f"{member.mention} already has an open ticket: {existing.mention}",
+            mention_author=False,
+        )
+    channel = await _supp_create_ticket_channel_for(ctx.guild, member, ticket)
+    if channel is None:
+        return await ctx.reply("Failed to create ticket channel (missing category or permissions).", mention_author=False)
+    # Welcome embed in the new ticket
+    desc = (
+        f"Hi {member.mention} — this ticket was opened on your behalf by {ctx.author.mention}.\n\n"
+        f"**Type:** {ticket.label}\n"
+        + (f"**Reason:** {reason}\n" if reason else "")
+        + "\nA staff member will be with you shortly. Use **Close Ticket** when done."
+    )
+    welcome = discord.Embed(
+        title=f"{ticket.emoji} {ticket.label}",
+        description=desc,
+        color=_TICKET_COLORS.get(ticket.key, discord.Color.blurple()),
+        timestamp=datetime.now(timezone.utc),
+    )
+    welcome.set_footer(text=f"Opened by staff: {ctx.author} • {ctx.author.id}")
+    try:
+        from_view = SupportCloseButton() if "SupportCloseButton" in globals() else None
+        if from_view is not None:
+            view = discord.ui.View(timeout=None)
+            view.add_item(from_view)
+            await channel.send(content=member.mention, embed=welcome, view=view)
+        else:
+            await channel.send(content=member.mention, embed=welcome)
+    except Exception:
+        try:
+            await channel.send(content=member.mention, embed=welcome)
+        except Exception:
+            pass
+    await ctx.reply(
+        embed=discord.Embed(
+            description=f"✅ Opened {channel.mention} for {member.mention}.",
+            color=discord.Color.green(),
         ),
         mention_author=False,
     )
