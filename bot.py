@@ -29982,7 +29982,9 @@ def _supp_build_member_context_embed(member: discord.Member) -> discord.Embed:
 
 
 # ── FAQ deflection (Ask-a-Question pre-flight) ───────────────────────────────
-_FAQ_DEFLECT_ENTRIES: "list" = [
+_FAQ_FILE = os.path.join(DATA_FOLDER, "diff_faq.json")
+
+_FAQ_DEFAULTS: "list" = [
     (
         "How do I get verified?",
         "🪪",
@@ -30035,6 +30037,35 @@ _FAQ_DEFLECT_ENTRIES: "list" = [
          "You can also see your active warnings any time with `!mystats`."),
     ),
 ]
+
+
+def _faq_load_entries() -> "list":
+    """Load FAQ entries from disk; fall back to hardcoded defaults if file is missing/broken.
+    Returns a list of (title, emoji, body) tuples."""
+    try:
+        with open(_FAQ_FILE, "r") as _f:
+            _raw = json.load(_f)
+        _out: "list" = []
+        for _e in _raw:
+            if isinstance(_e, dict) and "title" in _e and "body" in _e:
+                _out.append((str(_e["title"]), str(_e.get("emoji", "❓")), str(_e["body"])))
+            elif isinstance(_e, (list, tuple)) and len(_e) >= 3:
+                _out.append((str(_e[0]), str(_e[1]), str(_e[2])))
+        if _out:
+            return _out
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return list(_FAQ_DEFAULTS)
+
+def _faq_save_entries(entries: "list") -> None:
+    try:
+        _atomic_json_save(_FAQ_FILE, [
+            {"title": t, "emoji": e, "body": b} for (t, e, b) in entries
+        ])
+    except Exception:
+        pass
+
+_FAQ_DEFLECT_ENTRIES: "list" = _faq_load_entries()
 
 
 class _FaqDeflectAnswerButton(discord.ui.Button):
@@ -31934,11 +31965,247 @@ async def _ticket_stats_cmd(ctx: commands.Context) -> None:
         inline=False,
     )
     embed.add_field(name="🔢 Total Open", value=f"`{total}`", inline=True)
+
+    # ── SLA / staff performance block ────────────────────────────────────────
+    try:
+        _perf = _tperf_load()
+        _staff_rows: list = []
+        _total_claimed = 0
+        _total_closed = 0
+        _total_seconds = 0.0
+        for _sid, _payload in _perf.items():
+            _c = int(_payload.get("claimed", 0) or 0)
+            _x = int(_payload.get("closed", 0) or 0)
+            _ts = float(_payload.get("total_seconds", 0) or 0)
+            if _x <= 0 and _c <= 0:
+                continue
+            _avg = (_ts / _x) if _x > 0 else 0.0
+            _staff_rows.append((_sid, _c, _x, _avg))
+            _total_claimed += _c
+            _total_closed += _x
+            _total_seconds += _ts
+        if _staff_rows:
+            _global_avg = (_total_seconds / _total_closed) if _total_closed > 0 else 0.0
+            def _fmt_dur(_s: float) -> str:
+                if _s <= 0:
+                    return "—"
+                _h = _s / 3600
+                if _h >= 1:
+                    return f"{_h:.1f}h"
+                _m = _s / 60
+                return f"{_m:.0f}m"
+            embed.add_field(
+                name="⏱️ SLA Snapshot",
+                value=(
+                    f"All-time claims: **{_total_claimed}** · closes: **{_total_closed}**\n"
+                    f"Avg claim→close: **{_fmt_dur(_global_avg)}**"
+                ),
+                inline=False,
+            )
+            _staff_rows.sort(key=lambda r: r[2], reverse=True)
+            _top = _staff_rows[:5]
+            _staff_lines = [
+                f"<@{_sid}> — claimed {_c}, closed {_x} · avg {_fmt_dur(_avg)}"
+                for _sid, _c, _x, _avg in _top
+            ]
+            embed.add_field(
+                name=f"🏆 Top Staff (by closes) — {len(_top)}",
+                value="\n".join(_staff_lines) or "*No data yet*",
+                inline=False,
+            )
+    except Exception:
+        pass
+
     embed.set_footer(text="Different Meets • Support System")
     if DIFF_LOGO_URL:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
 
-    await ctx.send(embed=embed, delete_after=60)
+    await ctx.send(embed=embed, delete_after=120, allowed_mentions=discord.AllowedMentions.none())
+
+
+# ── Canned replies (staff prefix) ────────────────────────────────────────────
+_CANNED_REPLIES_FILE = os.path.join(DATA_FOLDER, "diff_canned_replies.json")
+
+def _canned_load() -> dict:
+    try:
+        with open(_CANNED_REPLIES_FILE, "r") as _f:
+            return json.load(_f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _canned_save(_d: dict) -> None:
+    try:
+        _atomic_json_save(_CANNED_REPLIES_FILE, _d)
+    except Exception:
+        pass
+
+_CANNED_DEFAULTS = {
+    "verify":   "👋 To get verified, post your PSN ID in the verification channel and follow the prompts. Staff will review within a few hours.",
+    "rules":    "📜 Full rules are pinned in the rules channel. Quick highlights: PS5 only, no overpowered builds at chill meets, always read the meet description.",
+    "appeal":   "⚖️ Warnings can be appealed via the **⚖️ Appeals** dropdown in the support channel. Be honest, give context, and don't argue the original reason.",
+    "schedule": "📅 Meets are announced weekly in the announcements / host-call-out channels. Check pinned messages there for the current week's schedule.",
+    "patience": "🙏 Thanks for your patience — a staff member will respond as soon as possible. If this is urgent, use the 🚨 Urgent button on the support panel.",
+}
+
+def _canned_is_staff(member: "discord.Member") -> bool:
+    return any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in member.roles)
+
+@bot.command(name="canned", aliases=("c", "reply"))
+async def _canned_send_cmd(ctx: commands.Context, key: "str | None" = None) -> None:
+    """Send a canned reply by key. Usage: !canned <key>"""
+    if not isinstance(ctx.author, discord.Member) or not _canned_is_staff(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    _data = _canned_load() or dict(_CANNED_DEFAULTS)
+    if not key:
+        return await ctx.send(
+            f"Usage: `!canned <key>` — try `!cannedlist` to see all keys.",
+            delete_after=15,
+        )
+    _txt = _data.get(key.lower())
+    if not _txt:
+        return await ctx.send(
+            f"No canned reply for `{key}`. Use `!cannedlist` to see available keys, or `!cannedadd {key} <text>` to add one.",
+            delete_after=15,
+        )
+    await ctx.send(_txt, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.command(name="cannedlist", aliases=("clist",))
+async def _canned_list_cmd(ctx: commands.Context) -> None:
+    """List all canned reply keys."""
+    if not isinstance(ctx.author, discord.Member) or not _canned_is_staff(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    _data = _canned_load() or dict(_CANNED_DEFAULTS)
+    if not _data:
+        return await ctx.send("No canned replies defined yet.", delete_after=30)
+    _lines = []
+    for _k in sorted(_data.keys()):
+        _preview = (_data[_k] or "")[:80].replace("\n", " ")
+        _lines.append(f"• **{_k}** — {_preview}{'…' if len(_data[_k]) > 80 else ''}")
+    embed = discord.Embed(
+        title="💬 Canned Replies",
+        description="\n".join(_lines),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Use `!canned <key>` to send · `!cannedadd <key> <text>` to add")
+    await ctx.send(embed=embed, delete_after=120)
+
+@bot.command(name="cannedadd", aliases=("caddreply", "addcanned"))
+async def _canned_add_cmd(ctx: commands.Context, key: "str | None" = None, *, text: "str | None" = None) -> None:
+    """Add or overwrite a canned reply. Usage: !cannedadd <key> <text>"""
+    if not isinstance(ctx.author, discord.Member) or not _canned_is_staff(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    if not key or not text:
+        return await ctx.send("Usage: `!cannedadd <key> <text>`", delete_after=15)
+    if len(text) > 1900:
+        return await ctx.send("Reply text must be 1900 characters or fewer.", delete_after=15)
+    _data = _canned_load() or dict(_CANNED_DEFAULTS)
+    _data[key.lower()] = text
+    _canned_save(_data)
+    await ctx.send(f"✅ Canned reply `{key.lower()}` saved.", delete_after=15)
+
+@bot.command(name="canneddel", aliases=("cdelreply", "removecanned"))
+async def _canned_del_cmd(ctx: commands.Context, key: "str | None" = None) -> None:
+    """Delete a canned reply by key."""
+    if not isinstance(ctx.author, discord.Member) or not _canned_is_staff(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    if not key:
+        return await ctx.send("Usage: `!canneddel <key>`", delete_after=15)
+    _data = _canned_load() or dict(_CANNED_DEFAULTS)
+    if key.lower() not in _data:
+        return await ctx.send(f"No canned reply for `{key}`.", delete_after=15)
+    del _data[key.lower()]
+    _canned_save(_data)
+    await ctx.send(f"🗑️ Canned reply `{key.lower()}` removed.", delete_after=15)
+
+
+# ── FAQ admin commands (staff prefix) ────────────────────────────────────────
+@bot.command(name="faqlist", aliases=("faqs",))
+async def _faq_list_cmd(ctx: commands.Context) -> None:
+    """List current FAQ deflection entries with indexes."""
+    if not isinstance(ctx.author, discord.Member) or not _canned_is_staff(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    if not _FAQ_DEFLECT_ENTRIES:
+        return await ctx.send("No FAQ entries defined.", delete_after=30)
+    embed = discord.Embed(
+        title="❓ FAQ Deflection Entries",
+        description="Shown to members on the **Ask a Question** flow before they open a ticket.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    for _i, (_t, _e, _b) in enumerate(_FAQ_DEFLECT_ENTRIES):
+        _preview = _b[:200] + ("…" if len(_b) > 200 else "")
+        embed.add_field(name=f"`[{_i}]` {_e} {_t}", value=_preview, inline=False)
+    embed.set_footer(text="Use `!faqadd <emoji> | <title> | <body>` · `!faqdel <index>` · `!faqreset`")
+    await ctx.send(embed=embed, delete_after=180)
+
+@bot.command(name="faqadd")
+async def _faq_add_cmd(ctx: commands.Context, *, payload: "str | None" = None) -> None:
+    """Add a new FAQ entry. Usage: !faqadd <emoji> | <title> | <body>"""
+    if not isinstance(ctx.author, discord.Member) or not _canned_is_staff(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    if not payload or payload.count("|") < 2:
+        return await ctx.send("Usage: `!faqadd <emoji> | <title> | <body>`", delete_after=20)
+    _parts = [p.strip() for p in payload.split("|", 2)]
+    if len(_parts) < 3 or not _parts[1] or not _parts[2]:
+        return await ctx.send("Need emoji, title, and body separated by `|`.", delete_after=20)
+    _emoji, _title, _body = _parts[0] or "❓", _parts[1][:75], _parts[2][:1500]
+    _FAQ_DEFLECT_ENTRIES.append((_title, _emoji, _body))
+    _faq_save_entries(_FAQ_DEFLECT_ENTRIES)
+    await ctx.send(f"✅ FAQ entry added at index `{len(_FAQ_DEFLECT_ENTRIES) - 1}`.", delete_after=15)
+
+@bot.command(name="faqdel", aliases=("faqremove",))
+async def _faq_del_cmd(ctx: commands.Context, index: "int | None" = None) -> None:
+    """Delete an FAQ entry by index (see !faqlist)."""
+    if not isinstance(ctx.author, discord.Member) or not _canned_is_staff(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    if index is None or index < 0 or index >= len(_FAQ_DEFLECT_ENTRIES):
+        return await ctx.send(f"Usage: `!faqdel <index>` (valid range: 0–{max(len(_FAQ_DEFLECT_ENTRIES) - 1, 0)})", delete_after=15)
+    _removed = _FAQ_DEFLECT_ENTRIES.pop(index)
+    _faq_save_entries(_FAQ_DEFLECT_ENTRIES)
+    await ctx.send(f"🗑️ Removed FAQ: **{_removed[0]}**", delete_after=15)
+
+@bot.command(name="faqreset")
+async def _faq_reset_cmd(ctx: commands.Context) -> None:
+    """Reset FAQ entries to the hardcoded defaults."""
+    if not isinstance(ctx.author, discord.Member) or not _canned_is_staff(ctx.author):
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    _FAQ_DEFLECT_ENTRIES.clear()
+    _FAQ_DEFLECT_ENTRIES.extend(_FAQ_DEFAULTS)
+    _faq_save_entries(_FAQ_DEFLECT_ENTRIES)
+    await ctx.send(f"♻️ FAQ entries reset to {len(_FAQ_DEFAULTS)} defaults.", delete_after=15)
 
 
 @bot.command(name="csatreport", aliases=("csat", "csatstats"))
