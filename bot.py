@@ -20505,6 +20505,7 @@ async def on_ready():
         ticket_scan_loop.start()
     if not _ticket_inactivity_monitor.is_running():
         _ticket_inactivity_monitor.start()
+        _ticket_daily_digest_loop.start()
 
     _rsvp_load_all()
     for _rsvp_mid, _rsvp_rec in _rsvp_meets.items():
@@ -29851,18 +29852,21 @@ def _thist_save(_d: dict) -> None:
     _atomic_json_save(_TICKET_HISTORY_FILE, _d)
 
 def _thist_record_close(owner_id: int, ticket_key: str, channel_name: str,
-                        closed_by_id: int) -> None:
+                        closed_by_id: int, *, reason: str = "") -> None:
     _d = _thist_load()
     _ticket = _TICKET_TYPES.get(ticket_key, _TICKET_TYPES.get("support"))
     _label = _ticket.label if _ticket else ticket_key
     _arr = _d.setdefault(str(owner_id), [])
-    _arr.append({
+    _entry = {
         "ticket_key": ticket_key,
         "label": _label,
         "channel_name": channel_name,
         "closed_by": int(closed_by_id),
         "closed_at": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    if reason:
+        _entry["reason"] = reason
+    _arr.append(_entry)
     _d[str(owner_id)] = _arr[-25:]
     _thist_save(_d)
 
@@ -30263,6 +30267,182 @@ async def _supp_send_csat_dm(owner_id: int, staff_id: int, ticket_label: str) ->
         pass
 
 
+_CLOSE_REASON_LABELS = {
+    "resolved":      "✅ Resolved",
+    "no_response":   "🕳️ No response from opener",
+    "spam":          "🗑️ Spam / not a real ticket",
+    "wrong_channel": "↪️ Wrong channel — redirected",
+    "other":         "📝 Other",
+}
+_CSAT_SKIP_REASONS = {"no_response", "spam"}
+
+
+async def _perform_ticket_close(channel: "discord.TextChannel", closer: "discord.Member", reason_key: str) -> None:
+    """Execute the full ticket close flow with a structured close-reason.
+    Skips CSAT DM + closure DM for reasons where opener feedback is meaningless (spam, no response)."""
+    reason_label = _CLOSE_REASON_LABELS.get(reason_key, "📝 Other")
+    guild = channel.guild
+    if guild is None:
+        return
+
+    try:
+        await channel.send(
+            embed=discord.Embed(
+                description=(
+                    f"🔒 This ticket is being closed by {closer.mention}.\n"
+                    f"**Reason:** {reason_label}\n"
+                    "The channel will be deleted shortly."
+                ),
+                color=discord.Color.red(),
+            )
+        )
+    except Exception:
+        pass
+
+    topic = channel.topic or ""
+    owner_id = _supp_parse_topic(topic, "ticket_owner")
+    ticket_key = _supp_parse_topic(topic, "ticket_type") or "support"
+    ticket = _TICKET_TYPES.get(ticket_key, _TICKET_TYPES["support"])
+    claimer_id = _supp_parse_topic(topic, "ticket_claimed_by")
+
+    if claimer_id and claimer_id.isdigit():
+        try:
+            _tperf_record_close(int(claimer_id), channel.name)
+        except Exception:
+            pass
+
+    if owner_id and str(owner_id).isdigit():
+        try:
+            _thist_record_close(int(owner_id), ticket_key, channel.name, closer.id, reason=reason_key)
+        except Exception:
+            pass
+
+    skip_owner_dm = reason_key in _CSAT_SKIP_REASONS
+
+    if not skip_owner_dm:
+        try:
+            if (owner_id and str(owner_id).isdigit()
+                and claimer_id and claimer_id.isdigit()
+                and int(owner_id) != int(claimer_id)
+                and int(owner_id) != closer.id):
+                asyncio.create_task(
+                    _supp_send_csat_dm(int(owner_id), int(claimer_id), ticket.label)
+                )
+        except Exception:
+            pass
+
+    transcript_file = await _supp_export_transcript(channel)
+    logs_channel = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(logs_channel, discord.TextChannel):
+        now = datetime.now(_EST_TZ)
+        color = _TICKET_COLORS.get(ticket.key, discord.Color.red())
+        close_embed = discord.Embed(
+            title=f"🔒 Ticket Closed — {ticket.label}",
+            color=color,
+            timestamp=now,
+        )
+        close_embed.add_field(name="📋 Type", value=ticket.label, inline=True)
+        close_embed.add_field(name="🔒 Closed By", value=closer.mention, inline=True)
+        close_embed.add_field(name="⏰ Closed At", value=f"<t:{int(now.timestamp())}:F>", inline=True)
+        if owner_id:
+            close_embed.add_field(name="👤 Ticket Owner", value=f"<@{owner_id}>", inline=True)
+        if claimer_id:
+            close_embed.add_field(name="🙋 Claimed By", value=f"<@{claimer_id}>", inline=True)
+        close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
+        close_embed.add_field(name="📝 Reason", value=reason_label, inline=False)
+        _supp_brand_embed(close_embed)
+        try:
+            await logs_channel.send(embed=close_embed)
+        except discord.HTTPException:
+            pass
+
+    _transcript_url: "str | None" = None
+    if transcript_file:
+        try:
+            _transcript_url = await _post_transcript_to_channel(
+                guild, transcript_file,
+                channel.name, "Support Ticket",
+                outcome=reason_label,
+            )
+        except TypeError:
+            try:
+                _transcript_url = await _post_transcript_to_channel(
+                    guild, transcript_file, channel.name, "Support Ticket",
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    if owner_id and not skip_owner_dm:
+        try:
+            owner = guild.get_member(int(owner_id))
+            if owner:
+                dm_embed = discord.Embed(
+                    title="🔒 Your Ticket Has Been Closed",
+                    description=(
+                        f"Your **{ticket.label}** ticket in **{guild.name}** has been closed.\n\n"
+                        f"**Reason:** {reason_label}\n\n"
+                        "Your full ticket transcript is available via the button below — you can open it in your browser to view the full conversation.\n\n"
+                        "If you still need help, feel free to open a new ticket from the support panel."
+                    ),
+                    color=_TICKET_COLORS.get(ticket.key, discord.Color.red()),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                dm_embed.set_footer(text="Different Meets • Support System")
+                close_view = _TicketRatingView(channel_name=channel.name, ticket_type=ticket.label, transcript_url=_transcript_url)
+                try:
+                    await owner.send(embed=dm_embed, view=close_view)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    await asyncio.sleep(2)
+    try:
+        await channel.delete(reason=f"Ticket closed by {closer} ({closer.id}) — {reason_label}")
+    except discord.HTTPException:
+        pass
+
+
+class _CloseReasonSelect(discord.ui.Select):
+    def __init__(self) -> None:
+        super().__init__(
+            placeholder="Pick a close reason…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Resolved", value="resolved", emoji="✅",
+                                     description="Issue was handled — owner will get a CSAT prompt."),
+                discord.SelectOption(label="No response from opener", value="no_response", emoji="🕳️",
+                                     description="Opener went silent — skip CSAT DM."),
+                discord.SelectOption(label="Spam / not a real ticket", value="spam", emoji="🗑️",
+                                     description="Not a genuine support request — skip CSAT DM."),
+                discord.SelectOption(label="Wrong channel — redirected", value="wrong_channel", emoji="↪️",
+                                     description="Pointed opener to the right place."),
+                discord.SelectOption(label="Other", value="other", emoji="📝",
+                                     description="Anything else."),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(interaction.channel, discord.TextChannel) or not isinstance(interaction.user, discord.Member):
+            return
+        reason_key = self.values[0]
+        label = _CLOSE_REASON_LABELS.get(reason_key, "📝 Other")
+        try:
+            await interaction.response.edit_message(content=f"🔒 Closing as **{label}**…", view=None)
+        except Exception:
+            pass
+        asyncio.create_task(_perform_ticket_close(interaction.channel, interaction.user, reason_key))
+
+
+class _CloseReasonView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=120)
+        self.add_item(_CloseReasonSelect())
+
+
 class SupportCloseButton(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -30306,101 +30486,11 @@ class SupportCloseButton(discord.ui.View):
         if not (is_owner or is_staff or member.guild_permissions.manage_channels):
             return await interaction.response.send_message("You do not have permission to close this ticket.", ephemeral=True)
 
-        await interaction.response.send_message("🔒 Closing ticket and saving transcript...", ephemeral=True)
-        await channel.send(
-            embed=discord.Embed(
-                description=f"🔒 This ticket is being closed by {member.mention}. The channel will be deleted shortly.",
-                color=discord.Color.red(),
-            )
+        return await interaction.response.send_message(
+            "🔒 **Why are you closing this ticket?**\nPick a reason — it's logged with the close and shapes whether the opener gets a CSAT prompt.",
+            view=_CloseReasonView(),
+            ephemeral=True,
         )
-
-        ticket_key = _supp_parse_topic(channel.topic, "ticket_type") or "support"
-        ticket = _TICKET_TYPES.get(ticket_key, _TICKET_TYPES["support"])
-        claimer_id = _supp_parse_topic(channel.topic, "ticket_claimed_by")
-        if claimer_id and claimer_id.isdigit():
-            _tperf_record_close(int(claimer_id), channel.name)
-
-        # Record into per-owner ticket history (for My Tickets "recently closed")
-        try:
-            if owner_id and str(owner_id).isdigit():
-                _thist_record_close(int(owner_id), ticket_key, channel.name, member.id)
-        except Exception:
-            pass
-
-        # DM the owner a CSAT rating prompt (best effort — staff-closed only,
-        # and only when a staff member handled it, to avoid self-rating noise)
-        try:
-            if (owner_id and str(owner_id).isdigit()
-                and claimer_id and claimer_id.isdigit()
-                and int(owner_id) != int(claimer_id)
-                and int(owner_id) != member.id):
-                asyncio.create_task(
-                    _supp_send_csat_dm(int(owner_id), int(claimer_id), ticket.label)
-                )
-        except Exception:
-            pass
-
-        transcript_file = await _supp_export_transcript(channel)
-        logs_channel = interaction.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-        if isinstance(logs_channel, discord.TextChannel):
-            from datetime import timezone as _tz
-            now = datetime.now(_EST_TZ)
-
-            color = _TICKET_COLORS.get(ticket.key, discord.Color.red())
-            close_embed = discord.Embed(
-                title=f"🔒 Ticket Closed — {ticket.label}",
-                color=color,
-                timestamp=now,
-            )
-            close_embed.add_field(name="📋 Type", value=ticket.label, inline=True)
-            close_embed.add_field(name="🔒 Closed By", value=member.mention, inline=True)
-            close_embed.add_field(name="⏰ Closed At", value=f"<t:{int(now.timestamp())}:F>", inline=True)
-            if owner_id:
-                close_embed.add_field(name="👤 Ticket Owner", value=f"<@{owner_id}>", inline=True)
-            if claimer_id:
-                close_embed.add_field(name="🙋 Claimed By", value=f"<@{claimer_id}>", inline=True)
-            close_embed.add_field(name="📁 Channel", value=f"`{channel.name}`", inline=True)
-            _supp_brand_embed(close_embed)
-            try:
-                await logs_channel.send(embed=close_embed)
-            except discord.HTTPException:
-                pass
-        _transcript_url: str | None = None
-        if transcript_file and interaction.guild:
-            _transcript_url = await _post_transcript_to_channel(
-                interaction.guild, transcript_file,
-                channel.name, "Support Ticket",
-            )
-
-        if owner_id:
-            try:
-                owner = interaction.guild.get_member(int(owner_id))
-                if owner:
-                    dm_embed = discord.Embed(
-                        title="🔒 Your Ticket Has Been Closed",
-                        description=(
-                            f"Your **{ticket.label}** ticket in **{interaction.guild.name}** has been closed.\n\n"
-                            "Your full ticket transcript is available via the button below — you can open it in your browser to view the full conversation.\n\n"
-                            "If you still need help, feel free to open a new ticket from the support panel."
-                        ),
-                        color=_TICKET_COLORS.get(ticket.key, discord.Color.red()),
-                        timestamp=datetime.now(timezone.utc),
-                    )
-                    dm_embed.set_footer(text="Different Meets • Support System")
-                    close_view = _TicketRatingView(channel_name=channel.name, ticket_type=ticket.label, transcript_url=_transcript_url)
-                    try:
-                        await owner.send(embed=dm_embed, view=close_view)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        await asyncio.sleep(2)
-        try:
-            await channel.delete(reason=f"Ticket closed by {member} ({member.id})")
-        except discord.HTTPException:
-            pass
-
 
 class SupportApplicationReviewView(discord.ui.View):
     def __init__(self) -> None:
@@ -31226,6 +31316,51 @@ async def _supp_open_ticket_flow(interaction: discord.Interaction, ticket_key: s
         pass
 
 
+_URGENT_ESCALATION_AFTER_SECONDS = 300  # 5 min
+
+async def _supp_urgent_escalation_check(channel_id: int, owner_id: int) -> None:
+    """5 min after an urgent ticket opens, if it's still unclaimed, escalate to staff-logs."""
+    try:
+        await asyncio.sleep(_URGENT_ESCALATION_AFTER_SECONDS)
+        channel = bot.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return  # already deleted
+        topic = channel.topic or ""
+        if "ticket_claimed_by=" in topic:
+            return  # claimed — no escalation needed
+        guild = channel.guild
+        if guild is None:
+            return
+        logs = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if not isinstance(logs, discord.TextChannel):
+            return
+        pings: list[str] = []
+        for rid in (TICKET_SUPPORT_ROLE_ID, LEADER_ROLE_ID, CO_LEADER_ROLE_ID):
+            if rid:
+                pings.append(f"<@&{rid}>")
+        embed = discord.Embed(
+            title="🚨 URGENT TICKET STILL UNCLAIMED",
+            description=(
+                f"<@{owner_id}>'s urgent ticket {channel.mention} has been **open for "
+                f"{_URGENT_ESCALATION_AFTER_SECONDS // 60} minutes** with no staff claim.\n\n"
+                "Please claim it now."
+            ),
+            color=discord.Color.red(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text="Different Meets • Urgent Escalation")
+        try:
+            await logs.send(
+                content=" ".join(pings) if pings else None,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(roles=True, users=False),
+            )
+        except discord.HTTPException:
+            pass
+    except Exception:
+        pass
+
+
 async def _supp_open_urgent_ticket(interaction: discord.Interaction) -> None:
     """Opens a high-priority report-type ticket with leadership pinged immediately."""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -31300,6 +31435,9 @@ async def _supp_open_urgent_ticket(interaction: discord.Interaction) -> None:
         f"🚨 Urgent ticket opened: {channel.mention}\nLeadership has been notified.",
         ephemeral=True,
     )
+
+    # Schedule auto-escalation if nobody claims within 5 min
+    asyncio.create_task(_supp_urgent_escalation_check(channel.id, interaction.user.id))
 
 
 async def _supp_show_my_tickets(interaction: discord.Interaction) -> None:
@@ -31593,6 +31731,145 @@ async def __ticket_inactivity_monitor_on_error(error: Exception) -> None:
     await _handle_loop_error('_ticket_inactivity_monitor', error, _ticket_inactivity_monitor)
 @_ticket_inactivity_monitor.before_loop
 async def _before_ticket_monitor():
+    await bot.wait_until_ready()
+
+
+# ── Daily 9 AM EST ticket digest ──────────────────────────────────────────────
+
+_TICKET_DIGEST_STATE_FILE = os.path.join(DATA_FOLDER, "diff_ticket_digest_state.json")
+
+def _digest_load_ts() -> float:
+    try:
+        with open(_TICKET_DIGEST_STATE_FILE) as f:
+            return float(json.load(f).get("last_digest_ts", 0))
+    except Exception:
+        return 0.0
+
+def _digest_save_ts(ts: float) -> None:
+    try:
+        _atomic_json_save(_TICKET_DIGEST_STATE_FILE, {"last_digest_ts": ts})
+    except Exception:
+        pass
+
+async def __ticket_daily_digest_logic():
+    now_est = datetime.now(_EST_TZ)
+    if now_est.hour != 9:
+        return
+    now_ts = now_est.timestamp()
+    last_ts = _digest_load_ts()
+    if now_ts - last_ts < 12 * 3600:  # already ran this morning
+        return
+
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    logs = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if not isinstance(logs, discord.TextChannel):
+        return
+
+    open_tickets: list[dict] = []
+    for ch in guild.text_channels:
+        topic = ch.topic or ""
+        if "ticket_owner=" not in topic or "ticket_type=" not in topic:
+            continue
+        owner_id_s = _supp_parse_topic(topic, "ticket_owner") or "?"
+        ticket_key = _supp_parse_topic(topic, "ticket_type") or "?"
+        claimer_id = _supp_parse_topic(topic, "ticket_claimed_by")
+        ticket_obj = _TICKET_TYPES.get(ticket_key)
+        label = ticket_obj.label if ticket_obj else ticket_key
+        emoji = ticket_obj.emoji if ticket_obj else "🎫"
+        try:
+            age_hrs = (datetime.now(timezone.utc) - ch.created_at).total_seconds() / 3600
+        except Exception:
+            age_hrs = 0.0
+        last_active_hrs: "float | None" = None
+        try:
+            async for m in ch.history(limit=1):
+                _dt = m.created_at
+                if _dt.tzinfo is None:
+                    _dt = _dt.replace(tzinfo=timezone.utc)
+                last_active_hrs = (datetime.now(timezone.utc) - _dt).total_seconds() / 3600
+        except Exception:
+            pass
+        open_tickets.append({
+            "ch": ch,
+            "owner_id": owner_id_s,
+            "label": label,
+            "emoji": emoji,
+            "claimed": bool(claimer_id),
+            "claimer_id": claimer_id,
+            "age_hrs": age_hrs,
+            "last_active_hrs": last_active_hrs,
+        })
+
+    open_tickets.sort(key=lambda t: t["age_hrs"], reverse=True)
+    unclaimed = [t for t in open_tickets if not t["claimed"]]
+    claimed = [t for t in open_tickets if t["claimed"]]
+
+    embed = discord.Embed(
+        title="📊 Daily Ticket Digest",
+        description=(
+            f"**{len(open_tickets)}** open ticket(s) — "
+            f"**{len(unclaimed)}** unclaimed, **{len(claimed)}** claimed."
+            if open_tickets else "🎉 No open tickets right now."
+        ),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    def _fmt(t: dict) -> str:
+        age_str = f"{t['age_hrs']:.0f}h old"
+        if t["last_active_hrs"] is not None:
+            age_str += f", last reply {t['last_active_hrs']:.0f}h ago"
+        claim_str = f" • claimed by <@{t['claimer_id']}>" if t["claimed"] else " • **unclaimed**"
+        return f"{t['emoji']} {t['ch'].mention} <@{t['owner_id']}> — {age_str}{claim_str}"
+
+    if unclaimed:
+        embed.add_field(
+            name=f"🕳️ Unclaimed ({len(unclaimed)})",
+            value="\n".join(_fmt(t) for t in unclaimed[:10]) or "*None*",
+            inline=False,
+        )
+    if claimed:
+        embed.add_field(
+            name=f"🙋 Claimed ({len(claimed)})",
+            value="\n".join(_fmt(t) for t in claimed[:10]) or "*None*",
+            inline=False,
+        )
+
+    stale = [t for t in open_tickets if (t["last_active_hrs"] or 0) >= 24]
+    if stale:
+        embed.add_field(
+            name=f"⏰ Stale (24h+ silent) — {len(stale)}",
+            value="\n".join(f"{t['ch'].mention} ({t['last_active_hrs']:.0f}h)" for t in stale[:8]),
+            inline=False,
+        )
+
+    embed.set_footer(text="Different Meets • Daily Ticket Digest • 9 AM EST")
+
+    try:
+        await logs.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        _digest_save_ts(now_ts)
+    except Exception:
+        pass
+
+@tasks.loop(minutes=15)
+async def _ticket_daily_digest_loop() -> None:
+    _loop_success('_ticket_daily_digest_loop')
+    try:
+        await run_with_timeout('_ticket_daily_digest_loop', __ticket_daily_digest_logic(), timeout=120)
+    except Exception as _lte:
+        await _handle_loop_error('_ticket_daily_digest_loop', _lte, _ticket_daily_digest_loop)
+
+@_ticket_daily_digest_loop.error
+async def __ticket_daily_digest_on_error(error: Exception) -> None:
+    await _handle_loop_error('_ticket_daily_digest_loop', error, _ticket_daily_digest_loop)
+
+@_ticket_daily_digest_loop.before_loop
+async def _before_ticket_daily_digest():
     await bot.wait_until_ready()
 
 
