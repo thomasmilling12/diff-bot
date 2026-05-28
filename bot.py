@@ -421,14 +421,19 @@ import os as _os
 _os.makedirs("logs", exist_ok=True)
 
 _bot_log = logging.getLogger("diff_bot")
-_bot_log.setLevel(logging.WARNING)
+# Root at INFO so the file handler can actually receive INFO records; console
+# stays at INFO too (unchanged). Bumped from WARNING on 2026-05-27 so we can
+# capture context around the recurring freeze events (last action, last loop
+# tick, etc.) — see chat with agent.
+_bot_log.setLevel(logging.INFO)
 _log_formatter = logging.Formatter(
     "%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-# File handler
-_fh = logging.FileHandler("logs/bot.log", encoding="utf-8")
-_fh.setLevel(logging.WARNING)
+# File handler — rotated so INFO-level chatter can't fill the SD card.
+from logging.handlers import RotatingFileHandler as _RFH_bot
+_fh = _RFH_bot("logs/bot.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+_fh.setLevel(logging.INFO)
 _fh.setFormatter(_log_formatter)
 _bot_log.addHandler(_fh)
 # Console handler
