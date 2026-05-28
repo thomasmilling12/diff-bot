@@ -8756,10 +8756,18 @@ class MeetInfoView(discord.ui.View):
         self.add_item(discord.ui.Button(label="Support Tickets", style=discord.ButtonStyle.link, emoji="🎟️", url=build_channel_link(guild_id, SUPPORT_TICKETS_CHANNEL_ID), row=0))
         self.add_item(discord.ui.Button(label="Hosts",           style=discord.ButtonStyle.link, emoji="👥", url=build_channel_link(guild_id, DIFF_HOSTS_CHANNEL_ID),       row=0))
         # Row 1 — interactive helpers
-        self.add_item(_MeetInfoNextMeetButton())
-        self.add_item(_MeetInfoFirstTimeButton())
-        # Row 2 — feedback select (selects always take a full row)
-        self.add_item(_MeetInfoFeedbackSelect())
+        nm = _MeetInfoNextMeetButton()
+        nm.row = 1
+        self.add_item(nm)
+        ft = _MeetInfoFirstTimeButton()
+        ft.row = 1
+        self.add_item(ft)
+        # Row 2 — feedback select (selects always take a full row; force row=2 to
+        # bypass discord.py auto-placement which tries row 1 and fails with
+        # "row 1 (7 > 5 width)" — see bot.log 2026-05-26 20:42).
+        fb = _MeetInfoFeedbackSelect()
+        fb.row = 2
+        self.add_item(fb)
 
 
 @bot.command(name="editmeetinfo", aliases=("refreshmeetinfo", "meetinforefresh"))
