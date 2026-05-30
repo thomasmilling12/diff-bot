@@ -555,7 +555,10 @@ async def _gateway_watchdog_loop():
 # is a real OS thread, it keeps running even when the loop is completely dead.
 import threading as _threading
 
-_LOOP_HEARTBEAT_TS: float = time.time()
+# NOTE: all heartbeat timing uses time.monotonic(), NOT time.time(). The Pi has
+# no RTC, so on boot/NTP sync the wall clock can jump forward several seconds and
+# would otherwise make the heartbeat look instantly stale → false force-exit.
+_LOOP_HEARTBEAT_TS: float = time.monotonic()
 _HEARTBEAT_STALE_LIMIT: float = 120.0   # loop frozen this long (s) → force exit
 _HEARTBEAT_CHECK_EVERY: float = 15.0    # thread poll interval (s)
 _thread_watchdog_started: bool = False
@@ -565,7 +568,21 @@ async def _loop_heartbeat_updater():
     """Bumps the heartbeat the thread watchdog monitors. Ticks every 5s while
     the event loop is alive; stops the instant the loop freezes."""
     global _LOOP_HEARTBEAT_TS
-    _LOOP_HEARTBEAT_TS = time.time()
+    _LOOP_HEARTBEAT_TS = time.monotonic()
+
+@_loop_heartbeat_updater.error
+async def _loop_heartbeat_updater_error(error: Exception) -> None:
+    """Self-heal: if the heartbeat loop ever crashes, the thread watchdog would
+    eventually force-exit on a false 'freeze'. Log and restart the loop instead."""
+    try:
+        _bot_log.error("[ThreadWatchdog] Heartbeat loop crashed: %s — restarting.", error, exc_info=True)
+    except Exception:
+        pass
+    try:
+        if not _loop_heartbeat_updater.is_running():
+            _loop_heartbeat_updater.restart()
+    except Exception:
+        pass
 
 def _thread_watchdog_body() -> None:
     """Runs in a daemon OS thread. Force-exits the process if the event loop
@@ -573,7 +590,7 @@ def _thread_watchdog_body() -> None:
     while True:
         time.sleep(_HEARTBEAT_CHECK_EVERY)
         try:
-            age = time.time() - _LOOP_HEARTBEAT_TS
+            age = time.monotonic() - _LOOP_HEARTBEAT_TS
             if age > _HEARTBEAT_STALE_LIMIT:
                 try:
                     _bot_log.critical(
@@ -594,7 +611,7 @@ def _start_thread_watchdog() -> None:
     if _thread_watchdog_started:
         return
     _thread_watchdog_started = True
-    _LOOP_HEARTBEAT_TS = time.time()  # fresh baseline so startup work can't false-trip
+    _LOOP_HEARTBEAT_TS = time.monotonic()  # fresh baseline so startup work can't false-trip
     try:
         if not _loop_heartbeat_updater.is_running():
             _loop_heartbeat_updater.start()
