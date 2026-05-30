@@ -542,6 +542,77 @@ async def _gateway_watchdog_loop():
         os._exit(1)
 
 
+# ── Thread-based freeze watchdog (catches a FROZEN event loop) ────────────────
+# The gateway watchdog above runs as a @tasks.loop — i.e. ON the event loop. If
+# the loop itself freezes (a blocking sync call, a hung thread-pool await like
+# the May 22 PSN incident, etc.), that coroutine never gets scheduled and can
+# never call os._exit(). The process stays "alive" to systemd and the only
+# recovery is a physical power-cycle.
+#
+# This watchdog lives in a dedicated OS thread that does NOT depend on asyncio.
+# The event loop bumps a heartbeat timestamp every few seconds; the thread
+# checks it independently and force-exits if it goes stale. Because the thread
+# is a real OS thread, it keeps running even when the loop is completely dead.
+import threading as _threading
+
+_LOOP_HEARTBEAT_TS: float = time.time()
+_HEARTBEAT_STALE_LIMIT: float = 120.0   # loop frozen this long (s) → force exit
+_HEARTBEAT_CHECK_EVERY: float = 15.0    # thread poll interval (s)
+_thread_watchdog_started: bool = False
+
+@tasks.loop(seconds=5)
+async def _loop_heartbeat_updater():
+    """Bumps the heartbeat the thread watchdog monitors. Ticks every 5s while
+    the event loop is alive; stops the instant the loop freezes."""
+    global _LOOP_HEARTBEAT_TS
+    _LOOP_HEARTBEAT_TS = time.time()
+
+def _thread_watchdog_body() -> None:
+    """Runs in a daemon OS thread. Force-exits the process if the event loop
+    heartbeat goes stale — the freeze case the asyncio watchdog cannot catch."""
+    while True:
+        time.sleep(_HEARTBEAT_CHECK_EVERY)
+        try:
+            age = time.time() - _LOOP_HEARTBEAT_TS
+            if age > _HEARTBEAT_STALE_LIMIT:
+                try:
+                    _bot_log.critical(
+                        "[ThreadWatchdog] Event loop frozen for %.0fs (>%.0fs limit) "
+                        "— force-exiting so systemd restarts the bot.",
+                        age, _HEARTBEAT_STALE_LIMIT,
+                    )
+                except Exception:
+                    pass
+                os._exit(1)
+        except Exception:
+            # Never let the watchdog thread die on a transient error.
+            pass
+
+def _start_thread_watchdog() -> None:
+    """Idempotent: starts the heartbeat updater loop + the daemon watchdog thread."""
+    global _thread_watchdog_started, _LOOP_HEARTBEAT_TS
+    if _thread_watchdog_started:
+        return
+    _thread_watchdog_started = True
+    _LOOP_HEARTBEAT_TS = time.time()  # fresh baseline so startup work can't false-trip
+    try:
+        if not _loop_heartbeat_updater.is_running():
+            _loop_heartbeat_updater.start()
+    except Exception as _e:
+        _bot_log.error("[ThreadWatchdog] Failed to start heartbeat updater: %s", _e)
+    try:
+        _t = _threading.Thread(
+            target=_thread_watchdog_body, name="diff-loop-watchdog", daemon=True,
+        )
+        _t.start()
+        _bot_log.warning(
+            "[ThreadWatchdog] Armed — force-exits if event loop freezes >%.0fs.",
+            _HEARTBEAT_STALE_LIMIT,
+        )
+    except Exception as _e:
+        _bot_log.error("[ThreadWatchdog] Failed to start watchdog thread: %s", _e)
+
+
 async def _handle_loop_error(name: str, error: Exception, loop=None) -> None:
     """Shared error handler for all @tasks.loop functions.
     Logs full traceback, increments failure counter, alerts staff ONCE per
@@ -21796,6 +21867,9 @@ async def on_ready():
             _bot_log.warning("[Watchdog] Gateway watchdog armed (60s checks, 3-strike ~3min trip).")
     except Exception as _e:
         _bot_log.error("[Watchdog] Failed to start: %s", _e)
+
+    # ── Thread watchdog: catches a fully FROZEN event loop (power-cycle case) ──
+    _start_thread_watchdog()
 
     # ── Save this moment as "last online" so next restart knows the gap ──
     try:
