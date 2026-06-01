@@ -43269,6 +43269,91 @@ def _host_digest_mark_sent() -> None:
     with open(_HOST_DIGEST_SENT_FILE, "w", encoding="utf-8") as f:
         json.dump({"last_sent": datetime.now(timezone.utc).date().isoformat()}, f)
 
+
+def _host_digest_channel(guild: discord.Guild):
+    """Resolve the channel the weekly host digest posts to.
+    Uses data['host_digest_channel_id'] if set (via !sethostdigestchannel),
+    otherwise falls back to STAFF_LOGS so the digest is always findable."""
+    cid = 0
+    try:
+        cid = int(data.get("host_digest_channel_id") or 0)
+    except Exception:
+        cid = 0
+    ch = guild.get_channel(cid) if cid else None
+    if not isinstance(ch, discord.TextChannel):
+        ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    return ch if isinstance(ch, discord.TextChannel) else None
+
+
+def _build_host_avail_embed(guild: discord.Guild):
+    """Build the weekly host availability summary embed.
+
+    Returns (embed, total_responses). total_responses == 0 means nobody has
+    RSVP'd yet and callers can skip posting. Available hosts are listed by name
+    with their time/theme; 'Maybe' shows names; 'Unavailable' shows a count only
+    (no name call-outs)."""
+    rsvp_data = _hrsvp_load()
+    _host_role = guild.get_role(HOST_ROLE_ID)
+    _total_hosts = len([_hm for _hm in (_host_role.members if _host_role else []) if not _hm.bot])
+    _resp_uids: set = set()
+    total_responses = 0
+    meet_fields = []
+
+    for day in _HRSVP_DAYS:
+        slot  = rsvp_data.get(day, {})
+        yes   = slot.get("yes", [])
+        no    = slot.get("no", [])
+        maybe = slot.get("maybe", [])
+        total_responses += len(yes) + len(no) + len(maybe)
+        for _bkt in (yes, no, maybe):
+            for _e in _bkt:
+                _u = _hrsvp_uid(_e)
+                if _u:
+                    _resp_uids.add(_u)
+
+        avail_lines = []
+        for entry in yes:
+            uid = _hrsvp_uid(entry)
+            m   = guild.get_member(int(uid)) if uid else None
+            name = m.display_name if m else str(uid)
+            theme = entry.get("theme", "") if isinstance(entry, dict) else ""
+            time_ = entry.get("time", "")  if isinstance(entry, dict) else ""
+            detail = " · ".join([x for x in (str(time_).strip(), str(theme).strip()) if x and x != "?"])
+            avail_lines.append(f"• **{name}**" + (f" — {detail}" if detail else ""))
+
+        maybe_names = [
+            (guild.get_member(int(_hrsvp_uid(e))).display_name
+             if guild.get_member(int(_hrsvp_uid(e))) else str(_hrsvp_uid(e)))
+            for e in maybe if _hrsvp_uid(e)
+        ]
+
+        parts = []
+        parts.append("✅ **Available**\n" + "\n".join(avail_lines) if avail_lines else "✅ **Available** — none yet")
+        if maybe_names:
+            parts.append("❓ Maybe: " + ", ".join(maybe_names))
+        if no:
+            parts.append(f"❌ Unavailable: {len(no)}")
+        val = "\n".join(parts)
+        if len(val) > 1024:  # Discord field-value hard cap
+            val = val[:1010].rstrip() + "\n…"
+        meet_fields.append((day, val))
+
+    rate = (
+        f"📊 **{len(_resp_uids)} of {_total_hosts} hosts** have responded this week"
+        if _total_hosts else f"📊 **{len(_resp_uids)} host(s)** responded this week"
+    )
+    embed = discord.Embed(
+        title="📅 Weekly Host Availability",
+        description=rate,
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    for nm, val in meet_fields:
+        embed.add_field(name=f"🏁 {nm}", value=val or "—", inline=False)
+    embed.set_footer(text="DIFF Meets • Weekly Host Digest")
+    return embed, total_responses
+
+
 async def __host_avail_weekly_dm_task_logic():
     """Every Monday, DM leaders/managers with a host RSVP availability summary."""
     await bot.wait_until_ready()
@@ -43284,81 +43369,23 @@ async def __host_avail_weekly_dm_task_logic():
     if not guild:
         return
 
-    rsvp_data = _hrsvp_load()
-    lines = []
-    total_responses = 0
-    unique_respondents: set = set()
-    for day in _HRSVP_DAYS:
-        slot   = rsvp_data.get(day, {})
-        yes    = slot.get("yes", [])
-        no     = slot.get("no", [])
-        maybe  = slot.get("maybe", [])
-        total_responses += len(yes) + len(no) + len(maybe)
-        for _bkt in (yes, no, maybe):
-            for _e in _bkt:
-                _u = _hrsvp_uid(_e)
-                if _u:
-                    unique_respondents.add(_u)
-
-        yes_names = []
-        for entry in yes:
-            uid = _hrsvp_uid(entry)
-            m   = guild.get_member(int(uid)) if uid else None
-            theme = entry.get("theme", "?") if isinstance(entry, dict) else "?"
-            time_ = entry.get("time", "?")  if isinstance(entry, dict) else "?"
-            yes_names.append(f"{m.display_name if m else uid} ({time_}, {theme})")
-
-        no_names    = [guild.get_member(int(_hrsvp_uid(e))).display_name if guild.get_member(int(_hrsvp_uid(e))) else _hrsvp_uid(e) for e in no  if _hrsvp_uid(e)]
-        maybe_names = [guild.get_member(int(_hrsvp_uid(e))).display_name if guild.get_member(int(_hrsvp_uid(e))) else _hrsvp_uid(e) for e in maybe if _hrsvp_uid(e)]
-
-        lines.append(
-            f"**{day}**\n"
-            f"  ✅ Available ({len(yes)}): {', '.join(yes_names) or '—'}\n"
-            f"  ❓ Maybe ({len(maybe)}): {', '.join(maybe_names) or '—'}\n"
-            f"  ❌ Unavailable ({len(no)}): {', '.join(no_names) or '—'}"
-        )
-
-    # Skip the DM entirely if no hosts have responded yet
+    embed, total_responses = _build_host_avail_embed(guild)
+    # Skip entirely if no hosts have responded yet
     if total_responses == 0:
         _host_digest_mark_sent()
         return
 
-    _host_role = guild.get_role(HOST_ROLE_ID)
-    _total_hosts = len([_hm for _hm in (_host_role.members if _host_role else []) if not _hm.bot])
-    _rate_str = (
-        f"{len(unique_respondents)} of {_total_hosts} host(s) responded"
-        if _total_hosts else f"{len(unique_respondents)} host(s) responded"
-    )
-    dm_embed = discord.Embed(
-        title="📅 Weekly Host Availability Summary",
-        description=f"**{_rate_str}**\n\n" + ("\n\n".join(lines) or "No availability data."),
-        color=discord.Color.blurple(),
-        timestamp=datetime.now(timezone.utc),
-    )
-    dm_embed.set_footer(text="DIFF Meets • Weekly Host Digest")
-
-    _host_digest_mark_sent()
-
-    # Post to staff channel so the digest is always findable
+    # Post to the configured host-digest channel (management chat) — no more DMs.
+    # Only mark sent AFTER a successful post so a failure can retry on restart.
+    ch = _host_digest_channel(guild)
+    if not ch:
+        _bot_log.warning("Weekly host digest: no postable channel resolved; skipping.")
+        return
     try:
-        _staff_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-        if isinstance(_staff_ch, discord.TextChannel):
-            await _staff_ch.send(embed=dm_embed)
-    except Exception:
-        pass
-
-    for role_id in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID):
-        role = guild.get_role(role_id)
-        if not role:
-            continue
-        for member in role.members:
-            if member.bot:
-                continue
-            try:
-                await member.send(embed=dm_embed)
-                await asyncio.sleep(1)
-            except Exception:
-                pass
+        await ch.send(embed=embed)
+        _host_digest_mark_sent()
+    except Exception as _e:
+        _bot_log.warning("Weekly host digest failed to post to #%s: %r", getattr(ch, "name", "?"), _e)
 
 @tasks.loop(hours=24)
 async def _host_avail_weekly_dm_task():
@@ -43378,7 +43405,7 @@ async def _before_host_avail_weekly_dm():
 @bot.command(name="sendweeklyhostdm", aliases=["hostsummary"])
 @commands.cooldown(1, 300, commands.BucketType.guild)
 async def _cmd_send_weekly_host_dm(ctx: commands.Context):
-    """Manually trigger the weekly host availability DM (staff only)."""
+    """Manually post the weekly host availability summary to the digest channel (staff only)."""
     if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
         return await ctx.send("Staff only.", delete_after=6)
     try:
@@ -43389,68 +43416,44 @@ async def _cmd_send_weekly_host_dm(ctx: commands.Context):
     if not guild:
         return
 
-    rsvp_data = _hrsvp_load()
-    lines = []
-    for day in _HRSVP_DAYS:
-        slot  = rsvp_data.get(day, {})
-        yes   = slot.get("yes", [])
-        no    = slot.get("no", [])
-        maybe = slot.get("maybe", [])
-
-        yes_names = []
-        for entry in yes:
-            uid = _hrsvp_uid(entry)
-            m   = guild.get_member(int(uid)) if uid else None
-            theme = entry.get("theme", "?") if isinstance(entry, dict) else "?"
-            time_ = entry.get("time", "?")  if isinstance(entry, dict) else "?"
-            yes_names.append(f"{m.display_name if m else uid} ({time_}, {theme})")
-
-        no_names    = [guild.get_member(int(_hrsvp_uid(e))).display_name if guild.get_member(int(_hrsvp_uid(e))) else _hrsvp_uid(e) for e in no  if _hrsvp_uid(e)]
-        maybe_names = [guild.get_member(int(_hrsvp_uid(e))).display_name if guild.get_member(int(_hrsvp_uid(e))) else _hrsvp_uid(e) for e in maybe if _hrsvp_uid(e)]
-
-        lines.append(
-            f"**{day}**\n"
-            f"  ✅ Available ({len(yes)}): {', '.join(yes_names) or '—'}\n"
-            f"  ❓ Maybe ({len(maybe)}): {', '.join(maybe_names) or '—'}\n"
-            f"  ❌ Unavailable ({len(no)}): {', '.join(no_names) or '—'}"
+    embed, _ = _build_host_avail_embed(guild)
+    ch = _host_digest_channel(guild)
+    if not ch:
+        return await ctx.send(
+            "⚠️ No host-digest channel is set. Use `!sethostdigestchannel #channel` first.",
+            delete_after=12,
         )
+    try:
+        await ch.send(embed=embed)
+    except Exception:
+        return await ctx.send(
+            f"⚠️ Couldn't post to {ch.mention} — check my permissions there.",
+            delete_after=12,
+        )
+    await ctx.send(f"✅ Host availability summary posted to {ch.mention}.", delete_after=10)
 
-    _host_role2 = guild.get_role(HOST_ROLE_ID)
-    _total_hosts2 = len([_hm for _hm in (_host_role2.members if _host_role2 else []) if not _hm.bot])
-    _resp_uids: set = set()
-    for _d in _HRSVP_DAYS:
-        for _bkt2 in ("yes", "no", "maybe"):
-            for _e2 in rsvp_data.get(_d, {}).get(_bkt2, []):
-                _u2 = _hrsvp_uid(_e2)
-                if _u2:
-                    _resp_uids.add(_u2)
-    _rate_str2 = (
-        f"{len(_resp_uids)} of {_total_hosts2} host(s) responded"
-        if _total_hosts2 else f"{len(_resp_uids)} host(s) responded"
-    )
-    dm_embed = discord.Embed(
-        title="📅 Weekly Host Availability Summary",
-        description=f"**{_rate_str2}**\n\n" + ("\n\n".join(lines) or "No availability data."),
-        color=discord.Color.blurple(),
-        timestamp=datetime.now(timezone.utc),
-    )
-    dm_embed.set_footer(text="DIFF Meets • Weekly Host Digest")
 
-    sent = 0
-    for role_id in (LEADER_ROLE_ID, CO_LEADER_ROLE_ID, MANAGER_ROLE_ID):
-        role = guild.get_role(role_id)
-        if not role:
-            continue
-        for member in role.members:
-            if member.bot:
-                continue
-            try:
-                await member.send(embed=dm_embed)
-                sent += 1
-                await asyncio.sleep(1)
-            except Exception:
-                pass
-    await ctx.send(f"✅ Host availability summary sent to **{sent}** staff member(s).", delete_after=10)
+@bot.command(name="sethostdigestchannel", aliases=["sethostdigest"])
+async def _cmd_set_host_digest_channel(ctx: commands.Context, channel: discord.TextChannel = None):
+    """Set the channel the weekly host availability summary posts to (Leadership)."""
+    if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
+        return await ctx.send("Staff only.", delete_after=6)
+    ch = channel or (ctx.message.channel_mentions[0] if ctx.message.channel_mentions else None)
+    if ch is None:
+        cur_id = 0
+        try:
+            cur_id = int(data.get("host_digest_channel_id") or 0)
+        except Exception:
+            cur_id = 0
+        cur = ctx.guild.get_channel(cur_id) if cur_id else None
+        cur_txt = cur.mention if isinstance(cur, discord.TextChannel) else "staff-logs (default)"
+        return await ctx.send(
+            f"Currently posting the weekly host digest to **{cur_txt}**.\n"
+            f"Usage: `!sethostdigestchannel #channel`"
+        )
+    data["host_digest_channel_id"] = ch.id
+    save_data(data)
+    await ctx.send(f"✅ Weekly host availability summary will now post to {ch.mention}.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -44787,7 +44790,7 @@ async def _cmd_diff_help(ctx: commands.Context):
                 "`!weeklyreport` — Full weekly report\n"
                 "`!pendingjoins` — Open join tickets\n"
                 "`!hoststatus` — Current host team activity\n"
-                "`!sendweeklyhostdm` — Manually send weekly host availability DM"
+                "`!sendweeklyhostdm` — Manually post the weekly host availability summary"
             ),
             inline=False,
         )
