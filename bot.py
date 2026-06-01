@@ -4428,7 +4428,7 @@ def _asched_banner_url() -> str:
     if custom.startswith("http"):
         return custom
     if _SCHED_BANNER_DEFAULTS:
-        wk = utc_now().isocalendar()[1]
+        wk = int(utc_now().timestamp() // 604800)
         return _SCHED_BANNER_DEFAULTS[wk % len(_SCHED_BANNER_DEFAULTS)]
     return ""
 
