@@ -7382,30 +7382,36 @@ def _ft_build_suggestions_embed(guild: discord.Guild) -> discord.Embed:
     return embed
 
 
+async def _notify_toggle_role(interaction: discord.Interaction, role_id: int, label: str, on_emoji: str) -> None:
+    """Shared notification opt-in toggle — used by the standalone NotifyMeetView
+    panel and the Welcome Hub panel's notification buttons."""
+    member = (interaction.user if isinstance(interaction.user, discord.Member)
+              else (interaction.guild.get_member(interaction.user.id) if interaction.guild else None))
+    if not member or not interaction.guild:
+        return await interaction.response.send_message("Could not find your profile.", ephemeral=True)
+    role = interaction.guild.get_role(role_id)
+    if not role:
+        return await interaction.response.send_message("Role not configured.", ephemeral=True)
+    if role in member.roles:
+        try:
+            await member.remove_roles(role, reason="DIFF notify toggle")
+        except discord.Forbidden:
+            return await interaction.response.send_message("Missing permission.", ephemeral=True)
+        return await interaction.response.send_message(f"🔕 **{label}** notifications turned **off**.", ephemeral=True)
+    else:
+        try:
+            await member.add_roles(role, reason="DIFF notify toggle")
+        except discord.Forbidden:
+            return await interaction.response.send_message("Missing permission.", ephemeral=True)
+        return await interaction.response.send_message(f"{on_emoji} **{label}** notifications turned **on**.", ephemeral=True)
+
+
 class NotifyMeetView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
     async def _toggle(self, interaction: discord.Interaction, role_id: int, label: str, on_emoji: str) -> None:
-        member = (interaction.user if isinstance(interaction.user, discord.Member)
-                  else (interaction.guild.get_member(interaction.user.id) if interaction.guild else None))
-        if not member or not interaction.guild:
-            return await interaction.response.send_message("Could not find your profile.", ephemeral=True)
-        role = interaction.guild.get_role(role_id)
-        if not role:
-            return await interaction.response.send_message("Role not configured.", ephemeral=True)
-        if role in member.roles:
-            try:
-                await member.remove_roles(role, reason="DIFF notify toggle")
-            except discord.Forbidden:
-                return await interaction.response.send_message("Missing permission.", ephemeral=True)
-            return await interaction.response.send_message(f"🔕 **{label}** notifications turned **off**.", ephemeral=True)
-        else:
-            try:
-                await member.add_roles(role, reason="DIFF notify toggle")
-            except discord.Forbidden:
-                return await interaction.response.send_message("Missing permission.", ephemeral=True)
-            return await interaction.response.send_message(f"{on_emoji} **{label}** notifications turned **on**.", ephemeral=True)
+        await _notify_toggle_role(interaction, role_id, label, on_emoji)
 
     @discord.ui.button(label="Car Meets", style=discord.ButtonStyle.primary, emoji="🏁", custom_id="diff_notify_meet_toggle", row=0)
     async def toggle_notify(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -39548,7 +39554,17 @@ def _wh_build_embed() -> discord.Embed:
         ),
         inline=False,
     )
-    embed.set_footer(text="DIFF Welcome Hub  •  Explore DIFF ↓  •  💎 Booster options ↓")
+    embed.add_field(
+        name="🔔 Notifications",
+        value=(
+            "Use the buttons below to pick your pings — toggle any on/off anytime:\n"
+            "🏁 **Car Meets** — pinged when weekly roll calls go live\n"
+            "📸 **Media Live** — pinged when DIFF media or streams go live\n"
+            "📢 **Announcements** — pinged for important server announcements"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="DIFF Welcome Hub  •  Explore DIFF ↓  •  💎 Booster options ↓  •  🔔 Notify buttons ↓")
     return embed
 
 
@@ -39981,6 +39997,22 @@ class _WHBoosterSelect(discord.ui.Select):
             )
 
 
+class _WHNotifyButton(discord.ui.Button):
+    """Welcome Hub notification opt-in toggle. Distinct custom_ids from the
+    standalone NotifyMeetView so persistent-view dispatch doesn't collide; both
+    route to the shared _notify_toggle_role helper."""
+
+    def __init__(self, *, role_id: int, label: str, emoji: str, on_emoji: str,
+                 custom_id: str, style: discord.ButtonStyle, row: int) -> None:
+        super().__init__(label=label, emoji=emoji, style=style, custom_id=custom_id, row=row)
+        self._role_id = role_id
+        self._label = label
+        self._on_emoji = on_emoji
+
+    async def callback(self, interaction: discord.Interaction):
+        await _notify_toggle_role(interaction, self._role_id, self._label, self._on_emoji)
+
+
 class WelcomeHubView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -40003,6 +40035,18 @@ class WelcomeHubView(discord.ui.View):
         self.add_item(_CarRequirementsButton(row=0, key="wh"))
         self.add_item(WelcomeHubSelect())
         self.add_item(_WHBoosterSelect())
+        self.add_item(_WHNotifyButton(
+            role_id=NOTIFY_ROLE_ID, label="Car Meets", emoji="🏁", on_emoji="🔔",
+            custom_id="diff_wh_notify_meet", style=discord.ButtonStyle.primary, row=3,
+        ))
+        self.add_item(_WHNotifyButton(
+            role_id=MEDIA_NOTIFY_ROLE_ID, label="Media Live", emoji="📸", on_emoji="📸",
+            custom_id="diff_wh_notify_media", style=discord.ButtonStyle.secondary, row=3,
+        ))
+        self.add_item(_WHNotifyButton(
+            role_id=ANNOUNCEMENT_NOTIFY_ROLE_ID, label="Announcements", emoji="📢", on_emoji="📢",
+            custom_id="diff_wh_notify_announce", style=discord.ButtonStyle.secondary, row=3,
+        ))
 
 
 async def _wh_post_or_refresh(guild: discord.Guild) -> None:
