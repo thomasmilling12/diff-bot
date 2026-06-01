@@ -4545,6 +4545,36 @@ async def _send_car_requirements(channel: "discord.abc.Messageable") -> None:
         await channel.send(embeds=_ex)
 
 
+class _CarRequirementsButton(discord.ui.Button):
+    """Persistent panel button — shows the DIFF vehicle requirements + example
+    builds privately (ephemeral) to whoever clicks. Same custom_id is reused
+    across panels; the callback is identical so dispatch is unambiguous."""
+
+    def __init__(self, *, row: int = 0):
+        super().__init__(
+            label="Car Requirements",
+            style=discord.ButtonStyle.secondary,
+            emoji="🚗",
+            custom_id="diff_car_requirements",
+            row=row,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            embeds = [_diff_vehicle_requirements_embed()] + _car_examples_gallery_embeds(4)
+            await interaction.response.send_message(embeds=embeds, ephemeral=True)
+        except Exception as _e:
+            _bot_log.warning(f"[carreq-btn] failed: {_e}")
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "⚠️ Couldn't load the requirements right now — please try again shortly.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                pass
+
+
 @bot.command(name="carreqs", aliases=["carrequirements", "vehiclereqs", "carrules", "buildreqs"])
 async def carreqs(ctx: commands.Context):
     """Show the DIFF vehicle requirements + example builds in this channel (anyone)."""
@@ -9263,6 +9293,7 @@ class MeetInfoView(discord.ui.View):
         ft = _MeetInfoFirstTimeButton()
         ft.row = 1
         self.add_item(ft)
+        self.add_item(_CarRequirementsButton(row=1))
         # Row 2 — feedback select (selects always take a full row; force row=2 to
         # bypass discord.py auto-placement which tries row 1 and fails with
         # "row 1 (7 > 5 width)" — see bot.log 2026-05-26 20:42).
@@ -38310,6 +38341,7 @@ class JoinPlatformView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
         self.add_item(JoinPlatformSelect())
+        self.add_item(_CarRequirementsButton(row=2))
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
@@ -39965,6 +39997,7 @@ class WelcomeHubView(discord.ui.View):
             label="Join Crew", emoji="🏎️", style=discord.ButtonStyle.link, row=0,
             url=f"https://discord.com/channels/{GUILD_ID}/{CREW_PANEL_CHANNEL_ID}",
         ))
+        self.add_item(_CarRequirementsButton(row=0))
         self.add_item(WelcomeHubSelect())
         self.add_item(_WHBoosterSelect())
 
