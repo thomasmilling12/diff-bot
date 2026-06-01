@@ -4323,9 +4323,115 @@ class _ASchedAnnounceView(discord.ui.View):
             print(f"[AutoSched] Notify ping failed: {e}")
 
 
+def _asched_attendees(slot: dict) -> list:
+    """Current attendee user-ids for a slot, auto-reset when the meet changes."""
+    sig = f"{slot.get('class','')}|{slot.get('day','')}|{slot.get('time','')}"
+    if slot.get("attendees_sig") != sig:
+        slot["attendees"] = []
+        slot["attendees_sig"] = sig
+    return slot.setdefault("attendees", [])
+
+
+def _asched_reconcile_attendees(schedule: dict) -> bool:
+    """Reset attendee lists whose meet details changed. Returns True if mutated."""
+    changed = False
+    for key in _HRSVP_DAYS:
+        slot = schedule.get("days", {}).get(key)
+        if not isinstance(slot, dict):
+            continue
+        sig = f"{slot.get('class','')}|{slot.get('day','')}|{slot.get('time','')}"
+        if slot.get("attendees_sig") != sig:
+            slot["attendees"] = []
+            slot["attendees_sig"] = sig
+            changed = True
+    return changed
+
+
+def _asched_sorted_slots(schedule: dict):
+    """Return slot rows sorted soonest-first (future → past → TBD) + now_ts."""
+    now_ts = int(utc_now().timestamp())
+    rows = []
+    for key in _HRSVP_DAYS:
+        entry = schedule.get("days", {}).get(key, {})
+        mt = _parse_meet_ts(entry.get("day", "TBD"), entry.get("time", "TBD"))
+        if mt is None:
+            cat, sortk = 2, (2, 0)
+        elif mt < now_ts:
+            cat, sortk = 1, (1, mt)
+        else:
+            cat, sortk = 0, (0, mt)
+        rows.append({"key": key, "entry": entry, "ts": mt, "cat": cat, "sortk": sortk})
+    rows.sort(key=lambda r: r["sortk"])
+    return rows, now_ts
+
+
+_THEME_HINTS = [
+    (("lowrider", "low rider", "low-rider"), "Lowriders & customs"),
+    (("muscle",), "American muscle"),
+    (("classic", "vintage", "retro"), "Classics & vintage builds"),
+    (("jdm", "import", "japan"), "JDM & imports"),
+    (("euro", "european", "german"), "European builds"),
+    (("super", "hyper", "exotic"), "Supercars & exotics"),
+    (("luxury", "vip"), "Luxury & VIP"),
+    (("offroad", "off road", "off-road", "suv", "truck", "4x4"), "Off-road & trucks"),
+    (("tuner", "modified", "stance"), "Tuners & modified"),
+    (("drift",), "Drift-spec builds"),
+    (("song", "music", "playlist"), "Match your car to a song"),
+    (("open class", "open"), "Open class — anything goes"),
+]
+
+
+def _theme_detail_hint(theme: str) -> str | None:
+    """Best-effort one-line 'what to bring' hint from a freeform theme string."""
+    if not theme:
+        return None
+    t = theme.lower()
+    for keys, hint in _THEME_HINTS:
+        if any(k in t for k in keys):
+            return hint
+    return None
+
+
+def _gcal_url(theme: str, start_ts: int) -> str:
+    """Google Calendar quick-add URL for a 2-hour meet block."""
+    import urllib.parse as _up
+    from datetime import datetime as _dt, timezone as _tz
+    _s = _dt.fromtimestamp(start_ts, tz=_tz.utc).strftime("%Y%m%dT%H%M%SZ")
+    _e = _dt.fromtimestamp(start_ts + 7200, tz=_tz.utc).strftime("%Y%m%dT%H%M%SZ")
+    _params = {
+        "action": "TEMPLATE",
+        "text": f"DIFF Meets — {theme}",
+        "dates": f"{_s}/{_e}",
+        "details": "PlayStation GTA car meet hosted by DIFF Meets.",
+    }
+    return "https://calendar.google.com/calendar/render?" + _up.urlencode(_params)
+
+
+def _outlook_url(theme: str, start_ts: int) -> str:
+    """Outlook web 'add event' deeplink for a 2-hour meet block."""
+    import urllib.parse as _up
+    from datetime import datetime as _dt, timezone as _tz
+    _s = _dt.fromtimestamp(start_ts, tz=_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _e = _dt.fromtimestamp(start_ts + 7200, tz=_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _params = {
+        "path": "/calendar/action/compose",
+        "rru": "addevent",
+        "subject": f"DIFF Meets — {theme}",
+        "startdt": _s,
+        "enddt": _e,
+        "body": "PlayStation GTA car meet hosted by DIFF Meets.",
+    }
+    return "https://outlook.live.com/calendar/0/deeplink/compose?" + _up.urlencode(_params)
+
+
 async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> discord.Embed:
     """Clean, community-facing embed for the upcoming-meet channel. No management details."""
     schedule = _asched_load()
+    if _asched_reconcile_attendees(schedule):
+        try:
+            _asched_save(schedule)
+        except Exception:
+            pass
 
     embed = discord.Embed(
         title="🗓️ DIFF PS5 Weekly Car Meet Schedule",
@@ -4341,34 +4447,21 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
 
     _NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
 
-    # Find the next upcoming meet by earliest future timestamp
-    now_ts = int(utc_now().timestamp())
-    next_idx = None
-    min_ts = None
-    for i, day in enumerate(_HRSVP_DAYS):
-        entry = schedule["days"].get(day, {})
-        mt = _parse_meet_ts(entry.get("day", "TBD"), entry.get("time", "TBD"))
-        if mt and mt > now_ts:
-            if min_ts is None or mt < min_ts:
-                min_ts = mt
-                next_idx = i
+    rows, now_ts = _asched_sorted_slots(schedule)
+    next_row = next((r for r in rows if r["cat"] == 0), None)
 
-    def _gcal_url(theme: str, start_ts: int) -> str:
-        """Build a Google Calendar quick-add URL for a 2-hour meet block."""
-        import urllib.parse as _up
-        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-        _s = _dt.fromtimestamp(start_ts, tz=_tz.utc).strftime("%Y%m%dT%H%M%SZ")
-        _e = _dt.fromtimestamp(start_ts + 7200, tz=_tz.utc).strftime("%Y%m%dT%H%M%SZ")
-        _params = {
-            "action": "TEMPLATE",
-            "text": f"DIFF Meets — {theme}",
-            "dates": f"{_s}/{_e}",
-            "details": "PlayStation GTA car meet hosted by DIFF Meets.",
-        }
-        return "https://calendar.google.com/calendar/render?" + _up.urlencode(_params)
+    # Prominent countdown to the soonest upcoming meet
+    if next_row and next_row["ts"]:
+        embed.description = f"⏰ **Next meet** <t:{next_row['ts']}:R> — <t:{next_row['ts']}:F>"
+    else:
+        embed.description = "No upcoming meets scheduled yet — check back soon."
 
-    for idx, day in enumerate(_HRSVP_DAYS, start=1):
-        entry     = schedule["days"].get(day, {})
+    for pos, row in enumerate(rows, start=1):
+        entry     = row["entry"]
+        meet_ts   = row["ts"]
+        is_past   = row["cat"] == 1
+        is_next   = next_row is not None and row is next_row
+
         host_id   = entry.get("host_id")
         class_val = entry.get("class", "TBD")
         time_val  = entry.get("time",  "TBD")
@@ -4393,28 +4486,37 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
             else:
                 host_str = f"<@{host_id}>"
 
-        meet_ts = _parse_meet_ts(date_val, time_val)
-        is_past = bool(meet_ts and meet_ts < now_ts)
-
         if meet_ts:
             when_line = f"<t:{meet_ts}:F>  ·  <t:{meet_ts}:R>"
         else:
             when_line = f"📅 {date_val}  🕒 {time_val}"
 
-        is_next = (idx - 1) == next_idx
-
+        badge = _NUM_EMOJI[pos - 1] if pos <= len(_NUM_EMOJI) else f"{pos}\uFE0F\u20E3"
         # Field name: number badge always kept; NEXT/PAST as suffix labels
         if is_past:
-            field_name = f"{_NUM_EMOJI[idx - 1]}  ✅  ~~{class_val}~~  ·  *Completed*"
+            field_name = f"{badge}  ✅  ~~{class_val}~~  ·  *Completed*"
         elif is_next:
-            field_name = f"{_NUM_EMOJI[idx - 1]}  🏎️  {class_val}  ·  👉 NEXT UP"
+            field_name = f"{badge}  🏎️  {class_val}  ·  👉 NEXT UP"
         else:
-            field_name = f"{_NUM_EMOJI[idx - 1]}  🏎️  {class_val}"
+            field_name = f"{badge}  🏎️  {class_val}"
 
-        # Value: when + host, plus calendar link for future meets only
+        # Value: when + host (+ theme hint + RSVP count + calendar links for future meets)
         value_lines = [when_line, f"🎮 {host_str}"]
+
+        hint = _theme_detail_hint(class_val)
+        if hint and not is_past:
+            value_lines.append(f"-# 🚗 {hint}")
+
+        if not is_past:
+            n = len(_asched_attendees(entry))
+            if n:
+                value_lines.append(f"🙌 **{n}** going")
+
         if meet_ts and not is_past and class_val and class_val.upper() != "TBD":
-            value_lines.append(f"[📅 Add to Calendar]({_gcal_url(class_val, meet_ts)})")
+            value_lines.append(
+                f"📅 Add to Calendar: [Google]({_gcal_url(class_val, meet_ts)}) · "
+                f"[Outlook]({_outlook_url(class_val, meet_ts)})"
+            )
 
         embed.add_field(
             name=field_name,
@@ -4424,11 +4526,153 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
 
     embed.add_field(
         name="\u200b",
-        value="-# *Meets may change based on host availability · Times shown in your local timezone*",
+        value="-# *Meets may change based on host availability · Times shown in your local timezone · Tap a button below to RSVP*",
         inline=False,
     )
+
+    _banner = ""
+    try:
+        _banner = (data.get("schedule_banner_url") or "").strip()
+    except Exception:
+        _banner = ""
+    if _banner.startswith("http"):
+        embed.set_image(url=_banner)
+
     embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets")
     return embed
+
+
+class _ASchedRSVPBtn(discord.ui.Button):
+    def __init__(self, slot_key: str, label: str, disabled: bool = False, row: int = 0):
+        super().__init__(
+            label=label,
+            emoji="✅",
+            style=discord.ButtonStyle.success,
+            custom_id=f"diff_asched_rsvp:{slot_key}",
+            disabled=disabled,
+            row=row,
+        )
+        self._slot_key = slot_key
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _asched_rsvp_toggle(interaction, self._slot_key)
+
+
+class _ASchedRSVPView(discord.ui.View):
+    """RSVP buttons under the weekly schedule. Built dynamically (live labels +
+    counts) when posting/editing; a generic instance is registered on_ready so
+    button clicks still route after a restart (matched by custom_id)."""
+    def __init__(self, schedule: dict | None = None):
+        super().__init__(timeout=None)
+        if schedule is None:
+            for key in _HRSVP_DAYS:
+                self.add_item(_ASchedRSVPBtn(key, f"I'm Going — {key}", row=0))
+            return
+        rows, _now = _asched_sorted_slots(schedule)
+        for row in rows:
+            key     = row["key"]
+            entry   = row["entry"]
+            is_past = row["cat"] == 1
+            day_val = entry.get("day", "TBD")
+            if is_past:
+                label = f"{day_val} — closed"
+            else:
+                n = len(_asched_attendees(entry))
+                label = f"{day_val} ({n})" if n else f"I'm Going — {day_val}"
+            self.add_item(_ASchedRSVPBtn(key, label[:80], disabled=is_past, row=0))
+
+
+def _asched_build_rsvp_view(schedule: dict) -> "_ASchedRSVPView":
+    return _ASchedRSVPView(schedule)
+
+
+async def _asched_rsvp_toggle(interaction: discord.Interaction, slot_key: str) -> None:
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except Exception:
+        pass
+    sched = _asched_load()
+    slot  = sched.get("days", {}).get(slot_key)
+    if not isinstance(slot, dict):
+        return await interaction.followup.send("That meet is no longer on the schedule.", ephemeral=True)
+    mt = _parse_meet_ts(slot.get("day", "TBD"), slot.get("time", "TBD"))
+    if mt and mt < int(utc_now().timestamp()):
+        return await interaction.followup.send("That meet has already happened.", ephemeral=True)
+
+    att = _asched_attendees(slot)
+    uid = interaction.user.id
+    if uid in att:
+        att.remove(uid)
+        joined = False
+    else:
+        att.append(uid)
+        joined = True
+    try:
+        _asched_save(sched)
+    except Exception:
+        pass
+
+    # Live-update the public schedule message (embed count + button labels)
+    try:
+        if interaction.message:
+            new_embed = await _asched_build_finalized_embed(guild=interaction.guild)
+            await interaction.message.edit(embed=new_embed, view=_asched_build_rsvp_view(sched))
+    except Exception:
+        pass
+
+    theme = slot.get("class", "the meet")
+    when  = f" — <t:{mt}:F>" if mt else ""
+    if joined:
+        await interaction.followup.send(
+            f"✅ You're on the list for **{theme}**{when}. See you there! 🏎️", ephemeral=True
+        )
+    else:
+        await interaction.followup.send(f"Removed you from **{theme}**.", ephemeral=True)
+
+
+@bot.command(name="setschedulebanner", aliases=["schedulebanner", "setschedbanner"])
+async def setschedulebanner(ctx, *, url: str = None):
+    """Leadership: set or clear the wide banner image on the weekly schedule embed."""
+    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in getattr(ctx.author, "roles", [])):
+        return await ctx.send("🚫 Only leadership can set the schedule banner.")
+    arg = (url or "").strip()
+    if not arg and ctx.message.attachments:
+        arg = ctx.message.attachments[0].url
+    if arg.lower() in ("clear", "off", "none", "remove"):
+        data["schedule_banner_url"] = ""
+        save_data(data)
+        await _asched_try_live_refresh()
+        return await ctx.send("✅ Schedule banner removed.")
+    if not arg.startswith("http"):
+        return await ctx.send(
+            "Usage: `!setschedulebanner <image URL>` (or `clear` to remove).\n"
+            "Use a permanent hosted link — Discord attachment URLs expire."
+        )
+    data["schedule_banner_url"] = arg
+    save_data(data)
+    await _asched_try_live_refresh()
+    await ctx.send("✅ Schedule banner updated — it'll show on the weekly schedule embed.")
+
+
+async def _asched_try_live_refresh() -> None:
+    """Re-edit the live schedule message immediately, if one is posted."""
+    try:
+        _sched = _asched_load()
+        mid = _sched.get("panel_message_id")
+        if not mid:
+            return
+        ch = bot.get_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            ch = await bot.fetch_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            return
+        msg = await ch.fetch_message(int(mid))
+        await msg.edit(
+            embed=await _asched_build_finalized_embed(guild=ch.guild),
+            view=_asched_build_rsvp_view(_sched),
+        )
+    except Exception:
+        pass
 
 
 async def _asched_post_finalized(bot_client) -> None:
@@ -4454,7 +4698,7 @@ async def _asched_post_finalized(bot_client) -> None:
     embed = await _asched_build_finalized_embed(guild=guild)
 
     try:
-        sent = await channel.send(content=ping_content, embed=embed)
+        sent = await channel.send(content=ping_content, embed=embed, view=_asched_build_rsvp_view(_asched_load()))
         try:
             _sched = _asched_load()
             _sched["panel_message_id"] = sent.id
@@ -4491,7 +4735,7 @@ async def _asched_refresh_loop():
             return
         embed = await _asched_build_finalized_embed(guild=channel.guild)
         try:
-            await msg.edit(embed=embed)
+            await msg.edit(embed=embed, view=_asched_build_rsvp_view(_sched))
         except Exception as _e:
             print(f"[AutoSched] refresh edit failed: {_e}")
     except Exception as _e:
@@ -21637,6 +21881,7 @@ async def on_ready():
     _safe_add_view(lambda: LeaderboardView(),                                                "LeaderboardView")
     _safe_add_view(lambda: UnifiedCrewHubView(),                                             "UnifiedCrewHubView")
     _safe_add_view(lambda: MeetRSVPView(meet1="Meet 1", meet2="Meet 2", meet3="Meet 3"),    "MeetRSVPView")
+    _safe_add_view(lambda: _ASchedRSVPView(),                                                "ASchedRSVPView")
     _safe_add_view(lambda: ActivityDashboardView(),                                          "ActivityDashboardView")
     _safe_add_view(lambda: ColorSubmissionPanelView(),                                       "ColorSubmissionPanelView")
     _safe_add_view(lambda: SubmissionActionView(),                                           "SubmissionActionView")
