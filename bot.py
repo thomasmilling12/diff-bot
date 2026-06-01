@@ -4437,6 +4437,78 @@ _CAR_EXAMPLE_BASE = "https://raw.githubusercontent.com/thomasmilling12/diff-bot/
 _CAR_EXAMPLE_URLS = [f"{_CAR_EXAMPLE_BASE}/car_{i:02d}.jpg" for i in range(1, 21)]
 
 
+def _diff_vehicle_requirements_embed() -> discord.Embed:
+    """The DIFF vehicle requirements applicants must meet. Shown automatically in
+    the join ticket, immediately above the example-build gallery. Motto: keep it
+    simple, keep it clean."""
+    emb = discord.Embed(
+        title="🚗 DIFF Vehicle Requirements",
+        description=(
+            "We have **strict** vehicle requirements. If your vehicle does not match "
+            "these, you simply do not belong in our crew. We like clean cars — but "
+            "clean means something different to everyone, so to prevent any "
+            "misconceptions, here's exactly what we like to see.\n\n"
+            "**Car Motto: Keep it Simple. Keep it Clean.**"
+        ),
+        color=0x3B6FE8,
+    )
+    emb.add_field(
+        name="⚙️ Performance Upgrades",
+        value="Optional and entirely up to the owner. DIFF has **no** performance requirements.",
+        inline=False,
+    )
+    emb.add_field(
+        name="🔧 Body Parts",
+        value=(
+            "Keep modifications simple and realistic.\n"
+            "• **Exhaust:** preferably Carbon, Black or Chrome tipped.\n"
+            "• **Avoid:** big splitters, canards, hoods with vents/scoops, roof scoops, big skirts & spoilers.\n"
+            "• **Interior:** only slight changes — roll cages, steering wheel and seats are allowed.\n"
+            "• **Window tint:** slight tint is fine — **limo tint is a no-go.**"
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="🎨 Respray Color",
+        value=(
+            "Your color is the **most important** part of the build.\n"
+            "• Use **Metallic, Classic, or the Weekly Crew Color.**\n"
+            "• **Avoid:** modded neon colors, chrome paint and chameleon.\n"
+            "• Choose your interior and accent colors wisely!"
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="🛞 Wheels",
+        value=(
+            "Use wheels that fit your car class and build — e.g. stance builds → dished wheels, "
+            "trucks → offroad steelies.\n"
+            "• **Avoid:** Benny's Originals and F1 tires.\n"
+            "• Paint preferably **Black/Grey/White, Bronze/Gold or Chrome.**\n"
+            "• Tire design only on Lowrider, Benny's, Street or Track wheels."
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="💡 Lights",
+        value=(
+            "Neons are **NOT** allowed on vehicles. Headlights should only be "
+            "**Stock, Xenon, Yellow or White.**"
+        ),
+        inline=False,
+    )
+    emb.add_field(
+        name="✨ Standing Out",
+        value=(
+            "To stand out, stance your car — either manually (shoot the wheels) or lower it "
+            "through the menu (**Tuner class only**)."
+        ),
+        inline=False,
+    )
+    emb.set_footer(text="Keep it Simple. Keep it Clean. • Example builds below 👇")
+    return emb
+
+
 def _car_examples_gallery_embeds(count: int = 4) -> list[discord.Embed]:
     """Return a small set of embeds that Discord merges into a single image
     gallery (multiple embeds sharing one `url` collapse into one multi-image
@@ -4453,7 +4525,7 @@ def _car_examples_gallery_embeds(count: int = 4) -> list[discord.Embed]:
     for idx, img in enumerate(picks):
         emb = discord.Embed(color=0x3B6FE8, url=gallery_url)
         if idx == 0:
-            emb.title = "🚗 The Build Quality We Expect"
+            emb.title = "📸 Examples of a DIFF Build"
             emb.description = (
                 "Here are a few example builds that meet DIFF standards — clean, "
                 "realistic, well-styled PS5 GTA cars. Aim for this level of quality "
@@ -38089,8 +38161,12 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
             allowed_mentions=discord.AllowedMentions(roles=True, users=True),
         )
 
-        # Show example builds so the applicant sees the expected quality up front.
-        # Best-effort: never let a gallery failure block ticket creation.
+        # Post the DIFF vehicle requirements + example builds so the applicant sees
+        # the standard up front. Best-effort: never let these block ticket creation.
+        try:
+            await channel.send(embed=_diff_vehicle_requirements_embed())
+        except Exception as _req_err:
+            _bot_log.warning(f"[JoinHub] vehicle-requirements embed failed: {_req_err}")
         try:
             _ex_embeds = _car_examples_gallery_embeds(4)
             if _ex_embeds:
