@@ -4407,6 +4407,32 @@ def _gcal_url(theme: str, start_ts: int) -> str:
     return "https://calendar.google.com/calendar/render?" + _up.urlencode(_params)
 
 
+_SCHED_BANNER_DEFAULTS = [
+    "https://raw.githubusercontent.com/thomasmilling12/diff-bot/main/assets/meets/banner_brown_coupe.jpg",
+    "https://raw.githubusercontent.com/thomasmilling12/diff-bot/main/assets/meets/banner_orange_supercar.jpg",
+    "https://raw.githubusercontent.com/thomasmilling12/diff-bot/main/assets/meets/banner_green_caprice.jpg",
+    "https://raw.githubusercontent.com/thomasmilling12/diff-bot/main/assets/meets/banner_white_grotti.jpg",
+    "https://raw.githubusercontent.com/thomasmilling12/diff-bot/main/assets/meets/banner_yellow_blue.jpg",
+]
+
+
+def _asched_banner_url() -> str:
+    """Banner image for the schedule embed: a manual override if set, else one of
+    the default DIFF meet shots rotated automatically by ISO week (stable within a
+    week, changes weekly with zero persisted state)."""
+    custom = ""
+    try:
+        custom = (data.get("schedule_banner_url") or "").strip()
+    except Exception:
+        custom = ""
+    if custom.startswith("http"):
+        return custom
+    if _SCHED_BANNER_DEFAULTS:
+        wk = utc_now().isocalendar()[1]
+        return _SCHED_BANNER_DEFAULTS[wk % len(_SCHED_BANNER_DEFAULTS)]
+    return ""
+
+
 def _outlook_url(theme: str, start_ts: int) -> str:
     """Outlook web 'add event' deeplink for a 2-hour meet block."""
     import urllib.parse as _up
@@ -4530,11 +4556,7 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
         inline=False,
     )
 
-    _banner = ""
-    try:
-        _banner = (data.get("schedule_banner_url") or "").strip()
-    except Exception:
-        _banner = ""
+    _banner = _asched_banner_url()
     if _banner.startswith("http"):
         embed.set_image(url=_banner)
 
@@ -4642,10 +4664,10 @@ async def setschedulebanner(ctx, *, url: str = None):
         data["schedule_banner_url"] = ""
         save_data(data)
         await _asched_try_live_refresh()
-        return await ctx.send("✅ Schedule banner removed.")
+        return await ctx.send("✅ Custom banner cleared — back to the rotating DIFF meet banners.")
     if not arg.startswith("http"):
         return await ctx.send(
-            "Usage: `!setschedulebanner <image URL>` (or `clear` to remove).\n"
+            "Usage: `!setschedulebanner <image URL>` (or `clear` to revert to the rotating defaults).\n"
             "Use a permanent hosted link — Discord attachment URLs expire."
         )
     data["schedule_banner_url"] = arg
