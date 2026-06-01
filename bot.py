@@ -4434,7 +4434,7 @@ def _asched_banner_url() -> str:
 
 
 _CAR_EXAMPLE_BASE = "https://raw.githubusercontent.com/thomasmilling12/diff-bot/main/assets/car-examples"
-_CAR_EXAMPLE_URLS = [f"{_CAR_EXAMPLE_BASE}/car_{i:02d}.jpg" for i in range(1, 21)]
+_CAR_EXAMPLE_URLS = [f"{_CAR_EXAMPLE_BASE}/car_{i:02d}.jpg" for i in range(1, 25)]
 
 
 def _diff_vehicle_requirements_embed() -> discord.Embed:
