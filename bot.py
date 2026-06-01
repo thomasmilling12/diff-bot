@@ -4536,6 +4536,45 @@ def _car_examples_gallery_embeds(count: int = 4) -> list[discord.Embed]:
     return embeds
 
 
+async def _send_car_requirements(channel: "discord.abc.Messageable") -> None:
+    """Post the DIFF vehicle requirements embed followed by a 4-image example
+    gallery to the given channel. Shared by the join flow and the prefix commands."""
+    await channel.send(embed=_diff_vehicle_requirements_embed())
+    _ex = _car_examples_gallery_embeds(4)
+    if _ex:
+        await channel.send(embeds=_ex)
+
+
+@bot.command(name="carreqs", aliases=["carrequirements", "vehiclereqs", "carrules", "buildreqs"])
+async def carreqs(ctx: commands.Context):
+    """Show the DIFF vehicle requirements + example builds in this channel (anyone)."""
+    try:
+        await _send_car_requirements(ctx.channel)
+    except discord.Forbidden:
+        await ctx.send("🚫 I need permission to send embeds/links in this channel.")
+    except Exception as _e:
+        _bot_log.warning(f"[carreqs] failed: {_e}")
+        await ctx.send("⚠️ Couldn't post the requirements right now — please try again.")
+
+
+@bot.command(name="postcarreqs", aliases=["pincarreqs", "postvehiclereqs"])
+async def postcarreqs(ctx: commands.Context, channel: discord.TextChannel = None):
+    """Leadership: post the vehicle requirements + examples into a channel for pinning.
+    Usage: !postcarreqs [#channel] (defaults to the current channel)."""
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in getattr(ctx.author, "roles", [])):
+        return await ctx.send("🚫 Only leadership can post the pinned requirements.")
+    target = channel or ctx.channel
+    try:
+        await _send_car_requirements(target)
+    except discord.Forbidden:
+        return await ctx.send(f"🚫 I can't send embeds in {getattr(target, 'mention', 'that channel')}.")
+    except Exception as _e:
+        _bot_log.warning(f"[postcarreqs] failed: {_e}")
+        return await ctx.send("⚠️ Couldn't post the requirements right now — please try again.")
+    if target.id != ctx.channel.id:
+        await ctx.send(f"✅ Posted the vehicle requirements in {target.mention}.")
+
+
 def _outlook_url(theme: str, start_ts: int) -> str:
     """Outlook web 'add event' deeplink for a 2-hour meet block."""
     import urllib.parse as _up
