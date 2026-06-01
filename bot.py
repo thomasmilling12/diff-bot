@@ -4433,6 +4433,37 @@ def _asched_banner_url() -> str:
     return ""
 
 
+_CAR_EXAMPLE_BASE = "https://raw.githubusercontent.com/thomasmilling12/diff-bot/main/assets/car-examples"
+_CAR_EXAMPLE_URLS = [f"{_CAR_EXAMPLE_BASE}/car_{i:02d}.jpg" for i in range(1, 21)]
+
+
+def _car_examples_gallery_embeds(count: int = 4) -> list[discord.Embed]:
+    """Return a small set of embeds that Discord merges into a single image
+    gallery (multiple embeds sharing one `url` collapse into one multi-image
+    embed, up to 4 images). The first embed carries the title/description so
+    new applicants instantly see the build quality DIFF expects."""
+    import random as _rnd
+    pool = list(_CAR_EXAMPLE_URLS)
+    if not pool:
+        return []
+    n = max(1, min(count, 4, len(pool)))
+    picks = _rnd.sample(pool, n)
+    gallery_url = "https://github.com/thomasmilling12/diff-bot"
+    embeds: list[discord.Embed] = []
+    for idx, img in enumerate(picks):
+        emb = discord.Embed(color=0x3B6FE8, url=gallery_url)
+        if idx == 0:
+            emb.title = "🚗 The Build Quality We Expect"
+            emb.description = (
+                "Here are a few example builds that meet DIFF standards — clean, "
+                "realistic, well-styled PS5 GTA cars. Aim for this level of quality "
+                "when you submit your garage photos."
+            )
+        emb.set_image(url=img)
+        embeds.append(emb)
+    return embeds
+
+
 def _outlook_url(theme: str, start_ts: int) -> str:
     """Outlook web 'add event' deeplink for a 2-hour meet block."""
     import urllib.parse as _up
@@ -38057,6 +38088,15 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
             view=JoinTicketView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=True),
         )
+
+        # Show example builds so the applicant sees the expected quality up front.
+        # Best-effort: never let a gallery failure block ticket creation.
+        try:
+            _ex_embeds = _car_examples_gallery_embeds(4)
+            if _ex_embeds:
+                await channel.send(embeds=_ex_embeds)
+        except Exception as _ex_err:
+            _bot_log.warning(f"[JoinHub] car-examples gallery failed: {_ex_err}")
 
         # Save extra application data
         extra = _join_extra_load()
