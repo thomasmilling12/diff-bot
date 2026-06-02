@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 # Eastern Time (handles EST/EDT automatically)
 _EST_TZ = ZoneInfo("America/New_York")
 import subprocess
+import faulthandler
 from dotenv import load_dotenv
 import discord
 from discord import app_commands
@@ -595,9 +596,24 @@ def _thread_watchdog_body() -> None:
                 try:
                     _bot_log.critical(
                         "[ThreadWatchdog] Event loop frozen for %.0fs (>%.0fs limit) "
-                        "— force-exiting so systemd restarts the bot.",
+                        "— dumping thread stacks then force-exiting for systemd restart.",
                         age, _HEARTBEAT_STALE_LIMIT,
                     )
+                except Exception:
+                    pass
+                # Dump EVERY thread's stack so the blocking call that froze the
+                # loop is identifiable. The main thread's stack points straight at
+                # the synchronous call that stalled the event loop. Written to
+                # logs/freeze_trace.log (persists the restart) + stderr (journald).
+                try:
+                    _ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                    _trace_path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "logs", "freeze_trace.log"
+                    )
+                    with open(_trace_path, "a", encoding="utf-8") as _tf:
+                        _tf.write(f"\n===== FREEZE @ {_ts} (loop stalled {age:.0f}s) =====\n")
+                        faulthandler.dump_traceback(file=_tf, all_threads=True)
                 except Exception:
                     pass
                 os._exit(1)
