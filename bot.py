@@ -14963,7 +14963,7 @@ async def _rc_flush_log(guild: discord.Guild, member: discord.Member) -> None:
             value=f"{prev_label} → {new_label}",
             inline=True,
         )
-    while len(entries) % 3 != 0:
+    for _ in range((3 - (n % 3)) % 3):
         embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(name="Member", value=f"{member.mention}  `{member}`", inline=False)
     embed.set_footer(text="Roll Call Log  •  Different Meets")
