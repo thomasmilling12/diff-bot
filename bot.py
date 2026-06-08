@@ -35561,16 +35561,24 @@ async def _startup_catchup_welcome_dms() -> None:
 _COMMUNITY_ROLE_FILE = "diff_data/diff_community_role.json"
 _COMMUNITY_ROLE_NAME = "Community Member"
 _community_role_lock = asyncio.Lock()
+_community_role_id_cache: "int | None" = None  # process-lifetime guard vs. disk-write failure
 
 def _community_role_load() -> "int | None":
+    global _community_role_id_cache
+    if _community_role_id_cache:
+        return _community_role_id_cache
     try:
         with open(_COMMUNITY_ROLE_FILE, "r", encoding="utf-8") as _f:
             rid = int(json.load(_f).get("role_id") or 0)
+            if rid:
+                _community_role_id_cache = rid
             return rid or None
     except Exception:
         return None
 
 def _community_role_save(role_id: int) -> None:
+    global _community_role_id_cache
+    _community_role_id_cache = role_id  # cache first so a disk failure can't cause dupes
     try:
         os.makedirs("diff_data", exist_ok=True)
         with open(_COMMUNITY_ROLE_FILE, "w", encoding="utf-8") as _f:
