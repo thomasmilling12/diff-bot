@@ -35553,6 +35553,65 @@ async def _startup_catchup_welcome_dms() -> None:
     return
 
 
+# ── Community Member role (general membership role for EVERY new joiner) ───────
+# Deliberately separate from MEET_ATTENDER_ROLE_ID so meet-attendance stats and
+# leaderboards stay accurate. The role is auto-created once; its ID is persisted
+# to disk so it survives restarts (we never look it up by name, since the legacy
+# meet-attendance role is also named "Community Member").
+_COMMUNITY_ROLE_FILE = "diff_data/diff_community_role.json"
+_COMMUNITY_ROLE_NAME = "Community Member"
+_community_role_lock = asyncio.Lock()
+
+def _community_role_load() -> "int | None":
+    try:
+        with open(_COMMUNITY_ROLE_FILE, "r", encoding="utf-8") as _f:
+            rid = int(json.load(_f).get("role_id") or 0)
+            return rid or None
+    except Exception:
+        return None
+
+def _community_role_save(role_id: int) -> None:
+    try:
+        os.makedirs("diff_data", exist_ok=True)
+        with open(_COMMUNITY_ROLE_FILE, "w", encoding="utf-8") as _f:
+            json.dump({"role_id": role_id}, _f)
+    except Exception:
+        pass
+
+async def _ensure_community_role(guild: discord.Guild) -> "discord.Role | None":
+    """Return the dedicated Community Member role, creating it once if needed.
+    Concurrency-safe (double-checked lock) so a join flood can't create dupes."""
+    rid = _community_role_load()
+    if rid:
+        r = guild.get_role(rid)
+        if r:
+            return r
+    async with _community_role_lock:
+        rid = _community_role_load()
+        if rid:
+            r = guild.get_role(rid)
+            if r:
+                return r
+        try:
+            r = await guild.create_role(
+                name=_COMMUNITY_ROLE_NAME,
+                mentionable=False,
+                reason="Auto-created: general membership role granted to every new joiner",
+            )
+            _community_role_save(r.id)
+            try:
+                print(f"[community_role] created '{_COMMUNITY_ROLE_NAME}' role id={r.id}")
+            except Exception:
+                pass
+            return r
+        except Exception as _e:
+            try:
+                print(f"[community_role] create failed: {_e!r}")
+            except Exception:
+                pass
+            return None
+
+
 # ── Welcome DM on member join ─────────────────────────────────────────────────
 
 @bot.event
@@ -35604,6 +35663,18 @@ async def on_member_join(member: discord.Member) -> None:
         _activity_upsert(member.id, join_ts=time.time())
     except Exception:
         pass
+
+    # Give every new member the general Community Member role (separate from the
+    # meet-attendance role, so attendance stats/leaderboards stay accurate).
+    try:
+        _cm_role = await _ensure_community_role(member.guild)
+        if _cm_role and _cm_role not in member.roles:
+            await member.add_roles(_cm_role, reason="New member — auto Community Member role")
+    except Exception as _e:
+        try:
+            print(f"[community_role] assign failed for {member}: {_e!r}")
+        except Exception:
+            pass
 
     await _send_welcome_dm(member)
 
