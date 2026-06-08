@@ -32,6 +32,7 @@ print("[BoosterHub] Module loading...")
 # ─── Configuration ────────────────────────────────────────────────────────────
 GUILD_ID              = 850386896509337710
 BOOSTER_PANEL_CHANNEL = 1485687906382123331   # #welcome-hub
+EVERYONE_CHAT_CHANNEL_ID = 1047335231826436166  # #everyone chat — new-booster shoutout
 MOD_HUB_CHANNEL_ID    = 1486598266211664003   # staff review channel
 LOG_CHANNEL_ID        = 1485265848099799163
 
@@ -708,9 +709,9 @@ class BoosterHubCog(commands.Cog, name="BoosterHub"):
         except discord.Forbidden:
             pass
 
-        # Post a welcome shoutout in welcome-hub
+        # Post a public shoutout in everyone chat
         guild = after.guild
-        ch = guild.get_channel(BOOSTER_PANEL_CHANNEL)
+        ch = guild.get_channel(EVERYONE_CHAT_CHANNEL_ID)
         if isinstance(ch, discord.TextChannel):
             try:
                 shout_embed = discord.Embed(
