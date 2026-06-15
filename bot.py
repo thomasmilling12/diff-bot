@@ -23397,6 +23397,9 @@ async def _rc_saturday_reminder_loop() -> None:
             print(f"[RcReminder] Loop error: {_e}")
 
 
+_rc_strike_action_lock = asyncio.Lock()
+
+
 class _RCStrikeConfirmView(discord.ui.View):
     """Persistent staff-confirm view on the weekly roll-call strike-candidate report.
     Candidates are loaded from disk state keyed by message id, so buttons survive restarts."""
@@ -23416,17 +23419,37 @@ class _RCStrikeConfirmView(discord.ui.View):
         if not any(r.id in _LEADERSHIP_ROLE_IDS for r in roles):
             return await interaction.response.send_message("Leadership only.", ephemeral=True)
         await interaction.response.defer()
-        state = _rc_strike_state_load()
-        pending = state.setdefault("pending", {})
-        entry = pending.get(str(interaction.message.id))
-        if not entry:
-            return await interaction.followup.send("This strike review is no longer active.", ephemeral=True)
-        cand_ids = entry.get("candidates", [])
+
+        # Consume the pending entry + persist all data mutations under a lock so two
+        # near-simultaneous leadership clicks can't both issue strikes / double-write
+        # warnings. Slow network work (DMs, embed edit) happens AFTER the lock releases.
+        async with _rc_strike_action_lock:
+            state = _rc_strike_state_load()
+            pending = state.setdefault("pending", {})
+            entry = pending.pop(str(interaction.message.id), None)
+            if entry is None:
+                return await interaction.followup.send("This strike review is no longer active.", ephemeral=True)
+            cand_ids = entry.get("candidates", [])
+            if issue:
+                import uuid as _uuid
+                wdata = _warnings_load()
+                miss = state.setdefault("miss_streaks", {})
+                for uid in cand_ids:
+                    warn_id = str(_uuid.uuid4())[:8].upper()
+                    wdata.setdefault(str(uid), []).append({
+                        "id": warn_id,
+                        "reason": "Repeatedly missed the weekly roll call",
+                        "issued_by": interaction.user.id,
+                        "issued_by_name": interaction.user.display_name,
+                        "timestamp": datetime.now(_EST_TZ).isoformat(),
+                    })
+                    miss[str(uid)] = 0
+                _warnings_save(wdata)
+            _rc_strike_state_save(state)
+
         guild = interaction.guild
 
         if not issue:
-            pending.pop(str(interaction.message.id), None)
-            _rc_strike_state_save(state)
             try:
                 emb = interaction.message.embeds[0]
                 emb.color = discord.Color.greyple()
@@ -23437,20 +23460,9 @@ class _RCStrikeConfirmView(discord.ui.View):
                 pass
             return await interaction.followup.send("Dismissed — no strikes issued.", ephemeral=True)
 
-        import uuid as _uuid
-        wdata = _warnings_load()
-        miss = state.setdefault("miss_streaks", {})
+        # Warnings already persisted under the lock; now DM each member (slow / network).
         issued = 0
         for uid in cand_ids:
-            warn_id = str(_uuid.uuid4())[:8].upper()
-            wdata.setdefault(str(uid), []).append({
-                "id": warn_id,
-                "reason": "Repeatedly missed the weekly roll call",
-                "issued_by": interaction.user.id,
-                "issued_by_name": interaction.user.display_name,
-                "timestamp": datetime.now(_EST_TZ).isoformat(),
-            })
-            miss[str(uid)] = 0
             issued += 1
             member = guild.get_member(uid) if guild else None
             if member:
@@ -23469,9 +23481,6 @@ class _RCStrikeConfirmView(discord.ui.View):
                 except Exception:
                     pass
                 await asyncio.sleep(0.5)
-        _warnings_save(wdata)
-        pending.pop(str(interaction.message.id), None)
-        _rc_strike_state_save(state)
         try:
             emb = interaction.message.embeds[0]
             emb.color = discord.Color.green()
@@ -23645,47 +23654,52 @@ async def _rc_pruning_report_loop() -> None:
                 print(f"[PruningReport] Streak update error: {_se}")
 
             # ── Auto-strike candidate tracking (repeat no-response weeks) ──
+            # Persisted weekly guard (last_strike_week) so a restart near Mon 00:15
+            # can't re-run the increment and double-count misses for the same week.
             try:
                 strike_state = _rc_strike_state_load()
-                miss = strike_state.setdefault("miss_streaks", {})
-                no_response_ids = {m.id for m in no_response}
-                candidates: list = []
-                for cm in crew_members:
-                    if _rc_strike_exempt(cm):
-                        miss.pop(str(cm.id), None)
-                        continue
-                    key = str(cm.id)
-                    if cm.id in no_response_ids:
-                        miss[key] = int(miss.get(key, 0)) + 1
-                    else:
-                        miss[key] = 0
-                    if miss[key] >= _RC_STRIKE_THRESHOLD:
-                        candidates.append((cm, miss[key]))
-                _rc_strike_state_save(strike_state)
-
-                if candidates:
-                    cand_lines = "\n".join(
-                        f"{m.mention} — missed **{c}** weeks in a row" for (m, c) in candidates[:25]
-                    )
-                    more = f"\n…and {len(candidates) - 25} more" if len(candidates) > 25 else ""
-                    strike_embed = discord.Embed(
-                        title="⚠️ Roll Call Strike Candidates",
-                        description=(
-                            f"These crew members have missed roll call **{_RC_STRIKE_THRESHOLD}+ weeks in a row**:\n\n"
-                            f"{cand_lines}{more}\n\n"
-                            "Leadership — click **Issue Strikes** to give each a formal warning (they'll be DM'd), "
-                            "or **Dismiss** to skip this week."
-                        ),
-                        color=discord.Color.dark_red(),
-                        timestamp=now,
-                    )
-                    strike_embed.set_footer(text="DIFF Meets • Roll Call Strike Review")
-                    strike_msg = await logs_ch.send(embed=strike_embed, view=_RCStrikeConfirmView())
-                    strike_state.setdefault("pending", {})[str(strike_msg.id)] = {
-                        "candidates": [m.id for (m, _c) in candidates],
-                        "created": now.isoformat(),
-                    }
+                week_key = now.strftime("%Y-%m-%d")
+                if strike_state.get("last_strike_week") != week_key:
+                    strike_state["last_strike_week"] = week_key
+                    miss = strike_state.setdefault("miss_streaks", {})
+                    no_response_ids = {m.id for m in no_response}
+                    candidates: list = []
+                    for cm in crew_members:
+                        if _rc_strike_exempt(cm):
+                            miss.pop(str(cm.id), None)
+                            continue
+                        key = str(cm.id)
+                        if cm.id in no_response_ids:
+                            miss[key] = int(miss.get(key, 0)) + 1
+                        else:
+                            miss[key] = 0
+                        if miss[key] >= _RC_STRIKE_THRESHOLD:
+                            candidates.append((cm, miss[key]))
                     _rc_strike_state_save(strike_state)
+
+                    if candidates:
+                        cand_lines = "\n".join(
+                            f"{m.mention} — missed **{c}** weeks in a row" for (m, c) in candidates[:25]
+                        )
+                        more = f"\n…and {len(candidates) - 25} more" if len(candidates) > 25 else ""
+                        strike_embed = discord.Embed(
+                            title="⚠️ Roll Call Strike Candidates",
+                            description=(
+                                f"These crew members have missed roll call **{_RC_STRIKE_THRESHOLD}+ weeks in a row**:\n\n"
+                                f"{cand_lines}{more}\n\n"
+                                "Leadership — click **Issue Strikes** to give each a formal warning (they'll be DM'd), "
+                                "or **Dismiss** to skip this week."
+                            ),
+                            color=discord.Color.dark_red(),
+                            timestamp=now,
+                        )
+                        strike_embed.set_footer(text="DIFF Meets • Roll Call Strike Review")
+                        strike_msg = await logs_ch.send(embed=strike_embed, view=_RCStrikeConfirmView())
+                        strike_state.setdefault("pending", {})[str(strike_msg.id)] = {
+                            "candidates": [m.id for (m, _c) in candidates],
+                            "created": now.isoformat(),
+                        }
+                        _rc_strike_state_save(strike_state)
             except Exception as _str_e:
                 print(f"[RcStrike] candidate tracking error: {_str_e}")
         except Exception as _e:
