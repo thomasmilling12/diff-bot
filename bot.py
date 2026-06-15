@@ -4466,7 +4466,7 @@ def _asched_build_embed() -> discord.Embed:
         # Status badge
         if host_id:
             status_tag = "🟢 Confirmed" if host_status != "maybe" else "🟡 Tentative"
-            host_val   = f"<@{host_id}>" + (" *(tentative)*" if host_status == "maybe" else "")
+            host_val   = _readable_host(None, host_id) + (" *(tentative)*" if host_status == "maybe" else "")
             avail_line = None
         else:
             available = [_hrsvp_uid(e) for e in rsvp_slot.get("yes", [])]
@@ -4587,7 +4587,7 @@ def _asched_build_console_meet_embed(idx: int, day: str) -> discord.Embed:
 
     if host_id:
         status_tag = "🟢 Confirmed" if host_status != "maybe" else "🟡 Tentative"
-        host_val   = f"<@{host_id}>" + (" *(tentative)*" if host_status == "maybe" else "")
+        host_val   = _readable_host(None, host_id) + (" *(tentative)*" if host_status == "maybe" else "")
         avail_line = None
         color      = 0x57F287 if host_status != "maybe" else 0xFEE75C
     else:
@@ -5033,9 +5033,9 @@ async def _asched_build_finalized_embed(guild: discord.Guild | None = None) -> d
             except Exception:
                 pass
             if _psn_id and _psn_url:
-                host_str = f"{_psn_id} [↗]({_psn_url}) · <@{host_id}>"
+                host_str = f"{_psn_id} [↗]({_psn_url}) · {_readable_host(guild, host_id)}"
             else:
-                host_str = f"<@{host_id}>"
+                host_str = _readable_host(guild, host_id) or f"<@{host_id}>"
 
         if meet_ts:
             when_line = f"<t:{meet_ts}:F>  ·  <t:{meet_ts}:R>"
@@ -5180,8 +5180,8 @@ def _asched_host_str(entry: dict) -> str:
     except Exception:
         pass
     if _psn_id and _psn_url:
-        return f"{_psn_id} [↗]({_psn_url}) · <@{host_id}>"
-    return f"<@{host_id}>"
+        return f"{_psn_id} [↗]({_psn_url}) · {_readable_host(None, host_id)}"
+    return _readable_host(None, host_id) or f"<@{host_id}>"
 
 
 def _asched_build_header_embed(guild: discord.Guild | None = None) -> discord.Embed:
@@ -5512,7 +5512,7 @@ class _ASchedReminderBtn(discord.ui.Button):
         for day in _HRSVP_DAYS:
             entry    = schedule["days"].get(day, {})
             host_id  = entry.get("host_id")
-            host_str = f"<@{host_id}>" if host_id else "*TBD*"
+            host_str = _readable_host(interaction.guild, host_id) or "*TBD*"
             cls_val  = entry.get('class', 'TBD')
             time_val = entry.get('time', 'TBD')
             date_val = entry.get('day', '')
@@ -13018,7 +13018,7 @@ async def cmd_archive_roll_call(ctx: commands.Context):
             maybe_ids = meet_responses.get("maybe", [])
             total_resp = len(yes_ids) + len(no_ids) + len(maybe_ids)
             host_id = meet_row["host_id"]
-            host_mention = f"<@{host_id}>" if host_id else "Unassigned"
+            host_mention = _readable_host(None, host_id) or "Unassigned"
             embed.add_field(
                 name=f"Meet {mn} — {meet_row['class_name'] or 'TBD'} ({meet_row['date_text'] or 'TBD'})",
                 value=(
@@ -13081,7 +13081,7 @@ async def cmd_rc_stats(ctx: commands.Context):
         total_resp = len(yes_ids) + len(no_ids) + len(maybe_ids)
         pct = round(total_resp / total_crew * 100) if total_crew else 0
         host_id = meet_row["host_id"]
-        host_val = f"<@{host_id}>" if host_id else "Unassigned"
+        host_val = _readable_host(None, host_id) or "Unassigned"
         bar_filled = round(pct / 10)
         bar = "🟩" * bar_filled + "⬜" * (10 - bar_filled)
         embed.add_field(
@@ -15135,15 +15135,22 @@ def _rc_build_header_embed(guild: discord.Guild) -> discord.Embed:
     return embed
 
 
-def _readable_host(guild: discord.Guild, host_id) -> str | None:
+def _readable_host(guild, host_id) -> str | None:
     """Readable host label that always shows a name. Embed mentions only resolve on
     clients that have the user cached, so some members saw raw <@id> numbers. We lead
-    with the display name (always readable) and keep the clickable mention beside it."""
+    with the display name (always readable) and keep the clickable mention beside it.
+    Pass guild=None to resolve against the main guild automatically."""
     if not host_id:
         return None
+    g = guild
+    if g is None:
+        try:
+            g = bot.get_guild(GUILD_ID)
+        except Exception:
+            g = None
     m = None
     try:
-        m = guild.get_member(int(host_id)) if guild else None
+        m = g.get_member(int(host_id)) if g else None
     except (TypeError, ValueError):
         m = None
     if m:
@@ -19908,7 +19915,7 @@ def _popup_build_meet_embed(
     embed.add_field(name="📍 Location", value=(location or "_TBD — ask host_"), inline=True)
     # Row 2: Time + Host + Pulling Up (3 columns)
     embed.add_field(name="🕒 Time",  value=time_text,         inline=True)
-    embed.add_field(name="👤 Host",  value=f"<@{host_id}>",   inline=True)
+    embed.add_field(name="👤 Host",  value=_readable_host(None, host_id) or f"<@{host_id}>",   inline=True)
     if capacity and capacity > 0:
         _cap_str = f"**{pullup_count}/{capacity}** confirmed"
     else:
@@ -22316,7 +22323,7 @@ def _lp_render_reply_embed(meet: dict | None, ocr: dict | None = None) -> discor
     if meet.get("hosts"):
         emb.add_field(
             name="🎤 Hosts",
-            value=" ".join(f"<@{h}>" for h in meet["hosts"]),
+            value=" ".join(_readable_host(None, h) or f"<@{h}>" for h in meet["hosts"]),
             inline=False,
         )
     if meet.get("jump_url"):
@@ -23236,7 +23243,7 @@ async def _rc_auto_archive_loop() -> None:
                     maybe_ids = meet_responses.get("maybe", [])
                     total_resp = len(yes_ids) + len(no_ids) + len(maybe_ids)
                     host_id = meet_row["host_id"]
-                    host_mention = f"<@{host_id}>" if host_id else "Unassigned"
+                    host_mention = _readable_host(None, host_id) or "Unassigned"
                     embed.add_field(
                         name=f"Meet {mn} — {meet_row['class_name'] or 'TBD'} ({meet_row['date_text'] or 'TBD'})",
                         value=(
@@ -38238,7 +38245,7 @@ async def lockslot_cmd(
     await _asched_update_panel(interaction.client)
 
     host_id = entry.get("host_id")
-    host_str = f"<@{host_id}>" if host_id else "*unassigned*"
+    host_str = _readable_host(interaction.guild, host_id) or "*unassigned*"
     icon = "🔒" if locking else "🔓"
     msg = (
         f"{icon} **{slot}** is now **{'locked' if locking else 'unlocked'}**.\n"
