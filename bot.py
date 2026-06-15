@@ -5302,27 +5302,133 @@ def _asched_get_msg_ids(schedule: dict) -> dict:
     return dict(v) if isinstance(v, dict) else {}
 
 
-async def _asched_render_layout(bot_client, ping_roles: bool = False) -> None:
-    """Delete any existing schedule messages, then post header + one card per meet.
-    `ping_roles=True` is the new-week announce; refresh paths use False (no re-ping)."""
+def _asched_is_public_panel_msg(msg: discord.Message, bot_id: int) -> bool:
+    """True for a bot-authored public schedule message (header or meet card)."""
+    if msg.author.id != bot_id:
+        return False
+    for row in msg.components:
+        for child in getattr(row, "children", []):
+            cid = getattr(child, "custom_id", "") or ""
+            if cid.startswith("diff_asched_rsvp"):
+                return True
+    for emb in msg.embeds:
+        if emb.title and "Weekly Car Meet Schedule" in emb.title:
+            return True
+    return False
+
+
+def _asched_panel_ids(sched: dict) -> dict:
+    """Normalize stored panel ids to {'header': id|None, 'cards': [ids...]} from any
+    historical format (legacy single id, or legacy {slot_key: id} dict)."""
+    raw = sched.get("panel_message_ids")
+    header, cards = None, []
+    if isinstance(raw, dict):
+        header = raw.get("header")
+        if isinstance(raw.get("cards"), list):
+            cards = [c for c in raw["cards"] if c]
+        else:
+            cards = [v for k, v in raw.items() if k != "header" and v]
+    if not header:
+        header = sched.get("panel_message_id")  # legacy single-panel fallback
+    return {"header": header, "cards": cards}
+
+
+async def _asched_sync_panel(bot_client, ping_roles: bool = False) -> None:
+    """Maintain ONE persistent schedule panel by editing in place — never delete +
+    repost the whole thing. The header lives permanently and is only edited; meet
+    cards are reused by position (add/trim only the delta). On `ping_roles` a single
+    short ping line is posted (and cleaned up on the next sync) so the panel itself
+    is never re-posted week to week."""
     channel = await _asched_resolve_announce_channel(bot_client)
     if channel is None:
         return
-    guild = channel.guild
+    guild  = channel.guild
+    bot_id = bot_client.user.id
 
-    sched = _asched_load()
-    old_ids = []
-    if sched.get("panel_message_id"):
-        old_ids.append(sched["panel_message_id"])
-    old_ids += [v for v in _asched_get_msg_ids(sched).values() if v]
-    for mid in old_ids:
+    sched  = _asched_load()
+    layout = _asched_layout_slots(sched)
+    ids    = _asched_panel_ids(sched)
+    need_cleanup = not sched.get("panel_legacy_cleanup_done")
+
+    # Clear any transient ping line from a previous sync.
+    old_ping = sched.get("panel_ping_msg_id")
+    if old_ping:
         try:
-            m = await channel.fetch_message(int(mid))
+            m = await channel.fetch_message(int(old_ping))
             await m.delete()
         except Exception:
             pass
 
-    ping_content = None
+    keep: set = set()
+
+    # ── Header: reuse the permanent message, or create it once ──
+    header_msg = None
+    if ids["header"]:
+        try:
+            header_msg = await channel.fetch_message(int(ids["header"]))
+        except Exception:
+            header_msg = None
+    if header_msg is not None:
+        try:
+            await header_msg.edit(embed=_asched_build_header_embed(guild), view=None)
+        except Exception:
+            pass
+    else:
+        try:
+            header_msg = await channel.send(embed=_asched_build_header_embed(guild))
+        except Exception as e:
+            print(f"[AutoSched] header post failed: {e}")
+            return
+    keep.add(header_msg.id)
+
+    # ── Meet cards: reuse existing in order, append/trim the delta ──
+    existing  = list(ids["cards"])
+    new_cards = []
+    for i, sl in enumerate(layout):
+        view  = _ASchedMeetRSVPView(sl["key"], sl["entry"], sl["is_past"])
+        embed = _asched_build_meet_embed(guild, sl)
+        msg = None
+        if i < len(existing):
+            try:
+                msg = await channel.fetch_message(int(existing[i]))
+                await msg.edit(embed=embed, view=view)
+            except Exception:
+                msg = None
+        if msg is None:
+            try:
+                msg = await channel.send(embed=embed, view=view)
+            except Exception as e:
+                print(f"[AutoSched] card post failed: {e}")
+                continue
+        new_cards.append(msg.id)
+        keep.add(msg.id)
+
+    # Delete leftover card messages beyond the current layout (e.g. weekly reset).
+    for leftover in existing[len(layout):]:
+        try:
+            m = await channel.fetch_message(int(leftover))
+            await m.delete()
+        except Exception:
+            pass
+
+    # One-time cleanup: remove any stray/duplicate schedule panels (e.g. an old
+    # finalized panel from before the split rollout) so only this panel remains.
+    # Gated by a persisted flag so the 15-min refresh loop never re-runs the sweep.
+    if need_cleanup:
+        try:
+            async for m in channel.history(limit=100):
+                if m.id in keep:
+                    continue
+                if _asched_is_public_panel_msg(m, bot_id):
+                    try:
+                        await m.delete()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # ── Optional finalize ping: a single short line, not a new panel ──
+    ping_id = None
     if ping_roles:
         parts = []
         ps5_role    = guild.get_role(PS5_ROLE_ID)
@@ -5331,65 +5437,34 @@ async def _asched_render_layout(bot_client, ping_roles: bool = False) -> None:
             parts.append(ps5_role.mention)
         if notify_role:
             parts.append(notify_role.mention)
-        ping_content = " ".join(parts) if parts else None
+        if parts:
+            try:
+                ping_msg = await channel.send(
+                    content=" ".join(parts) + " — 📅 **This week's DIFF meet schedule is up — RSVP on the cards above!**",
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+                ping_id = ping_msg.id
+            except Exception as e:
+                print(f"[AutoSched] finalize ping failed: {e}")
 
-    layout  = _asched_layout_slots(sched)
-    new_ids: dict = {}
-    try:
-        header = await channel.send(
-            content=ping_content,
-            embed=_asched_build_header_embed(guild),
-            allowed_mentions=discord.AllowedMentions(roles=True),
-        )
-        new_ids["header"] = header.id
-        for sl in layout:
-            mm = await channel.send(
-                embed=_asched_build_meet_embed(guild, sl),
-                view=_ASchedMeetRSVPView(sl["key"], sl["entry"], sl["is_past"]),
-            )
-            new_ids[sl["key"]] = mm.id
-        sched = _asched_load()
-        sched["panel_message_id"] = None
-        sched["panel_message_ids"] = new_ids
-        _asched_save(sched)
-    except Exception as e:
-        print(f"[AutoSched] layout post failed: {e}")
+    # ── Persist ids ──
+    sched = _asched_load()
+    sched["panel_message_id"]  = None
+    sched["panel_message_ids"] = {"header": header_msg.id, "cards": new_cards}
+    sched["panel_ping_msg_id"] = ping_id
+    sched["panel_legacy_cleanup_done"] = True
+    _asched_save(sched)
+
+
+async def _asched_render_layout(bot_client, ping_roles: bool = False) -> None:
+    """New-week / first-post path. Edits the persistent panel in place (no full repost);
+    `ping_roles=True` adds a single ping line."""
+    await _asched_sync_panel(bot_client, ping_roles=ping_roles)
 
 
 async def _asched_refresh_layout(bot_client) -> None:
-    """Edit header + meet cards in place; full repost (no ping) if anything is missing
-    or the set of scheduled meets changed."""
-    channel = await _asched_resolve_announce_channel(bot_client)
-    if channel is None:
-        return
-    sched   = _asched_load()
-    ids     = _asched_get_msg_ids(sched)
-    layout  = _asched_layout_slots(sched)
-    expected = {"header"} | {s["key"] for s in layout}
-
-    if (not ids) or sched.get("panel_message_id") or (set(ids.keys()) != expected):
-        await _asched_render_layout(bot_client, ping_roles=False)
-        return
-
-    try:
-        hm = await channel.fetch_message(int(ids["header"]))
-        await hm.edit(embed=_asched_build_header_embed(channel.guild))
-    except discord.NotFound:
-        return await _asched_render_layout(bot_client, ping_roles=False)
-    except Exception:
-        pass
-
-    for sl in layout:
-        try:
-            mm = await channel.fetch_message(int(ids[sl["key"]]))
-            await mm.edit(
-                embed=_asched_build_meet_embed(channel.guild, sl),
-                view=_ASchedMeetRSVPView(sl["key"], sl["entry"], sl["is_past"]),
-            )
-        except discord.NotFound:
-            return await _asched_render_layout(bot_client, ping_roles=False)
-        except Exception:
-            pass
+    """Periodic refresh — edits header + meet cards in place, no ping, no repost."""
+    await _asched_sync_panel(bot_client, ping_roles=False)
 
 
 async def _asched_rsvp_toggle(interaction: discord.Interaction, slot_key: str) -> None:
@@ -5472,7 +5547,7 @@ async def _asched_try_live_refresh() -> None:
 
 
 async def _asched_post_finalized(bot_client) -> None:
-    """New-week announce: re-post the full split layout (header + meet cards) with role pings."""
+    """New-week announce: update the persistent panel in place and drop a single role-ping line."""
     await _asched_render_layout(bot_client, ping_roles=True)
 
 
