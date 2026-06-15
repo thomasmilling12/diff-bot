@@ -15985,6 +15985,15 @@ class _OfficialMeetRSVPView(discord.ui.View):
             if record.ended:
                 await interaction.response.send_message("This meet has already ended.", ephemeral=True)
                 return
+            # Defer immediately — the start flow builds the attendance panel and
+            # posts the live announcement (network calls) that can blow past
+            # Discord's 3s ack window and throw 10062 Unknown interaction.
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except discord.InteractionResponded:
+                pass
+            except Exception as _e:
+                _bot_log.warning("[StartMeet] defer failed: %s", _e)
             record.started = True
             record.started_at_ts = int(datetime.now(timezone.utc).timestamp())
             att_msg, att_all_msgs = await _om_create_attendance_panel(record)
@@ -16031,7 +16040,12 @@ class _OfficialMeetRSVPView(discord.ui.View):
             for child in self.children:
                 if isinstance(child, discord.ui.Button) and child.custom_id == "diff_om_ctrl:start":
                     child.disabled = True
-            await interaction.response.edit_message(view=self)
+            # Already deferred above — edit the message directly (can't use
+            # interaction.response.* after a defer).
+            try:
+                await interaction.message.edit(view=self)
+            except Exception:
+                pass
             await interaction.followup.send(
                 f"Meet marked as **live**. Attendance panel posted in <#{_CREW_CHAT_CHANNEL_ID}> and <#{_EVERYONE_CHAT_CHANNEL_ID}>.",
                 ephemeral=True,
