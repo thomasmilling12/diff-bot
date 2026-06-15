@@ -3530,7 +3530,12 @@ def _hrsvp_save(data: dict) -> None:
 
 
 def _hrsvp_reset() -> dict:
+    prev = _hrsvp_load()
     data = {day: {"yes": [], "no": [], "maybe": []} for day in _HRSVP_DAYS}
+    # Preserve the posted layout's message ids so the weekly reset edits the existing
+    # cards in place (no duplicate role ping in the panel channel).
+    if prev.get("panel_message_ids"):
+        data["panel_message_ids"] = prev["panel_message_ids"]
     _hrsvp_save(data)
     return data
 
@@ -3696,6 +3701,130 @@ def _hrsvp_build_embed() -> discord.Embed:
 
     embed.set_footer(text=f"Different Meets • Host Availability  •  Updated {_now_et.strftime('%-m/%-d/%Y %-I:%M %p')}  •  Times shown in your local timezone")
     return embed
+
+
+# ── Split layout: slim header card + one roomy availability card per meet ───────
+def _hrsvp_build_header_embed() -> discord.Embed:
+    """Header card: week range, reset countdown, progress + legend. No per-meet lists."""
+    data = _hrsvp_load()
+    from datetime import timedelta as _td
+    _now_et = datetime.now(_EST_TZ)
+    _monday = _now_et - _td(days=_now_et.weekday())
+    _sunday = _monday + _td(days=6)
+    _week_str = f"{_monday.strftime('%b %d')} – {_sunday.strftime('%b %d, %Y')}"
+    _next_monday = (_monday + _td(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    _reset_ts = int(_next_monday.timestamp())
+
+    all_responded_uids: set = set()
+    for day in _HRSVP_DAYS:
+        d = data.get(day, {})
+        for bucket in ("yes", "no", "maybe"):
+            for e in d.get(bucket, []):
+                all_responded_uids.add(_hrsvp_uid(e))
+    total_responders = len(all_responded_uids)
+    slots_with_host  = sum(1 for day in _HRSVP_DAYS if data.get(day, {}).get("yes", []))
+    slots_needed     = len(_HRSVP_DAYS)
+    slot_bar         = "🟩" * slots_with_host + "⬜" * (slots_needed - slots_with_host)
+
+    embed = discord.Embed(
+        title="📋 DIFF Host Availability — Meet Schedule",
+        description=(
+            f"📅 **Week of {_week_str}**  •  🔄 Resets <t:{_reset_ts}:R>\n\n"
+            f"**Hosts, mark your availability on each meet card below.**\n\n"
+            f"📊 {slot_bar}  **{slots_with_host}/{slots_needed} slots have a confirmed host**\n"
+            f"👥 **{total_responders} host{'s' if total_responders != 1 else ''}** have responded so far\n\n"
+            "• ✅ **Available** — opens a form for your day, time & class\n"
+            "• ❓ **Maybe** — opens a form to note your preferred day\n"
+            "• ❌ **Unavailable** — marks you as unable to host\n"
+            "• 👤 **My Status** — shows what you've submitted so far"
+        ),
+        color=0x5865F2,
+        timestamp=utc_now(),
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_footer(text="Different Meets • Host Availability  •  Times shown in your local timezone")
+    return embed
+
+
+def _hrsvp_build_meet_embed(day: str) -> discord.Embed:
+    """One roomy availability card for a single meet slot."""
+    data          = _hrsvp_load()
+    d             = data.get(day, {"yes": [], "no": [], "maybe": []})
+    yes_entries   = d.get("yes", [])
+    no_entries    = d.get("no", [])
+    maybe_entries = d.get("maybe", [])
+    _MAX = 12
+
+    if yes_entries:
+        slot_status = f"🟢 **{len(yes_entries)} host{'s' if len(yes_entries) != 1 else ''} available**"
+        color = 0x57F287
+    elif maybe_entries:
+        slot_status = f"🟡 **{len(maybe_entries)} maybe** — still needs a host"
+        color = 0xFEE75C
+    else:
+        slot_status = "🔴 **Open — no hosts yet**"
+        color = 0xED4245
+
+    lines = [slot_status, ""]
+    if yes_entries:
+        for e in yes_entries[:_MAX]:
+            uid = _hrsvp_uid(e)
+            if isinstance(e, dict):
+                dv = e.get('day', 'TBD')
+                tv = e.get('time', 'TBD')
+                ts = _parse_meet_ts(dv, tv) if not tv.startswith("<t:") else None
+                if ts:
+                    when_display = f"<t:{ts}:F>  (<t:{ts}:R>)"
+                elif tv.startswith("<t:"):
+                    when_display = tv
+                else:
+                    when_display = f"📅 {dv}  🕒 {tv}"
+                lines.append(f"✅ <@{uid}>\n　{when_display}  🎮 {e.get('theme', 'TBD')}")
+            else:
+                lines.append(f"✅ <@{uid}>")
+        if len(yes_entries) > _MAX:
+            lines.append(f"-# +{len(yes_entries) - _MAX} more available")
+    else:
+        lines.append("✅ *No confirmed hosts yet*")
+
+    if maybe_entries:
+        for e in maybe_entries[:_MAX]:
+            uid = _hrsvp_uid(e)
+            day_pref = e.get("day", "") if isinstance(e, dict) else ""
+            lines.append(f"❓ <@{uid}>" + (f" — prefers {day_pref}" if day_pref else ""))
+        if len(maybe_entries) > _MAX:
+            lines.append(f"-# +{len(maybe_entries) - _MAX} more maybe")
+
+    if no_entries:
+        no_tags = "  ".join(f"<@{_hrsvp_uid(u)}>" for u in no_entries[:_MAX])
+        extra   = f"  +{len(no_entries) - _MAX}" if len(no_entries) > _MAX else ""
+        lines.append(f"❌ Unavailable: {no_tags}{extra}")
+
+    desc = "\n".join(lines)
+    if len(desc) > 4000:
+        desc = desc[:3990] + "\n-# …"
+    embed = discord.Embed(title=f"🏁 {day}", description=desc, color=color)
+    embed.set_footer(text=f"{day} • mark your availability below")
+    return embed
+
+
+class _HrsvpHeaderView(discord.ui.View):
+    """My Status + Reset only — buttons reuse registered custom_ids."""
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(_HrsvpMyStatusBtn())
+        self.add_item(_HrsvpResetBtn())
+
+
+class _HrsvpMeetView(discord.ui.View):
+    """Available / Maybe / Unavailable for one meet. custom_ids match the registered
+    HostRSVPView (`hrsvp_<day>_<choice>`) so clicks survive restarts."""
+    def __init__(self, day: str):
+        super().__init__(timeout=None)
+        self.add_item(_HostRSVPBtn(day, "yes",   "✅", discord.ButtonStyle.success,   label="Available"))
+        self.add_item(_HostRSVPBtn(day, "maybe", "❓", discord.ButtonStyle.secondary, label="Maybe"))
+        self.add_item(_HostRSVPBtn(day, "no",    "❌", discord.ButtonStyle.danger,    label="Unavailable"))
 
 
 class _HrsvpResetConfirmModal(discord.ui.Modal, title="Confirm Reset"):
@@ -3907,9 +4036,9 @@ class _HostMaybeModal(discord.ui.Modal):
 
 
 class _HostRSVPBtn(discord.ui.Button):
-    def __init__(self, day: str, choice: str, emoji: str, style: discord.ButtonStyle):
+    def __init__(self, day: str, choice: str, emoji: str, style: discord.ButtonStyle, label: str | None = None):
         super().__init__(
-            label=day,
+            label=label or day,
             emoji=emoji,
             style=style,
             custom_id=f"hrsvp_{day.replace(' ', '_')}_{choice}",
@@ -3970,32 +4099,97 @@ def _hrsvp_is_rsvp_msg(msg: discord.Message, bot_id: int) -> bool:
     return False
 
 
-async def _hrsvp_update_panel(bot_client) -> None:
+async def _hrsvp_resolve_channel(bot_client) -> "discord.TextChannel | None":
     channel = bot_client.get_channel(HOST_RSVP_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         try:
             channel = await bot_client.fetch_channel(HOST_RSVP_CHANNEL_ID)
         except Exception:
-            return
-    if not isinstance(channel, discord.TextChannel):
+            return None
+    return channel if isinstance(channel, discord.TextChannel) else None
+
+
+async def _hrsvp_render_layout(bot_client, ping: bool = False) -> None:
+    """Delete any existing host-availability messages, then post header + one card per meet.
+    Only touches messages carrying `hrsvp_` buttons — the Auto Schedule Builder panel
+    in the same channel is left alone."""
+    channel = await _hrsvp_resolve_channel(bot_client)
+    if channel is None:
         return
-    embed = _hrsvp_build_embed()
-    view = HostRSVPView()
-    async for msg in channel.history(limit=25):
-        if _hrsvp_is_rsvp_msg(msg, bot_client.user.id):
-            try:
-                await msg.edit(embed=embed, view=view)
-            except Exception:
-                pass
-            return
+    bot_id = bot_client.user.id
+
+    data    = _hrsvp_load()
+    stored  = [v for v in (data.get("panel_message_ids") or {}).values() if v]
+    deleted: set = set()
+    for mid in stored:
+        try:
+            m = await channel.fetch_message(int(mid))
+            await m.delete()
+            deleted.add(int(mid))
+        except Exception:
+            pass
     try:
-        await channel.send(
-            content=f"<@&{HOST_ROLE_ID}>",
-            embed=embed,
-            view=view,
+        async for msg in channel.history(limit=40):
+            if msg.id in deleted:
+                continue
+            if _hrsvp_is_rsvp_msg(msg, bot_id):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    new_ids: dict = {}
+    try:
+        header = await channel.send(
+            content=(f"<@&{HOST_ROLE_ID}>" if ping else None),
+            embed=_hrsvp_build_header_embed(),
+            view=_HrsvpHeaderView(),
+            allowed_mentions=discord.AllowedMentions(roles=True),
         )
+        new_ids["header"] = header.id
+        for day in _HRSVP_DAYS:
+            mm = await channel.send(embed=_hrsvp_build_meet_embed(day), view=_HrsvpMeetView(day))
+            new_ids[day] = mm.id
+        data = _hrsvp_load()
+        data["panel_message_ids"] = new_ids
+        _hrsvp_save(data)
     except Exception as e:
-        print(f"[HostRSVP] Panel send failed: {e}")
+        print(f"[HostRSVP] layout post failed: {e}")
+
+
+async def _hrsvp_update_panel(bot_client) -> None:
+    """Edit header + meet cards in place; full (no-ping) repost if anything is missing."""
+    channel = await _hrsvp_resolve_channel(bot_client)
+    if channel is None:
+        return
+
+    data     = _hrsvp_load()
+    ids      = data.get("panel_message_ids") or {}
+    expected = {"header"} | set(_HRSVP_DAYS)
+
+    if set(ids.keys()) != expected:
+        # First rollout / broken layout → fresh post (ping only if nothing existed before).
+        await _hrsvp_render_layout(bot_client, ping=not ids)
+        return
+
+    try:
+        hm = await channel.fetch_message(int(ids["header"]))
+        await hm.edit(embed=_hrsvp_build_header_embed(), view=_HrsvpHeaderView())
+    except discord.NotFound:
+        return await _hrsvp_render_layout(bot_client, ping=False)
+    except Exception:
+        pass
+
+    for day in _HRSVP_DAYS:
+        try:
+            mm = await channel.fetch_message(int(ids[day]))
+            await mm.edit(embed=_hrsvp_build_meet_embed(day), view=_HrsvpMeetView(day))
+        except discord.NotFound:
+            return await _hrsvp_render_layout(bot_client, ping=False)
+        except Exception:
+            pass
 
 
 # =========================
@@ -4295,6 +4489,117 @@ def _asched_build_embed() -> discord.Embed:
         ),
         inline=False,
     )
+    embed.set_footer(text="DIFF • Auto Host Schedule Builder  •  🔒 = slot locked by leadership")
+    return embed
+
+
+# ── Split layout: slim controls header + one status card per meet ───────────────
+def _asched_build_console_header_embed() -> discord.Embed:
+    """Builder header: progress + last-rebuilt + control buttons (no per-meet lists)."""
+    schedule = _asched_load()
+    updated_at = schedule.get("updated_at")
+    if updated_at:
+        try:
+            ts = int(datetime.fromisoformat(updated_at).timestamp())
+            rebuilt_str = f"<t:{ts}:R>  (<t:{ts}:f>)"
+        except Exception:
+            rebuilt_str = "recently"
+    else:
+        rebuilt_str = "*never — press Rebuild Schedule*"
+
+    filled = sum(1 for d in _HRSVP_DAYS if schedule["days"].get(d, {}).get("host_id"))
+    total  = len(_HRSVP_DAYS)
+    embed_color = 0x57F287 if filled == total else (0xFEE75C if filled > 0 else 0xEB459E)
+    progress_bar = "🟩" * filled + "⬜" * (total - filled)
+
+    embed = discord.Embed(
+        title="📋 DIFF PS5 Weekly Schedule — Builder",
+        description=(
+            f"*Built automatically from host availability responses.*\n\n"
+            f"📊 {progress_bar}  **{filled}/{total} slots filled**\n"
+            f"🕐 **Last rebuilt:** {rebuilt_str}\n\n"
+            "Use the buttons below to **rebuild**, **override**, **remind hosts**, "
+            "and **submit** the schedule. Each meet's status is shown on its own card below."
+        ),
+        color=embed_color,
+        timestamp=utc_now(),
+    )
+    embed.set_author(
+        name="Different Meets",
+        icon_url=DIFF_LOGO_URL if DIFF_LOGO_URL else discord.utils.MISSING,
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.add_field(
+        name="📌 Important Information",
+        value=(
+            "*All DIFF Meets are based on the host's work & IRL schedule.*\n"
+            "*Meet details are all subject to change.*"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="DIFF • Auto Host Schedule Builder  •  🔒 = slot locked by leadership")
+    return embed
+
+
+def _asched_build_console_meet_embed(idx: int, day: str) -> discord.Embed:
+    """One status card for a single meet slot in the builder console."""
+    schedule    = _asched_load()
+    rsvp        = _hrsvp_load()
+    entry       = schedule["days"].get(day, {})
+    host_id     = entry.get("host_id")
+    host_status = entry.get("host_status", "none")
+    rsvp_slot   = rsvp.get(day, {})
+    class_val   = entry.get("class", "-")
+    time_val    = entry.get("time",  "-")
+    date_val    = entry.get("day",   "-")
+    locked      = entry.get("locked", False)
+    lock_tag    = " 🔒" if locked else ""
+
+    if host_id:
+        status_tag = "🟢 Confirmed" if host_status != "maybe" else "🟡 Tentative"
+        host_val   = f"<@{host_id}>" + (" *(tentative)*" if host_status == "maybe" else "")
+        avail_line = None
+        color      = 0x57F287 if host_status != "maybe" else 0xFEE75C
+    else:
+        available = [_hrsvp_uid(e) for e in rsvp_slot.get("yes", [])]
+        maybe_av  = [_hrsvp_uid(e) for e in rsvp_slot.get("maybe", [])]
+        host_val  = "-"
+        if available:
+            status_tag = "⏳ Awaiting Assignment"
+            avail_line = (
+                f"✅ **Available ({len(available)} host{'s' if len(available) != 1 else ''}):** "
+                + "  ".join(f"<@{u}>" for u in available[:8])
+            )
+            color = 0xFEE75C
+        elif maybe_av:
+            status_tag = "❓ Possible Hosts"
+            avail_line = (
+                f"❓ **Maybe ({len(maybe_av)}):** "
+                + "  ".join(f"<@{u}>" for u in maybe_av[:8])
+            )
+            color = 0xFEE75C
+        else:
+            status_tag = "🔴 Open Slot"
+            avail_line = None
+            color = 0xEB459E
+
+    meet_ts = _parse_meet_ts(date_val, time_val)
+    if meet_ts:
+        when_line = f"📅 <t:{meet_ts}:D>  ·  🕒 <t:{meet_ts}:t>  ·  <t:{meet_ts}:R>"
+    else:
+        when_line = f"📅 {date_val}  ·  🕒 {time_val}"
+
+    lines = [
+        f"**{status_tag}**{lock_tag}",
+        f"🎮 {class_val}",
+        when_line,
+        f"👤 **Host:** {host_val}",
+    ]
+    if avail_line:
+        lines.append(avail_line)
+
+    embed = discord.Embed(title=f"〔{idx}〕 Meet {idx}", description="\n".join(lines), color=color)
     embed.set_footer(text="DIFF • Auto Host Schedule Builder  •  🔒 = slot locked by leadership")
     return embed
 
@@ -4799,6 +5104,265 @@ def _asched_build_rsvp_view(schedule: dict) -> "_ASchedRSVPView":
     return _ASchedRSVPView(schedule)
 
 
+# ── Split layout: header card + one roomy card per scheduled meet ──────────────
+def _asched_slot_scheduled(entry: dict) -> bool:
+    """True when a slot holds a real meet (host, set class, or a parseable time)."""
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("host_id"):
+        return True
+    cls = (entry.get("class") or "").strip()
+    if cls and cls.upper() != "TBD":
+        return True
+    if _parse_meet_ts(entry.get("day", "TBD"), entry.get("time", "TBD")):
+        return True
+    return False
+
+
+def _asched_layout_slots(schedule: dict) -> list[dict]:
+    """Ordered (soonest-first) scheduled slots with display flags. Empty TBD slots
+    are dropped entirely so the public schedule never shows fake 'TBD' meets."""
+    rows, _now = _asched_sorted_slots(schedule)
+    scheduled = [r for r in rows if _asched_slot_scheduled(r["entry"])]
+    next_key = next((r["key"] for r in scheduled if r["cat"] == 0), None)
+    out = []
+    for pos, r in enumerate(scheduled, start=1):
+        out.append({
+            "key": r["key"], "entry": r["entry"], "ts": r["ts"],
+            "is_past": r["cat"] == 1, "is_next": r["key"] == next_key, "pos": pos,
+        })
+    return out
+
+
+def _asched_host_str(entry: dict) -> str:
+    """PSN name (linked) · Discord mention — matches the original schedule format."""
+    host_id = entry.get("host_id")
+    if not host_id:
+        return "*TBD*"
+    _psn_id, _psn_url = "", ""
+    try:
+        for _h in data.get("hosts", []):
+            if _h.get("discord_id") == int(host_id):
+                _purl = (_h.get("profile_url") or "").rstrip("/")
+                if _purl:
+                    _psn_url = _purl
+                    _psn_id = _purl.split("/")[-1]
+                break
+    except Exception:
+        pass
+    if _psn_id and _psn_url:
+        return f"{_psn_id} [↗]({_psn_url}) · <@{host_id}>"
+    return f"<@{host_id}>"
+
+
+def _asched_build_header_embed(guild: discord.Guild | None = None) -> discord.Embed:
+    """Slim header card: week banner + countdown to the next meet (or clean empty state)."""
+    schedule = _asched_load()
+    if _asched_reconcile_attendees(schedule):
+        try:
+            _asched_save(schedule)
+        except Exception:
+            pass
+
+    layout   = _asched_layout_slots(schedule)
+    next_row = next((s for s in layout if s["is_next"]), None)
+
+    embed = discord.Embed(
+        title="🗓️ DIFF PS5 Weekly Car Meet Schedule",
+        color=0x57F287,
+        timestamp=utc_now(),
+    )
+    embed.set_author(
+        name="Different Meets",
+        icon_url=DIFF_LOGO_URL if DIFF_LOGO_URL else discord.utils.MISSING,
+    )
+    if not layout:
+        embed.description = (
+            "**No meets scheduled yet — check back soon.** 🏁\n\n"
+            "-# Hosts set each week's meets from their availability. "
+            "You'll get pinged here the moment a meet drops."
+        )
+    elif next_row and next_row["ts"]:
+        cnt = len(layout)
+        embed.description = (
+            f"⏰ **Next meet** <t:{next_row['ts']}:R> — <t:{next_row['ts']}:F>\n\n"
+            f"-# {cnt} meet{'s' if cnt != 1 else ''} this week · RSVP on each card below 👇"
+        )
+    else:
+        embed.description = "-# RSVP on each meet card below 👇"
+
+    _banner = _asched_banner_url()
+    if _banner.startswith("http"):
+        embed.set_image(url=_banner)
+
+    embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets  ·  Times shown in your local timezone")
+    return embed
+
+
+def _asched_build_meet_embed(guild: discord.Guild | None, slot: dict) -> discord.Embed:
+    """One roomy card for a single scheduled meet."""
+    entry    = slot["entry"]
+    meet_ts  = slot["ts"]
+    is_past  = slot["is_past"]
+    is_next  = slot["is_next"]
+    pos      = slot["pos"]
+    class_val = entry.get("class", "TBD")
+    time_val  = entry.get("time",  "TBD")
+    date_val  = entry.get("day",   "TBD")
+
+    _NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
+    badge = _NUM_EMOJI[pos - 1] if pos <= len(_NUM_EMOJI) else f"{pos}\uFE0F\u20E3"
+    if is_past:
+        title, color = f"{badge}  ✅  {class_val}  ·  Completed", 0x99AAB5
+    elif is_next:
+        title, color = f"{badge}  🏎️  {class_val}  ·  👉 NEXT UP", 0x57F287
+    else:
+        title, color = f"{badge}  🏎️  {class_val}", 0x5865F2
+
+    embed = discord.Embed(title=title, color=color)
+
+    if meet_ts:
+        when_line = f"🗓️ <t:{meet_ts}:F>\n⏳ <t:{meet_ts}:R>"
+    else:
+        when_line = f"📅 {date_val}  ·  🕒 {time_val}"
+    lines = [when_line, f"🎮 **Host:** {_asched_host_str(entry)}"]
+
+    hint = _theme_detail_hint(class_val)
+    if hint and not is_past:
+        lines.append(f"-# 🚗 {hint}")
+
+    if not is_past:
+        n = len(_asched_attendees(entry))
+        lines.append(f"🙌 **{n}** going" if n else "-# Be the first to RSVP below 👇")
+        if meet_ts and class_val and class_val.upper() != "TBD":
+            lines.append(
+                f"📅 Add to Calendar: [Google]({_gcal_url(class_val, meet_ts)}) · "
+                f"[Outlook]({_outlook_url(class_val, meet_ts)})"
+            )
+
+    embed.description = "\n".join(lines)
+    embed.set_footer(text="DIFF Meets • Tap below to RSVP" if not is_past else "DIFF Meets • This meet has ended")
+    return embed
+
+
+class _ASchedMeetRSVPView(discord.ui.View):
+    """Single RSVP button for one meet card. custom_id matches the registered
+    `_ASchedRSVPView` routing (`diff_asched_rsvp:{slot_key}`) so clicks survive restarts."""
+    def __init__(self, slot_key: str, entry: dict, is_past: bool):
+        super().__init__(timeout=None)
+        if is_past:
+            label = "Meet ended"
+        else:
+            n = len(_asched_attendees(entry))
+            label = f"I'm Going ({n})" if n else "I'm Going"
+        self.add_item(_ASchedRSVPBtn(slot_key, label[:80], disabled=is_past, row=0))
+
+
+async def _asched_resolve_announce_channel(bot_client) -> "discord.TextChannel | None":
+    ch = bot_client.get_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        try:
+            ch = await bot_client.fetch_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
+        except Exception:
+            return None
+    return ch if isinstance(ch, discord.TextChannel) else None
+
+
+def _asched_get_msg_ids(schedule: dict) -> dict:
+    v = schedule.get("panel_message_ids")
+    return dict(v) if isinstance(v, dict) else {}
+
+
+async def _asched_render_layout(bot_client, ping_roles: bool = False) -> None:
+    """Delete any existing schedule messages, then post header + one card per meet.
+    `ping_roles=True` is the new-week announce; refresh paths use False (no re-ping)."""
+    channel = await _asched_resolve_announce_channel(bot_client)
+    if channel is None:
+        return
+    guild = channel.guild
+
+    sched = _asched_load()
+    old_ids = []
+    if sched.get("panel_message_id"):
+        old_ids.append(sched["panel_message_id"])
+    old_ids += [v for v in _asched_get_msg_ids(sched).values() if v]
+    for mid in old_ids:
+        try:
+            m = await channel.fetch_message(int(mid))
+            await m.delete()
+        except Exception:
+            pass
+
+    ping_content = None
+    if ping_roles:
+        parts = []
+        ps5_role    = guild.get_role(PS5_ROLE_ID)
+        notify_role = guild.get_role(NOTIFY_ROLE_ID)
+        if ps5_role:
+            parts.append(ps5_role.mention)
+        if notify_role:
+            parts.append(notify_role.mention)
+        ping_content = " ".join(parts) if parts else None
+
+    layout  = _asched_layout_slots(sched)
+    new_ids: dict = {}
+    try:
+        header = await channel.send(
+            content=ping_content,
+            embed=_asched_build_header_embed(guild),
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+        new_ids["header"] = header.id
+        for sl in layout:
+            mm = await channel.send(
+                embed=_asched_build_meet_embed(guild, sl),
+                view=_ASchedMeetRSVPView(sl["key"], sl["entry"], sl["is_past"]),
+            )
+            new_ids[sl["key"]] = mm.id
+        sched = _asched_load()
+        sched["panel_message_id"] = None
+        sched["panel_message_ids"] = new_ids
+        _asched_save(sched)
+    except Exception as e:
+        print(f"[AutoSched] layout post failed: {e}")
+
+
+async def _asched_refresh_layout(bot_client) -> None:
+    """Edit header + meet cards in place; full repost (no ping) if anything is missing
+    or the set of scheduled meets changed."""
+    channel = await _asched_resolve_announce_channel(bot_client)
+    if channel is None:
+        return
+    sched   = _asched_load()
+    ids     = _asched_get_msg_ids(sched)
+    layout  = _asched_layout_slots(sched)
+    expected = {"header"} | {s["key"] for s in layout}
+
+    if (not ids) or sched.get("panel_message_id") or (set(ids.keys()) != expected):
+        await _asched_render_layout(bot_client, ping_roles=False)
+        return
+
+    try:
+        hm = await channel.fetch_message(int(ids["header"]))
+        await hm.edit(embed=_asched_build_header_embed(channel.guild))
+    except discord.NotFound:
+        return await _asched_render_layout(bot_client, ping_roles=False)
+    except Exception:
+        pass
+
+    for sl in layout:
+        try:
+            mm = await channel.fetch_message(int(ids[sl["key"]]))
+            await mm.edit(
+                embed=_asched_build_meet_embed(channel.guild, sl),
+                view=_ASchedMeetRSVPView(sl["key"], sl["entry"], sl["is_past"]),
+            )
+        except discord.NotFound:
+            return await _asched_render_layout(bot_client, ping_roles=False)
+        except Exception:
+            pass
+
+
 async def _asched_rsvp_toggle(interaction: discord.Interaction, slot_key: str) -> None:
     try:
         await interaction.response.defer(ephemeral=True)
@@ -4825,11 +5389,14 @@ async def _asched_rsvp_toggle(interaction: discord.Interaction, slot_key: str) -
     except Exception:
         pass
 
-    # Live-update the public schedule message (embed count + button labels)
+    # Live-update just this meet card (count + button label)
     try:
-        if interaction.message:
-            new_embed = await _asched_build_finalized_embed(guild=interaction.guild)
-            await interaction.message.edit(embed=new_embed, view=_asched_build_rsvp_view(sched))
+        sl = next((s for s in _asched_layout_slots(sched) if s["key"] == slot_key), None)
+        if sl and interaction.message:
+            await interaction.message.edit(
+                embed=_asched_build_meet_embed(interaction.guild, sl),
+                view=_ASchedMeetRSVPView(slot_key, sl["entry"], sl["is_past"]),
+            )
     except Exception:
         pass
 
@@ -4868,89 +5435,23 @@ async def setschedulebanner(ctx, *, url: str = None):
 
 
 async def _asched_try_live_refresh() -> None:
-    """Re-edit the live schedule message immediately, if one is posted."""
+    """Re-edit the live schedule layout immediately, if one is posted."""
     try:
-        _sched = _asched_load()
-        mid = _sched.get("panel_message_id")
-        if not mid:
-            return
-        ch = bot.get_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
-        if not isinstance(ch, discord.TextChannel):
-            ch = await bot.fetch_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
-        if not isinstance(ch, discord.TextChannel):
-            return
-        msg = await ch.fetch_message(int(mid))
-        await msg.edit(
-            embed=await _asched_build_finalized_embed(guild=ch.guild),
-            view=_asched_build_rsvp_view(_sched),
-        )
+        await _asched_refresh_layout(bot)
     except Exception:
         pass
 
 
 async def _asched_post_finalized(bot_client) -> None:
-    channel = bot_client.get_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
-    if not isinstance(channel, discord.TextChannel):
-        try:
-            channel = await bot_client.fetch_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
-        except Exception:
-            return
-    if not isinstance(channel, discord.TextChannel):
-        return
-
-    guild = channel.guild
-    ping_parts = []
-    ps5_role   = guild.get_role(PS5_ROLE_ID)
-    notify_role = guild.get_role(NOTIFY_ROLE_ID)
-    if ps5_role:
-        ping_parts.append(ps5_role.mention)
-    if notify_role:
-        ping_parts.append(notify_role.mention)
-    ping_content = " ".join(ping_parts) if ping_parts else None
-
-    embed = await _asched_build_finalized_embed(guild=guild)
-
-    try:
-        sent = await channel.send(content=ping_content, embed=embed, view=_asched_build_rsvp_view(_asched_load()))
-        try:
-            _sched = _asched_load()
-            _sched["panel_message_id"] = sent.id
-            _asched_save(_sched)
-        except Exception as _e:
-            print(f"[AutoSched] could not persist panel_message_id: {_e}")
-    except Exception as e:
-        print(f"[AutoSched] Announce post failed: {e}")
+    """New-week announce: re-post the full split layout (header + meet cards) with role pings."""
+    await _asched_render_layout(bot_client, ping_roles=True)
 
 
 @tasks.loop(minutes=15)
 async def _asched_refresh_loop():
-    """Re-edit the live weekly schedule embed so NEXT badge + past-meet ticks stay current."""
+    """Re-edit the live weekly schedule layout so NEXT badge + past-meet ticks stay current."""
     try:
-        _sched = _asched_load()
-        msg_id = _sched.get("panel_message_id")
-        if not msg_id:
-            return
-        channel = bot.get_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
-            try:
-                channel = await bot.fetch_channel(_ASCHED_ANNOUNCE_CHANNEL_ID)
-            except Exception:
-                return
-        if not isinstance(channel, discord.TextChannel):
-            return
-        try:
-            msg = await channel.fetch_message(int(msg_id))
-        except discord.NotFound:
-            _sched["panel_message_id"] = None
-            _asched_save(_sched)
-            return
-        except Exception:
-            return
-        embed = await _asched_build_finalized_embed(guild=channel.guild)
-        try:
-            await msg.edit(embed=embed, view=_asched_build_rsvp_view(_sched))
-        except Exception as _e:
-            print(f"[AutoSched] refresh edit failed: {_e}")
+        await _asched_refresh_layout(bot)
     except Exception as _e:
         print(f"[AutoSched] refresh loop error: {_e}")
 
@@ -5427,32 +5928,104 @@ def _asched_is_sched_msg(msg: discord.Message, bot_id: int) -> bool:
     return False
 
 
-async def _asched_update_panel(bot_client) -> None:
+async def _asched_resolve_console_channel(bot_client) -> "discord.TextChannel | None":
     channel = bot_client.get_channel(HOST_RSVP_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         try:
             channel = await bot_client.fetch_channel(HOST_RSVP_CHANNEL_ID)
         except Exception:
-            return
-    if not isinstance(channel, discord.TextChannel):
+            return None
+    return channel if isinstance(channel, discord.TextChannel) else None
+
+
+def _asched_get_console_ids(schedule: dict) -> dict:
+    v = schedule.get("console_message_ids")
+    return dict(v) if isinstance(v, dict) else {}
+
+
+async def _asched_render_console(bot_client) -> None:
+    """Delete any existing builder messages, then post header (controls) + one card per meet.
+    Only touches messages carrying the builder's buttons plus the stored card ids — the Host
+    Availability panel in the same channel uses `hrsvp_` ids and is left alone."""
+    channel = await _asched_resolve_console_channel(bot_client)
+    if channel is None:
+        return
+    bot_id = bot_client.user.id
+
+    sched   = _asched_load()
+    stored  = [v for v in _asched_get_console_ids(sched).values() if v]
+    deleted: set = set()
+    for mid in stored:
+        try:
+            m = await channel.fetch_message(int(mid))
+            await m.delete()
+            deleted.add(int(mid))
+        except Exception:
+            pass
+    try:
+        async for msg in channel.history(limit=40):
+            if msg.id in deleted:
+                continue
+            if _asched_is_sched_msg(msg, bot_id):
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    new_ids: dict = {}
+    try:
+        header = await channel.send(
+            embed=_asched_build_console_header_embed(),
+            view=AutoScheduleView(bot_client),
+        )
+        new_ids["header"] = header.id
+        for idx, day in enumerate(_HRSVP_DAYS, start=1):
+            mm = await channel.send(embed=_asched_build_console_meet_embed(idx, day))
+            new_ids[day] = mm.id
+        sched = _asched_load()
+        sched["console_message_ids"] = new_ids
+        _asched_save(sched)
+    except Exception as e:
+        print(f"[AutoSched] console post failed: {e}")
+
+
+async def _asched_update_panel(bot_client) -> None:
+    """Edit builder header + meet cards in place; full repost if anything is missing."""
+    channel = await _asched_resolve_console_channel(bot_client)
+    if channel is None:
         return
     try:
-        embed = _asched_build_embed()
+        _ = _asched_build_console_header_embed()
     except Exception as _be:
         print(f"[AutoSched] Build embed error: {_be}")
         return
-    view = AutoScheduleView(bot_client)
-    async for msg in channel.history(limit=25):
-        if _asched_is_sched_msg(msg, bot_client.user.id):
-            try:
-                await msg.edit(embed=embed, view=view)
-            except Exception:
-                pass
-            return
+
+    sched    = _asched_load()
+    ids      = _asched_get_console_ids(sched)
+    expected = {"header"} | set(_HRSVP_DAYS)
+
+    if set(ids.keys()) != expected:
+        await _asched_render_console(bot_client)
+        return
+
     try:
-        await channel.send(embed=embed, view=view)
-    except Exception as e:
-        print(f"[AutoSched] Panel send failed: {e}")
+        hm = await channel.fetch_message(int(ids["header"]))
+        await hm.edit(embed=_asched_build_console_header_embed(), view=AutoScheduleView(bot_client))
+    except discord.NotFound:
+        return await _asched_render_console(bot_client)
+    except Exception:
+        pass
+
+    for idx, day in enumerate(_HRSVP_DAYS, start=1):
+        try:
+            mm = await channel.fetch_message(int(ids[day]))
+            await mm.edit(embed=_asched_build_console_meet_embed(idx, day))
+        except discord.NotFound:
+            return await _asched_render_console(bot_client)
+        except Exception:
+            pass
 
 
 # -------------------------------------------------------
