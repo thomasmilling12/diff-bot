@@ -30133,7 +30133,7 @@ def _rsvp_build_embed(meet: RsvpMeet) -> discord.Embed:
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Meet", value=meet.title, inline=True)
-    embed.add_field(name="Host", value=meet.host_name, inline=True)
+    embed.add_field(name="Host", value=_readable_host(None, meet.host_id) or meet.host_name, inline=True)
     embed.add_field(name="Date", value=meet.meet_date, inline=True)
     embed.add_field(name="✅ Pulling Up", value=str(len(meet.attendees_yes)), inline=True)
     embed.add_field(name="❓ Maybe", value=str(len(meet.attendees_maybe)), inline=True)
@@ -30509,7 +30509,7 @@ async def attendance_close(interaction: discord.Interaction, meet_id: str, total
             timestamp=datetime.now(timezone.utc),
         )
         result_embed.add_field(name="Meet", value=meet.title, inline=True)
-        result_embed.add_field(name="Host", value=meet.host_name, inline=True)
+        result_embed.add_field(name="Host", value=_readable_host(None, meet.host_id) or meet.host_name, inline=True)
         result_embed.add_field(name="Lobby Size", value=str(total_players), inline=True)
         result_embed.add_field(name="✅ Checked In", value=str(len(meet.checked_in)), inline=True)
         result_embed.add_field(name="❌ No Shows", value=str(no_shows), inline=True)
