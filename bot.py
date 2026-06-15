@@ -17965,30 +17965,18 @@ def _om_panel_build_embed() -> discord.Embed:
     if recap:
         embed.add_field(name=recap[0], value=recap[1], inline=False)
 
-    # ── Host walkthrough (replaces the old generic "What Gets Posted") ─
-    embed.add_field(
-        name="🛠️ For Hosts & Staff (2 steps)",
-        value=(
-            "**1.** Tap **📋 Schedule Official Meet** below → pick the host from the dropdown\n"
-            "**2.** Fill the modal — theme, date & time (e.g. `April 5 9:00 PM EST`), entry info, notes, style direction\n"
-            "Bot posts the full announcement with role pings, an auto-converting timestamp, RSVP buttons, "
-            "staff controls (Start / End / Cancel), and fires 1h + 15min reminders automatically."
-        ),
-        inline=False,
-    )
-
     # ── Recent activity stats ──────────────────────────────────────────
     stats = _om_panel_stats_field()
     if stats:
         embed.add_field(name=stats[0], value=stats[1], inline=False)
 
     embed.add_field(
-        name="🔒 Access",
-        value="Scheduling is restricted to **staff and assigned hosts**. Members can RSVP on any posted meet.",
+        name="🛠️ Hosts & Staff",
+        value="Tap **📋 Schedule Official Meet** to post one — the form walks you through it. Members can RSVP on any posted meet.",
         inline=False,
     )
 
-    embed.set_footer(text="DIFF Official Meet System • Panel refreshes hourly • Pinned guide has the full walkthrough")
+    embed.set_footer(text="DIFF Official Meet System • Refreshes hourly")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
@@ -20873,55 +20861,30 @@ def _popup_build_panel_embed() -> discord.Embed:
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.add_field(
-        name="🚗 For Members",
+        name="🚗 Members",
         value=(
-            "• Tap **🚗 Pulling Up!** on any meet card to RSVP\n"
-            "• If the meet is full you\'ll be **waitlisted** + auto-promoted (with DM) when a spot opens\n"
-            "• Each meet has a 💬 discussion thread — chat, meet up, drop pics there\n"
-            "• Want pings? Grab the **PlayStation** and **Car Meet** roles in " + f"<#{JOIN_MEETS_CHANNEL_ID}>"
+            "Tap **🚗 Pulling Up!** on any meet card to RSVP — full meets waitlist you and auto-promote (with a DM) when a spot opens. "
+            "Each meet gets its own 💬 thread. Want pings? Grab the roles in " + f"<#{JOIN_MEETS_CHANNEL_ID}>."
         ),
         inline=False,
     )
     embed.add_field(
-        name="🛠️ For Hosts (3 steps)",
+        name="🛠️ Hosts",
         value=(
-            "**1.** Tap **⚡ Create Pop-Up Meet** below\n"
-            "**2.** Pick from 3 dropdowns: who to ping • theme • voice channel (optional)\n"
-            "**3.** Fill the modal — theme (required) • time (required, smart parser: `in 30 min`, `tonight 9`, `tomorrow 7pm CT`) • location, notes, capacity (all optional)\n"
-            "Manage the live card with **✏️ Edit**, **📣 DM Attendees**, and **🏁 End Meet**. "
-            "📖 Full guide is pinned above — tap to expand."
+            "Tap **⚡ Create Pop-Up Meet** below — the form walks you through pings, theme, time, and capacity. "
+            "Manage the live card with **✏️ Edit**, **📣 DM Attendees**, and **🏁 End Meet**."
         ),
         inline=False,
     )
     embed.add_field(
-        name="✨ What Happens Automatically",
+        name="⚠️ Rules & Limits",
         value=(
-            "• Host is auto-RSVPed as the first pullup\n"
-            "• Card is auto-pinned + a discussion thread is created\n"
-            "• Waitlist auto-promotes with DMs when spots open\n"
-            "• Host gets a 30-min last-call DM before auto-close\n"
-            "• Meets auto-close after 3h with a thank-you summary in the thread"
+            "PS5 only • clean builds • no crashing or griefing • be ready when you RSVP (repeat no-shows get flagged)\n"
+            "Hosts: 1 active pop-up each • 5 per server max"
         ),
         inline=False,
     )
-    embed.add_field(
-        name="⚠️ Rules",
-        value=(
-            "• PS5 only • clean, realistic builds only\n"
-            "• No crashing or griefing • follow host instructions\n"
-            "• Be ready to join when you RSVP — repeat no-shows get flagged"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🔒 Access & Limits",
-        value=(
-            "• Only **Host** role members can create pop-ups\n"
-            "• 1 active pop-up per host • 5 active per server max"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text="DIFF Pop-Up Meet System — pinned guide above has full host walkthrough")
+    embed.set_footer(text="DIFF Pop-Up Meet System")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
@@ -21229,110 +21192,6 @@ async def popuplist_cmd(ctx):
     if len(actives) > 15:
         emb.set_footer(text=f"…and {len(actives) - 15} more")
     await ctx.reply(embed=emb, mention_author=False)
-
-
-@bot.command(name="postpopupguide", aliases=["popupguide", "popuphowto"])
-async def postpopupguide_cmd(ctx):
-    """!postpopupguide — staff: post (and pin) the full how-to-host guide in #popup-meets."""
-    if not ctx.guild:
-        return
-    if not _popup_is_staff(ctx.author):
-        return await ctx.reply("Staff only.", mention_author=False)
-    ch = ctx.guild.get_channel(_POPUP_PANEL_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.reply("Pop-up meets channel not found.", mention_author=False)
-
-    emb = discord.Embed(
-        title="📖 How to Host a Pop-Up Meet",
-        color=discord.Color.from_rgb(255, 140, 0),
-        description=(
-            "Pop-ups are spontaneous PS5 meets that go live without advance notice. "
-            "Anyone with the **Host** role can drop one anytime — here\'s the full walkthrough."
-        ),
-    )
-    emb.set_thumbnail(url=DIFF_LOGO_URL)
-
-    emb.add_field(
-        name="① Start the meet",
-        value=(
-            "Tap **⚡ Create Pop-Up Meet** on the panel above. A private setup screen opens with three quick dropdowns:\n"
-            "• 🔔 **Who to ping** — PlayStation only / Car Meet only / Both / No pings\n"
-            "• 🎨 **Quick-pick theme** — JDM, Clean Euros, Supers, Off-Road, Cinematic, Muscle, Tuners, Open Class, or Custom\n"
-            "• 🔊 **Voice channel** (optional) — attach a VC so members know where to drop\n"
-            "Defaults are fine for most meets. Tap **Continue →** when ready."
-        ),
-        inline=False,
-    )
-    emb.add_field(
-        name="② Fill in the details",
-        value=(
-            "**Meet Theme** (required) — pre-filled from your dropdown pick; edit if you want\n"
-            "**Location** (optional) — leave blank if TBD\n"
-            "**Time** (required) — smart parser accepts:\n"
-            "  • `in 30 min` • `in 1 hour` • `+45m`\n"
-            "  • `tonight 9` • `tomorrow 7pm CT` • `now`\n"
-            "  • bare `8pm` (auto-rolls to tomorrow if past)\n"
-            "**Notes** (optional) — clean builds only / first come first served / etc.\n"
-            "**Capacity** (optional) — leave blank for unlimited, or set 1–50"
-        ),
-        inline=False,
-    )
-    emb.add_field(
-        name="③ Manage your meet",
-        value=(
-            "Every live meet card has 5 buttons:\n"
-            "🚗 **Pulling Up!** / ❌ **Can\'t Make It** — members tap to RSVP\n"
-            "✏️ **Edit** — update theme / location / time / notes anytime\n"
-            "📣 **DM Attendees** — blast a message to every confirmed pullup\n"
-            "🏁 **End Meet** — manually close it"
-        ),
-        inline=False,
-    )
-    emb.add_field(
-        name="④ What happens automatically",
-        value=(
-            "• You\'re auto-RSVPed as the first pullup\n"
-            "• Card is auto-pinned + a discussion thread is auto-created\n"
-            "• At capacity, new pullups go to a **waitlist** and get auto-promoted (with DM) when a spot opens\n"
-            "• You\'ll get a DM **30 min before** the 3-hour auto-close\n"
-            "• Meets auto-close after 3h with a thank-you summary in the thread"
-        ),
-        inline=False,
-    )
-    emb.add_field(
-        name="⚠️ Limits",
-        value=(
-            "• **1 active pop-up per host** — end yours before starting another\n"
-            "• **5 active pop-ups per server** total\n"
-            "• PS5 only • Clean builds only • Follow host instructions"
-        ),
-        inline=False,
-    )
-    emb.add_field(
-        name="🛡️ Staff Commands",
-        value=(
-            "`!popuplist` — all active pop-ups\n"
-            "`!popupinfo <id>` — full RSVP breakdown (host can also use)\n"
-            "`!endpopup <id>` — force-end from anywhere (DMs host)"
-        ),
-        inline=False,
-    )
-    emb.set_footer(text="DIFF Pop-Up Meets — questions? Drop them in the host channel.")
-
-    try:
-        msg = await ch.send(embed=emb)
-        try:
-            await msg.pin(reason=f"Pop-up host guide posted by {ctx.author}")
-        except Exception as _pe:
-            await ctx.reply(
-                f"✅ Guide posted in {ch.mention} but couldn\'t pin it ({_pe}). "
-                "Pin it manually or free up a pin slot.",
-                mention_author=False,
-            )
-            return
-        await ctx.reply(f"✅ Host guide posted and pinned in {ch.mention}.", mention_author=False)
-    except Exception as _se:
-        await ctx.reply(f"❌ Failed to post guide: {_se}", mention_author=False)
 
 
 async def _popup_post_or_refresh(guild: discord.Guild):
