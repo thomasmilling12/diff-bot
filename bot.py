@@ -16041,6 +16041,15 @@ class _OfficialMeetRSVPView(discord.ui.View):
             if record.ended:
                 await interaction.response.send_message("This meet has already ended.", ephemeral=True)
                 return
+            # Defer immediately — the end flow does several network calls (close
+            # embed, staff log, leaderboard, message cleanup) that can blow past
+            # Discord's 3s ack window and throw 10062 Unknown interaction.
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except discord.InteractionResponded:
+                pass
+            except Exception as _e:
+                _bot_log.warning("[EndMeet] defer failed: %s", _e)
             record.ended = True
             record.ended_at_ts = int(datetime.now(timezone.utc).timestamp())
             rsvp_pool = set(record.rsvp_yes_ids) | set(record.rsvp_maybe_ids)
@@ -16105,7 +16114,12 @@ class _OfficialMeetRSVPView(discord.ui.View):
                     "diff_om_ctrl:start", "diff_om_ctrl:end", "diff_om_ctrl:cancel"
                 ):
                     child.disabled = True
-            await interaction.response.edit_message(view=self)
+            # Already deferred above — edit the message directly (can't use
+            # interaction.response.* after a defer).
+            try:
+                await interaction.message.edit(view=self)
+            except Exception:
+                pass
             # Auto-cleanup: delete the original meet announcement, the 1h + 15min
             # reminder embeds, the "DIFF Meet Live" announcement (if any), and
             # archive the discussion thread. The "📌 DIFF Meet Closed" summary
