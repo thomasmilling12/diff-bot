@@ -14998,7 +14998,7 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
         start_time   = meet["start_time"] if meet else "TBD"
         date_text    = meet["date_text"]  if meet else "TBD"
         host_id      = meet["host_id"]    if meet else None
-        host_text    = f"<@{host_id}>"   if host_id else "*No host assigned*"
+        host_text    = _readable_host(guild, host_id) or "*No host assigned*"
         is_finalized = bool(meet and meet["is_finalized"])
 
         if is_finalized:
@@ -15133,6 +15133,22 @@ def _rc_build_header_embed(guild: discord.Guild) -> discord.Embed:
     )
     embed.set_footer(text=f"DIFF • Auto Roll Call System  •  Updated {_now_et.strftime('%-m/%-d/%Y %-I:%M %p')}  •  Use 📊 My RSVP to see your responses")
     return embed
+
+
+def _readable_host(guild: discord.Guild, host_id) -> str | None:
+    """Readable host label that always shows a name. Embed mentions only resolve on
+    clients that have the user cached, so some members saw raw <@id> numbers. We lead
+    with the display name (always readable) and keep the clickable mention beside it."""
+    if not host_id:
+        return None
+    m = None
+    try:
+        m = guild.get_member(int(host_id)) if guild else None
+    except (TypeError, ValueError):
+        m = None
+    if m:
+        return f"**{m.display_name}** · {m.mention}"
+    return f"<@{host_id}>"
 
 
 def _rc_build_meet_embed(guild: discord.Guild, n: int) -> discord.Embed:
@@ -15873,9 +15889,20 @@ async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
 
     sorted_meets = sorted(meets, key=_meet_sort_key)
 
+    # ── Only meets with a real, parseable date count as "set" ──
+    # Firing this notification on all-TBD placeholders told crew "the schedule has
+    # been set" while every card read TBD/TBD/TBD. Skip undated meets entirely.
+    dated_meets = [
+        m for m in sorted_meets
+        if _parse_meet_ts(m.get("date_text", ""), m.get("start_time", "TBD"))
+    ]
+    if not dated_meets:
+        print("[RollCallNotify] No meets have real dates yet — skipping crew notification.")
+        return
+
     # ── Build per-meet field data ─────────────────────────────
     meet_fields = []
-    for m in sorted_meets:
+    for m in dated_meets:
         n       = m["meet_number"]
         host_id = m.get("host_id")
         cls     = m.get("class_name", "TBD")
@@ -15883,7 +15910,7 @@ async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
         dt      = m.get("date_text", "")
         ts      = _parse_meet_ts(dt, t) if dt and t != "TBD" else None
         when    = f"<t:{ts}:F>  ·  <t:{ts}:R>" if ts else f"🕒 {t}"
-        host_str = f"<@{host_id}>" if host_id else "*TBD*"
+        host_str = _readable_host(guild, host_id) or "*TBD*"
         field_val = f"🎮 {cls}\n📅 {when}\n👤 {host_str}"
         meet_fields.append((f"Meet {n}", field_val))
 
@@ -17359,7 +17386,11 @@ def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str
     embed.add_field(name="📅 Date", value=f"<t:{timestamp}:F>", inline=True)
     embed.add_field(name="⏰ Begins", value=f"<t:{timestamp}:R>", inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)
-    embed.add_field(name="🎙️ Host", value=host.mention, inline=True)
+    embed.add_field(
+        name="🎙️ Host",
+        value=(f"**{host.display_name}** · {host.mention}" if host else "*TBD*"),
+        inline=True,
+    )
     embed.add_field(name="🎨 Theme", value=theme, inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     if entry_info:
