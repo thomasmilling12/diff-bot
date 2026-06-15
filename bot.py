@@ -3725,6 +3725,14 @@ def _hrsvp_build_header_embed() -> discord.Embed:
     slots_with_host  = sum(1 for day in _HRSVP_DAYS if data.get(day, {}).get("yes", []))
     slots_needed     = len(_HRSVP_DAYS)
     slot_bar         = "🟩" * slots_with_host + "⬜" * (slots_needed - slots_with_host)
+    slots_open       = slots_needed - slots_with_host
+    if slots_open > 0:
+        urgency_line = (
+            f"⏳ **{slots_open} slot{'s' if slots_open != 1 else ''} still need a host** — "
+            f"leadership builds the schedule from your replies, so respond before reset!"
+        )
+    else:
+        urgency_line = "✅ **All slots have a confirmed host — thank you!**"
 
     embed = discord.Embed(
         title="📋 DIFF Host Availability — Meet Schedule",
@@ -3732,7 +3740,8 @@ def _hrsvp_build_header_embed() -> discord.Embed:
             f"📅 **Week of {_week_str}**  •  🔄 Resets <t:{_reset_ts}:R>\n\n"
             f"**Hosts, mark your availability on each meet card below.**\n\n"
             f"📊 {slot_bar}  **{slots_with_host}/{slots_needed} slots have a confirmed host**\n"
-            f"👥 **{total_responders} host{'s' if total_responders != 1 else ''}** have responded so far\n\n"
+            f"👥 **{total_responders} host{'s' if total_responders != 1 else ''}** have responded so far\n"
+            f"{urgency_line}\n\n"
             "• ✅ **Available** — opens a form for your day, time & class\n"
             "• ❓ **Maybe** — opens a form to note your preferred day\n"
             "• ❌ **Unavailable** — marks you as unable to host\n"
@@ -3766,7 +3775,22 @@ def _hrsvp_build_meet_embed(day: str) -> discord.Embed:
         slot_status = "🔴 **Open — no hosts yet**"
         color = 0xED4245
 
-    lines = [slot_status, ""]
+    # Scheduled date/time for this slot, once leadership has built it.
+    when_sub = "🗓️ *Date is set once a host signs up*"
+    try:
+        sched_entry = _asched_load().get("days", {}).get(day, {})
+        s_day  = sched_entry.get("day", "TBD")
+        s_time = sched_entry.get("time", "TBD")
+        _known = s_day not in ("TBD", "-", None, "") and s_time not in ("TBD", "-", None, "")
+        s_ts   = _parse_meet_ts(s_day, s_time) if _known else None
+        if s_ts:
+            when_sub = f"🗓️ <t:{s_ts}:F>  (<t:{s_ts}:R>)"
+        elif _known:
+            when_sub = f"🗓️ {s_day} · {s_time}"
+    except Exception:
+        pass
+
+    lines = [slot_status, when_sub, ""]
     if yes_entries:
         for e in yes_entries[:_MAX]:
             uid = _hrsvp_uid(e)
@@ -3785,8 +3809,6 @@ def _hrsvp_build_meet_embed(day: str) -> discord.Embed:
                 lines.append(f"✅ <@{uid}>")
         if len(yes_entries) > _MAX:
             lines.append(f"-# +{len(yes_entries) - _MAX} more available")
-    else:
-        lines.append("✅ *No confirmed hosts yet*")
 
     if maybe_entries:
         for e in maybe_entries[:_MAX]:
@@ -3891,6 +3913,7 @@ class _HrsvpMyStatusBtn(discord.ui.Button):
         uid  = str(interaction.user.id)
         data = _hrsvp_load()
         lines = []
+        missing = []
         for day in _HRSVP_DAYS:
             slot = data.get(day, {})
             found = False
@@ -3918,9 +3941,15 @@ class _HrsvpMyStatusBtn(discord.ui.Button):
                     found = True
             if not found:
                 lines.append(f"⬜ **{day}** — No response yet")
+                missing.append(day)
+
+        if missing:
+            summary = f"⚠️ **Still need your answer for:** {', '.join(missing)}"
+        else:
+            summary = "✅ **You've responded to every meet — thank you!**"
 
         await interaction.response.send_message(
-            "**Your current availability:**\n" + "\n".join(lines),
+            "**Your current availability:**\n" + summary + "\n\n" + "\n".join(lines),
             ephemeral=True,
         )
 
