@@ -7151,7 +7151,7 @@ async def _cmd_attendlb(ctx: commands.Context):
     lines = []
     for i, (uid, s) in enumerate(sorted_hosts[:10]):
         medal = medals[i] if i < 3 else f"`{i + 1}.`"
-        name = s.get("host_name", f"<@{uid}>")
+        name = _readable_host(None, uid) or s.get("host_name", f"<@{uid}>")
         diff_att = s.get("diff_attendance_sum", 0)
         total_att = s.get("total_attendance_sum", 0)
         meets = s.get("meets_hosted", 0)
@@ -7970,7 +7970,7 @@ def _ft_build_suggestions_embed(guild: discord.Guild) -> discord.Embed:
             hosts.append((uid, hosted, total, avg))
     hosts.sort(key=lambda x: (x[2], x[1], x[3]), reverse=True)
     for uid, hosted, total, avg in hosts[:5]:
-        best_host_lines.append(f"• <@{uid}> — Hosted: **{hosted}** | Total Att: **{total}** | Avg: **{avg}**")
+        best_host_lines.append(f"• {_readable_host(None, uid)} — Hosted: **{hosted}** | Total Att: **{total}** | Avg: **{avg}**")
 
     rsvp_suggestions = []
     for item in _rsvp_promotions[-10:][::-1]:
@@ -11559,7 +11559,7 @@ def _build_unified_hub_embed() -> discord.Embed:
 
     latest = _rsvp_get_latest_meet()
     if latest:
-        latest_value = f"**{latest.title}**\nHost: {latest.host_name} | Date: {latest.meet_date}"
+        latest_value = f"**{latest.title}**\nHost: {_readable_host(None, latest.host_id) or latest.host_name} | Date: {latest.meet_date}"
     else:
         latest_value = "No meet panel created yet."
 
@@ -16314,7 +16314,7 @@ def _build_unified_lb_embed(guild: discord.Guild) -> discord.Embed:
     for i, s in enumerate(host_list[:5], 1):
         prefix = medals.get(i, f"**{i}.**")
         host_lines.append(
-            f"{prefix} <@{s['user_id']}> — "
+            f"{prefix} {_readable_host(None, s['user_id'])} — "
             f"Hosted: **{s.get('meets_hosted', 0)}** | "
             f"Completed: **{s.get('meets_completed', 0)}** | "
             f"Attend: **{s.get('total_attendance', 0)}** | "
