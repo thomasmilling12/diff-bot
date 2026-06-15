@@ -14136,6 +14136,15 @@ class _RollCallDB:
                 PRIMARY KEY (guild_id, meet_number)
             )
         """)
+        # Per-meet message layout: one row per posted message (header / meet1-3 / admin)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS rollcall_messages (
+                guild_id INTEGER NOT NULL,
+                slot TEXT NOT NULL,
+                message_id INTEGER NOT NULL,
+                PRIMARY KEY (guild_id, slot)
+            )
+        """)
         self.conn.commit()
 
     def upsert_panel(self, guild_id, channel_id, message_id, admin_message_id=None):
@@ -14162,6 +14171,26 @@ class _RollCallDB:
         cur.execute("DELETE FROM rollcall_panels WHERE guild_id=?", (guild_id,))
         self.conn.commit()
 
+    def set_message(self, guild_id, slot, message_id):
+        cur = self.conn.cursor()
+        cur.execute("""
+            INSERT INTO rollcall_messages (guild_id, slot, message_id)
+            VALUES (?, ?, ?)
+            ON CONFLICT(guild_id, slot) DO UPDATE SET message_id=excluded.message_id
+        """, (guild_id, slot, message_id))
+        self.conn.commit()
+
+    def get_messages(self, guild_id) -> dict:
+        """Returns {slot: message_id} for this guild's roll-call layout."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT slot, message_id FROM rollcall_messages WHERE guild_id=?", (guild_id,))
+        return {row["slot"]: row["message_id"] for row in cur.fetchall()}
+
+    def clear_messages(self, guild_id):
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM rollcall_messages WHERE guild_id=?", (guild_id,))
+        self.conn.commit()
+
     def reset_week(self, guild_id):
         """Full weekly reset: clears RSVP responses, meet details, finalization state,
         and actual-attendance records for the guild.  Cumulative career stats are kept."""
@@ -14171,6 +14200,7 @@ class _RollCallDB:
         cur.execute("DELETE FROM attendance_actual    WHERE guild_id=?", (guild_id,))
         cur.execute("DELETE FROM meet_state           WHERE guild_id=?", (guild_id,))
         cur.execute("DELETE FROM rollcall_panels      WHERE guild_id=?", (guild_id,))
+        cur.execute("DELETE FROM rollcall_messages    WHERE guild_id=?", (guild_id,))
         self.conn.commit()
 
     def upsert_meets(self, guild_id, meets: list):
@@ -14439,6 +14469,130 @@ def _rc_build_admin_embed() -> discord.Embed:
     return embed
 
 
+def _rc_meet_is_locked(meet) -> bool:
+    """RSVP buttons lock on the event day itself (no last-minute flips)."""
+    if not meet:
+        return False
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+    ts = _parse_meet_ts(
+        meet["date_text"]  if "date_text"  in meet.keys() else "",
+        meet["start_time"] if "start_time" in meet.keys() else "",
+    )
+    if not ts:
+        return False
+    return _date.today() >= _dt.fromtimestamp(ts, tz=_tz.utc).date()
+
+
+def _rc_build_header_embed(guild: discord.Guild) -> discord.Embed:
+    """Compact intro card that sits above the three per-meet cards."""
+    from datetime import timedelta as _td
+    meets        = _rc_db.get_meets(guild.id)
+    meets_by_num = {row["meet_number"]: row for row in meets}
+
+    _now_et  = datetime.now(_EST_TZ)
+    _monday  = _now_et - _td(days=_now_et.weekday())
+    _sunday  = _monday + _td(days=6)
+    _week_str = f"{_monday.strftime('%b %d')} – {_sunday.strftime('%b %d, %Y')}"
+    _next_monday = (_monday + _td(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    _reset_ts = int(_next_monday.timestamp())
+
+    finalized_count = sum(1 for n in (1, 2, 3)
+                          if meets_by_num.get(n) and meets_by_num[n]["is_finalized"])
+    all_finalized = finalized_count == 3
+    color = (0x57F287 if all_finalized
+             else 0xFEE75C if finalized_count > 0
+             else 0x5865F2)
+
+    if all_finalized:
+        desc = (
+            f"📅 **Week of {_week_str}**\n\n"
+            "**All meets this week have been finalized!** 🎉\n"
+            "Attendance has been recorded — see you on the track."
+        )
+    else:
+        desc = (
+            f"📅 **Week of {_week_str}**  •  🔄 Resets <t:{_reset_ts}:R>\n\n"
+            "There are **three meets** this week — each one has its own card below.\n"
+            "Please RSVP to **every** meet, even the ones you can't make.\n"
+            "*No-shows are tracked.*"
+        )
+
+    embed = discord.Embed(
+        title="📋 DIFF Auto Roll Call",
+        description=desc,
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.set_author(
+        name="Different Meets",
+        icon_url=DIFF_LOGO_URL if DIFF_LOGO_URL else discord.utils.MISSING,
+    )
+    embed.set_footer(text=f"DIFF • Auto Roll Call System  •  Updated {_now_et.strftime('%-m/%-d/%Y %-I:%M %p')}  •  Use 📊 My RSVP to see your responses")
+    return embed
+
+
+def _rc_build_meet_embed(guild: discord.Guild, n: int) -> discord.Embed:
+    """One roomy, readable card for a single meet (replaces the old clumped field)."""
+    meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
+    meet         = meets_by_num.get(n)
+    c            = _rc_db.get_counts(guild.id, n)
+    class_name   = meet["class_name"] if meet else "TBD"
+    start_time   = meet["start_time"] if meet else "TBD"
+    date_text    = meet["date_text"]  if meet else "TBD"
+    host_id      = meet["host_id"]    if meet else None
+    host_text    = f"<@{host_id}>"   if host_id else "*No host assigned*"
+    is_finalized = bool(meet and meet["is_finalized"])
+    scheduled    = class_name != "TBD" and start_time != "TBD"
+    ts           = _parse_meet_ts(date_text, start_time) if scheduled else None
+
+    if is_finalized:
+        color       = 0x57F287
+        status_line = "🏁 **Closed** — attendance recorded"
+    elif not scheduled:
+        color       = 0x5865F2
+        status_line = "⏳ **Awaiting schedule**"
+    else:
+        color       = 0x5865F2
+        status_line = "📝 **Open for RSVP**"
+
+    title_class = class_name if class_name != "TBD" else "To be announced"
+    embed = discord.Embed(
+        title=f"〔 Meet {n} 〕  {title_class}",
+        color=color,
+    )
+    if DIFF_LOGO_URL:
+        embed.set_thumbnail(url=DIFF_LOGO_URL)
+
+    if ts:
+        when_val = f"📆 <t:{ts}:F>\n🕐 <t:{ts}:R>"
+    elif scheduled:
+        when_val = f"📆 {date_text}\n🕒 {start_time}"
+    else:
+        when_val = "📆 *Date & time not posted yet*"
+
+    embed.add_field(name="\u200b", value=status_line, inline=False)
+    embed.add_field(name="When", value=when_val, inline=True)
+    embed.add_field(name="Host", value=host_text, inline=True)
+
+    total        = c["yes"] + c["maybe"] + c["no"]
+    scale        = max(total, 10)
+    yes_blocks   = round(c["yes"]   / scale * 10)
+    maybe_blocks = round(c["maybe"] / scale * 10)
+    bar          = "🟩" * yes_blocks + "🟨" * maybe_blocks + "⬜" * (10 - yes_blocks - maybe_blocks)
+    embed.add_field(
+        name="Attendance",
+        value=(
+            f"✅ **{c['yes']}** going    ❓ **{c['maybe']}** maybe    ❌ **{c['no']}** out\n"
+            f"{bar}"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=f"Meet {n} of 3  •  Tap a button below to RSVP")
+    return embed
+
+
 class _RcFinalizeModal(discord.ui.Modal):
     attendees = discord.ui.TextInput(
         label="Users who actually attended",
@@ -14700,6 +14854,24 @@ class _RcRollCallView(discord.ui.View):
         self.add_item(_RcMyRsvpBtn())
 
 
+class _RcMeetView(discord.ui.View):
+    """Buttons for a single meet card (✅ / ❓ / ❌ on one row)."""
+    def __init__(self, meet_number: int, locked: bool = False) -> None:
+        super().__init__(timeout=None)
+        for status in ("yes", "maybe", "no"):
+            btn = _RcBtn(meet_number, status, 0)
+            if locked:
+                btn.disabled = True
+            self.add_item(btn)
+
+
+class _RcHeaderView(discord.ui.View):
+    """Header card — just the personal '📊 My RSVP' button."""
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self.add_item(_RcMyRsvpBtn())
+
+
 class _RcFinalizeBtn(discord.ui.Button):
     """Pi-compatible button for the admin finalize panel."""
     def __init__(self, meet_number: int) -> None:
@@ -14725,109 +14897,129 @@ class _RcAdminView(discord.ui.View):
 
 
 def _rc_classify_msg(msg: discord.Message, bot_id: int) -> str | None:
-    """Returns 'rollcall', 'admin', or None based on button custom IDs."""
+    """Classify a bot message into its roll-call slot by button custom IDs.
+    Returns 'admin', 'meet1'/'meet2'/'meet3', 'header', or None.
+    Note: meet buttons are checked before the My-RSVP button so the legacy
+    combined panel (which carried both) is still detected (as a meet) and
+    therefore cleaned up on the next fresh post."""
     if msg.author.id != bot_id:
         return None
+    has_my_rsvp = False
     for row in msg.components:
         for child in row.children:
             cid = getattr(child, "custom_id", "") or ""
-            if cid.startswith("diff_rollcall:"):
-                return "rollcall"
             if cid.startswith("diff_rollcall_finalize:"):
                 return "admin"
-    return None
+            m = re.match(r"diff_rollcall:([123]):", cid)
+            if m:
+                return f"meet{m.group(1)}"
+            if cid == "diff_rollcall:my_rsvp":
+                has_my_rsvp = True
+    return "header" if has_my_rsvp else None
 
 
-async def _rc_scan_and_recover(channel: discord.TextChannel, guild_id: int, bot_id: int) -> tuple:
-    """Scan channel history for roll call panel messages.
-    Deletes duplicate copies, keeps the newest, saves recovered IDs to DB.
-    Returns (rc_msg_id, admin_msg_id) — either may be None if not found."""
-    rc_msgs: list[discord.Message] = []
-    admin_msgs: list[discord.Message] = []
+async def _rc_scan_and_recover(channel: discord.TextChannel, guild_id: int, bot_id: int) -> dict:
+    """Scan channel history for the roll-call layout messages.
+    Deletes duplicate copies (keeps newest per slot), saves recovered IDs.
+    Returns {slot: message_id} for whatever was found."""
+    found: dict[str, list[discord.Message]] = {}
     try:
-        async for msg in channel.history(limit=60):
-            kind = _rc_classify_msg(msg, bot_id)
-            if kind == "rollcall":
-                rc_msgs.append(msg)
-            elif kind == "admin":
-                admin_msgs.append(msg)
+        async for msg in channel.history(limit=80):
+            slot = _rc_classify_msg(msg, bot_id)
+            if slot:
+                found.setdefault(slot, []).append(msg)
     except Exception:
-        return None, None
+        return {}
 
-    # Delete duplicates — keep the newest (index 0, history is newest-first)
-    for m in rc_msgs[1:]:
+    kept: dict[str, int] = {}
+    for slot, msgs in found.items():
+        kept[slot] = msgs[0].id            # history is newest-first
+        for m in msgs[1:]:                 # delete older duplicates
+            try:
+                await m.delete()
+            except Exception:
+                pass
+
+    header_id = kept.get("header")
+    admin_id  = kept.get("admin")
+    if header_id:
+        _rc_db.upsert_panel(guild_id, channel.id, header_id, admin_id)
+        _rc_db.set_message(guild_id, "header", header_id)
+    if admin_id:
+        _rc_db.set_message(guild_id, "admin", admin_id)
+    for n in (1, 2, 3):
+        if kept.get(f"meet{n}"):
+            _rc_db.set_message(guild_id, f"meet{n}", kept[f"meet{n}"])
+
+    return kept
+
+
+async def _rc_resolve_channel(guild: discord.Guild):
+    channel = guild.get_channel(ROLL_CALL_CHANNEL_ID) or bot.get_channel(ROLL_CALL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
         try:
-            await m.delete()
-        except Exception:
-            pass
-    for m in admin_msgs[1:]:
-        try:
-            await m.delete()
-        except Exception:
-            pass
-
-    rc_msg_id = rc_msgs[0].id if rc_msgs else None
-    admin_msg_id = admin_msgs[0].id if admin_msgs else None
-
-    if rc_msg_id and admin_msg_id:
-        _rc_db.upsert_panel(guild_id, channel.id, rc_msg_id, admin_msg_id)
-
-    return rc_msg_id, admin_msg_id
+            channel = await bot.fetch_channel(ROLL_CALL_CHANNEL_ID)
+        except Exception as _ce:
+            print(f"[RcPanel] cannot resolve roll-call channel: {_ce}")
+            return None
+    return channel if isinstance(channel, discord.TextChannel) else None
 
 
 async def _rc_refresh_panel(guild: discord.Guild):
-    """Update the live roll call embed.  Debounced per-guild to prevent rate-limit storms."""
-    # --- debounce: cancel any already-queued refresh for this guild ---
+    """Re-render the header + per-meet cards.  Debounced per-guild to prevent rate-limit storms."""
     existing = _rc_refresh_tasks.get(guild.id)
     if existing and not existing.done():
         existing.cancel()
 
     async def _do_refresh():
         try:
-            await asyncio.sleep(0.5)          # brief wait to coalesce rapid clicks
-            panel   = _rc_db.get_panel(guild.id)
-            # Prefer guild cache, fall back to bot-level lookup
-            channel = guild.get_channel(ROLL_CALL_CHANNEL_ID) or bot.get_channel(ROLL_CALL_CHANNEL_ID)
-            if not isinstance(channel, discord.TextChannel):
-                try:
-                    channel = await bot.fetch_channel(ROLL_CALL_CHANNEL_ID)
-                except Exception as _ce:
-                    print(f"[RcPanel] cannot resolve roll-call channel: {_ce}")
-                    return
-            if not isinstance(channel, discord.TextChannel):
-                print(f"[RcPanel] roll-call channel {ROLL_CALL_CHANNEL_ID} not a TextChannel")
+            await asyncio.sleep(0.5)          # coalesce rapid clicks
+            channel = await _rc_resolve_channel(guild)
+            if channel is None:
                 return
 
-            # --- try stored ID first ---
+            msgs         = _rc_db.get_messages(guild.id)
             meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
-            print(f"[RcPanel] refresh — meets in DB: {[dict(r) for r in meets_by_num.values()]}")
-            if panel:
-                try:
-                    msg = await channel.fetch_message(panel["message_id"])
-                    await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
-                    print(f"[RcPanel] panel edited OK (stored msg {panel['message_id']})")
+
+            # No stored header → try to recover from channel history
+            if not msgs.get("header"):
+                await _rc_scan_and_recover(channel, guild.id, guild.me.id)
+                msgs = _rc_db.get_messages(guild.id)
+
+            # Still nothing → post a fresh layout
+            if not msgs.get("header"):
+                print("[RcPanel] no existing layout found — posting fresh")
+                await _rc_post_new_panel(guild, ping_roles=False)
+                return
+
+            # Edit the header card
+            try:
+                hm = await channel.fetch_message(msgs["header"])
+                await hm.edit(embed=_rc_build_header_embed(guild), view=_RcHeaderView())
+            except discord.NotFound:
+                print("[RcPanel] header message gone — reposting layout")
+                await _rc_post_new_panel(guild, ping_roles=False)
+                return
+            except Exception as e:
+                print(f"[RcPanel] header edit error: {e}")
+
+            # Edit each per-meet card
+            for n in (1, 2, 3):
+                mid = msgs.get(f"meet{n}")
+                if not mid:
+                    print(f"[RcPanel] meet{n} message missing — reposting layout")
+                    await _rc_post_new_panel(guild, ping_roles=False)
                     return
+                try:
+                    mm     = await channel.fetch_message(mid)
+                    locked = _rc_meet_is_locked(meets_by_num.get(n))
+                    await mm.edit(embed=_rc_build_meet_embed(guild, n), view=_RcMeetView(n, locked))
                 except discord.NotFound:
-                    print(f"[RcPanel] stored message not found, scanning channel")
-                except Exception as e:
-                    print(f"[RcPanel] refresh error (stored msg): {e}")
-                    import traceback as _tb; _tb.print_exc()
-                    return
-
-            # --- stored ID stale: scan channel and recover ---
-            rc_msg_id, _ = await _rc_scan_and_recover(channel, guild.id, guild.me.id)
-            if rc_msg_id:
-                try:
-                    msg = await channel.fetch_message(rc_msg_id)
-                    await msg.edit(embed=_rc_build_rollcall_embed(guild), view=_RcRollCallView(meets_by_num))
-                    print(f"[RcPanel] panel edited OK (recovered msg {rc_msg_id})")
+                    print(f"[RcPanel] meet{n} message gone — reposting layout")
+                    await _rc_post_new_panel(guild, ping_roles=False)
                     return
                 except Exception as e:
-                    print(f"[RcPanel] refresh error (scanned msg): {e}")
-
-            # --- nothing found: post fresh ---
-            print(f"[RcPanel] no existing panel found — posting fresh")
-            await _rc_post_new_panel(guild, ping_roles=False)
+                    print(f"[RcPanel] meet{n} edit error: {e}")
         except Exception as _task_err:
             print(f"[RcPanel] _do_refresh unhandled error: {_task_err}")
             import traceback as _tb; _tb.print_exc()
@@ -14837,16 +15029,18 @@ async def _rc_refresh_panel(guild: discord.Guild):
 
 
 async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
-    channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
-    if not isinstance(channel, discord.TextChannel):
+    """Wipe any old roll-call messages and post a fresh layout:
+    header card → 3 per-meet cards → staff admin card."""
+    channel = await _rc_resolve_channel(guild)
+    if channel is None:
         return
 
-    # Delete any existing roll call / admin panel messages before posting fresh
+    # Delete any existing roll-call layout messages before posting fresh
     bot_id = guild.me.id if guild.me else None
     if bot_id:
         try:
-            async for msg in channel.history(limit=60):
-                if _rc_classify_msg(msg, bot_id) in ("rollcall", "admin"):
+            async for msg in channel.history(limit=80):
+                if _rc_classify_msg(msg, bot_id) is not None:
                     try:
                         await msg.delete()
                     except Exception:
@@ -14854,7 +15048,7 @@ async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
         except Exception:
             pass
 
-    _rc_db.reset_week(guild.id)   # wipe responses, meets, finalized flags → fresh slate
+    _rc_db.reset_week(guild.id)   # wipe responses, meets, finalized flags + message rows → fresh slate
 
     ping_text = None
     if ping_roles:
@@ -14867,29 +15061,45 @@ async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
             parts.append(ps5r.mention)
         if parts:
             ping_text = " ".join(parts)
+
     try:
-        rc_msg = await channel.send(
+        meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
+
+        header_msg = await channel.send(
             content=ping_text,
-            embed=_rc_build_rollcall_embed(guild),
-            view=_RcRollCallView(),
+            embed=_rc_build_header_embed(guild),
+            view=_RcHeaderView(),
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
+        _rc_db.upsert_panel(guild.id, channel.id, header_msg.id, None)
+        _rc_db.set_message(guild.id, "header", header_msg.id)
+
+        for n in (1, 2, 3):
+            locked   = _rc_meet_is_locked(meets_by_num.get(n))
+            meet_msg = await channel.send(
+                embed=_rc_build_meet_embed(guild, n),
+                view=_RcMeetView(n, locked),
+            )
+            _rc_db.set_message(guild.id, f"meet{n}", meet_msg.id)
+
         admin_msg = await channel.send(embed=_rc_build_admin_embed(), view=_RcAdminView())
-        _rc_db.upsert_panel(guild.id, channel.id, rc_msg.id, admin_msg.id)
+        _rc_db.upsert_panel(guild.id, channel.id, header_msg.id, admin_msg.id)
+        _rc_db.set_message(guild.id, "admin", admin_msg.id)
     except Exception as e:
         print(f"[RollCall] post failed: {e}")
+        import traceback as _tb; _tb.print_exc()
 
 
 async def _rc_ensure_panel(guild: discord.Guild):
-    panel = _rc_db.get_panel(guild.id)
     channel = guild.get_channel(ROLL_CALL_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         return
 
-    # Try stored ID
-    if panel:
+    # Try stored header message
+    msgs = _rc_db.get_messages(guild.id)
+    if msgs.get("header"):
         try:
-            await channel.fetch_message(panel["message_id"])
+            await channel.fetch_message(msgs["header"])
             return
         except discord.NotFound:
             pass
@@ -14899,8 +15109,8 @@ async def _rc_ensure_panel(guild: discord.Guild):
     # Stored ID stale — scan to recover or clean up before posting
     bot_id = guild.me.id if guild.me else None
     if bot_id:
-        rc_msg_id, _ = await _rc_scan_and_recover(channel, guild.id, bot_id)
-        if rc_msg_id:
+        kept = await _rc_scan_and_recover(channel, guild.id, bot_id)
+        if kept.get("header"):
             return  # recovered successfully, no need to post
 
     await _rc_post_new_panel(guild, ping_roles=True)
@@ -15190,66 +15400,14 @@ async def _cmd_syncrc(ctx: commands.Context):
     _rc_db.upsert_meets(ctx.guild.id, rc_meets)
     written = {r["meet_number"]: r["class_name"] for r in _rc_db.get_meets(ctx.guild.id)}
 
-    # Resolve the roll call channel
-    rc_channel = (
-        ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
-        or bot.get_channel(ROLL_CALL_CHANNEL_ID)
-    )
-    if not isinstance(rc_channel, discord.TextChannel):
-        try:
-            rc_channel = await bot.fetch_channel(ROLL_CALL_CHANNEL_ID)
-        except Exception as _fe:
-            await ctx.send(f"❌ Cannot resolve roll-call channel: {_fe}", delete_after=15)
-            return
-
-    # Try stored panel ID first
-    panel = _rc_db.get_panel(ctx.guild.id)
-    meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(ctx.guild.id)}
-    edited = False
-
-    if panel:
-        try:
-            rc_msg = await rc_channel.fetch_message(panel["message_id"])
-            await rc_msg.edit(
-                embed=_rc_build_rollcall_embed(ctx.guild),
-                view=_RcRollCallView(meets_by_num),
-            )
-            edited = True
-        except discord.NotFound:
-            pass
-        except Exception as _ee:
-            await ctx.send(f"❌ Edit failed: {_ee}", delete_after=15)
-            return
-
-    # If stored ID stale, scan the channel
-    if not edited:
-        async for msg in rc_channel.history(limit=40):
-            if _rc_classify_msg(msg, ctx.guild.me.id) == "rollcall":
-                try:
-                    await msg.edit(
-                        embed=_rc_build_rollcall_embed(ctx.guild),
-                        view=_RcRollCallView(meets_by_num),
-                    )
-                    _rc_db.upsert_panel(ctx.guild.id, rc_channel.id, msg.id,
-                                        panel["admin_message_id"] if panel else None)
-                    edited = True
-                except Exception as _se:
-                    await ctx.send(f"❌ Scan-edit failed: {_se}", delete_after=15)
-                    return
-                break
+    # Re-render the header + per-meet cards (recovers / reposts automatically if missing)
+    await _rc_refresh_panel(ctx.guild)
 
     filled = sum(1 for m in rc_meets if m["host_id"])
-    if edited:
-        await ctx.send(
-            f"✅ Roll call panel updated — {filled}/3 slots pushed. DB: {written}",
-            delete_after=12,
-        )
-    else:
-        await ctx.send(
-            f"⚠️ No roll-call panel found in <#{ROLL_CALL_CHANNEL_ID}>. "
-            f"Run `!postrollcall` to post a fresh one.",
-            delete_after=15,
-        )
+    await ctx.send(
+        f"✅ Roll call cards updated — {filled}/3 slots pushed. DB: {written}",
+        delete_after=12,
+    )
 
 
 async def __rc_ensure_loop_logic():
@@ -15277,18 +15435,10 @@ async def _cmd_postrollcall(ctx: commands.Context):
         await ctx.message.delete()
     except Exception:
         pass
-    panel = _rc_db.get_panel(ctx.guild.id)
-    if panel:
-        channel = ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
-        if isinstance(channel, discord.TextChannel):
-            for mid in (panel.get("message_id"), panel.get("admin_message_id")):
-                if mid:
-                    try:
-                        old = await channel.fetch_message(mid)
-                        await old.delete()
-                    except Exception:
-                        pass
-        _rc_db.clear_panel(ctx.guild.id)
+    # _rc_post_new_panel scans + deletes every existing roll-call message itself,
+    # then resets the week and posts the fresh header + per-meet cards.
+    _rc_db.clear_panel(ctx.guild.id)
+    _rc_db.clear_messages(ctx.guild.id)
     await _rc_post_new_panel(ctx.guild, ping_roles=True)
 
 
@@ -15985,15 +16135,6 @@ class _OfficialMeetRSVPView(discord.ui.View):
             if record.ended:
                 await interaction.response.send_message("This meet has already ended.", ephemeral=True)
                 return
-            # Defer immediately — the start flow builds the attendance panel and
-            # posts the live announcement (network calls) that can blow past
-            # Discord's 3s ack window and throw 10062 Unknown interaction.
-            try:
-                await interaction.response.defer(ephemeral=True)
-            except discord.InteractionResponded:
-                pass
-            except Exception as _e:
-                _bot_log.warning("[StartMeet] defer failed: %s", _e)
             record.started = True
             record.started_at_ts = int(datetime.now(timezone.utc).timestamp())
             att_msg, att_all_msgs = await _om_create_attendance_panel(record)
@@ -16040,12 +16181,7 @@ class _OfficialMeetRSVPView(discord.ui.View):
             for child in self.children:
                 if isinstance(child, discord.ui.Button) and child.custom_id == "diff_om_ctrl:start":
                     child.disabled = True
-            # Already deferred above — edit the message directly (can't use
-            # interaction.response.* after a defer).
-            try:
-                await interaction.message.edit(view=self)
-            except Exception:
-                pass
+            await interaction.response.edit_message(view=self)
             await interaction.followup.send(
                 f"Meet marked as **live**. Attendance panel posted in <#{_CREW_CHAT_CHANNEL_ID}> and <#{_EVERYONE_CHAT_CHANNEL_ID}>.",
                 ephemeral=True,
