@@ -7128,7 +7128,7 @@ async def _cmd_noshowcheck(ctx: commands.Context):
             for s in hp_data.get("active_sessions", {}).values()
         )
         status = "✅ Session started" if has_session else "⚠ No session started"
-        lines.append(f"**{day}**: <@{host_id}> — {status}")
+        lines.append(f"**{day}**: {_readable_host(None, host_id)} — {status}")
     embed = discord.Embed(
         title="👁 Host No-Show Check",
         description="\n".join(lines) or "*No schedule data found.*",
@@ -12132,7 +12132,7 @@ def _hp_session_embed(s: dict) -> discord.Embed:
     embed = discord.Embed(
         title=f"🚗 Host Session • {s.get('meet_name', '—')}",
         description=(
-            f"**Host:** <@{s['host_id']}>\n"
+            f"**Host:** {_readable_host(None, s['host_id'])}\n"
             f"**Session ID:** `{s['session_id']}`\n\n"
             "Use the buttons below to mark progress during your meet."
         ),
@@ -12371,7 +12371,7 @@ def _hp_recap_embed(session: dict, score: int, warnings: list[str]) -> discord.E
         color=color,
         timestamp=utc_now(),
     )
-    embed.add_field(name="🎮 Host", value=f"<@{session['host_id']}>", inline=True)
+    embed.add_field(name="🎮 Host", value=_readable_host(None, session['host_id']) or f"<@{session['host_id']}>", inline=True)
     embed.add_field(name="👥 Total Attendance", value=str(session.get("total_attendance", 0)), inline=True)
     embed.add_field(name="🏅 DIFF Attendance", value=str(session.get("diff_attendance", 0)), inline=True)
     embed.add_field(name="📊 Score", value=f"**{score}**", inline=True)
@@ -12557,7 +12557,7 @@ class HostSessionView(discord.ui.View):
         if isinstance(staff_ch, discord.TextChannel):
             log_embed = discord.Embed(
                 title="📊 Host Performance Update",
-                description=f"Host performance logged for <@{session['host_id']}>.",
+                description=f"Host performance logged for {_readable_host(None, session['host_id'])}.",
                 color=discord.Color.blue(),
             )
             log_embed.add_field(name="Session Summary", value=(
@@ -12578,7 +12578,7 @@ class HostSessionView(discord.ui.View):
             for issue in warnings:
                 warn_embed = discord.Embed(
                     title="⚠️ Host Warning Logged",
-                    description=f"A host warning has been logged for <@{session['host_id']}>.",
+                    description=f"A host warning has been logged for {_readable_host(None, session['host_id'])}.",
                     color=discord.Color.red(),
                 )
                 warn_embed.add_field(name="Warning Details", value=(
@@ -13245,7 +13245,7 @@ async def cmd_session_log(ctx: commands.Context):
         warnings = s.get("warning_count", 0)
         warn_icon = f"⚠️×{warnings}" if warnings else "✅"
         lines.append(
-            f"**{s.get('meet_name','?')}** — <@{s['host_id']}> · {date_str}\n"
+            f"**{s.get('meet_name','?')}** — {_readable_host(None, s['host_id'])} · {date_str}\n"
             f"  Score **{score}** · {att} attendees · {warn_icon}"
         )
 
@@ -13660,7 +13660,7 @@ async def cmd_active_vc(ctx: commands.Context):
             s.get("todays_meet_posted", False),
         ])
         lines.append(
-            f"**{s.get('meet_name','?')}** — <@{s['host_id']}>\n"
+            f"**{s.get('meet_name','?')}** — {_readable_host(None, s['host_id'])}\n"
             f"  VC: {vc.mention if vc else '`unknown`'} · {members_in_vc} members · ⏱ {time_str} · Steps {steps_done}/5"
         )
 
@@ -16797,7 +16797,7 @@ class _OfficialMeetRSVPView(discord.ui.View):
                     timestamp=datetime.now(timezone.utc),
                 )
                 live_embed.add_field(name="⏰ Started", value=f"<t:{record.timestamp}:R>", inline=True)
-                live_embed.add_field(name="🎮 Host", value=f"<@{record.host_id}>", inline=True)
+                live_embed.add_field(name="🎮 Host", value=_readable_host(None, record.host_id) or f"<@{record.host_id}>", inline=True)
                 live_embed.add_field(
                     name="📋 Instructions",
                     value="Add the host on PSN and head to **#chat** for session updates.",
@@ -16876,7 +16876,7 @@ class _OfficialMeetRSVPView(discord.ui.View):
                     color=0xED4245,
                     timestamp=datetime.now(timezone.utc),
                 )
-                close_embed.add_field(name="🎙️ Host", value=f"<@{record.host_id}>", inline=True)
+                close_embed.add_field(name="🎙️ Host", value=_readable_host(None, record.host_id) or f"<@{record.host_id}>", inline=True)
                 close_embed.add_field(name="🎨 Theme", value=record.theme, inline=True)
                 close_embed.add_field(name="📅 Scheduled", value=f"<t:{record.timestamp}:F>", inline=False)
                 close_embed.add_field(
@@ -17103,7 +17103,7 @@ async def _om_staff_log(title: str, record: _OmRecord, acted_by: discord.Member)
     if not isinstance(ch, discord.TextChannel):
         return
     embed = discord.Embed(title=f"🏁 {title}", color=discord.Color.blurple(), timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="Host", value=f"<@{record.host_id}>", inline=True)
+    embed.add_field(name="Host", value=_readable_host(None, record.host_id) or f"<@{record.host_id}>", inline=True)
     embed.add_field(name="Theme", value=record.theme, inline=True)
     embed.add_field(name="Scheduled", value=f"<t:{record.timestamp}:F>", inline=False)
     embed.add_field(name="Action By", value=acted_by.mention, inline=True)
@@ -17764,7 +17764,7 @@ def _om_panel_lineup_field() -> tuple[str, str] | None:
             if time_val and time_val.upper() != "TBD":
                 extras.append(time_val[:18])
             tail = f" — {' • '.join(extras)}" if extras else ""
-            lines.append(f"{emoji} **{day_label}** — <@{host_id}>{tail}")
+            lines.append(f"{emoji} **{day_label}** — {_readable_host(None, host_id)}{tail}")
         else:
             lines.append(f"{emoji} **{day_label}** — ⚪ open slot")
     header = f"🗓️ This Week\'s Host Lineup  ({filled}/7 filled)"
@@ -17843,7 +17843,7 @@ def _om_panel_recap_field() -> tuple[str, str] | None:
     return (
         "🏁 Last Meet Recap",
         (
-            f"**{theme}** — hosted by <@{host_id}>\n"
+            f"**{theme}** — hosted by {_readable_host(None, host_id)}\n"
             f"✅ **{attended}** attended  •  📋 **{yes_count}** RSVPed yes  •  ended <t:{int(recent[0])}:R>"
         ),
     )
@@ -17870,7 +17870,7 @@ def _om_panel_build_embed() -> discord.Embed:
             value=(
                 f"**{next_meet.theme}**\n"
                 f"<t:{next_meet.timestamp}:F>  •  <t:{next_meet.timestamp}:R>\n"
-                f"🎙️ Host: <@{next_meet.host_id}>"
+                f"🎙️ Host: {_readable_host(None, next_meet.host_id)}"
             ),
             inline=False,
         )
@@ -18049,7 +18049,7 @@ def _om_conflict_summary(meet_ts):
         if abs(ts - meet_ts) <= _OM_CONFLICT_WINDOW_SECS:
             theme = (raw.get("theme") or "Official Meet")[:50]
             hid = raw.get("host_id") or 0
-            return f"**{theme}** — hosted by <@{hid}> at <t:{ts}:F> (<t:{ts}:R>)"
+            return f"**{theme}** — hosted by {_readable_host(None, hid) or f'<@{hid}>'} at <t:{ts}:F> (<t:{ts}:R>)"
     return None
 
 
@@ -18502,7 +18502,7 @@ class _OfficialMeetPanelView(discord.ui.View):
 
             sub_lines = []
             if host_id:
-                sub_lines.append(f"👤 <@{host_id}>")
+                sub_lines.append(f"👤 {_readable_host(None, host_id)}")
             ts = None
             if day_val and time_val and time_val.upper() != "TBD":
                 try:
@@ -18850,7 +18850,7 @@ def _om_recur_format_slot(slot_id: str, slot: dict) -> str:
     theme = (slot.get("theme") or "Open Class")[:40]
     return (
         f"{enabled} `{slot_id}` — **{day_label} {hour:02d}:{minute:02d} {tz_short}** "
-        f"• {theme} • host <@{host_id}>\n"
+        f"• {theme} • host {_readable_host(None, host_id) or f'<@{host_id}>'}\n"
         f"   ↳ next post: <t:{next_ts - _OM_RECUR_POST_HOURS_BEFORE*3600}:R> "
         f"for meet at <t:{next_ts}:F>"
     )
@@ -19891,15 +19891,15 @@ def _popup_build_meet_embed(
         attendance_line = f"**{pullup_count}** member{'s' if pullup_count != 1 else ''} pulled up"
         if cantmake_count:
             attendance_line += f"  •  {cantmake_count} couldn't make it"
-        description = f"This meet has ended. Hosted by <@{host_id}>.\n{attendance_line}"
+        description = f"This meet has ended. Hosted by {_readable_host(None, host_id)}.\n{attendance_line}"
     elif is_started:
         title = "🟢 DIFF Pop-Up Meet — LIVE NOW"
         color = discord.Color.from_rgb(46, 204, 113)
-        description = f"The meet is live — <@{host_id}> is hosting. Pull up now!"
+        description = f"The meet is live — {_readable_host(None, host_id)} is hosting. Pull up now!"
     else:
         title = "⚡ DIFF Pop-Up Meet"
         color = discord.Color.from_rgb(255, 140, 0)
-        description = f"<@{host_id}> is hosting a pop-up meet. Pull up!"
+        description = f"{_readable_host(None, host_id)} is hosting a pop-up meet. Pull up!"
 
     embed = discord.Embed(
         title=title,
@@ -20126,7 +20126,7 @@ class _PopupStartMeetBtn(discord.ui.Button):
             pass
         live_announce = discord.Embed(
             title="🟢 Pop-Up Meet — LIVE NOW",
-            description=(f"<@{meet['host_user_id']}> just started the pop-up meet. "
+            description=(f"{_readable_host(None, meet['host_user_id'])} just started the pop-up meet. "
                          f"**Pull up!**"),
             color=discord.Color.from_rgb(46, 204, 113),
             timestamp=datetime.now(timezone.utc),
@@ -20166,7 +20166,7 @@ class _PopupStartMeetBtn(discord.ui.Button):
             pullup_ids = []
         dm_embed = discord.Embed(
             title="🟢 The pop-up meet is LIVE",
-            description=(f"<@{meet['host_user_id']}> just started **{meet['theme'] or 'the pop-up meet'}**. "
+            description=(f"{_readable_host(None, meet['host_user_id'])} just started **{meet['theme'] or 'the pop-up meet'}**. "
                          f"Pull up now!"),
             color=discord.Color.from_rgb(46, 204, 113),
         )
@@ -21005,7 +21005,7 @@ async def popupinfo_cmd(ctx, meet_id: int = 0):
     emb.add_field(name="🎨 Theme",    value=(meet["theme"] or "Open Class"), inline=True)
     emb.add_field(name="📍 Location", value=meet["location"] or "—",         inline=True)
     emb.add_field(name="🕒 Time",     value=meet["time_text"] or "—",        inline=True)
-    emb.add_field(name="👤 Host",     value=f"<@{meet['host_user_id']}>",    inline=True)
+    emb.add_field(name="👤 Host",     value=_readable_host(None, meet['host_user_id']) or f"<@{meet['host_user_id']}>",    inline=True)
     if vc_id:
         emb.add_field(name="🔊 Voice", value=f"<#{vc_id}>", inline=True)
     emb.add_field(name="🚗 Confirmed", value=cap_str, inline=True)
@@ -21146,7 +21146,7 @@ async def popuplist_cmd(ctx):
         emb.add_field(
             name=f"#{mid} — {(m['theme'] or 'Open Class')[:40]}",
             value=(
-                f"👤 <@{m['host_user_id']}>  •  📍 {(m['location'] or 'TBD')[:60]}\n"
+                f"👤 {_readable_host(None, m['host_user_id'])}  •  📍 {(m['location'] or 'TBD')[:60]}\n"
                 f"🕒 {(m['time_text'] or '—')[:80]}\n"
                 f"🚗 {cap_str} confirmed  •  📋 {counts.get('waitlist',0)} waitlist  •  ⏱ {age_str}"
             ),
@@ -21871,7 +21871,7 @@ def _hp_render_embed(state: dict) -> discord.Embed:
     if host_ids:
         emb.add_field(
             name="🎤 Hosts",
-            value=" ".join(f"<@{hid}>" for hid in host_ids),
+            value=" ".join(_readable_host(None, hid) or f"<@{hid}>" for hid in host_ids),
             inline=False,
         )
 
