@@ -23792,8 +23792,8 @@ async def _hp_session_cleanup_loop() -> None:
 # HRSVP AUTO-RESET LOOP
 # =========================
 async def _hrsvp_auto_reset_loop() -> None:
-    """Every 30 min: wipe RSVP panel on Monday midnight EST, ping @Meet Hosts.
-    On startup, immediately catches up any missed Monday reset."""
+    """Checks every 60 s: wipe RSVP panel once per week when a new Monday (EST) begins,
+    ping @Meet Hosts. On startup, immediately catches up any missed Monday reset."""
     await bot.wait_until_ready()
     from zoneinfo import ZoneInfo as _ZI
     from datetime import timedelta as _td
@@ -23821,28 +23821,30 @@ async def _hrsvp_auto_reset_loop() -> None:
     except Exception as _e:
         print(f"[HRSVP] Startup catch-up error: {_e}")
 
-    # ── Ongoing loop ─────────────────────────────────────────────────────────
+    # ── Ongoing loop: reset promptly whenever a new week (Monday EST) begins ──
+    # Mirrors the startup catch-up logic (compare stored vs. most-recent Monday)
+    # instead of gating on hour==0, so a missed midnight tick can't leave the
+    # panel stale for up to half an hour — it resets within ~60 s of Monday 00:00.
     while not bot.is_closed():
-        await asyncio.sleep(1800)
+        await asyncio.sleep(60)
         try:
-            now_est   = datetime.now(_ZI("America/New_York"))
-            if now_est.weekday() == 0 and now_est.hour == 0:
-                today_str = now_est.strftime("%Y-%m-%d")
-                if _hrsvp_reset_ts_load() == today_str:
-                    continue
-                _hrsvp_reset()
-                _hrsvp_reset_ts_save(today_str)
-                await _hrsvp_update_panel(bot)
-                # Reset notice goes to #host-team chat (not the panel channel)
-                ch = bot.get_channel(_HOST_TEAM_CHANNEL_ID)
-                if isinstance(ch, discord.TextChannel):
-                    host_role = ch.guild.get_role(HOST_ROLE_ID) if ch.guild else None
-                    ping      = host_role.mention if host_role else "@Meet Hosts"
-                    await ch.send(
-                        f"{ping} 📋 **New week — availability panel reset!**\n"
-                        f"Please mark your availability for Meet 1, Meet 2, and Meet 3 in <#{HOST_RSVP_CHANNEL_ID}>. "
-                        "Leadership builds the schedule from your responses."
-                    )
+            now_est            = datetime.now(_ZI("America/New_York"))
+            most_recent_monday = (now_est - _td(days=now_est.weekday())).strftime("%Y-%m-%d")
+            if _hrsvp_reset_ts_load() == most_recent_monday:
+                continue
+            _hrsvp_reset()
+            _hrsvp_reset_ts_save(most_recent_monday)
+            await _hrsvp_update_panel(bot)
+            # Reset notice goes to #host-team chat (not the panel channel)
+            ch = bot.get_channel(_HOST_TEAM_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                host_role = ch.guild.get_role(HOST_ROLE_ID) if ch.guild else None
+                ping      = host_role.mention if host_role else "@Meet Hosts"
+                await ch.send(
+                    f"{ping} 📋 **New week — availability panel reset!**\n"
+                    f"Please mark your availability for Meet 1, Meet 2, and Meet 3 in <#{HOST_RSVP_CHANNEL_ID}>. "
+                    "Leadership builds the schedule from your responses."
+                )
         except Exception as _e:
             print(f"[HRSVP AutoReset] {_e}")
 
