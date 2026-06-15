@@ -15160,7 +15160,7 @@ def _rc_build_meet_embed(guild: discord.Guild, n: int) -> discord.Embed:
     start_time   = meet["start_time"] if meet else "TBD"
     date_text    = meet["date_text"]  if meet else "TBD"
     host_id      = meet["host_id"]    if meet else None
-    host_text    = f"<@{host_id}>"   if host_id else "*No host assigned*"
+    host_text    = _readable_host(guild, host_id) or "*No host assigned*"
     is_finalized = bool(meet and meet["is_finalized"])
     scheduled    = class_name != "TBD" and start_time != "TBD"
     ts           = _parse_meet_ts(date_text, start_time) if scheduled else None
