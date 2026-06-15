@@ -7577,7 +7577,7 @@ class HostFlowView(discord.ui.View):
         if not isinstance(ch, discord.TextChannel):
             await interaction.response.send_message("Meet channel not found.", ephemeral=True)
             return
-        _ping, _embed = _hostflow_start_embed(interaction.user.mention, interaction.guild)
+        _ping, _embed = _hostflow_start_embed(_readable_host(None, interaction.user.id), interaction.guild)
         await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
         await interaction.response.send_message(f"✅ Welcome speech posted in {ch.mention}.", ephemeral=True)
 
@@ -9683,7 +9683,7 @@ class _MeetInfoNextMeetButton(discord.ui.Button):
         host_line = ""
         if hosts:
             try:
-                host_line = " · ".join(f"<@{int(h)}>" for h in hosts[:6])
+                host_line = " · ".join(_readable_host(None, int(h)) or f"<@{int(h)}>" for h in hosts[:6])
             except Exception:
                 host_line = ""
 
@@ -13139,7 +13139,7 @@ async def cmd_host_leaderboard(ctx: commands.Context):
         )
         medal = medals[i] if i < 3 else f"`#{i + 1}`"
         member = ctx.guild.get_member(int(uid))
-        name = member.mention if member else f"**{s.get('host_name', uid)}**"
+        name = _readable_host(ctx.guild, int(uid)) if member else f"**{s.get('host_name', uid)}**"
         lines.append(
             f"{medal} {name} — **{meets}** session{'s' if meets != 1 else ''} · "
             f"Score {score} · Avg {avg_att} attendees · ⚠️ {warnings}"
@@ -14311,7 +14311,7 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
             await interaction.response.defer(ephemeral=True)
             ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
             if isinstance(ch, discord.TextChannel):
-                _ping, _embed = _hostflow_start_embed(interaction.user.mention, interaction.guild)
+                _ping, _embed = _hostflow_start_embed(_readable_host(None, interaction.user.id), interaction.guild)
                 await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
                 await interaction.followup.send(f"✅ Welcome speech posted in {ch.mention}.", ephemeral=True)
             else:
@@ -14345,7 +14345,7 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                     color=0x2ecc71,
                     timestamp=datetime.now(timezone.utc),
                 )
-                embed.add_field(name="Host", value=interaction.user.mention, inline=True)
+                embed.add_field(name="Host", value=_readable_host(None, interaction.user.id), inline=True)
                 embed.add_field(name="Status", value="🟢 Live", inline=True)
                 embed.add_field(
                     name="Use this channel for",
@@ -14388,7 +14388,7 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                     color=0xe74c3c,
                     timestamp=datetime.now(timezone.utc),
                 )
-                embed.add_field(name="Host", value=interaction.user.mention, inline=True)
+                embed.add_field(name="Host", value=_readable_host(None, interaction.user.id), inline=True)
                 embed.add_field(name="Status", value="🔴 Ended", inline=True)
                 embed.add_field(
                     name="Thank You",
@@ -14423,7 +14423,7 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                             color=0x5865F2,
                             timestamp=datetime.now(timezone.utc),
                         )
-                        recap_embed.add_field(name="Host", value=interaction.user.mention, inline=True)
+                        recap_embed.add_field(name="Host", value=_readable_host(None, interaction.user.id), inline=True)
                         recap_embed.add_field(name="Meets Hosted (lifetime)", value=str(meets_total), inline=True)
                         recap_embed.add_field(name="Host Score", value=str(score), inline=True)
                         recap_embed.add_field(name="Avg Attendance", value=str(avg_att), inline=True)
@@ -14483,7 +14483,7 @@ class _UnifiedLocationUpdateModal(discord.ui.Modal, title="DIFF Meet Location Up
         embed = discord.Embed(
             title="📍 DIFF Meet Location Update",
             description=(
-                f"**Host:** {interaction.user.mention}\n"
+                f"**Host:** {_readable_host(None, interaction.user.id)}\n"
                 f"**New Location:** {self.location_name.value}\n\n"
                 f"**Notes:**\n{self.extra_notes.value or 'No extra notes provided.'}"
             ),
@@ -42585,7 +42585,7 @@ async def _cmd_log_meet_attendance(ctx: commands.Context, total_players: int, di
         return
     from datetime import datetime as _dt
     embed = discord.Embed(title="📊 DIFF Meet Attendance", color=discord.Color.orange())
-    embed.add_field(name="Host", value=ctx.author.mention, inline=False)
+    embed.add_field(name="Host", value=_readable_host(None, ctx.author.id), inline=False)
     embed.add_field(name="Meet Name", value=meet_name, inline=False)
     embed.add_field(name="Date", value=_dt.now().strftime("%b %d, %Y"), inline=True)
     embed.add_field(name="Total Players in Lobby", value=str(total_players), inline=True)
