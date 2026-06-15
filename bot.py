@@ -1632,7 +1632,7 @@ async def record_meet_attendance(guild: discord.Guild, member: discord.Member, m
         embed = discord.Embed(title="✅ Meet Attendance Recorded", color=discord.Color.blue(), timestamp=utc_now())
         embed.add_field(name="Member", value=member.mention, inline=False)
         embed.add_field(name="Meet", value=meet_name, inline=False)
-        embed.add_field(name="Host", value=host_member.mention if host_member else "Unknown", inline=False)
+        embed.add_field(name="Host", value=(_readable_host(guild, host_member.id) if host_member else "Unknown"), inline=False)
         embed.add_field(name="Total Attended", value=str(stats["meets_attended"]), inline=False)
         embed.add_field(name="Rep Awarded", value=f"+{MEET_ATTENDANCE_REP}" if MEET_ATTENDER_ROLE_ID in role_ids else "None (no attender role)", inline=False)
         try:
@@ -1651,7 +1651,7 @@ async def record_meet_host(guild: discord.Guild, host_member: discord.Member, me
     logs_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if isinstance(logs_ch, discord.TextChannel):
         embed = discord.Embed(title="🎤 Meet Host Recorded", color=discord.Color.purple(), timestamp=utc_now())
-        embed.add_field(name="Host", value=host_member.mention, inline=False)
+        embed.add_field(name="Host", value=_readable_host(guild, host_member.id), inline=False)
         embed.add_field(name="Meet", value=meet_name, inline=False)
         embed.add_field(name="Total Hosted", value=str(stats["meets_hosted"]), inline=False)
         try:
@@ -7041,7 +7041,7 @@ async def _cmd_hostreport(ctx: commands.Context, host: Optional[discord.Member] 
         color=discord.Color.green() if point_change >= 0 else discord.Color.orange(),
         timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(name="Host", value=host.mention, inline=False)
+    embed.add_field(name="Host", value=_readable_host(None, host.id), inline=False)
     embed.add_field(name="Meet", value=meet_name, inline=True)
     embed.add_field(name="Attendance", value=str(attendance), inline=True)
     embed.add_field(name="Result", value=result_label, inline=True)
@@ -11851,7 +11851,7 @@ async def meet_create(interaction: discord.Interaction, meet_id: str, title: str
     embed.add_field(name="Meet ID", value=f"`{meet_id}`", inline=False)
     embed.add_field(name="Title", value=title, inline=False)
     embed.add_field(name="Time", value=f"<t:{scheduled_time_unix}:F>", inline=False)
-    embed.add_field(name="Host", value=host.mention, inline=False)
+    embed.add_field(name="Host", value=_readable_host(None, host.id), inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -12963,11 +12963,11 @@ async def cmd_host_noshow(ctx: commands.Context):
             lines.append(f"Meet {meet_num} — **{class_name}** ({date_text}) — ⚪ No host assigned")
         elif host_id not in hosts_with_sessions:
             member = guild.get_member(host_id)
-            name = member.mention if member else f"`{host_id}`"
+            name = _readable_host(guild, host_id) or f"`{host_id}`"
             lines.append(f"Meet {meet_num} — **{class_name}** ({date_text}) — ⚠️ {name} has not started a session")
         else:
             member = guild.get_member(host_id)
-            name = member.mention if member else f"`{host_id}`"
+            name = _readable_host(guild, host_id) or f"`{host_id}`"
             lines.append(f"Meet {meet_num} — **{class_name}** ({date_text}) — ✅ {name} session active")
 
     embed = discord.Embed(
@@ -17395,7 +17395,7 @@ def _om_build_embed(theme: str, host: discord.Member, timestamp: int, notes: str
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
         name="🎙️ Host",
-        value=(f"**{host.display_name}** · {host.mention}" if host else "*TBD*"),
+        value=(_readable_host(None, host.id) if host else "*TBD*"),
         inline=True,
     )
     embed.add_field(name="🎨 Theme", value=theme, inline=True)
@@ -17870,7 +17870,7 @@ def _om_panel_build_embed() -> discord.Embed:
             value=(
                 f"**{next_meet.theme}**\n"
                 f"<t:{next_meet.timestamp}:F>  •  <t:{next_meet.timestamp}:R>\n"
-                f"🎙️ Host: {_readable_host(None, next_meet.host_id)}"
+                f"🎙️ Host: {_readable_host(None, next_meet.host_id) or '*TBD*'}"
             ),
             inline=False,
         )
@@ -18264,7 +18264,7 @@ class _OfficialMeetScheduleModal(discord.ui.Modal, title="🏁 Schedule Official
             color=discord.Color.from_rgb(241, 196, 15),
             description=(
                 f"Posting to <#{_OFFICIAL_MEET_CHANNEL_ID}> with **{ping_label}**.\n"
-                f"🎙️ Host: {host_member.mention}  •  ⏰ <t:{meet_ts}:F>  (<t:{meet_ts}:R>)"
+                f"🎙️ Host: {_readable_host(None, host_member.id)}  •  ⏰ <t:{meet_ts}:F>  (<t:{meet_ts}:R>)"
             ),
         )
         if conflict:
@@ -19065,7 +19065,7 @@ async def recurmeet_cmd(ctx, day: str = None, time_str: str = None,
             f"**When:** every {_OM_RECUR_DAY_LABEL[dow]} at {hour:02d}:{minute:02d} "
             f"({tz_name.split('/')[-1].replace('_',' ')})\n"
             f"**Theme:** {slot['theme']}\n"
-            f"**Host:** {host.mention}\n"
+            f"**Host:** {_readable_host(None, host.id)}\n"
             f"**Ping:** both PlayStation + Car Meet\n\n"
             f"📅 Next occurrence: <t:{next_ts}:F>\n"
             f"🤖 Will auto-post at <t:{post_ts}:F> (<t:{post_ts}:R>)\n\n"
@@ -30779,7 +30779,7 @@ async def meetrecap(
         title="🎬 DIFF Meet Recap",
         description="\n".join([
             f"**Meet:** {meet}",
-            f"**Host:** {host.mention}",
+            f"**Host:** {_readable_host(None, host.id)}",
             f"**Attendance:** {attendance}",
             "",
             "**Top Members**",
@@ -30811,7 +30811,7 @@ async def meetrecap(
         try:
             await log_ch.send(embed=discord.Embed(
                 title="🎬 Meet Recap Logged",
-                description=f"**Host:** {host.mention} | **Meet:** {meet} | **Attendance:** {attendance}",
+                description=f"**Host:** {_readable_host(None, host.id)} | **Meet:** {meet} | **Attendance:** {attendance}",
                 color=discord.Color.dark_gray(),
                 timestamp=utc_now(),
             ))
@@ -42950,7 +42950,7 @@ def _postmeet_build_embed(host, date, time_str, ts, class_name, notes, image_url
         timestamp=datetime.now(_tz.utc),
     )
     if host:
-        embed.add_field(name="👤 Host", value=host.mention, inline=True)
+        embed.add_field(name="👤 Host", value=_readable_host(None, host.id), inline=True)
     if class_name:
         embed.add_field(name="🎮 Class", value=class_name, inline=True)
     if ts:
@@ -46175,7 +46175,7 @@ class _PlanMeetModal(discord.ui.Modal, title="📅 Plan a New DIFF Meet"):
             title="✅ Meet Planned",
             description=(
                 f"**Theme:** {theme}\n"
-                f"**Host:** {host.mention}\n"
+                f"**Host:** {_readable_host(None, host.id)}\n"
                 f"**When:** <t:{meet_ts}:F> (<t:{meet_ts}:R>)\n"
                 f"**Posted in:** {channel.mention}\n\n"
                 "📨 RSVPers will get auto-DM reminders at **T-24h** and **T-1h**.\n"
