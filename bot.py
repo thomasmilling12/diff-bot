@@ -15028,9 +15028,14 @@ async def _rc_refresh_panel(guild: discord.Guild):
     _rc_refresh_tasks[guild.id] = task
 
 
-async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
-    """Wipe any old roll-call messages and post a fresh layout:
-    header card → 3 per-meet cards → staff admin card."""
+async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False, reset: bool = False):
+    """Re-post the roll-call layout (header card → 3 per-meet cards → staff admin card).
+
+    Deletes any existing roll-call messages first, then posts fresh.
+    `reset=True` ALSO wipes the week (responses/meets/finalized) — use ONLY for an
+    explicit new-week post (`!postrollcall`). When `reset=False` (recovery/repost),
+    existing responses + meets are preserved so a missing card never costs data.
+    """
     channel = await _rc_resolve_channel(guild)
     if channel is None:
         return
@@ -15048,7 +15053,10 @@ async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False):
         except Exception:
             pass
 
-    _rc_db.reset_week(guild.id)   # wipe responses, meets, finalized flags + message rows → fresh slate
+    if reset:
+        _rc_db.reset_week(guild.id)   # wipe responses, meets, finalized flags + message rows → fresh slate
+    else:
+        _rc_db.clear_messages(guild.id)   # only drop stale message-id rows; keep responses + meets
 
     ping_text = None
     if ping_roles:
@@ -15435,11 +15443,10 @@ async def _cmd_postrollcall(ctx: commands.Context):
         await ctx.message.delete()
     except Exception:
         pass
-    # _rc_post_new_panel scans + deletes every existing roll-call message itself,
-    # then resets the week and posts the fresh header + per-meet cards.
+    # _rc_post_new_panel scans + deletes every existing roll-call message itself.
+    # reset=True → explicit new-week post: wipe responses/meets and post a fresh slate.
     _rc_db.clear_panel(ctx.guild.id)
-    _rc_db.clear_messages(ctx.guild.id)
-    await _rc_post_new_panel(ctx.guild, ping_roles=True)
+    await _rc_post_new_panel(ctx.guild, ping_roles=True, reset=True)
 
 
 @bot.command(name="remindrollcall")
