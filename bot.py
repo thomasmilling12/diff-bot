@@ -319,7 +319,6 @@ async def _setup_hook():
         "cogs.diff_crew_events",
         "cogs.diff_attendance",
         "cogs.diff_announcement_panels",
-        "cogs.diff_upcoming_meet_panel",
         "cogs.diff_mod_hub",
         "cogs.diff_automod",
         "cogs.diff_server_stats",
