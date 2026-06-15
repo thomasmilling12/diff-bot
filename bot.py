@@ -13490,6 +13490,94 @@ def _rc_streaks_save(data: dict) -> None:
     _atomic_json_save(_RC_STREAKS_FILE, data)
 
 
+# =============================================================
+# ROLL CALL — PUBLIC REMINDERS + AUTO-STRIKE STATE
+# =============================================================
+_RC_REMINDER_STATE_FILE = os.path.join("diff_data", "diff_rc_reminder_state.json")
+_RC_STRIKE_STATE_FILE   = os.path.join("diff_data", "diff_rc_strike_state.json")
+_RC_STRIKE_THRESHOLD    = 2   # consecutive missed weeks before a member becomes a strike candidate
+
+
+def _rc_reminder_state_load() -> dict:
+    try:
+        with open(_RC_REMINDER_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _rc_reminder_state_save(data: dict) -> None:
+    _atomic_json_save(_RC_REMINDER_STATE_FILE, data)
+
+
+def _rc_strike_state_load() -> dict:
+    try:
+        with open(_RC_STRIKE_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _rc_strike_state_save(data: dict) -> None:
+    _atomic_json_save(_RC_STRIKE_STATE_FILE, data)
+
+
+def _rc_strike_exempt(member) -> bool:
+    """Leadership and hosts are never auto-struck for missing roll call."""
+    try:
+        rids = {r.id for r in member.roles}
+    except Exception:
+        return False
+    if rids & _LEADERSHIP_ROLE_IDS:
+        return True
+    if HOST_ROLE_ID in rids:
+        return True
+    return False
+
+
+def _rc_compute_non_responders(guild):
+    """Returns (crew_role, [members who haven't responded to ANY meet this week])."""
+    crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+    if not crew_role:
+        return None, []
+    responses = _rc_db.get_all_responses(guild.id)
+    responded: set = set()
+    for mr in responses.values():
+        for uid_list in mr.values():
+            responded.update(uid_list)
+    non = [m for m in crew_role.members if not m.bot and m.id not in responded]
+    return crew_role, non
+
+
+def _rc_build_public_reminder(guild, tag_individuals: bool = False):
+    """Builds (ping_content, embed, non_responders) for a public roll-call nudge,
+    or None if every crew member has already responded."""
+    crew_role, non = _rc_compute_non_responders(guild)
+    if crew_role is None or not non:
+        return None
+    n = len(non)
+    plural = "s" if n != 1 else ""
+    rc_url = f"https://discord.com/channels/{GUILD_ID}/{ROLL_CALL_CHANNEL_ID}"
+    if tag_individuals:
+        mentions = " ".join(m.mention for m in non[:50])
+        extra = f" + {n - 50} more" if n > 50 else ""
+        ping_content = mentions + extra
+    else:
+        ping_content = crew_role.mention
+    embed = discord.Embed(
+        title="⏰ Roll Call Reminder",
+        description=(
+            f"**{n} crew member{plural}** still haven't done this week's roll call.\n\n"
+            f"👉 **[Complete it here]({rc_url})** — it only takes a few seconds.\n\n"
+            "Roll call resets **Monday**. Repeatedly missing it may result in a **strike**."
+        ),
+        color=discord.Color.orange(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text="DIFF Meets • Roll Call System")
+    return ping_content, embed, non
+
+
 @bot.command(name="warn")
 async def cmd_warn(ctx: commands.Context, member: discord.Member = None, *, reason: str = None):
     """Leadership-only: issue a formal warning to a member."""
@@ -16227,6 +16315,34 @@ async def _cmd_remindrollcall(ctx: commands.Context):
     result_embed.add_field(name="📊 Total Non-Responders", value=str(len(non_responders)), inline=True)
     result_embed.set_footer(text="Staff only • Different Meets")
     await ctx.send(embed=result_embed)
+
+
+@bot.command(name="rcremind")
+async def _cmd_rcremind(ctx: commands.Context, mode: str = ""):
+    """Staff: post a public roll-call reminder in the roll-call channel, pinging crew.
+    Use `!rcremind tag` to @-mention the exact non-responders instead of the whole role."""
+    if not _rc_is_admin(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if not ctx.guild:
+        return
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    tag_individuals = mode.strip().lower() in ("tag", "ping", "each", "individual", "individuals")
+    built = _rc_build_public_reminder(ctx.guild, tag_individuals=tag_individuals)
+    if not built:
+        return await ctx.send("✅ Every crew member has already responded to this week's roll call.", delete_after=15)
+    ping_content, embed, non = built
+    ch = ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return await ctx.send("Roll call channel not found.", delete_after=10)
+    await ch.send(
+        content=ping_content,
+        embed=embed,
+        allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
+    )
+    await ctx.send(f"📣 Reminder posted in {ch.mention} — **{len(non)}** non-responder(s).", delete_after=10)
 
 
 @bot.command(name="rollleaderboard")
@@ -22985,10 +23101,16 @@ async def on_ready():
     bot.loop.create_task(_rc_auto_archive_loop())
     bot.loop.create_task(_rc_saturday_reminder_loop())
     bot.loop.create_task(_rc_pruning_report_loop())
+    # on_ready can fire again on reconnect — guard so we don't spawn duplicate loops
+    global _rc_public_reminder_task
+    _rcprt = globals().get("_rc_public_reminder_task")
+    if _rcprt is None or _rcprt.done():
+        _rc_public_reminder_task = bot.loop.create_task(_rc_public_reminder_loop())
     bot.loop.create_task(_hp_session_cleanup_loop())
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
     _safe_add_view(_ASchedAnnounceView(),   "_ASchedAnnounceView")
+    _safe_add_view(_RCStrikeConfirmView(),  "_RCStrikeConfirmView")
     _asched_build()
     await _asched_update_panel(bot)
     _safe_add_view(HostHubView(),           "HostHubView")
@@ -23275,6 +23397,130 @@ async def _rc_saturday_reminder_loop() -> None:
             print(f"[RcReminder] Loop error: {_e}")
 
 
+class _RCStrikeConfirmView(discord.ui.View):
+    """Persistent staff-confirm view on the weekly roll-call strike-candidate report.
+    Candidates are loaded from disk state keyed by message id, so buttons survive restarts."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Issue Strikes", style=discord.ButtonStyle.danger, custom_id="diff_rc_strike_issue")
+    async def _issue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, issue=True)
+
+    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, custom_id="diff_rc_strike_dismiss")
+    async def _dismiss_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._handle(interaction, issue=False)
+
+    async def _handle(self, interaction: discord.Interaction, issue: bool):
+        roles = getattr(interaction.user, "roles", [])
+        if not any(r.id in _LEADERSHIP_ROLE_IDS for r in roles):
+            return await interaction.response.send_message("Leadership only.", ephemeral=True)
+        await interaction.response.defer()
+        state = _rc_strike_state_load()
+        pending = state.setdefault("pending", {})
+        entry = pending.get(str(interaction.message.id))
+        if not entry:
+            return await interaction.followup.send("This strike review is no longer active.", ephemeral=True)
+        cand_ids = entry.get("candidates", [])
+        guild = interaction.guild
+
+        if not issue:
+            pending.pop(str(interaction.message.id), None)
+            _rc_strike_state_save(state)
+            try:
+                emb = interaction.message.embeds[0]
+                emb.color = discord.Color.greyple()
+                emb.title = "⚪ Roll Call Strikes — Dismissed"
+                emb.set_footer(text=f"Dismissed by {interaction.user.display_name}")
+                await interaction.message.edit(embed=emb, view=None)
+            except Exception:
+                pass
+            return await interaction.followup.send("Dismissed — no strikes issued.", ephemeral=True)
+
+        import uuid as _uuid
+        wdata = _warnings_load()
+        miss = state.setdefault("miss_streaks", {})
+        issued = 0
+        for uid in cand_ids:
+            warn_id = str(_uuid.uuid4())[:8].upper()
+            wdata.setdefault(str(uid), []).append({
+                "id": warn_id,
+                "reason": "Repeatedly missed the weekly roll call",
+                "issued_by": interaction.user.id,
+                "issued_by_name": interaction.user.display_name,
+                "timestamp": datetime.now(_EST_TZ).isoformat(),
+            })
+            miss[str(uid)] = 0
+            issued += 1
+            member = guild.get_member(uid) if guild else None
+            if member:
+                try:
+                    await member.send(embed=discord.Embed(
+                        title="⚠️ You have received a formal warning",
+                        description=(
+                            "**Reason:** Repeatedly missing the weekly DIFF roll call.\n\n"
+                            f"👉 [Open the roll call](https://discord.com/channels/{GUILD_ID}/{ROLL_CALL_CHANNEL_ID}) "
+                            "and respond each week to avoid further strikes.\n\n"
+                            "If you believe this was issued in error, contact leadership."
+                        ),
+                        color=discord.Color.red(),
+                        timestamp=datetime.now(_EST_TZ),
+                    ).set_footer(text="Different Meets • Formal Warning"))
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+        _warnings_save(wdata)
+        pending.pop(str(interaction.message.id), None)
+        _rc_strike_state_save(state)
+        try:
+            emb = interaction.message.embeds[0]
+            emb.color = discord.Color.green()
+            emb.title = "✅ Roll Call Strikes — Issued"
+            emb.set_footer(text=f"{issued} strike(s) issued by {interaction.user.display_name}")
+            await interaction.message.edit(embed=emb, view=None)
+        except Exception:
+            pass
+        await interaction.followup.send(f"✅ Issued **{issued}** strike(s) — each member was DM'd.", ephemeral=True)
+
+
+async def _rc_public_reminder_loop() -> None:
+    """Sunday 6 PM ET: post a public roll-call reminder in the roll-call channel pinging @Crew Members.
+    Disk-persisted (diff_rc_reminder_state.json) so a redeploy can't re-fire it the same week."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await asyncio.sleep(60)
+        try:
+            now = datetime.now(_EST_TZ)
+            # Sunday (weekday 6), 6 PM ET — the day before the Monday reset
+            if now.weekday() != 6 or now.hour != 18 or now.minute != 0:
+                continue
+            today_key = now.strftime("%Y-%m-%d")
+            st = _rc_reminder_state_load()
+            if st.get("last_public_reminder") == today_key:
+                continue
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+            built = _rc_build_public_reminder(guild, tag_individuals=False)
+            if not built:
+                st["last_public_reminder"] = today_key
+                _rc_reminder_state_save(st)
+                continue
+            ping_content, embed, _non = built
+            ch = guild.get_channel(ROLL_CALL_CHANNEL_ID)
+            if not isinstance(ch, discord.TextChannel):
+                continue
+            await ch.send(
+                content=ping_content,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
+            )
+            st["last_public_reminder"] = today_key
+            _rc_reminder_state_save(st)
+        except Exception as _e:
+            print(f"[RcPublicReminder] Loop error: {_e}")
+
+
 # =========================
 # CREW ATTENDANCE PRUNING REPORT LOOP
 # =========================
@@ -23397,6 +23643,51 @@ async def _rc_pruning_report_loop() -> None:
                         pass
             except Exception as _se:
                 print(f"[PruningReport] Streak update error: {_se}")
+
+            # ── Auto-strike candidate tracking (repeat no-response weeks) ──
+            try:
+                strike_state = _rc_strike_state_load()
+                miss = strike_state.setdefault("miss_streaks", {})
+                no_response_ids = {m.id for m in no_response}
+                candidates: list = []
+                for cm in crew_members:
+                    if _rc_strike_exempt(cm):
+                        miss.pop(str(cm.id), None)
+                        continue
+                    key = str(cm.id)
+                    if cm.id in no_response_ids:
+                        miss[key] = int(miss.get(key, 0)) + 1
+                    else:
+                        miss[key] = 0
+                    if miss[key] >= _RC_STRIKE_THRESHOLD:
+                        candidates.append((cm, miss[key]))
+                _rc_strike_state_save(strike_state)
+
+                if candidates:
+                    cand_lines = "\n".join(
+                        f"{m.mention} — missed **{c}** weeks in a row" for (m, c) in candidates[:25]
+                    )
+                    more = f"\n…and {len(candidates) - 25} more" if len(candidates) > 25 else ""
+                    strike_embed = discord.Embed(
+                        title="⚠️ Roll Call Strike Candidates",
+                        description=(
+                            f"These crew members have missed roll call **{_RC_STRIKE_THRESHOLD}+ weeks in a row**:\n\n"
+                            f"{cand_lines}{more}\n\n"
+                            "Leadership — click **Issue Strikes** to give each a formal warning (they'll be DM'd), "
+                            "or **Dismiss** to skip this week."
+                        ),
+                        color=discord.Color.dark_red(),
+                        timestamp=now,
+                    )
+                    strike_embed.set_footer(text="DIFF Meets • Roll Call Strike Review")
+                    strike_msg = await logs_ch.send(embed=strike_embed, view=_RCStrikeConfirmView())
+                    strike_state.setdefault("pending", {})[str(strike_msg.id)] = {
+                        "candidates": [m.id for (m, _c) in candidates],
+                        "created": now.isoformat(),
+                    }
+                    _rc_strike_state_save(strike_state)
+            except Exception as _str_e:
+                print(f"[RcStrike] candidate tracking error: {_str_e}")
         except Exception as _e:
             print(f"[PruningReport] Loop error: {_e}")
 
