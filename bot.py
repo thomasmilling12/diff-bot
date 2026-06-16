@@ -5114,18 +5114,17 @@ class _ASchedRSVPView(discord.ui.View):
             for key in _HRSVP_DAYS:
                 self.add_item(_ASchedRSVPBtn(key, f"I'm Going — {key}", row=0))
             return
-        rows, _now = _asched_sorted_slots(schedule)
-        for row in rows:
-            key     = row["key"]
-            entry   = row["entry"]
-            is_past = row["cat"] == 1
-            day_val = entry.get("day", "TBD")
+        layout = _asched_layout_slots(schedule)
+        for i, sl in enumerate(layout):
+            entry   = sl["entry"]
+            is_past = sl["is_past"]
+            cls     = entry.get("class", "TBD")
             if is_past:
-                label = f"{day_val} — closed"
+                label = f"{cls} — closed"
             else:
                 n = len(_asched_attendees(entry))
-                label = f"{day_val} ({n})" if n else f"I'm Going — {day_val}"
-            self.add_item(_ASchedRSVPBtn(key, label[:80], disabled=is_past, row=0))
+                label = f"{cls} ({n})" if n else f"RSVP: {cls}"
+            self.add_item(_ASchedRSVPBtn(sl["key"], label[:80], disabled=is_past, row=i // 5))
 
 
 def _asched_build_rsvp_view(schedule: dict) -> "_ASchedRSVPView":
@@ -5223,11 +5222,42 @@ def _asched_build_header_embed(guild: discord.Guild | None = None) -> discord.Em
     elif next_row and next_row["ts"]:
         cnt = len(layout)
         embed.description = (
-            f"⏰ **Next meet** <t:{next_row['ts']}:R> — <t:{next_row['ts']}:F>\n\n"
-            f"-# {cnt} meet{'s' if cnt != 1 else ''} this week · RSVP on each card below 👇"
+            f"⏰ **Next meet** <t:{next_row['ts']}:R> — <t:{next_row['ts']}:F>\n"
+            f"-# {cnt} meet{'s' if cnt != 1 else ''} this week · RSVP with the buttons below 👇"
         )
     else:
-        embed.description = "-# RSVP on each meet card below 👇"
+        embed.description = "-# RSVP with the buttons below 👇"
+
+    # One field per scheduled meet — the whole schedule lives on this single panel.
+    _NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
+    for sl in layout:
+        entry     = sl["entry"]
+        meet_ts   = sl["ts"]
+        is_past   = sl["is_past"]
+        is_next   = sl["is_next"]
+        pos       = sl["pos"]
+        class_val = entry.get("class", "TBD")
+        time_val  = entry.get("time",  "TBD")
+        date_val  = entry.get("day",   "TBD")
+        badge = _NUM_EMOJI[pos - 1] if pos <= len(_NUM_EMOJI) else f"{pos}\uFE0F\u20E3"
+        if is_past:
+            fname = f"{badge}  ✅  {class_val}  ·  Completed"
+        elif is_next:
+            fname = f"{badge}  🏎️  {class_val}  ·  👉 NEXT UP"
+        else:
+            fname = f"{badge}  🏎️  {class_val}"
+        if meet_ts:
+            flines = [f"🗓️ <t:{meet_ts}:F>  ·  ⏳ <t:{meet_ts}:R>"]
+        else:
+            flines = [f"📅 {date_val}  ·  🕒 {time_val}"]
+        flines.append(f"🎮 **Host:** {_asched_host_str(entry)}")
+        hint = _theme_detail_hint(class_val)
+        if hint and not is_past:
+            flines.append(f"-# 🚗 {hint}")
+        if not is_past:
+            n = len(_asched_attendees(entry))
+            flines.append(f"🙌 **{n}** going" if n else "-# Be the first to RSVP 👇")
+        embed.add_field(name=fname[:256], value="\n".join(flines)[:1024], inline=False)
 
     _banner = _asched_banner_url()
     if _banner.startswith("http"):
@@ -5235,60 +5265,6 @@ def _asched_build_header_embed(guild: discord.Guild | None = None) -> discord.Em
 
     embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets  ·  Times shown in your local timezone")
     return embed
-
-
-def _asched_build_meet_embed(guild: discord.Guild | None, slot: dict) -> discord.Embed:
-    """One roomy card for a single scheduled meet."""
-    entry    = slot["entry"]
-    meet_ts  = slot["ts"]
-    is_past  = slot["is_past"]
-    is_next  = slot["is_next"]
-    pos      = slot["pos"]
-    class_val = entry.get("class", "TBD")
-    time_val  = entry.get("time",  "TBD")
-    date_val  = entry.get("day",   "TBD")
-
-    _NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
-    badge = _NUM_EMOJI[pos - 1] if pos <= len(_NUM_EMOJI) else f"{pos}\uFE0F\u20E3"
-    if is_past:
-        title, color = f"{badge}  ✅  {class_val}  ·  Completed", 0x99AAB5
-    elif is_next:
-        title, color = f"{badge}  🏎️  {class_val}  ·  👉 NEXT UP", 0x57F287
-    else:
-        title, color = f"{badge}  🏎️  {class_val}", 0x5865F2
-
-    embed = discord.Embed(title=title, color=color)
-
-    if meet_ts:
-        when_line = f"🗓️ <t:{meet_ts}:F>\n⏳ <t:{meet_ts}:R>"
-    else:
-        when_line = f"📅 {date_val}  ·  🕒 {time_val}"
-    lines = [when_line, f"🎮 **Host:** {_asched_host_str(entry)}"]
-
-    hint = _theme_detail_hint(class_val)
-    if hint and not is_past:
-        lines.append(f"-# 🚗 {hint}")
-
-    if not is_past:
-        n = len(_asched_attendees(entry))
-        lines.append(f"🙌 **{n}** going" if n else "-# Be the first to RSVP below 👇")
-
-    embed.description = "\n".join(lines)
-    embed.set_footer(text="DIFF Meets • Tap below to RSVP" if not is_past else "DIFF Meets • This meet has ended")
-    return embed
-
-
-class _ASchedMeetRSVPView(discord.ui.View):
-    """Single RSVP button for one meet card. custom_id matches the registered
-    `_ASchedRSVPView` routing (`diff_asched_rsvp:{slot_key}`) so clicks survive restarts."""
-    def __init__(self, slot_key: str, entry: dict, is_past: bool):
-        super().__init__(timeout=None)
-        if is_past:
-            label = "Meet ended"
-        else:
-            n = len(_asched_attendees(entry))
-            label = f"I'm Going ({n})" if n else "I'm Going"
-        self.add_item(_ASchedRSVPBtn(slot_key, label[:80], disabled=is_past, row=0))
 
 
 async def _asched_resolve_announce_channel(bot_client) -> "discord.TextChannel | None":
@@ -5382,43 +5358,26 @@ async def _asched_sync_panel_inner(bot_client, ping_roles: bool = False) -> None
             header_msg = await channel.fetch_message(int(ids["header"]))
         except Exception:
             header_msg = None
+    # Single consolidated panel: the whole schedule (all meets as fields) + one RSVP
+    # button per meet live on ONE message. No separate per-meet card messages.
+    panel_embed = _asched_build_header_embed(guild)
+    panel_view  = _asched_build_rsvp_view(sched) if layout else None
     if header_msg is not None:
         try:
-            await header_msg.edit(embed=_asched_build_header_embed(guild), view=None)
+            await header_msg.edit(embed=panel_embed, view=panel_view)
         except Exception:
             pass
     else:
         try:
-            header_msg = await channel.send(embed=_asched_build_header_embed(guild))
+            header_msg = await channel.send(embed=panel_embed, view=panel_view)
         except Exception as e:
-            print(f"[AutoSched] header post failed: {e}")
+            print(f"[AutoSched] panel post failed: {e}")
             return
     keep.add(header_msg.id)
 
-    # ── Meet cards: reuse existing in order, append/trim the delta ──
-    existing  = list(ids["cards"])
-    new_cards = []
-    for i, sl in enumerate(layout):
-        view  = _ASchedMeetRSVPView(sl["key"], sl["entry"], sl["is_past"])
-        embed = _asched_build_meet_embed(guild, sl)
-        msg = None
-        if i < len(existing):
-            try:
-                msg = await channel.fetch_message(int(existing[i]))
-                await msg.edit(embed=embed, view=view)
-            except Exception:
-                msg = None
-        if msg is None:
-            try:
-                msg = await channel.send(embed=embed, view=view)
-            except Exception as e:
-                print(f"[AutoSched] card post failed: {e}")
-                continue
-        new_cards.append(msg.id)
-        keep.add(msg.id)
-
-    # Delete leftover card messages beyond the current layout (e.g. weekly reset).
-    for leftover in existing[len(layout):]:
+    # Remove any legacy per-meet card messages from the old split layout.
+    new_cards: list = []
+    for leftover in list(ids["cards"]):
         try:
             m = await channel.fetch_message(int(leftover))
             await m.delete()
@@ -5507,13 +5466,12 @@ async def _asched_rsvp_toggle(interaction: discord.Interaction, slot_key: str) -
     except Exception:
         pass
 
-    # Live-update just this meet card (count + button label)
+    # Live-update the single consolidated panel (counts + button labels)
     try:
-        sl = next((s for s in _asched_layout_slots(sched) if s["key"] == slot_key), None)
-        if sl and interaction.message:
+        if interaction.message:
             await interaction.message.edit(
-                embed=_asched_build_meet_embed(interaction.guild, sl),
-                view=_ASchedMeetRSVPView(slot_key, sl["entry"], sl["is_past"]),
+                embed=_asched_build_header_embed(interaction.guild),
+                view=_asched_build_rsvp_view(sched),
             )
     except Exception:
         pass
