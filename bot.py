@@ -23079,6 +23079,11 @@ async def on_ready():
     _rcprt = globals().get("_rc_public_reminder_task")
     if _rcprt is None or _rcprt.done():
         _rc_public_reminder_task = bot.loop.create_task(_rc_public_reminder_loop())
+    # Weekly roll-call auto-reset (Monday EST) — guard against duplicate loops on reconnect
+    global _rc_weekly_reset_task
+    _rcwr = globals().get("_rc_weekly_reset_task")
+    if _rcwr is None or _rcwr.done():
+        _rc_weekly_reset_task = bot.loop.create_task(_rc_weekly_reset_loop())
     bot.loop.create_task(_hp_session_cleanup_loop())
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
@@ -23820,6 +23825,53 @@ async def _hrsvp_auto_reset_loop() -> None:
                 )
         except Exception as _e:
             print(f"[HRSVP AutoReset] {_e}")
+
+
+# =========================
+# ROLL CALL WEEKLY AUTO-RESET LOOP
+# =========================
+async def _rc_weekly_reset_loop() -> None:
+    """Once per week, when a new Monday (EST) begins, wipe last week's roll-call
+    responses/meets and post a fresh roll-call panel (pings crew) — mirrors the host
+    availability panel's auto-reset. Checks every 60 s; on startup immediately catches
+    up if this week's Monday reset was missed. The once-per-week guard
+    (`last_weekly_reset` in the rc reminder-state file) is persisted to disk so a
+    redeploy can't re-fire the same week."""
+    await bot.wait_until_ready()
+    from zoneinfo import ZoneInfo as _ZI
+    from datetime import timedelta as _td
+
+    async def _do_reset(monday_str: str) -> None:
+        guild = bot.get_guild(GUILD_ID)
+        if guild is None:
+            return
+        await _rc_post_new_panel(guild, ping_roles=True, reset=True)
+        st = _rc_reminder_state_load()
+        st["last_weekly_reset"] = monday_str
+        _rc_reminder_state_save(st)
+        print(f"[RcWeeklyReset] Reset + reposted roll call for week of {monday_str}.")
+
+    # ── Startup catch-up: reset if this week's Monday reset was missed ───────
+    try:
+        now_est            = datetime.now(_ZI("America/New_York"))
+        most_recent_monday = (now_est - _td(days=now_est.weekday())).strftime("%Y-%m-%d")
+        if _rc_reminder_state_load().get("last_weekly_reset") != most_recent_monday:
+            await _do_reset(most_recent_monday)
+            print("[RcWeeklyReset] Startup catch-up reset applied.")
+    except Exception as _e:
+        print(f"[RcWeeklyReset] Startup catch-up error: {_e}")
+
+    # ── Ongoing loop: reset within ~60 s of Monday 00:00 EST ──
+    while not bot.is_closed():
+        await asyncio.sleep(60)
+        try:
+            now_est            = datetime.now(_ZI("America/New_York"))
+            most_recent_monday = (now_est - _td(days=now_est.weekday())).strftime("%Y-%m-%d")
+            if _rc_reminder_state_load().get("last_weekly_reset") == most_recent_monday:
+                continue
+            await _do_reset(most_recent_monday)
+        except Exception as _e:
+            print(f"[RcWeeklyReset] {_e}")
 
 
 # =========================
