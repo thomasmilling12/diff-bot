@@ -5413,7 +5413,7 @@ async def _asched_sync_panel_inner(bot_client, ping_roles: bool = False) -> None
         if parts:
             try:
                 ping_msg = await channel.send(
-                    content=" ".join(parts) + " — 📅 **This week's DIFF meet schedule is up — RSVP on the cards above!**",
+                    content=" ".join(parts) + " — 📅 **This week's DIFF meet schedule is up — RSVP on the panel above!**",
                     allowed_mentions=discord.AllowedMentions(roles=True),
                 )
                 ping_id = ping_msg.id
