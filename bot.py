@@ -5163,24 +5163,34 @@ def _asched_layout_slots(schedule: dict) -> list[dict]:
 
 
 def _asched_host_str(entry: dict) -> str:
-    """PSN name (linked) · Discord mention — matches the original schedule format."""
+    """Clean host label: the host's name shown ONCE, with an optional PSN profile link.
+    Drops the old redundant 'PSN-text · display-name · @mention' triple."""
     host_id = entry.get("host_id")
     if not host_id:
         return "*TBD*"
-    _psn_id, _psn_url = "", ""
+    # Display name (always readable), resolved against the main guild.
+    name = None
+    try:
+        g = bot.get_guild(GUILD_ID)
+        m = g.get_member(int(host_id)) if g else None
+        if m:
+            name = m.display_name
+    except Exception:
+        name = None
+    if not name:
+        name = f"<@{host_id}>"
+    # Optional PSN profile link.
+    _psn_url = ""
     try:
         for _h in data.get("hosts", []):
             if _h.get("discord_id") == int(host_id):
-                _purl = (_h.get("profile_url") or "").rstrip("/")
-                if _purl:
-                    _psn_url = _purl
-                    _psn_id = _purl.split("/")[-1]
+                _psn_url = (_h.get("profile_url") or "").rstrip("/")
                 break
     except Exception:
         pass
-    if _psn_id and _psn_url:
-        return f"{_psn_id} [↗]({_psn_url}) · {_readable_host(None, host_id)}"
-    return _readable_host(None, host_id) or f"<@{host_id}>"
+    if _psn_url:
+        return f"**{name}** · [PSN ↗]({_psn_url})"
+    return f"**{name}**"
 
 
 def _asched_build_header_embed(guild: discord.Guild | None = None) -> discord.Embed:
@@ -5262,11 +5272,6 @@ def _asched_build_meet_embed(guild: discord.Guild | None, slot: dict) -> discord
     if not is_past:
         n = len(_asched_attendees(entry))
         lines.append(f"🙌 **{n}** going" if n else "-# Be the first to RSVP below 👇")
-        if meet_ts and class_val and class_val.upper() != "TBD":
-            lines.append(
-                f"📅 Add to Calendar: [Google]({_gcal_url(class_val, meet_ts)}) · "
-                f"[Outlook]({_outlook_url(class_val, meet_ts)})"
-            )
 
     embed.description = "\n".join(lines)
     embed.set_footer(text="DIFF Meets • Tap below to RSVP" if not is_past else "DIFF Meets • This meet has ended")
