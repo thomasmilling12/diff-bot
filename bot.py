@@ -23851,13 +23851,23 @@ async def _rc_weekly_reset_loop() -> None:
         _rc_reminder_state_save(st)
         print(f"[RcWeeklyReset] Reset + reposted roll call for week of {monday_str}.")
 
-    # ── Startup catch-up: reset if this week's Monday reset was missed ───────
+    # ── Startup catch-up ───────
+    # Reset is destructive (wipes responses/meets), so on the VERY first run (or if the
+    # state file was lost) we SEED the marker without wiping — a mid-week deploy must
+    # never destroy an in-progress week. Auto-reset then begins at the next Monday.
+    # Only an actually-missed Monday boundary (stored marker older than this week) wipes.
     try:
         now_est            = datetime.now(_ZI("America/New_York"))
         most_recent_monday = (now_est - _td(days=now_est.weekday())).strftime("%Y-%m-%d")
-        if _rc_reminder_state_load().get("last_weekly_reset") != most_recent_monday:
+        st     = _rc_reminder_state_load()
+        stored = st.get("last_weekly_reset")
+        if stored is None:
+            st["last_weekly_reset"] = most_recent_monday
+            _rc_reminder_state_save(st)
+            print("[RcWeeklyReset] First run — seeded weekly marker (no reset).")
+        elif stored != most_recent_monday:
             await _do_reset(most_recent_monday)
-            print("[RcWeeklyReset] Startup catch-up reset applied.")
+            print("[RcWeeklyReset] Startup catch-up reset applied (missed Monday).")
     except Exception as _e:
         print(f"[RcWeeklyReset] Startup catch-up error: {_e}")
 
