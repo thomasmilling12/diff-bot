@@ -5332,12 +5332,23 @@ def _asched_panel_ids(sched: dict) -> dict:
     return {"header": header, "cards": cards}
 
 
+_asched_sync_lock = asyncio.Lock()
+
+
 async def _asched_sync_panel(bot_client, ping_roles: bool = False) -> None:
     """Maintain ONE persistent schedule panel by editing in place — never delete +
     repost the whole thing. The header lives permanently and is only edited; meet
     cards are reused by position (add/trim only the delta). On `ping_roles` a single
     short ping line is posted (and cleaned up on the next sync) so the panel itself
-    is never re-posted week to week."""
+    is never re-posted week to week.
+
+    Serialized via `_asched_sync_lock` so the 15-min refresh loop, a staff finalize,
+    and any manual trigger can never overlap and post a duplicate set of cards."""
+    async with _asched_sync_lock:
+        await _asched_sync_panel_inner(bot_client, ping_roles=ping_roles)
+
+
+async def _asched_sync_panel_inner(bot_client, ping_roles: bool = False) -> None:
     channel = await _asched_resolve_announce_channel(bot_client)
     if channel is None:
         return
@@ -5347,7 +5358,6 @@ async def _asched_sync_panel(bot_client, ping_roles: bool = False) -> None:
     sched  = _asched_load()
     layout = _asched_layout_slots(sched)
     ids    = _asched_panel_ids(sched)
-    need_cleanup = not sched.get("panel_legacy_cleanup_done")
 
     # Clear any transient ping line from a previous sync.
     old_ping = sched.get("panel_ping_msg_id")
@@ -5410,21 +5420,21 @@ async def _asched_sync_panel(bot_client, ping_roles: bool = False) -> None:
         except Exception:
             pass
 
-    # One-time cleanup: remove any stray/duplicate schedule panels (e.g. an old
-    # finalized panel from before the split rollout) so only this panel remains.
-    # Gated by a persisted flag so the 15-min refresh loop never re-runs the sweep.
-    if need_cleanup:
-        try:
-            async for m in channel.history(limit=100):
-                if m.id in keep:
-                    continue
-                if _asched_is_public_panel_msg(m, bot_id):
-                    try:
-                        await m.delete()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+    # Self-healing cleanup: delete any stray/duplicate bot-authored schedule message
+    # (old header, orphaned card from a prior race) that isn't part of the panel we
+    # just reconciled. Runs every sync — #upcoming-meet is dedicated to this panel, so
+    # a scan is cheap and removes duplicates instead of letting them pile up forever.
+    try:
+        async for m in channel.history(limit=100):
+            if m.id in keep:
+                continue
+            if _asched_is_public_panel_msg(m, bot_id):
+                try:
+                    await m.delete()
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     # ── Optional finalize ping: a single short line, not a new panel ──
     ping_id = None
