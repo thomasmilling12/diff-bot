@@ -24136,9 +24136,12 @@ def _meet_recap_save(d: dict) -> None:
 def _meet_recap_channel(guild):
     cid = _meet_recap_load().get("channel_id")
     if cid:
-        ch = guild.get_channel(int(cid))
-        if isinstance(ch, discord.TextChannel):
-            return ch
+        try:
+            ch = guild.get_channel(int(cid))
+            if isinstance(ch, discord.TextChannel):
+                return ch
+        except (ValueError, TypeError):
+            pass
     ch = guild.get_channel(_EVERYONE_CHAT_CHANNEL_ID)
     return ch if isinstance(ch, discord.TextChannel) else None
 
