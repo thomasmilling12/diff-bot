@@ -17182,45 +17182,68 @@ def _recap_channel(guild):
     return ch if isinstance(ch, discord.TextChannel) else None
 
 
+def _recap_week_bounds(week_key):
+    """(start, end) datetimes (ET) for an ISO 'YYYY-Wnn' week: Monday 00:00 through
+    the following Monday 00:00. Bounds every recap source to the exact completed
+    week so the numbers are correct even on a delayed/offline catch-up post."""
+    ys, ws = week_key.split("-W")
+    start = datetime.fromisocalendar(int(ys), int(ws), 1).replace(tzinfo=_EST_TZ)
+    return start, start + timedelta(days=7)
+
+
 def _recap_gather_stats(guild, week_key) -> dict:
-    """Collect the past week's community activity. Each source is isolated in
-    try/except so one missing system never blanks the whole recap."""
-    now = datetime.now(_EST_TZ)
-    week_ago = now - timedelta(days=7)
+    """Collect ONE exact ISO week's community activity (bounded by `week_key`, not a
+    rolling now-7d window). Each source is isolated in try/except so one missing
+    system never blanks the whole recap. Roll-call is current-state only (wiped by
+    the Monday reset), so it is best-effort: counted only while the week is still live."""
+    start, end = _recap_week_bounds(week_key)
+    start_ts, end_ts = start.timestamp(), end.timestamp()
     stats = {"meets": 0, "responses": 0, "host_sessions": 0, "lobby_pics": 0,
-             "warnings": 0, "top_earners": []}
+             "top_earners": []}
+    # Roll call (best-effort): rollcall_* tables are wiped weekly, so only the
+    # still-live week is recoverable. Filter to meets scheduled inside this ISO week.
     try:
-        meets = _rc_db.get_meets(guild.id)
+        in_week = set()
+        for m in _rc_db.get_meets(guild.id):
+            dt_txt = m["date_text"] if "date_text" in m.keys() else ""
+            st_txt = m["start_time"] if "start_time" in m.keys() else "TBD"
+            ts = _parse_meet_ts(dt_txt, st_txt)
+            if ts and start_ts <= ts < end_ts:
+                in_week.add(m["meet_number"])
+        stats["meets"] = len(in_week)
         all_resp = _rc_db.get_all_responses(guild.id)
-        stats["meets"] = len(meets)
-        stats["responses"] = sum(len(v) for mr in all_resp.values() for v in mr.values())
-    except Exception:
-        pass
-    try:
-        sessions = (_hp_load().get("active_sessions", {}) or {}).values()
-        stats["host_sessions"] = sum(
-            1 for s in sessions
-            if s.get("started_at")
-            and datetime.fromisoformat(s["started_at"]).astimezone(_EST_TZ) >= week_ago
+        stats["responses"] = sum(
+            len(lst)
+            for n, statuses in all_resp.items() if n in in_week
+            for lst in statuses.values()
         )
     except Exception:
         pass
+    # Host sessions started within the week (started_at is retained).
     try:
-        ts7 = now.timestamp() - 7 * 86400
+        cnt = 0
+        for s in (_hp_load().get("active_sessions", {}) or {}).values():
+            sa = s.get("started_at")
+            if not sa:
+                continue
+            try:
+                sdt = datetime.fromisoformat(sa).astimezone(_EST_TZ)
+            except Exception:
+                continue
+            if start <= sdt < end:
+                cnt += 1
+        stats["host_sessions"] = cnt
+    except Exception:
+        pass
+    # Lobby pics posted within the week (posted_at epoch retained ~30d).
+    try:
         stats["lobby_pics"] = sum(
             1 for s in _lp_load_all().values()
-            if float(s.get("posted_at") or 0) >= ts7
+            if start_ts <= float(s.get("posted_at") or 0) < end_ts
         )
     except Exception:
         pass
-    try:
-        stats["warnings"] = sum(
-            1 for wl in _warnings_load().values() for w in wl
-            if _try_parse_ts(w.get("timestamp", ""))
-            and datetime.fromisoformat(w["timestamp"]).astimezone(_EST_TZ) >= week_ago
-        )
-    except Exception:
-        pass
+    # Top earners — already attributed to the exact ISO week at earn-time.
     try:
         stats["top_earners"] = [
             (r["user_id"], r["week_xp"]) for r in _xp_db.week_top(guild.id, week_key, 5)
