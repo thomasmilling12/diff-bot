@@ -16292,6 +16292,10 @@ async def _rc_log_attendance(guild, meet_number, attended, no_shows, action_by):
                     guild, _am, _XP_PER_MEET_ATTEND,
                     kind="attend", ref=f"{_xwk}:{meet_number}",
                 )
+                try:
+                    await _xp_check_badges(guild, _am)
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -16365,6 +16369,12 @@ class _XPDB:
             "guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
             "kind TEXT NOT NULL, ref TEXT NOT NULL, ts TEXT, "
             "PRIMARY KEY (guild_id, user_id, kind, ref))"
+        )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS xp_badges ("
+            "guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+            "badge_key TEXT NOT NULL, earned_at TEXT, "
+            "PRIMARY KEY (guild_id, user_id, badge_key))"
         )
         self.conn.commit()
 
@@ -16447,6 +16457,42 @@ class _XPDB:
         cur.execute("SELECT COUNT(*) AS c FROM xp WHERE guild_id=? AND xp>?", (guild_id, row["xp"]))
         r = cur.fetchone()
         return (r["c"] if r else 0) + 1
+
+    def count_awards(self, guild_id, user_id, kind):
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) AS c FROM xp_awards WHERE guild_id=? AND user_id=? AND kind=?",
+            (guild_id, user_id, kind),
+        )
+        r = cur.fetchone()
+        return r["c"] if r else 0
+
+    def add_badge(self, guild_id, user_id, badge_key):
+        """Insert a badge; returns True if newly earned, False if already had it."""
+        cur = self.conn.cursor()
+        try:
+            cur.execute(
+                "INSERT INTO xp_badges (guild_id, user_id, badge_key, earned_at) VALUES (?, ?, ?, ?)",
+                (guild_id, user_id, badge_key, datetime.now(timezone.utc).isoformat()),
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def get_badges(self, guild_id, user_id):
+        cur = self.conn.cursor()
+        cur.execute("SELECT badge_key FROM xp_badges WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+        return set(r["badge_key"] for r in cur.fetchall())
+
+    def badge_top(self, guild_id, limit=10):
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT user_id, COUNT(*) AS c FROM xp_badges WHERE guild_id=? "
+            "GROUP BY user_id ORDER BY c DESC LIMIT ?",
+            (guild_id, limit),
+        )
+        return cur.fetchall()
 
 
 _xp_db = _XPDB()
@@ -16590,6 +16636,10 @@ async def _xp_apply_award(guild, member, amount, *, kind=None, ref=None):
         except Exception:
             granted = None
         await _xp_notify_levelup(guild, member, new_level, total, granted)
+        try:
+            await _xp_check_badges(guild, member)
+        except Exception:
+            pass
     elif new_level < old_level:
         # Manual reductions (!takexp) can drop a member below a reward tier — strip
         # any reward roles that are now above their level. No notification on demotion.
@@ -16729,6 +16779,177 @@ async def cmd_xpinfo(ctx):
     )
     e.add_field(name="🏅 Role Rewards", value=ladder, inline=False)
     e.set_footer(text="Different Meets • !rank to see your level")
+    await ctx.send(embed=e)
+
+
+# ── Achievements / Badges (Phase 2b) ──────────────────────────────────────────
+_XP_BADGES = [
+    {"key": "first_meet", "emoji": "🏁", "name": "First Laps",      "desc": "Attend your first meet"},
+    {"key": "meets_5",    "emoji": "🚗", "name": "Regular",         "desc": "Attend 5 meets"},
+    {"key": "meets_15",   "emoji": "🏆", "name": "Dedicated",       "desc": "Attend 15 meets"},
+    {"key": "meets_30",   "emoji": "👑", "name": "Veteran Cruiser", "desc": "Attend 30 meets"},
+    {"key": "streak_4",   "emoji": "🔥", "name": "On a Roll",       "desc": "4-week roll-call streak"},
+    {"key": "streak_8",   "emoji": "⚡", "name": "Committed",        "desc": "8-week roll-call streak"},
+    {"key": "streak_16",  "emoji": "💎", "name": "Iron Will",       "desc": "16-week roll-call streak"},
+    {"key": "pics_5",     "emoji": "📸", "name": "Shutterbug",      "desc": "Post 5 lobby pics"},
+    {"key": "pics_20",    "emoji": "🎞️", "name": "Photographer",    "desc": "Post 20 lobby pics"},
+    {"key": "lvl_5",      "emoji": "⭐", "name": "Rising Star",      "desc": "Reach Level 5"},
+    {"key": "lvl_10",     "emoji": "🌟", "name": "Established",      "desc": "Reach Level 10"},
+    {"key": "lvl_20",     "emoji": "💫", "name": "Elite",           "desc": "Reach Level 20"},
+    {"key": "lvl_35",     "emoji": "🏅", "name": "Legend",          "desc": "Reach Level 35"},
+]
+_XP_BADGE_BY_KEY = {b["key"]: b for b in _XP_BADGES}
+
+
+def _xp_compute_earned(guild, member) -> set:
+    """Compute which badge keys the member currently qualifies for, from the
+    persistent stat sources (RC attendance_stats, streaks json, lobby-pic awards,
+    XP level). Pure read — does not grant anything."""
+    earned = set()
+    # Meet attendance — source of truth is the persistent attendance_stats table.
+    try:
+        arow = _rc_db.get_user_stats_row(guild.id, member.id)
+        att = int(arow["attended_count"]) if arow else 0
+    except Exception:
+        att = 0
+    if att >= 1:
+        earned.add("first_meet")
+    if att >= 5:
+        earned.add("meets_5")
+    if att >= 15:
+        earned.add("meets_15")
+    if att >= 30:
+        earned.add("meets_30")
+    # Roll-call streak — best streak ever (keys are streak/best, NOT current_/best_).
+    try:
+        sd = _rc_streaks_load().get(str(member.id), {})
+        best = int(sd.get("best", sd.get("best_streak", 0)) or 0)
+    except Exception:
+        best = 0
+    if best >= 4:
+        earned.add("streak_4")
+    if best >= 8:
+        earned.add("streak_8")
+    if best >= 16:
+        earned.add("streak_16")
+    # Lobby pics — count of (daily-capped) lobby-pic XP awards.
+    try:
+        pics = _xp_db.count_awards(guild.id, member.id, "lobbypic")
+    except Exception:
+        pics = 0
+    if pics >= 5:
+        earned.add("pics_5")
+    if pics >= 20:
+        earned.add("pics_20")
+    # XP level.
+    try:
+        row = _xp_db.get(guild.id, member.id)
+        lvl = _xp_level_for(row["xp"]) if row else 0
+    except Exception:
+        lvl = 0
+    if lvl >= 5:
+        earned.add("lvl_5")
+    if lvl >= 10:
+        earned.add("lvl_10")
+    if lvl >= 20:
+        earned.add("lvl_20")
+    if lvl >= 35:
+        earned.add("lvl_35")
+    return earned
+
+
+async def _xp_notify_badge(guild, member, key):
+    b = _XP_BADGE_BY_KEY.get(key)
+    if not b:
+        return
+    e = discord.Embed(
+        title="🏅 Achievement Unlocked!",
+        description=f"{b['emoji']} **{b['name']}**\n{b['desc']}",
+        color=0xE67E22, timestamp=datetime.now(_EST_TZ),
+    )
+    e.set_footer(text="Different Meets • !badges")
+    try:
+        await member.send(embed=e)
+    except discord.Forbidden:
+        pass
+    except Exception:
+        pass
+    cfg = _xp_config_load()
+    ch_id = cfg.get("announce_channel_id")
+    if ch_id:
+        ch = guild.get_channel(int(ch_id))
+        if isinstance(ch, discord.TextChannel):
+            try:
+                await ch.send(f"🏅 {member.mention} earned the **{b['name']}** {b['emoji']} badge!")
+            except Exception:
+                pass
+
+
+async def _xp_check_badges(guild, member):
+    """Grant (and announce) any newly-earned badges for the member. Idempotent."""
+    if member is None or getattr(member, "bot", False):
+        return
+    try:
+        earned = _xp_compute_earned(guild, member)
+        if not earned:
+            return
+        have = _xp_db.get_badges(guild.id, member.id)
+        for key in earned - have:
+            if _xp_db.add_badge(guild.id, member.id, key):
+                await _xp_notify_badge(guild, member, key)
+    except Exception as _e:
+        print(f"[xp] badge check error: {_e!r}")
+
+
+@bot.command(name="badges", aliases=["achievements", "badge"])
+async def cmd_badges(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    if member.bot:
+        return await ctx.reply("Bots don't earn badges.", mention_author=False)
+    try:
+        await _xp_check_badges(ctx.guild, member)
+    except Exception:
+        pass
+    have = _xp_db.get_badges(ctx.guild.id, member.id)
+    earned_lines, locked_lines = [], []
+    for b in _XP_BADGES:
+        if b["key"] in have:
+            earned_lines.append(f"{b['emoji']} **{b['name']}** — {b['desc']}")
+        else:
+            locked_lines.append(f"🔒 {b['name']} — {b['desc']}")
+    e = discord.Embed(
+        title=f"🏅 {member.display_name}'s Badges",
+        description=f"**{len(have)} / {len(_XP_BADGES)}** unlocked",
+        color=0xE67E22, timestamp=datetime.now(_EST_TZ),
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    if earned_lines:
+        e.add_field(name="✅ Unlocked", value="\n".join(earned_lines)[:1024], inline=False)
+    if locked_lines:
+        e.add_field(name="🔓 Locked", value="\n".join(locked_lines)[:1024], inline=False)
+    e.set_footer(text="Different Meets • !badges")
+    await ctx.send(embed=e)
+
+
+@bot.command(name="badgeboard", aliases=["badgetop"])
+async def cmd_badgeboard(ctx):
+    rows = _xp_db.badge_top(ctx.guild.id, 10)
+    if not rows:
+        return await ctx.reply("No badges earned yet!", mention_author=False)
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, r in enumerate(rows):
+        m = ctx.guild.get_member(r["user_id"])
+        name = m.display_name if m else f"User {r['user_id']}"
+        tag = medals[i] if i < 3 else f"`#{i + 1}`"
+        plural = "s" if r["c"] != 1 else ""
+        lines.append(f"{tag} **{name}** — {r['c']} badge{plural}")
+    e = discord.Embed(
+        title="🏅 Badge Leaderboard",
+        description="\n".join(lines),
+        color=0xE67E22, timestamp=datetime.now(_EST_TZ),
+    )
+    e.set_footer(text="Different Meets • Most badges")
     await ctx.send(embed=e)
 
 
@@ -23216,6 +23437,11 @@ async def _lp_handle_lobby_post(message: discord.Message) -> None:
                 message.guild, message.author, _XP_PER_LOBBY_PIC,
                 kind="lobbypic", ref=f"{_xday}:{message.id}",
             )
+    except Exception:
+        pass
+
+    try:
+        await _xp_check_badges(message.guild, message.author)
     except Exception:
         pass
 
