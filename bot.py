@@ -16380,6 +16380,16 @@ class _XPDB:
             "CREATE INDEX IF NOT EXISTS idx_xp_badges_guild_user "
             "ON xp_badges(guild_id, user_id)"
         )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS xp_week ("
+            "guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+            "week_key TEXT NOT NULL, week_xp INTEGER NOT NULL DEFAULT 0, "
+            "PRIMARY KEY (guild_id, user_id, week_key))"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_xp_week_lookup "
+            "ON xp_week(guild_id, week_key)"
+        )
         self.conn.commit()
 
     def get(self, guild_id, user_id):
@@ -16406,6 +16416,17 @@ class _XPDB:
             "week_xp=xp.week_xp+?, updated_at=excluded.updated_at",
             (guild_id, user_id, new_total, new_level, wk_inc, now, wk_inc),
         )
+        # Bucket weekly XP by the week it was earned in (ISO week, ET) so Member of
+        # the Week is computed from an exact completed week with no boundary drift.
+        if wk_inc > 0:
+            wk = _xp_week_key()
+            cur.execute(
+                "INSERT INTO xp_week (guild_id, user_id, week_key, week_xp) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(guild_id, user_id, week_key) DO UPDATE SET "
+                "week_xp=xp_week.week_xp+?",
+                (guild_id, user_id, wk, wk_inc, wk_inc),
+            )
         self.conn.commit()
         return old_level, new_level, new_total
 
@@ -16451,6 +16472,17 @@ class _XPDB:
         cur = self.conn.cursor()
         cur.execute("UPDATE xp SET week_xp=0 WHERE guild_id=?", (guild_id,))
         self.conn.commit()
+
+    def week_top(self, guild_id, week_key, limit=10):
+        """Top earners for one exact ISO week (from the week-keyed bucket table)."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT user_id, week_xp FROM xp_week "
+            "WHERE guild_id=? AND week_key=? AND week_xp>0 "
+            "ORDER BY week_xp DESC LIMIT ?",
+            (guild_id, week_key, limit),
+        )
+        return cur.fetchall()
 
     def rank_of(self, guild_id, user_id):
         cur = self.conn.cursor()
@@ -17023,20 +17055,23 @@ def _xp_motw_embed(guild, rows, *, live):
     return e
 
 
-async def _xp_post_motw(guild):
-    """Post the spotlight for the week that just ended. No-op if nobody earned XP."""
-    rows = _xp_db.top_week(guild.id, 5)
+async def _xp_post_motw(guild, week_key):
+    """Post the spotlight for the exact `week_key`. Returns True if the week is
+    handled (posted, or nobody earned XP), False on a transient failure to retry."""
+    rows = _xp_db.week_top(guild.id, week_key, 5)
     if not rows:
-        return
+        return True  # nobody earned XP that week — advance marker, nothing to post
     ch = _xp_motw_channel(guild)
     if ch is None:
-        return
+        return False  # no resolvable channel yet — retry on the next tick
     winner = guild.get_member(rows[0]["user_id"])
     content = f"🎉 Congrats {winner.mention}!" if winner else None
     try:
         await ch.send(content=content, embed=_xp_motw_embed(guild, rows, live=False))
+        return True
     except Exception as _e:
         print(f"[xp] motw post error: {_e!r}")
+        return False
 
 
 @tasks.loop(minutes=10)
@@ -17047,21 +17082,22 @@ async def _xp_motw_loop():
             return
         now = datetime.now(_EST_TZ)
         cfg = _xp_config_load()
-        cur_wk = _xp_week_key(now)
-        # Seed on first run / state-file loss so we never post a partial accumulated
+        # The ISO week that just ended (3 days back lands safely inside last week on
+        # any Monday). Weekly XP is bucketed per-week at earn-time, so reading this
+        # key is exact regardless of when the loop tick happens to fire.
+        last_week = _xp_week_key(now - timedelta(days=3))
+        # Seed on first run / state-file loss so we never post a partial/empty first
         # week or re-fire after a redeploy. Auto-spotlight begins the next Monday.
         if "last_motw_week" not in cfg:
-            cfg["last_motw_week"] = cur_wk
+            cfg["last_motw_week"] = last_week
             _xp_config_save(cfg)
             return
-        # Fire once on Monday: spotlight last week's winner, THEN reset the weekly
-        # counter. Order is post → reset → mark so a failed post retries with data
-        # intact, and the weekly counter is never double-reset.
-        if now.weekday() == 0 and cfg.get("last_motw_week") != cur_wk:
-            await _xp_post_motw(guild)
-            _xp_db.reset_week(guild.id)
-            cfg["last_motw_week"] = cur_wk
-            _xp_config_save(cfg)
+        # Fire once on Monday: spotlight the week that just ended. Mark only AFTER a
+        # confirmed post so a transient Discord/channel failure retries with data intact.
+        if now.weekday() == 0 and cfg.get("last_motw_week") != last_week:
+            if await _xp_post_motw(guild, last_week):
+                cfg["last_motw_week"] = last_week
+                _xp_config_save(cfg)
     except Exception as _e:
         print(f"[xp] motw loop error: {_e!r}")
 
@@ -17074,7 +17110,7 @@ async def _xp_motw_loop_before():
 @bot.command(name="motw", aliases=["memberoftheweek"])
 async def cmd_motw(ctx):
     """Live standings for the current week (read-only — does not reset)."""
-    rows = _xp_db.top_week(ctx.guild.id, 5)
+    rows = _xp_db.week_top(ctx.guild.id, _xp_week_key(), 5)
     if not rows:
         return await ctx.reply("No XP earned yet this week — get chatting! 🚗", mention_author=False)
     await ctx.send(embed=_xp_motw_embed(ctx.guild, rows, live=True))
