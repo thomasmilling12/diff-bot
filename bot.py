@@ -29629,7 +29629,8 @@ async def _json_backup_loop():
     if now - _last_backup_ts < BACKUP_INTERVAL_HOURS * 3600:
         return
     ok = await _run_json_backup_once()
-    if ok:
+    gh_ok, _gh_info = await _run_github_backup_once()
+    if ok or gh_ok:
         _last_backup_ts = now
         _backup_state_save_ts(now)
 
@@ -29648,6 +29649,129 @@ async def cmd_backup_now(ctx):
         await msg.edit(content="✅ Backup posted to staff logs.")
     else:
         await msg.edit(content="❌ Backup failed — check console.")
+
+
+# ─── #9b  Off-Pi GitHub backup (P4a) ─────────────────────────────────────
+# Pushes diff_data/ (json raw + db consistent-snapshot) to a dedicated `backups`
+# branch of the bot repo. deploy.sh does `git reset --hard origin/main`, so the
+# backups branch is never touched by a deploy. Versioned history = point-in-time
+# restore. All network I/O runs in asyncio.to_thread (never blocks the loop).
+_GH_BACKUP_REPO   = "thomasmilling12/diff-bot"
+_GH_BACKUP_BRANCH = "backups"
+
+
+def _gh_api(method: str, url: str, token: str, body=None):
+    import urllib.request
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("User-Agent", "diff-bot-backup")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def _gh_collect_data_files() -> dict:
+    """name -> base64 content. .db files use a consistent SQLite snapshot so a
+    backup taken mid-write is never corrupt; .json read raw."""
+    import base64, sqlite3, tempfile
+    out = {}
+    try:
+        names = sorted(os.listdir(DATA_FOLDER))
+    except Exception as _e:
+        print(f"[ghbackup] cannot list {DATA_FOLDER}: {_e!r}")
+        return out
+    for name in names:
+        full = os.path.join(DATA_FOLDER, name)
+        if not os.path.isfile(full):
+            continue
+        try:
+            if name.endswith(".db"):
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+                tmp.close()
+                src = sqlite3.connect(full)
+                dst = sqlite3.connect(tmp.name)
+                try:
+                    with dst:
+                        src.backup(dst)
+                finally:
+                    src.close()
+                    dst.close()
+                with open(tmp.name, "rb") as f:
+                    raw = f.read()
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+            elif name.endswith(".json"):
+                with open(full, "rb") as f:
+                    raw = f.read()
+            else:
+                continue
+            out[name] = base64.b64encode(raw).decode("ascii")
+        except Exception as _e:
+            print(f"[ghbackup] skip {name}: {_e!r}")
+    return out
+
+
+def _gh_backup_sync():
+    """Blocking. Returns (ok: bool, info: str). Runs inside asyncio.to_thread."""
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        return (False, "GITHUB_TOKEN not set")
+    files = _gh_collect_data_files()
+    if not files:
+        return (False, "no data files")
+    base = f"https://api.github.com/repos/{_GH_BACKUP_REPO}/git"
+    try:
+        try:
+            ref = _gh_api("GET", f"{base}/ref/heads/{_GH_BACKUP_BRANCH}", token)
+            parent_sha = ref["object"]["sha"]
+        except Exception:
+            main_ref = _gh_api("GET", f"{base}/ref/heads/main", token)
+            parent_sha = main_ref["object"]["sha"]
+            _gh_api("POST", f"{base}/refs", token,
+                    {"ref": f"refs/heads/{_GH_BACKUP_BRANCH}", "sha": parent_sha})
+        tree = []
+        for name, b64 in files.items():
+            blob = _gh_api("POST", f"{base}/blobs", token, {"content": b64, "encoding": "base64"})
+            tree.append({"path": f"diff_data/{name}", "mode": "100644", "type": "blob", "sha": blob["sha"]})
+        tree_obj = _gh_api("POST", f"{base}/trees", token, {"tree": tree})
+        stamp = datetime.now(_EST_TZ).strftime("%Y-%m-%d %H:%M ET")
+        commit = _gh_api("POST", f"{base}/commits", token, {
+            "message": f"Data backup {stamp} ({len(files)} files)",
+            "tree": tree_obj["sha"],
+            "parents": [parent_sha],
+        })
+        _gh_api("PATCH", f"{base}/refs/heads/{_GH_BACKUP_BRANCH}", token,
+                {"sha": commit["sha"], "force": True})
+        return (True, f"{len(files)} files @ {commit['sha'][:7]}")
+    except Exception as _e:
+        return (False, repr(_e))
+
+
+async def _run_github_backup_once():
+    try:
+        ok, info = await asyncio.to_thread(_gh_backup_sync)
+    except Exception as _e:
+        print(f"[ghbackup] error: {_e!r}")
+        return (False, repr(_e))
+    print(f"[ghbackup] {'ok' if ok else 'failed'}: {info}")
+    return (ok, info)
+
+
+@bot.command(name="githubbackup", aliases=["ghbackup", "backupgh"])
+async def cmd_github_backup(ctx):
+    if not any(r.id in _LEADERSHIP_ROLE_IDS for r in ctx.author.roles):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    msg = await ctx.send("☁️ Backing up `diff_data/` to the GitHub `backups` branch…")
+    ok, info = await _run_github_backup_once()
+    if ok:
+        await msg.edit(content=f"✅ GitHub backup pushed — {info} (branch `{_GH_BACKUP_BRANCH}`).")
+    else:
+        await msg.edit(content=f"❌ GitHub backup failed — {info}")
 
 
 # ─── Host Posters reminder + escalation loop ─────────────────────────────
