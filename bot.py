@@ -14362,13 +14362,13 @@ async def cmd_streakboard(ctx: commands.Context):
     for uid_str, d in streaks.items():
         if not isinstance(d, dict):
             continue
-        cur  = d.get("streak", d.get("current_streak", 0)) or 0
-        best = d.get("best",   d.get("best_streak", 0)) or 0
-        if cur or best:
-            try:
+        try:
+            cur  = int(d.get("streak", d.get("current_streak", 0)) or 0)
+            best = int(d.get("best",   d.get("best_streak", 0)) or 0)
+            if cur or best:
                 entries.append((int(uid_str), cur, best))
-            except (ValueError, TypeError):
-                continue
+        except (ValueError, TypeError):
+            continue
     if not entries:
         return await ctx.reply("No roll-call streaks recorded yet.", mention_author=False)
     entries.sort(key=lambda x: (x[1], x[2]), reverse=True)
