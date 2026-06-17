@@ -14248,11 +14248,14 @@ async def cmd_mystats(ctx: commands.Context):
         maybe_c = row["maybe_count"] if "maybe_count" in row.keys() else 0
         att_c   = row["attended_count"]  if "attended_count"  in row.keys() else 0
         ns_c    = row["no_show_count"]   if "no_show_count"   in row.keys() else 0
+        _tot_meets = att_c + ns_c
+        _rate = round(att_c / _tot_meets * 100) if _tot_meets else 0
+        _rate_line = f"\n📈 Show-up rate: **{_rate}%** ({att_c}/{_tot_meets})" if _tot_meets else ""
         embed.add_field(
             name="Roll Call Record",
             value=(
                 f"✅ Yes: **{yes_c}** · ❌ No: **{no_c}** · ❓ Maybe: **{maybe_c}**\n"
-                f"🎮 Attended: **{att_c}** · 👻 No-shows: **{ns_c}**"
+                f"🎮 Attended: **{att_c}** · 👻 No-shows: **{ns_c}**" + _rate_line
             ),
             inline=False,
         )
@@ -14262,11 +14265,11 @@ async def cmd_mystats(ctx: commands.Context):
     # ── RC streak ─────────────────────────────────────────────
     streaks = _rc_streaks_load()
     streak_data = streaks.get(str(member.id), {})
-    cur_streak  = streak_data.get("current_streak", 0)
-    best_streak = streak_data.get("best_streak", 0)
+    cur_streak  = streak_data.get("streak", streak_data.get("current_streak", 0))
+    best_streak = streak_data.get("best",   streak_data.get("best_streak", 0))
     if cur_streak or best_streak:
         embed.add_field(
-            name="Attendance Streak",
+            name="Roll Call Streak",
             value=f"🔥 Current: **{cur_streak}** weeks · 🏆 Best: **{best_streak}** weeks",
             inline=False,
         )
@@ -14302,6 +14305,88 @@ async def cmd_mystats(ctx: commands.Context):
         )
     embed.set_footer(text="Different Meets • Personal Stats")
     await ctx.send(embed=embed, delete_after=120)
+
+
+def _attstats_viewer_ok(member) -> bool:
+    """Crew, host, or RC admin may view attendance/streak leaderboards."""
+    if not isinstance(member, discord.Member):
+        return False
+    if _rc_is_admin(member):
+        return True
+    if any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in member.roles):
+        return True
+    return any(r.id == CREW_MEMBER_ROLE_ID for r in member.roles)
+
+
+_LB_MEDALS = {0: "🥇", 1: "🥈", 2: "🥉"}
+
+
+@bot.command(name="attendanceboard", aliases=["attendtop", "attboard"])
+async def cmd_attendanceboard(ctx: commands.Context):
+    """Crew/host: all-time meet-attendance leaderboard (most meets + show-up rate)."""
+    if not _attstats_viewer_ok(ctx.author):
+        return await ctx.reply("Crew members and hosts only.", mention_author=False)
+    rows = _rc_db.get_top_attendance(ctx.guild.id, limit=15)
+    rows = [r for r in rows
+            if (r["attended_count"] if "attended_count" in r.keys() else 0) > 0]
+    if not rows:
+        return await ctx.reply("No meet attendance recorded yet.", mention_author=False)
+    lines = []
+    for i, r in enumerate(rows):
+        uid = r["user_id"]
+        att = r["attended_count"]
+        ns  = r["no_show_count"] if "no_show_count" in r.keys() else 0
+        tot = att + ns
+        rate = round(att / tot * 100) if tot else 0
+        m = ctx.guild.get_member(uid)
+        name = m.display_name if m else f"User {uid}"
+        rank = _LB_MEDALS.get(i, f"`#{i + 1}`")
+        lines.append(f"{rank} **{name}** — 🎮 **{att}** meets · {rate}% show-up")
+    embed = discord.Embed(
+        title="🏁 Meet Attendance Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text="Different Meets • All-time meet attendance")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="streakboard", aliases=["streaktop", "rcstreaks"])
+async def cmd_streakboard(ctx: commands.Context):
+    """Crew/host: roll-call streak leaderboard (consecutive weeks responding Yes)."""
+    if not _attstats_viewer_ok(ctx.author):
+        return await ctx.reply("Crew members and hosts only.", mention_author=False)
+    streaks = _rc_streaks_load()
+    entries = []
+    for uid_str, d in streaks.items():
+        if not isinstance(d, dict):
+            continue
+        cur  = d.get("streak", d.get("current_streak", 0)) or 0
+        best = d.get("best",   d.get("best_streak", 0)) or 0
+        if cur or best:
+            try:
+                entries.append((int(uid_str), cur, best))
+            except (ValueError, TypeError):
+                continue
+    if not entries:
+        return await ctx.reply("No roll-call streaks recorded yet.", mention_author=False)
+    entries.sort(key=lambda x: (x[1], x[2]), reverse=True)
+    entries = entries[:15]
+    lines = []
+    for i, (uid, cur, best) in enumerate(entries):
+        m = ctx.guild.get_member(uid)
+        name = m.display_name if m else f"User {uid}"
+        rank = _LB_MEDALS.get(i, f"`#{i + 1}`")
+        lines.append(f"{rank} **{name}** — 🔥 **{cur}** wk · 🏆 best {best}")
+    embed = discord.Embed(
+        title="🔥 Roll Call Streak Leaderboard",
+        description="\n".join(lines),
+        color=discord.Color.orange(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    embed.set_footer(text="Different Meets • Consecutive weeks responding Yes")
+    await ctx.send(embed=embed)
 
 
 def _try_parse_ts(ts_str: str) -> bool:
