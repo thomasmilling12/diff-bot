@@ -39631,6 +39631,274 @@ async def _update_join_ticket_complete(channel: discord.TextChannel) -> None:
         pass
 
 
+# ===================== AI Moderation Assist (Phase 3c) =====================
+# Advisory ONLY — never deletes, warns, or punishes. Two entry points:
+#  (1) automatic cheap pre-filter on messages → spends an AI call only on
+#      suspicious text (gated by per-user cooldown + global hourly cap) → posts
+#      a flag embed to staff for human review. OFF by default (staff opt-in).
+#  (2) on-demand !modcheck for staff to get an AI risk read on any message/text.
+# All silent-fallback: if AI is off/unparseable, nothing happens.
+_AIMOD_STATE_FILE         = "diff_data/diff_aimod_state.json"
+_AIMOD_MIN_LEN            = 8
+_AIMOD_USER_COOLDOWN_S    = 120     # min gap between AI mod calls per user
+_AIMOD_GLOBAL_HOURLY_CAP  = 40      # hard ceiling on auto AI mod calls per rolling hour
+_AIMOD_MAX_MENTIONS       = 6       # mass-mention heuristic
+
+_AIMOD_LINK_RE   = re.compile(r"(discord\.gg/|https?://)", re.I)
+_AIMOD_SCAM_TERMS = (
+    "free nitro", "nitro gift", "steam gift", "free robux", "airdrop",
+    "claim your", "crypto giveaway", "free giveaway", "click here", "onlyfans",
+    "@everyone", "@here",
+)
+# High-signal hate tokens (non-exhaustive — the AI makes the real judgment;
+# this only decides whether to SPEND an AI call).
+_AIMOD_HATE_TERMS = ("faggot", "nigger", "n1gger", "retard", "kys", "kill yourself", "tranny")
+
+_aimod_user_cd: dict[int, float] = {}
+_aimod_call_times: list[float] = []
+
+
+def _aimod_load() -> dict:
+    if not os.path.exists(_AIMOD_STATE_FILE):
+        return {"enabled": False, "channel_id": None}
+    try:
+        with open(_AIMOD_STATE_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f) or {}
+    except Exception:
+        d = {}
+    d.setdefault("enabled", False)
+    d.setdefault("channel_id", None)
+    return d
+
+
+def _aimod_save(d: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    _atomic_json_save(_AIMOD_STATE_FILE, d)
+
+
+def _aimod_enabled() -> bool:
+    return bool(_aimod_load().get("enabled"))
+
+
+def _aimod_flag_channel(guild):
+    cid = _aimod_load().get("channel_id")
+    if cid:
+        try:
+            ch = guild.get_channel(int(cid))
+            if isinstance(ch, discord.TextChannel):
+                return ch
+        except (ValueError, TypeError):
+            pass
+    ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    return ch if isinstance(ch, discord.TextChannel) else None
+
+
+def _aimod_is_staff(member) -> bool:
+    try:
+        if _xp_is_leadership(member):
+            return True
+        rids = {r.id for r in getattr(member, "roles", [])}
+        return bool(rids & _ALL_MOD_ROLE_IDS)
+    except Exception:
+        return False
+
+
+def _aimod_prefilter(text: str, mention_ct: int) -> "str|None":
+    """Cheap, AI-free triage. Returns a reason tag if the message warrants an AI
+    call, else None. Keeps cost near-zero on normal chatter."""
+    if not text or len(text) < _AIMOD_MIN_LEN:
+        return None
+    low = text.lower()
+    for w in _AIMOD_HATE_TERMS:
+        if w in low:
+            return "possible_hate"
+    if _AIMOD_LINK_RE.search(text) and any(t in low for t in _AIMOD_SCAM_TERMS):
+        return "possible_scam"
+    if "@everyone" in low or "@here" in low:
+        return "mass_mention"
+    if mention_ct >= _AIMOD_MAX_MENTIONS:
+        return "mass_mention"
+    return None
+
+
+def _aimod_allow_call(user_id: int) -> bool:
+    """Per-user cooldown + global rolling-hour cap so auto-scanning can't run up
+    cost. Records the call only when it is actually allowed."""
+    now = time.monotonic()
+    if now - _aimod_user_cd.get(user_id, 0) < _AIMOD_USER_COOLDOWN_S:
+        return False
+    wall = time.time()
+    cutoff = wall - 3600
+    _aimod_call_times[:] = [t for t in _aimod_call_times if t > cutoff]
+    if len(_aimod_call_times) >= _AIMOD_GLOBAL_HOURLY_CAP:
+        return False
+    _aimod_user_cd[user_id] = now
+    _aimod_call_times.append(wall)
+    return True
+
+
+async def _aimod_assess(text: str) -> "dict|None":
+    """AI risk read. Returns {flag, category, severity, reason} or None on failure."""
+    if not _ai_enabled():
+        return None
+    sys = (
+        f"You are a conservative content-moderation assistant for DIFF Meets.\n{_AI_BASE_CTX}\n\n"
+        "Assess ONLY the user message for genuine rule violations: hate speech / slurs / "
+        "harassment, scams or phishing, NSFW content, threats or self-harm, or spam/advertising. "
+        "Casual banter, ordinary profanity used non-abusively, and car/GTA trash-talk are NOT "
+        "violations. You ADVISE staff only and never take action. When unsure, do not flag. "
+        "Reply ONLY with JSON: {\"flag\": bool, \"category\": string, "
+        "\"severity\": \"low\"|\"medium\"|\"high\", \"reason\": string}."
+    )
+    raw = await _ai_chat(sys, text, json_mode=True, max_tokens=160)
+    if not raw:
+        return None
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    sev = str(d.get("severity") or "low").lower()
+    if sev not in ("low", "medium", "high"):
+        sev = "low"
+    return {
+        "flag": _ai_parse_bool(d.get("flag", False), default=False),
+        "category": str(d.get("category") or "unknown")[:40],
+        "severity": sev,
+        "reason": str(d.get("reason") or "")[:600],
+    }
+
+
+_AIMOD_SEV_COLOR = {"low": 0xF1C40F, "medium": 0xE67E22, "high": 0xE74C3C}
+
+
+def _aimod_build_embed(message, reason, verdict, *, on_demand=False):
+    sev = verdict.get("severity", "low")
+    e = discord.Embed(
+        title=("🔎 Mod Check" if on_demand else "🚨 AI Mod Flag"),
+        description=verdict.get("reason") or "(no reason given)",
+        color=_AIMOD_SEV_COLOR.get(sev, 0xF1C40F),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    try:
+        e.add_field(name="Member", value=f"{message.author.mention} (`{message.author.id}`)", inline=True)
+    except Exception:
+        pass
+    e.add_field(name="Category", value=verdict.get("category", "unknown"), inline=True)
+    e.add_field(name="Severity", value=sev.capitalize(), inline=True)
+    excerpt = (message.content or "")[:900] or "(no text)"
+    e.add_field(name="Message", value=excerpt, inline=False)
+    try:
+        e.add_field(name="Jump", value=f"[Go to message]({message.jump_url})", inline=True)
+    except Exception:
+        pass
+    e.add_field(name="Pre-filter", value=reason, inline=True)
+    e.set_footer(text="Different Meets • AI Moderation (advisory only — review manually)")
+    return e
+
+
+async def _aimod_scan_message(message) -> None:
+    """Automatic path: cheap pre-filter → gated AI call → staff flag. Never acts."""
+    try:
+        if not _aimod_enabled() or not _ai_enabled():
+            return
+        if not message.guild or message.author.bot:
+            return
+        if isinstance(message.author, discord.Member) and _aimod_is_staff(message.author):
+            return
+        content = message.content or ""
+        if content.startswith("!"):
+            return
+        mention_ct = len(getattr(message, "mentions", []) or [])
+        if "@everyone" in content or "@here" in content:
+            mention_ct += 1
+        reason = _aimod_prefilter(content, mention_ct)
+        if not reason:
+            return
+        if not _aimod_allow_call(message.author.id):
+            return
+        verdict = await _aimod_assess(content)
+        if not verdict or not verdict.get("flag"):
+            return
+        ch = _aimod_flag_channel(message.guild)
+        if ch is None:
+            return
+        await ch.send(embed=_aimod_build_embed(message, reason, verdict))
+    except Exception as _e:
+        print(f"[aimod] scan error: {_e!r}")
+
+
+@bot.command(name="aimod")
+@commands.guild_only()
+async def cmd_aimod(ctx, action: str = None, channel: discord.TextChannel = None):
+    """Leadership: !aimod (status) • !aimod on/off • !aimod channel #ch."""
+    if not _xp_is_leadership(ctx.author):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    state = _aimod_load()
+    act = (action or "").lower()
+    if act in ("on", "enable", "start"):
+        state["enabled"] = True
+        _aimod_save(state)
+        return await ctx.reply(
+            "✅ AI moderation auto-scan **ON**. Suspicious messages will be flagged to "
+            f"{(_aimod_flag_channel(ctx.guild).mention if _aimod_flag_channel(ctx.guild) else 'staff logs')} "
+            "for review (never auto-actioned).", mention_author=False,
+        )
+    if act in ("off", "disable", "stop"):
+        state["enabled"] = False
+        _aimod_save(state)
+        return await ctx.reply("🛑 AI moderation auto-scan **OFF**. `!modcheck` still works on demand.", mention_author=False)
+    if act in ("channel", "setchannel") and channel is not None:
+        state["channel_id"] = channel.id
+        _aimod_save(state)
+        return await ctx.reply(f"✅ AI mod flags will post to {channel.mention}.", mention_author=False)
+    cur = _aimod_flag_channel(ctx.guild)
+    wall = time.time()
+    used = len([t for t in _aimod_call_times if t > wall - 3600])
+    await ctx.reply(
+        "**AI Moderation Assist**\n"
+        f"• Auto-scan: {'🟢 ON' if state.get('enabled') else '🔴 OFF'}\n"
+        f"• Flag channel: {cur.mention if cur else 'staff logs (default)'}\n"
+        f"• AI available: {'yes' if _ai_enabled() else 'no (OPENAI_API_KEY missing)'}\n"
+        f"• Auto calls this hour: {used}/{_AIMOD_GLOBAL_HOURLY_CAP}\n"
+        "Usage: `!aimod on` · `!aimod off` · `!aimod channel #ch` · `!modcheck` (reply to a message).",
+        mention_author=False,
+    )
+
+
+@bot.command(name="modcheck", aliases=["aicheck"])
+@commands.guild_only()
+async def cmd_modcheck(ctx, *, text: str = None):
+    """Staff: AI risk read on a message. Reply to a message, or pass text inline."""
+    if not _aimod_is_staff(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    if not _ai_enabled():
+        return await ctx.reply("AI is not configured (OPENAI_API_KEY missing).", mention_author=False)
+    target = ctx.message
+    content = text
+    ref = getattr(ctx.message, "reference", None)
+    if ref is not None and getattr(ref, "message_id", None):
+        try:
+            target = await ctx.channel.fetch_message(ref.message_id)
+            content = target.content or text
+        except Exception:
+            target = ctx.message
+    if not content:
+        return await ctx.reply(
+            "Reply to a message with `!modcheck`, or `!modcheck <text to assess>`.",
+            mention_author=False,
+        )
+    async with ctx.typing():
+        verdict = await _aimod_assess(content)
+    if not verdict:
+        return await ctx.reply("Couldn't get an AI read (try again shortly).", mention_author=False)
+    if not verdict.get("flag"):
+        return await ctx.reply(
+            f"✅ No clear violation detected (AI category: {verdict.get('category', 'n/a')}).",
+            mention_author=False,
+        )
+    await ctx.reply(embed=_aimod_build_embed(target, "on_demand", verdict, on_demand=True), mention_author=False)
+
+
 @bot.event
 async def on_message(message: discord.Message) -> None:
     await bot.process_commands(message)
@@ -39655,6 +39923,12 @@ async def on_message(message: discord.Message) -> None:
             if _xnow - _xp_msg_cooldowns.get(message.author.id, 0) >= _XP_MSG_COOLDOWN_SECS:
                 _xp_msg_cooldowns[message.author.id] = _xnow
                 await _xp_apply_award(message.guild, message.author, _XP_PER_MESSAGE)
+    except Exception:
+        pass
+
+    # --- AI moderation assist (cost-aware pre-filter → staff flag; never acts) ---
+    try:
+        asyncio.create_task(_aimod_scan_message(message))
     except Exception:
         pass
 
