@@ -17149,6 +17149,222 @@ async def cmd_setmotwchannel(ctx, channel: discord.TextChannel = None):
     await ctx.reply(f"✅ Member of the Week will be announced in {channel.mention} every Monday.", mention_author=False)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Weekly AI Community Recap (Phase 3a)
+# Posts a friendly weekly wrap-up of community activity. AI writes the narrative
+# intro when OPENAI_API_KEY is present; otherwise it degrades to a stats-only
+# recap (never crashes, never blocks). Same completed-week keying + catch-up +
+# seed-on-first-run + mark-after-success pattern as Member of the Week.
+# ════════════════════════════════════════════════════════════════════════════
+_RECAP_STATE_FILE = "diff_data/diff_recap_state.json"
+
+
+def _recap_state_load() -> dict:
+    if not os.path.exists(_RECAP_STATE_FILE):
+        return {}
+    try:
+        with open(_RECAP_STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _recap_state_save(d: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    _atomic_json_save(_RECAP_STATE_FILE, d)
+
+
+def _recap_channel(guild):
+    """Resolve the recap channel: explicit recap_channel_id → community chat."""
+    st = _recap_state_load()
+    ch_id = st.get("recap_channel_id") or _EVERYONE_CHAT_CHANNEL_ID
+    ch = guild.get_channel(int(ch_id))
+    return ch if isinstance(ch, discord.TextChannel) else None
+
+
+def _recap_gather_stats(guild, week_key) -> dict:
+    """Collect the past week's community activity. Each source is isolated in
+    try/except so one missing system never blanks the whole recap."""
+    now = datetime.now(_EST_TZ)
+    week_ago = now - timedelta(days=7)
+    stats = {"meets": 0, "responses": 0, "host_sessions": 0, "lobby_pics": 0,
+             "warnings": 0, "top_earners": []}
+    try:
+        meets = _rc_db.get_meets(guild.id)
+        all_resp = _rc_db.get_all_responses(guild.id)
+        stats["meets"] = len(meets)
+        stats["responses"] = sum(len(v) for mr in all_resp.values() for v in mr.values())
+    except Exception:
+        pass
+    try:
+        sessions = (_hp_load().get("active_sessions", {}) or {}).values()
+        stats["host_sessions"] = sum(
+            1 for s in sessions
+            if s.get("started_at")
+            and datetime.fromisoformat(s["started_at"]).astimezone(_EST_TZ) >= week_ago
+        )
+    except Exception:
+        pass
+    try:
+        ts7 = now.timestamp() - 7 * 86400
+        stats["lobby_pics"] = sum(
+            1 for s in _lp_load_all().values()
+            if float(s.get("posted_at") or 0) >= ts7
+        )
+    except Exception:
+        pass
+    try:
+        stats["warnings"] = sum(
+            1 for wl in _warnings_load().values() for w in wl
+            if _try_parse_ts(w.get("timestamp", ""))
+            and datetime.fromisoformat(w["timestamp"]).astimezone(_EST_TZ) >= week_ago
+        )
+    except Exception:
+        pass
+    try:
+        stats["top_earners"] = [
+            (r["user_id"], r["week_xp"]) for r in _xp_db.week_top(guild.id, week_key, 5)
+        ]
+    except Exception:
+        pass
+    return stats
+
+
+async def _recap_ai_narrative(guild, stats) -> "str|None":
+    """AI-written 2-3 sentence intro grounded strictly in the gathered facts.
+    Returns None if AI is disabled/unavailable so the recap degrades gracefully."""
+    if not _ai_enabled():
+        return None
+    try:
+        top_names = []
+        for uid, _wx in stats.get("top_earners", [])[:3]:
+            m = guild.get_member(uid)
+            top_names.append(m.display_name if m else f"User {uid}")
+        top_str = ", ".join(top_names) if top_names else "none"
+        facts = (
+            f"Meets held: {stats['meets']}. "
+            f"Roll-call responses: {stats['responses']}. "
+            f"Host sessions run: {stats['host_sessions']}. "
+            f"Lobby pictures shared: {stats['lobby_pics']}. "
+            f"Top members this week: {top_str}."
+        )
+        sys = (
+            f"You write a short, upbeat weekly community recap for DIFF Meets.\n{_AI_BASE_CTX}\n\n"
+            "Write 2-3 genuine, hype sentences celebrating the week using ONLY the facts given. "
+            "Address the whole community (not one person). Do NOT invent numbers or names. "
+            "No hashtags. Plain text only, no JSON."
+        )
+        txt = await _ai_chat(sys, facts, json_mode=False, max_tokens=180)
+        if not txt:
+            return None
+        return txt.strip()[:1500]
+    except Exception:
+        return None
+
+
+def _recap_build_embed(guild, stats, narrative):
+    now = datetime.now(_EST_TZ)
+    desc = narrative or "Another week in the books — here's what the crew got up to. 🚗💨"
+    e = discord.Embed(
+        title=f"📰 DIFF Weekly Recap — Week of {now.strftime('%b %d, %Y')}",
+        description=desc,
+        color=0x1ABC9C,
+        timestamp=now,
+    )
+    e.add_field(name="🎮 Meets", value=str(stats["meets"]), inline=True)
+    e.add_field(name="🙋 RSVPs", value=str(stats["responses"]), inline=True)
+    e.add_field(name="🏁 Host sessions", value=str(stats["host_sessions"]), inline=True)
+    e.add_field(name="📸 Lobby pics", value=str(stats["lobby_pics"]), inline=True)
+    top = stats.get("top_earners", [])
+    if top:
+        medals = ["🥇", "🥈", "🥉", "🏅", "🏅"]
+        lines = []
+        for i, (uid, wx) in enumerate(top[:5]):
+            m = guild.get_member(uid)
+            nm = m.display_name if m else f"User {uid}"
+            lines.append(f"{medals[i]} {nm} — {wx:,} XP")
+        e.add_field(name="⭐ Most active", value="\n".join(lines), inline=False)
+    e.set_footer(text="Different Meets • Weekly Recap")
+    return e
+
+
+async def _recap_post(guild, week_key):
+    """Post the recap for the exact `week_key`. Returns True if handled (posted
+    or genuinely quiet week → advance marker), False on a transient failure to retry."""
+    stats = _recap_gather_stats(guild, week_key)
+    if not any([stats["meets"], stats["responses"], stats["host_sessions"],
+                stats["lobby_pics"], stats["top_earners"]]):
+        return True  # nothing happened — skip the post, advance the marker
+    ch = _recap_channel(guild)
+    if ch is None:
+        return False  # no resolvable channel yet — retry next tick
+    try:
+        narrative = await _recap_ai_narrative(guild, stats)
+        await ch.send(embed=_recap_build_embed(guild, stats, narrative))
+        return True
+    except Exception as _e:
+        print(f"[recap] post error: {_e!r}")
+        return False
+
+
+@tasks.loop(minutes=10)
+async def _community_recap_loop():
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+        now = datetime.now(_EST_TZ)
+        st = _recap_state_load()
+        # Most recently COMPLETED ISO week (see MOTW loop) — catches up a missed
+        # Monday and never recaps an in-progress week.
+        last_week = _xp_week_key(now - timedelta(days=now.weekday() + 1))
+        if "last_recap_week" not in st:
+            st["last_recap_week"] = last_week
+            _recap_state_save(st)
+            return
+        if st.get("last_recap_week") != last_week:
+            if await _recap_post(guild, last_week):
+                st["last_recap_week"] = last_week
+                _recap_state_save(st)
+    except Exception as _e:
+        print(f"[recap] loop error: {_e!r}")
+
+
+@_community_recap_loop.before_loop
+async def _community_recap_loop_before():
+    await bot.wait_until_ready()
+
+
+@bot.command(name="recap", aliases=["weeklyrecap"])
+async def cmd_recap(ctx):
+    """Leadership: preview this past week's community recap here, now. The auto
+    recap still posts to the community channel every Monday."""
+    if not _xp_is_leadership(ctx.author):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    now = datetime.now(_EST_TZ)
+    week_key = _xp_week_key(now - timedelta(days=now.weekday() + 1))
+    stats = _recap_gather_stats(ctx.guild, week_key)
+    narrative = await _recap_ai_narrative(ctx.guild, stats)
+    await ctx.send(embed=_recap_build_embed(ctx.guild, stats, narrative))
+
+
+@bot.command(name="setrecapchannel")
+async def cmd_setrecapchannel(ctx, channel: discord.TextChannel = None):
+    if not _xp_is_leadership(ctx.author):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    st = _recap_state_load()
+    if channel is None:
+        st.pop("recap_channel_id", None)
+        _recap_state_save(st)
+        return await ctx.reply(
+            "✅ Weekly recap channel reset to default (community chat).",
+            mention_author=False,
+        )
+    st["recap_channel_id"] = channel.id
+    _recap_state_save(st)
+    await ctx.reply(f"✅ Weekly recap will post in {channel.mention} every Monday.", mention_author=False)
+
+
 async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
     """Post roll call reminder to crew chat and DM crew members who haven't responded yet."""
 
@@ -24335,6 +24551,8 @@ async def on_ready():
         _xp_voice_loop.start()
     if not _xp_motw_loop.is_running():
         _xp_motw_loop.start()
+    if not _community_recap_loop.is_running():
+        _community_recap_loop.start()
 
     # ── Gateway watchdog: catches silent freezes (WiFi/gateway death) ──
     try:
