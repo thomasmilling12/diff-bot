@@ -8,4 +8,4 @@ yt-dlp
 edge-tts
 spotipy
 PyNaCl
-openai>=1.40.0
+psnawp

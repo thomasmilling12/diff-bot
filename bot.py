@@ -24688,6 +24688,14 @@ async def on_ready():
     except Exception as _e:
         print(f"[backup] failed to start loop: {_e!r}")
 
+    # P4b: read-only staff stats dashboard (opt-in via STATS_WEB_PASSWORD).
+    # Idempotent + lazy-imported so a missing/broken module never blocks boot.
+    try:
+        import stats_web
+        stats_web.start_stats_web(sys.modules.get("__main__"))
+    except Exception as _e:
+        print(f"[stats-web] start failed: {_e!r}")
+
     # #4 Smart meet DM reminder loop (T-24h + T-1h to RSVP-yes list)
     try:
         if not _smart_meet_dm_reminder_loop.is_running():
