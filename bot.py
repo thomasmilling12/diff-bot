@@ -17285,11 +17285,17 @@ async def _recap_ai_narrative(guild, stats) -> "str|None":
         return None
 
 
-def _recap_build_embed(guild, stats, narrative):
+def _recap_build_embed(guild, stats, narrative, week_key=None):
     now = datetime.now(_EST_TZ)
+    # Title the embed with the week actually being recapped (not "now") so a
+    # delayed/offline catch-up post is never mislabeled.
+    try:
+        title_dt = _recap_week_bounds(week_key)[0] if week_key else now
+    except Exception:
+        title_dt = now
     desc = narrative or "Another week in the books — here's what the crew got up to. 🚗💨"
     e = discord.Embed(
-        title=f"📰 DIFF Weekly Recap — Week of {now.strftime('%b %d, %Y')}",
+        title=f"📰 DIFF Weekly Recap — Week of {title_dt.strftime('%b %d, %Y')}",
         description=desc,
         color=0x1ABC9C,
         timestamp=now,
@@ -17323,7 +17329,7 @@ async def _recap_post(guild, week_key):
         return False  # no resolvable channel yet — retry next tick
     try:
         narrative = await _recap_ai_narrative(guild, stats)
-        await ch.send(embed=_recap_build_embed(guild, stats, narrative))
+        await ch.send(embed=_recap_build_embed(guild, stats, narrative, week_key))
         return True
     except Exception as _e:
         print(f"[recap] post error: {_e!r}")
@@ -17368,7 +17374,7 @@ async def cmd_recap(ctx):
     week_key = _xp_week_key(now - timedelta(days=now.weekday() + 1))
     stats = _recap_gather_stats(ctx.guild, week_key)
     narrative = await _recap_ai_narrative(ctx.guild, stats)
-    await ctx.send(embed=_recap_build_embed(ctx.guild, stats, narrative))
+    await ctx.send(embed=_recap_build_embed(ctx.guild, stats, narrative, week_key))
 
 
 @bot.command(name="setrecapchannel")
