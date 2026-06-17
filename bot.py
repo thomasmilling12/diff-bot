@@ -39687,6 +39687,12 @@ def _aimod_save(d: dict) -> None:
     _atomic_json_save(_AIMOD_STATE_FILE, d)
 
 
+try:
+    _aimod_load()  # warm the cache at import so the message hot-path never reads disk
+except Exception:
+    pass
+
+
 def _aimod_enabled() -> bool:
     return bool(_aimod_load().get("enabled"))
 
