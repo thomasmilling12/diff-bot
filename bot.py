@@ -16984,6 +16984,119 @@ async def _xp_voice_loop_before():
     await bot.wait_until_ready()
 
 
+# ── Member of the Week spotlight (Phase 2c) ───────────────────────────────────
+def _xp_motw_channel(guild):
+    """Resolve the MOTW post channel: explicit motw_channel_id → level-up
+    announce channel → community chat default."""
+    cfg = _xp_config_load()
+    ch_id = cfg.get("motw_channel_id") or cfg.get("announce_channel_id") or _EVERYONE_CHAT_CHANNEL_ID
+    ch = guild.get_channel(int(ch_id))
+    return ch if isinstance(ch, discord.TextChannel) else None
+
+
+def _xp_motw_embed(guild, rows, *, live):
+    """Build the spotlight embed. `rows` are xp rows sorted by week_xp desc."""
+    winner_row = rows[0]
+    winner = guild.get_member(winner_row["user_id"])
+    wname = winner.display_name if winner else f"User {winner_row['user_id']}"
+    title = "📊 Member of the Week — Live Standings" if live else "🏆 Member of the Week!"
+    e = discord.Embed(
+        title=title,
+        description=(
+            f"🥇 **{wname}** with **{winner_row['week_xp']:,} XP** this week!"
+            + ("" if live else "\n\nThanks for keeping the community alive — see you at the next meet! 🚗💨")
+        ),
+        color=0xF1C40F, timestamp=datetime.now(_EST_TZ),
+    )
+    if winner:
+        e.set_thumbnail(url=winner.display_avatar.url)
+    if len(rows) > 1:
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, r in enumerate(rows[:5]):
+            m = guild.get_member(r["user_id"])
+            nm = m.display_name if m else f"User {r['user_id']}"
+            tag = medals[i] if i < 3 else f"`#{i + 1}`"
+            lines.append(f"{tag} **{nm}** — {r['week_xp']:,} XP")
+        e.add_field(name="This Week's Top Earners", value="\n".join(lines), inline=False)
+    e.set_footer(text="Different Meets • Earn XP by chatting, attending meets & posting lobby pics")
+    return e
+
+
+async def _xp_post_motw(guild):
+    """Post the spotlight for the week that just ended. No-op if nobody earned XP."""
+    rows = _xp_db.top_week(guild.id, 5)
+    if not rows:
+        return
+    ch = _xp_motw_channel(guild)
+    if ch is None:
+        return
+    winner = guild.get_member(rows[0]["user_id"])
+    content = f"🎉 Congrats {winner.mention}!" if winner else None
+    try:
+        await ch.send(content=content, embed=_xp_motw_embed(guild, rows, live=False))
+    except Exception as _e:
+        print(f"[xp] motw post error: {_e!r}")
+
+
+@tasks.loop(minutes=10)
+async def _xp_motw_loop():
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+        now = datetime.now(_EST_TZ)
+        cfg = _xp_config_load()
+        cur_wk = _xp_week_key(now)
+        # Seed on first run / state-file loss so we never post a partial accumulated
+        # week or re-fire after a redeploy. Auto-spotlight begins the next Monday.
+        if "last_motw_week" not in cfg:
+            cfg["last_motw_week"] = cur_wk
+            _xp_config_save(cfg)
+            return
+        # Fire once on Monday: spotlight last week's winner, THEN reset the weekly
+        # counter. Order is post → reset → mark so a failed post retries with data
+        # intact, and the weekly counter is never double-reset.
+        if now.weekday() == 0 and cfg.get("last_motw_week") != cur_wk:
+            await _xp_post_motw(guild)
+            _xp_db.reset_week(guild.id)
+            cfg["last_motw_week"] = cur_wk
+            _xp_config_save(cfg)
+    except Exception as _e:
+        print(f"[xp] motw loop error: {_e!r}")
+
+
+@_xp_motw_loop.before_loop
+async def _xp_motw_loop_before():
+    await bot.wait_until_ready()
+
+
+@bot.command(name="motw", aliases=["memberoftheweek"])
+async def cmd_motw(ctx):
+    """Live standings for the current week (read-only — does not reset)."""
+    rows = _xp_db.top_week(ctx.guild.id, 5)
+    if not rows:
+        return await ctx.reply("No XP earned yet this week — get chatting! 🚗", mention_author=False)
+    await ctx.send(embed=_xp_motw_embed(ctx.guild, rows, live=True))
+
+
+@bot.command(name="setmotwchannel")
+async def cmd_setmotwchannel(ctx, channel: discord.TextChannel = None):
+    if not _xp_is_leadership(ctx.author):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    cfg = _xp_config_load()
+    if channel is None:
+        cfg.pop("motw_channel_id", None)
+        _xp_config_save(cfg)
+        return await ctx.reply(
+            "✅ Member of the Week channel reset to default (level-up channel, else community chat).",
+            mention_author=False,
+        )
+    cfg["motw_channel_id"] = channel.id
+    _xp_config_save(cfg)
+    await ctx.reply(f"✅ Member of the Week will be announced in {channel.mention} every Monday.", mention_author=False)
+
+
 async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
     """Post roll call reminder to crew chat and DM crew members who haven't responded yet."""
 
@@ -24168,6 +24281,8 @@ async def on_ready():
         _health_score_update_loop.start()
     if not _xp_voice_loop.is_running():
         _xp_voice_loop.start()
+    if not _xp_motw_loop.is_running():
+        _xp_motw_loop.start()
 
     # ── Gateway watchdog: catches silent freezes (WiFi/gateway death) ──
     try:
