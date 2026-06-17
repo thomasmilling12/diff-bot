@@ -39656,22 +39656,33 @@ _AIMOD_HATE_TERMS = ("faggot", "nigger", "n1gger", "retard", "kys", "kill yourse
 
 _aimod_user_cd: dict[int, float] = {}
 _aimod_call_times: list[float] = []
+_aimod_state_cache: "dict|None" = None   # in-memory cache — message hot-path must never touch disk
 
 
-def _aimod_load() -> dict:
-    if not os.path.exists(_AIMOD_STATE_FILE):
-        return {"enabled": False, "channel_id": None}
-    try:
-        with open(_AIMOD_STATE_FILE, "r", encoding="utf-8") as f:
-            d = json.load(f) or {}
-    except Exception:
-        d = {}
+def _aimod_load(force: bool = False) -> dict:
+    """Cached read. The per-message scan path consults this, so disk is only hit
+    once (or on explicit force) — never on every message."""
+    global _aimod_state_cache
+    if _aimod_state_cache is not None and not force:
+        return _aimod_state_cache
+    d = {}
+    if os.path.exists(_AIMOD_STATE_FILE):
+        try:
+            with open(_AIMOD_STATE_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f) or {}
+        except Exception:
+            d = {}
     d.setdefault("enabled", False)
     d.setdefault("channel_id", None)
+    _aimod_state_cache = d
     return d
 
 
 def _aimod_save(d: dict) -> None:
+    global _aimod_state_cache
+    d.setdefault("enabled", False)
+    d.setdefault("channel_id", None)
+    _aimod_state_cache = d
     os.makedirs("diff_data", exist_ok=True)
     _atomic_json_save(_AIMOD_STATE_FILE, d)
 
