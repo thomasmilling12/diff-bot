@@ -15159,6 +15159,15 @@ class _RollCallDB:
                     (guild_id, meet_number))
         return {r[0] for r in cur.fetchall()}
 
+    def is_attendance_finalized(self, guild_id, meet_number) -> bool:
+        """Source of truth for finalization is meet_state.attendance_finalized
+        (what finalize_no_shows checks) — NOT rollcall_meets.is_finalized."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT attendance_finalized FROM meet_state WHERE guild_id=? AND meet_number=?",
+                    (guild_id, meet_number))
+        row = cur.fetchone()
+        return bool(row and row[0] == 1)
+
 
 _rc_db = _RollCallDB()
 
@@ -15818,7 +15827,7 @@ class _RcAutoAttendView(discord.ui.View):
         summary, applied = [], 0
         for n in (1, 2, 3):
             det = self.detected.get(n) or set()
-            if n in self.finalized:
+            if n in self.finalized or _rc_db.is_attendance_finalized(gid, n):
                 summary.append(f"Meet {n}: ⏭️ already finalized — skipped")
                 continue
             if not det:
@@ -15862,7 +15871,7 @@ async def cmd_autoattend(ctx: commands.Context):
     detected = _rc_collect_detected_attendees(gid)
     meets = {row["meet_number"]: row for row in _rc_db.get_meets(gid)}
     responses = _rc_db.get_all_responses(gid)
-    finalized = {n for n in (1, 2, 3) if meets.get(n) and meets[n]["is_finalized"]}
+    finalized = {n for n in (1, 2, 3) if _rc_db.is_attendance_finalized(gid, n)}
     if sum(len(v) for v in detected.values()) == 0:
         return await ctx.reply(
             "No lobby-picture attendance detected yet. Post lobby screenshots with PSNs visible "
