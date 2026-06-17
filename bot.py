@@ -24103,6 +24103,319 @@ async def _lobby_weekly_gallery_logic():
     os.makedirs("diff_data", exist_ok=True)
     _atomic_json_save(_LP_GALLERY_STATE_FILE, state)
 
+# ===================== Per-Meet Recaps (Phase 3b) =====================
+# After a meet winds down, auto-post a celebratory recap of THAT single meet,
+# built from the lobby pics tied to it (attendees, crews, photo count, hero pic)
+# with an AI-written blurb. Distinct from the weekly gallery (top-5 across all
+# meets) and the weekly community recap (P3a, aggregate stats).
+_MEET_RECAP_STATE_FILE   = "diff_data/diff_meet_recap_state.json"
+_MEET_RECAP_DELAY_HOURS  = 8     # wait for pics + OCR to settle after a meet
+_MEET_RECAP_MAX_AGE_DAYS = 7     # never recap ancient meets (deploy backfill guard)
+_MEET_RECAP_PRUNE_DAYS   = 30    # drop posted-markers older than this
+
+
+def _meet_recap_load() -> dict:
+    if not os.path.exists(_MEET_RECAP_STATE_FILE):
+        return {"channel_id": None, "seeded": False, "posted": {}}
+    try:
+        with open(_MEET_RECAP_STATE_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f) or {}
+    except Exception:
+        d = {}
+    d.setdefault("channel_id", None)
+    d.setdefault("seeded", False)
+    d.setdefault("posted", {})
+    return d
+
+
+def _meet_recap_save(d: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    _atomic_json_save(_MEET_RECAP_STATE_FILE, d)
+
+
+def _meet_recap_channel(guild):
+    cid = _meet_recap_load().get("channel_id")
+    if cid:
+        ch = guild.get_channel(int(cid))
+        if isinstance(ch, discord.TextChannel):
+            return ch
+    ch = guild.get_channel(_EVERYONE_CHAT_CHANNEL_ID)
+    return ch if isinstance(ch, discord.TextChannel) else None
+
+
+def _meet_recap_hosts(meet_key):
+    """Best-effort host IDs for a meet_key (only Host-Poster meets carry them)."""
+    try:
+        if meet_key.startswith("hp:"):
+            st = (_hp_load_all() or {}).get(meet_key[3:]) or {}
+            return [int(h) for h in (st.get("assigned_host_ids") or [])]
+    except Exception:
+        pass
+    return []
+
+
+def _meet_recap_group_pics(guild_id):
+    """Group stored lobby pics by meet_key (only pics tied to a meet). Returns
+    {meet_key: {meet_ts, theme, attendees:set, crews:dict, pics:[(msg_id,state)]}}."""
+    groups = {}
+    try:
+        lobby = _lp_load_all() or {}
+    except Exception:
+        return groups
+    for mid, st in lobby.items():
+        if not isinstance(st, dict):
+            continue
+        if st.get("guild_id") and st.get("guild_id") != guild_id:
+            continue
+        mk = st.get("meet_key")
+        mts = st.get("meet_ts")
+        if not mk or not mts:
+            continue
+        g = groups.get(mk)
+        if g is None:
+            g = {
+                "meet_ts": int(mts),
+                "theme": st.get("meet_theme") or "DIFF Meet",
+                "attendees": set(),
+                "crews": {},
+                "pics": [],
+            }
+            groups[mk] = g
+        g["pics"].append((mid, st))
+        poster = st.get("poster_id")
+        if poster:
+            try:
+                g["attendees"].add(int(poster))
+            except (ValueError, TypeError):
+                pass
+        ocr = st.get("ocr") or {}
+        for uid in (ocr.get("attended") or []):
+            try:
+                g["attendees"].add(int(uid))
+            except (ValueError, TypeError):
+                continue
+        for tag, cnt in (ocr.get("crew_counts") or {}).items():
+            try:
+                g["crews"][tag] = g["crews"].get(tag, 0) + int(cnt)
+            except (ValueError, TypeError):
+                continue
+    return groups
+
+
+def _meet_recap_info(meet_key, g):
+    return {
+        "meet_key": meet_key,
+        "meet_ts": g["meet_ts"],
+        "theme": g["theme"],
+        "hosts": _meet_recap_hosts(meet_key),
+        "attendee_count": len(g["attendees"]),
+        "pic_count": len(g["pics"]),
+        "crews": g["crews"],
+        "_pics": g["pics"],
+    }
+
+
+async def _meet_recap_ai_narrative(guild, info):
+    """AI-written 1-2 sentence hype blurb grounded strictly in the facts. None on
+    any failure → embed falls back to a static line."""
+    if not _ai_enabled():
+        return None
+    try:
+        when = datetime.fromtimestamp(info["meet_ts"], _EST_TZ).strftime("%A, %b %d")
+        crew_list = sorted(info["crews"].items(), key=lambda x: -x[1])
+        crews = ", ".join(t for t, _c in crew_list[:4]) or "the crew"
+        facts = (
+            f"Meet theme: {info['theme']}. "
+            f"When: {when}. "
+            f"Attendees detected: {info['attendee_count']}. "
+            f"Photos shared: {info['pic_count']}. "
+            f"Crews spotted: {crews}."
+        )
+        sys = (
+            f"You write a short, hype recap of ONE car meet for DIFF Meets.\n{_AI_BASE_CTX}\n\n"
+            "Write 1-2 genuine sentences celebrating this single meet using ONLY the "
+            "facts given. Do NOT invent numbers or names. No hashtags. Plain text, no JSON."
+        )
+        txt = await _ai_chat(sys, facts, json_mode=False, max_tokens=140)
+        if not txt:
+            return None
+        return txt.strip()[:1200]
+    except Exception:
+        return None
+
+
+def _meet_recap_build_embed(guild, info, narrative, image_url=None):
+    desc = narrative or "Another meet in the books — here's how it went down. 🏁"
+    e = discord.Embed(
+        title=f"🏁 Meet Recap — {info['theme']}",
+        description=desc,
+        color=0xE67E22,
+        timestamp=datetime.now(_EST_TZ),
+    )
+    e.add_field(name="📅 When", value=f"<t:{info['meet_ts']}:F>", inline=True)
+    e.add_field(name="👥 Attendees", value=str(info["attendee_count"]), inline=True)
+    e.add_field(name="📸 Photos", value=str(info["pic_count"]), inline=True)
+    host_names = []
+    for hid in info.get("hosts", []):
+        nm = _readable_host(guild, hid)
+        if nm:
+            host_names.append(nm)
+    if host_names:
+        e.add_field(name="🏎️ Hosts", value=", ".join(host_names[:6])[:1024], inline=False)
+    crew_list = sorted(info["crews"].items(), key=lambda x: -x[1])
+    if crew_list:
+        crew_str = ", ".join(f"{t} ×{c}" for t, c in crew_list[:6])
+        e.add_field(name="🚩 Crews spotted", value=crew_str[:1024], inline=False)
+    if image_url:
+        e.set_image(url=image_url)
+    e.set_footer(text="Different Meets • Meet Recap")
+    return e
+
+
+def _meet_recap_first_image(pics):
+    for _mid, st in pics:
+        urls = st.get("image_urls") or []
+        if urls:
+            return urls[0]
+    return None
+
+
+async def _meet_recap_hero_image(guild, pics):
+    """Most-reacted pic's first image (best-effort); falls back to first pic."""
+    src_ch = guild.get_channel(LOBBY_PICTURES_CHANNEL_ID)
+    if isinstance(src_ch, discord.TextChannel):
+        best_rc, best_url = -1, None
+        for mid, st in pics:
+            urls = st.get("image_urls") or []
+            if not urls:
+                continue
+            try:
+                m = await src_ch.fetch_message(int(mid))
+                rc = sum(r.count for r in m.reactions) if m.reactions else 0
+            except Exception:
+                rc = 0
+            if rc > best_rc:
+                best_rc, best_url = rc, urls[0]
+        if best_url:
+            return best_url
+    return _meet_recap_first_image(pics)
+
+
+async def _meet_recap_post(guild, info):
+    ch = _meet_recap_channel(guild)
+    if ch is None:
+        return False
+    image_url = await _meet_recap_hero_image(guild, info["_pics"])
+    narrative = await _meet_recap_ai_narrative(guild, info)
+    emb = _meet_recap_build_embed(guild, info, narrative, image_url)
+    try:
+        await ch.send(embed=emb)
+        return True
+    except Exception as _e:
+        print(f"[meet-recap] send failed: {_e!r}")
+        return False
+
+
+@tasks.loop(minutes=20)
+async def _meet_recap_loop():
+    try:
+        await run_with_timeout("_meet_recap_loop", _meet_recap_logic(), timeout=90)
+    except Exception as _e:
+        print(f"[meet-recap] loop error: {_e!r}")
+
+
+async def _meet_recap_logic():
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    now_ts = time.time()
+    delay = _MEET_RECAP_DELAY_HOURS * 3600
+    max_age = _MEET_RECAP_MAX_AGE_DAYS * 86400
+    groups = _meet_recap_group_pics(guild.id)
+    eligible = {}
+    for mk, g in groups.items():
+        age = now_ts - g["meet_ts"]
+        if age < delay or age > max_age or not g["pics"]:
+            continue
+        eligible[mk] = g
+
+    state = _meet_recap_load()
+    posted = state.get("posted") or {}
+
+    # First run: seed currently-eligible meets as already-posted so a fresh deploy
+    # never backfills a burst of recaps for meets that already happened.
+    if not state.get("seeded"):
+        for mk in eligible:
+            posted[mk] = now_ts
+        state["seeded"] = True
+        state["posted"] = posted
+        _meet_recap_save(state)
+        return
+
+    changed = False
+    for mk, g in eligible.items():
+        if mk in posted:
+            continue
+        ok = await _meet_recap_post(guild, _meet_recap_info(mk, g))
+        if ok:                       # mark only AFTER a successful post (retry on fail)
+            posted[mk] = now_ts
+            changed = True
+
+    cutoff = now_ts - _MEET_RECAP_PRUNE_DAYS * 86400
+    for mk in list(posted.keys()):
+        try:
+            if float(posted[mk]) < cutoff:
+                del posted[mk]
+                changed = True
+        except (ValueError, TypeError):
+            continue
+
+    if changed:
+        state["posted"] = posted
+        _meet_recap_save(state)
+
+
+@bot.command(name="setmeetrecap")
+@commands.guild_only()
+async def cmd_set_meet_recap(ctx, channel: discord.TextChannel = None):
+    if not _xp_is_leadership(ctx.author):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    state = _meet_recap_load()
+    if channel is None:
+        cur = state.get("channel_id")
+        cur_s = f"<#{cur}>" if cur else f"<#{_EVERYONE_CHAT_CHANNEL_ID}> (default)"
+        return await ctx.reply(
+            f"Per-meet recaps post to: {cur_s}\nPass a channel to change it.",
+            mention_author=False,
+        )
+    state["channel_id"] = channel.id
+    _meet_recap_save(state)
+    await ctx.reply(
+        f"✅ Per-meet recaps will now post to {channel.mention}.", mention_author=False
+    )
+
+
+@bot.command(name="meetrecap", aliases=["lastmeetrecap"])
+@commands.guild_only()
+async def cmd_meet_recap(ctx):
+    """Leadership preview: recap the most recent meet that has lobby pics, to the
+    current channel (does NOT mark it posted — the loop still posts it normally)."""
+    if not _xp_is_leadership(ctx.author):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    groups = _meet_recap_group_pics(ctx.guild.id)
+    if not groups:
+        return await ctx.reply(
+            "No lobby pics tied to a meet yet — nothing to recap.", mention_author=False
+        )
+    mk = max(groups, key=lambda k: groups[k]["meet_ts"])
+    info = _meet_recap_info(mk, groups[mk])
+    async with ctx.typing():
+        image_url = _meet_recap_first_image(info["_pics"])
+        narrative = await _meet_recap_ai_narrative(ctx.guild, info)
+        emb = _meet_recap_build_embed(ctx.guild, info, narrative, image_url)
+    await ctx.send(embed=emb)
+
+
 @tasks.loop(hours=12)
 async def _lobby_pics_retention_loop():
     try:
@@ -24582,6 +24895,8 @@ async def on_ready():
         _xp_motw_loop.start()
     if not _community_recap_loop.is_running():
         _community_recap_loop.start()
+    if not _meet_recap_loop.is_running():
+        _meet_recap_loop.start()
 
     # ── Gateway watchdog: catches silent freezes (WiFi/gateway death) ──
     try:
