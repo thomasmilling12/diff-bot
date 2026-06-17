@@ -29658,6 +29658,7 @@ async def cmd_backup_now(ctx):
 # restore. All network I/O runs in asyncio.to_thread (never blocks the loop).
 _GH_BACKUP_REPO   = "thomasmilling12/diff-bot"
 _GH_BACKUP_BRANCH = "backups"
+_gh_backup_lock   = asyncio.Lock()  # prevents loop + manual runs from overlapping
 
 
 def _gh_api(method: str, url: str, token: str, body=None):
@@ -29691,20 +29692,22 @@ def _gh_collect_data_files() -> dict:
             if name.endswith(".db"):
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
                 tmp.close()
-                src = sqlite3.connect(full)
-                dst = sqlite3.connect(tmp.name)
                 try:
-                    with dst:
-                        src.backup(dst)
+                    src = sqlite3.connect(full)
+                    dst = sqlite3.connect(tmp.name)
+                    try:
+                        with dst:
+                            src.backup(dst)
+                    finally:
+                        src.close()
+                        dst.close()
+                    with open(tmp.name, "rb") as f:
+                        raw = f.read()
                 finally:
-                    src.close()
-                    dst.close()
-                with open(tmp.name, "rb") as f:
-                    raw = f.read()
-                try:
-                    os.unlink(tmp.name)
-                except Exception:
-                    pass
+                    try:
+                        os.unlink(tmp.name)
+                    except Exception:
+                        pass
             elif name.endswith(".json"):
                 with open(full, "rb") as f:
                     raw = f.read()
@@ -29740,13 +29743,24 @@ def _gh_backup_sync():
             tree.append({"path": f"diff_data/{name}", "mode": "100644", "type": "blob", "sha": blob["sha"]})
         tree_obj = _gh_api("POST", f"{base}/trees", token, {"tree": tree})
         stamp = datetime.now(_EST_TZ).strftime("%Y-%m-%d %H:%M ET")
-        commit = _gh_api("POST", f"{base}/commits", token, {
-            "message": f"Data backup {stamp} ({len(files)} files)",
-            "tree": tree_obj["sha"],
-            "parents": [parent_sha],
-        })
-        _gh_api("PATCH", f"{base}/refs/heads/{_GH_BACKUP_BRANCH}", token,
-                {"sha": commit["sha"], "force": True})
+
+        def _commit_and_set(parent):
+            # Fast-forward only (no force) so a concurrent backup can never be
+            # dropped from history. Caller retries once on non-fast-forward.
+            cm = _gh_api("POST", f"{base}/commits", token, {
+                "message": f"Data backup {stamp} ({len(files)} files)",
+                "tree": tree_obj["sha"],
+                "parents": [parent],
+            })
+            _gh_api("PATCH", f"{base}/refs/heads/{_GH_BACKUP_BRANCH}", token, {"sha": cm["sha"]})
+            return cm
+
+        try:
+            commit = _commit_and_set(parent_sha)
+        except Exception:
+            # Likely non-fast-forward (another backup landed) — re-read tip + retry once.
+            ref = _gh_api("GET", f"{base}/ref/heads/{_GH_BACKUP_BRANCH}", token)
+            commit = _commit_and_set(ref["object"]["sha"])
         return (True, f"{len(files)} files @ {commit['sha'][:7]}")
     except Exception as _e:
         return (False, repr(_e))
@@ -29754,7 +29768,8 @@ def _gh_backup_sync():
 
 async def _run_github_backup_once():
     try:
-        ok, info = await asyncio.to_thread(_gh_backup_sync)
+        async with _gh_backup_lock:
+            ok, info = await asyncio.to_thread(_gh_backup_sync)
     except Exception as _e:
         print(f"[ghbackup] error: {_e!r}")
         return (False, repr(_e))
