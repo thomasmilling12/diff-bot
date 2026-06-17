@@ -16484,6 +16484,16 @@ class _XPDB:
         )
         return cur.fetchall()
 
+    def prune_weeks(self, guild_id, before_week_key):
+        """Drop weekly buckets older than `before_week_key`. Week keys are
+        'YYYY-Wnn' (zero-padded), so lexicographic compare is chronological."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "DELETE FROM xp_week WHERE guild_id=? AND week_key < ?",
+            (guild_id, before_week_key),
+        )
+        self.conn.commit()
+
     def rank_of(self, guild_id, user_id):
         cur = self.conn.cursor()
         cur.execute("SELECT xp FROM xp WHERE guild_id=? AND user_id=?", (guild_id, user_id))
@@ -17082,22 +17092,28 @@ async def _xp_motw_loop():
             return
         now = datetime.now(_EST_TZ)
         cfg = _xp_config_load()
-        # The ISO week that just ended (3 days back lands safely inside last week on
-        # any Monday). Weekly XP is bucketed per-week at earn-time, so reading this
-        # key is exact regardless of when the loop tick happens to fire.
-        last_week = _xp_week_key(now - timedelta(days=3))
-        # Seed on first run / state-file loss so we never post a partial/empty first
-        # week or re-fire after a redeploy. Auto-spotlight begins the next Monday.
+        # The most recently COMPLETED ISO week — (weekday()+1) days back always lands
+        # on the Sunday of the previous week, for any day. So a missed Monday (e.g. the
+        # Pi was offline) is caught up the moment the bot returns, and an in-progress
+        # week is never posted early. Weekly XP is bucketed per-week at earn-time, so
+        # reading this key is exact regardless of when the tick fires.
+        last_week = _xp_week_key(now - timedelta(days=now.weekday() + 1))
+        # Seed on first run / state-file loss so we never post a partial/pre-deploy
+        # week. The first spotlight is the next week that completes after deploy.
         if "last_motw_week" not in cfg:
             cfg["last_motw_week"] = last_week
             _xp_config_save(cfg)
             return
-        # Fire once on Monday: spotlight the week that just ended. Mark only AFTER a
-        # confirmed post so a transient Discord/channel failure retries with data intact.
-        if now.weekday() == 0 and cfg.get("last_motw_week") != last_week:
+        # Post once per completed week. Mark only AFTER a confirmed post so a transient
+        # Discord/channel failure retries with data intact.
+        if cfg.get("last_motw_week") != last_week:
             if await _xp_post_motw(guild, last_week):
                 cfg["last_motw_week"] = last_week
                 _xp_config_save(cfg)
+                try:
+                    _xp_db.prune_weeks(guild.id, _xp_week_key(now - timedelta(weeks=8)))
+                except Exception:
+                    pass
     except Exception as _e:
         print(f"[xp] motw loop error: {_e!r}")
 
