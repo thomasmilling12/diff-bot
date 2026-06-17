@@ -16376,6 +16376,10 @@ class _XPDB:
             "badge_key TEXT NOT NULL, earned_at TEXT, "
             "PRIMARY KEY (guild_id, user_id, badge_key))"
         )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_xp_badges_guild_user "
+            "ON xp_badges(guild_id, user_id)"
+        )
         self.conn.commit()
 
     def get(self, guild_id, user_id):
@@ -24592,6 +24596,15 @@ async def _rc_pruning_report_loop() -> None:
                     else:
                         entry["streak"] = 0
                 _rc_streaks_save(streaks)
+
+                # Streak badges may have just become eligible — grant immediately
+                # for anyone who responded yes (instead of waiting for !badges).
+                for cm in crew_members:
+                    if cm.id in yes_responders:
+                        try:
+                            await _xp_check_badges(guild, cm)
+                        except Exception:
+                            pass
 
                 # Send milestone DMs
                 for (cm, wks) in milestone_dms:
