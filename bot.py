@@ -16403,9 +16403,11 @@ class _XPDB:
                 "INSERT INTO xp_awards (guild_id, user_id, kind, ref, ts) VALUES (?, ?, ?, ?, ?)",
                 (guild_id, user_id, kind, ref, datetime.now(timezone.utc).isoformat()),
             )
-            self.conn.commit()
         except sqlite3.IntegrityError:
             return None
+        # No commit here on purpose: add_xp() commits the dedup marker and the XP
+        # update together in one transaction, so a failure can't leave an award
+        # "spent" (marker persisted) with no XP actually granted.
         return self.add_xp(guild_id, user_id, amount)
 
     def count_awards_like(self, guild_id, user_id, kind, ref_prefix):
@@ -16588,6 +16590,13 @@ async def _xp_apply_award(guild, member, amount, *, kind=None, ref=None):
         except Exception:
             granted = None
         await _xp_notify_levelup(guild, member, new_level, total, granted)
+    elif new_level < old_level:
+        # Manual reductions (!takexp) can drop a member below a reward tier — strip
+        # any reward roles that are now above their level. No notification on demotion.
+        try:
+            await _xp_sync_reward_roles(guild, member, new_level)
+        except Exception:
+            pass
 
 
 def _xp_progress_bar(total_xp, level, length=12):
