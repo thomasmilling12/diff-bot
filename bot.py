@@ -15595,6 +15595,16 @@ class _RcBtn(discord.ui.Button):
         except Exception as e:
             print(f"[RcBtn] Post-response error for {interaction.user}: {e}")
 
+        # --- XP: reward RSVP "yes" once per week+meet ---
+        if self.status == "yes":
+            try:
+                await _xp_apply_award(
+                    interaction.guild, interaction.user, _XP_PER_RSVP_YES,
+                    kind="rsvp", ref=f"{_xp_week_key()}:{self.meet_number}",
+                )
+            except Exception:
+                pass
+
 
 class _RcMyRsvpBtn(discord.ui.Button):
     def __init__(self) -> None:
@@ -16272,9 +16282,472 @@ async def _rc_log_attendance(guild, meet_number, attended, no_shows, action_by):
             except discord.Forbidden:
                 pass
 
+    # --- XP: award meet attendance once per week+meet ---
+    try:
+        _xwk = _xp_week_key()
+        for _auid in attended:
+            _am = guild.get_member(_auid)
+            if _am:
+                await _xp_apply_award(
+                    guild, _am, _XP_PER_MEET_ATTEND,
+                    kind="attend", ref=f"{_xwk}:{meet_number}",
+                )
+    except Exception:
+        pass
+
 
 _CREW_CHAT_CHANNEL_ID    = 990097781798613063
 _EVERYONE_CHAT_CHANNEL_ID = 1047335231826436166
+
+
+# =========================
+# XP / LEVELS / REWARDS SYSTEM  (Phase 2a)
+# =========================
+_XP_DB_FILE      = "diff_data/diff_xp.db"
+_XP_ROLES_FILE   = "diff_data/diff_xp_roles.json"
+_XP_CONFIG_FILE  = "diff_data/diff_xp_config.json"
+
+_XP_PER_MESSAGE         = 5
+_XP_MSG_COOLDOWN_SECS   = 60
+_XP_PER_RSVP_YES        = 10
+_XP_PER_LOBBY_PIC       = 15
+_XP_LOBBY_PIC_DAILY_CAP = 3
+_XP_PER_MEET_ATTEND     = 50
+_XP_PER_VC_TICK         = 5
+_XP_VC_TICK_MINUTES     = 10
+
+# level threshold -> auto-created reward role name (only the highest earned is kept)
+_XP_ROLE_LADDER = [
+    (5,  "DIFF Regular"),
+    (10, "DIFF Veteran"),
+    (20, "DIFF Elite"),
+    (35, "DIFF Legend"),
+]
+
+_xp_msg_cooldowns: dict = {}
+_xp_roles_lock = asyncio.Lock()
+
+
+def _xp_level_for(total_xp: int) -> int:
+    """Cumulative XP to reach level L is 50*L*(L+1); this is the inverse."""
+    if total_xp < 100:
+        return 0
+    return int((-50 + (2500 + 200 * total_xp) ** 0.5) / 100)
+
+
+def _xp_to_reach(level: int) -> int:
+    if level <= 0:
+        return 0
+    return 50 * level * (level + 1)
+
+
+def _xp_week_key(dt=None) -> str:
+    d = dt or datetime.now(_EST_TZ)
+    iso = d.isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+class _XPDB:
+    def __init__(self, path: str = _XP_DB_FILE) -> None:
+        os.makedirs("diff_data", exist_ok=True)
+        self.conn = sqlite3.connect(path)
+        self.conn.row_factory = sqlite3.Row
+        cur = self.conn.cursor()
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS xp ("
+            "guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+            "xp INTEGER NOT NULL DEFAULT 0, level INTEGER NOT NULL DEFAULT 0, "
+            "week_xp INTEGER NOT NULL DEFAULT 0, updated_at TEXT, "
+            "PRIMARY KEY (guild_id, user_id))"
+        )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS xp_awards ("
+            "guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, "
+            "kind TEXT NOT NULL, ref TEXT NOT NULL, ts TEXT, "
+            "PRIMARY KEY (guild_id, user_id, kind, ref))"
+        )
+        self.conn.commit()
+
+    def get(self, guild_id, user_id):
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM xp WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+        return cur.fetchone()
+
+    def add_xp(self, guild_id, user_id, amount):
+        """Add XP (may be negative). Returns (old_level, new_level, new_total)."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT xp FROM xp WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+        row = cur.fetchone()
+        old_total = row["xp"] if row else 0
+        new_total = max(0, old_total + amount)
+        old_level = _xp_level_for(old_total)
+        new_level = _xp_level_for(new_total)
+        now = datetime.now(timezone.utc).isoformat()
+        wk_inc = amount if amount > 0 else 0
+        cur.execute(
+            "INSERT INTO xp (guild_id, user_id, xp, level, week_xp, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, user_id) DO UPDATE SET "
+            "xp=excluded.xp, level=excluded.level, "
+            "week_xp=xp.week_xp+?, updated_at=excluded.updated_at",
+            (guild_id, user_id, new_total, new_level, wk_inc, now, wk_inc),
+        )
+        self.conn.commit()
+        return old_level, new_level, new_total
+
+    def award_once(self, guild_id, user_id, kind, ref, amount):
+        """Insert a dedup marker; if new, add XP. Returns result tuple or None."""
+        cur = self.conn.cursor()
+        try:
+            cur.execute(
+                "INSERT INTO xp_awards (guild_id, user_id, kind, ref, ts) VALUES (?, ?, ?, ?, ?)",
+                (guild_id, user_id, kind, ref, datetime.now(timezone.utc).isoformat()),
+            )
+            self.conn.commit()
+        except sqlite3.IntegrityError:
+            return None
+        return self.add_xp(guild_id, user_id, amount)
+
+    def count_awards_like(self, guild_id, user_id, kind, ref_prefix):
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) AS c FROM xp_awards "
+            "WHERE guild_id=? AND user_id=? AND kind=? AND ref LIKE ?",
+            (guild_id, user_id, kind, ref_prefix),
+        )
+        r = cur.fetchone()
+        return r["c"] if r else 0
+
+    def top(self, guild_id, limit=10):
+        cur = self.conn.cursor()
+        cur.execute("SELECT * FROM xp WHERE guild_id=? ORDER BY xp DESC LIMIT ?", (guild_id, limit))
+        return cur.fetchall()
+
+    def top_week(self, guild_id, limit=10):
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT * FROM xp WHERE guild_id=? AND week_xp>0 ORDER BY week_xp DESC LIMIT ?",
+            (guild_id, limit),
+        )
+        return cur.fetchall()
+
+    def reset_week(self, guild_id):
+        cur = self.conn.cursor()
+        cur.execute("UPDATE xp SET week_xp=0 WHERE guild_id=?", (guild_id,))
+        self.conn.commit()
+
+    def rank_of(self, guild_id, user_id):
+        cur = self.conn.cursor()
+        cur.execute("SELECT xp FROM xp WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cur.execute("SELECT COUNT(*) AS c FROM xp WHERE guild_id=? AND xp>?", (guild_id, row["xp"]))
+        r = cur.fetchone()
+        return (r["c"] if r else 0) + 1
+
+
+_xp_db = _XPDB()
+
+
+def _xp_config_load() -> dict:
+    if not os.path.exists(_XP_CONFIG_FILE):
+        return {}
+    try:
+        with open(_XP_CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _xp_config_save(d: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    _atomic_json_save(_XP_CONFIG_FILE, d)
+
+
+def _xp_roles_load() -> dict:
+    if not os.path.exists(_XP_ROLES_FILE):
+        return {}
+    try:
+        with open(_XP_ROLES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _xp_roles_save(d: dict) -> None:
+    os.makedirs("diff_data", exist_ok=True)
+    _atomic_json_save(_XP_ROLES_FILE, d)
+
+
+async def _xp_ensure_ladder_roles(guild):
+    """Return {name: role_id} for every ladder role, creating any that are missing.
+    Concurrency-safe so a level-up flood can't create duplicate roles."""
+    out = {}
+    async with _xp_roles_lock:
+        cache = _xp_roles_load()
+        changed = False
+        for _lvl, name in _XP_ROLE_LADDER:
+            rid = cache.get(name)
+            role = guild.get_role(int(rid)) if rid else None
+            if role is None:
+                role = discord.utils.get(guild.roles, name=name)
+            if role is None:
+                try:
+                    role = await guild.create_role(
+                        name=name, mentionable=False, reason="Auto-created XP reward role"
+                    )
+                except Exception:
+                    role = None
+            if role is not None:
+                out[name] = role.id
+                if cache.get(name) != role.id:
+                    cache[name] = role.id
+                    changed = True
+        if changed:
+            _xp_roles_save(cache)
+    return out
+
+
+async def _xp_sync_reward_roles(guild, member, level):
+    """Grant the single highest reward role earned at `level`; strip lower ones.
+    Returns the newly-granted role name (if any) for the level-up notice."""
+    try:
+        ladder_ids = await _xp_ensure_ladder_roles(guild)
+    except Exception:
+        return None
+    earned = [name for lvl, name in _XP_ROLE_LADDER if level >= lvl]
+    target = earned[-1] if earned else None
+    granted = None
+    for name, rid in ladder_ids.items():
+        role = guild.get_role(rid)
+        if role is None:
+            continue
+        has = role in member.roles
+        if name == target:
+            if not has:
+                try:
+                    await member.add_roles(role, reason="XP reward role earned")
+                    granted = name
+                except Exception:
+                    pass
+        elif has:
+            try:
+                await member.remove_roles(role, reason="XP reward role superseded")
+            except Exception:
+                pass
+    return granted
+
+
+async def _xp_notify_levelup(guild, member, level, total, granted_role):
+    desc = f"You reached **Level {level}** in {guild.name}! 🎉\nTotal XP: **{total:,}**"
+    if granted_role:
+        desc += f"\n\n🏅 New role unlocked: **{granted_role}**"
+    e = discord.Embed(
+        title="⬆️ Level Up!", description=desc,
+        color=0xF1C40F, timestamp=datetime.now(_EST_TZ),
+    )
+    e.set_footer(text="Different Meets • Keep showing up")
+    try:
+        await member.send(embed=e)
+    except discord.Forbidden:
+        pass
+    except Exception:
+        pass
+    cfg = _xp_config_load()
+    ch_id = cfg.get("announce_channel_id")
+    if ch_id:
+        ch = guild.get_channel(int(ch_id))
+        if isinstance(ch, discord.TextChannel):
+            extra = f" — unlocked **{granted_role}**" if granted_role else ""
+            try:
+                await ch.send(f"🎉 {member.mention} just hit **Level {level}**!{extra}")
+            except Exception:
+                pass
+
+
+async def _xp_apply_award(guild, member, amount, *, kind=None, ref=None):
+    """Central XP award. With kind+ref the award is deduped (granted once only).
+    Detects level-ups, syncs reward roles, and notifies the member."""
+    if member is None or getattr(member, "bot", False):
+        return
+    try:
+        if kind and ref:
+            res = _xp_db.award_once(guild.id, member.id, kind, ref, amount)
+            if res is None:
+                return
+        else:
+            res = _xp_db.add_xp(guild.id, member.id, amount)
+        old_level, new_level, total = res
+    except Exception as _e:
+        print(f"[xp] award error: {_e!r}")
+        return
+    if new_level > old_level:
+        try:
+            granted = await _xp_sync_reward_roles(guild, member, new_level)
+        except Exception:
+            granted = None
+        await _xp_notify_levelup(guild, member, new_level, total, granted)
+
+
+def _xp_progress_bar(total_xp, level, length=12):
+    base = _xp_to_reach(level)
+    nxt = _xp_to_reach(level + 1)
+    span = max(1, nxt - base)
+    done = max(0, min(span, total_xp - base))
+    filled = int(length * done / span)
+    return ("█" * filled) + ("░" * (length - filled)), done, span
+
+
+def _xp_is_leadership(member) -> bool:
+    try:
+        if any(r.id in _LEADERSHIP_ROLE_IDS for r in member.roles):
+            return True
+        return bool(member.guild_permissions.manage_guild)
+    except Exception:
+        return False
+
+
+@bot.command(name="rank", aliases=["level", "xp"])
+async def cmd_rank(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    if member.bot:
+        return await ctx.reply("Bots don't earn XP.", mention_author=False)
+    row = _xp_db.get(ctx.guild.id, member.id)
+    total = row["xp"] if row else 0
+    level = _xp_level_for(total)
+    bar, done, span = _xp_progress_bar(total, level)
+    rank = _xp_db.rank_of(ctx.guild.id, member.id)
+    e = discord.Embed(
+        title=f"🎮 {member.display_name} — Level {level}",
+        color=0x5865F2, timestamp=datetime.now(_EST_TZ),
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="Total XP", value=f"**{total:,}**", inline=True)
+    e.add_field(name="Server Rank", value=(f"#{rank}" if rank else "—"), inline=True)
+    e.add_field(
+        name=f"Progress to Level {level + 1}",
+        value=f"{bar}\n{done:,} / {span:,} XP",
+        inline=False,
+    )
+    e.set_footer(text="Different Meets • !rank")
+    await ctx.send(embed=e)
+
+
+@bot.command(name="xpboard", aliases=["xptop", "levels"])
+async def cmd_xpboard(ctx):
+    rows = _xp_db.top(ctx.guild.id, 10)
+    if not rows:
+        return await ctx.reply(
+            "No XP earned yet. Show up to a meet, chat, or post a lobby pic!",
+            mention_author=False,
+        )
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, r in enumerate(rows):
+        m = ctx.guild.get_member(r["user_id"])
+        name = m.display_name if m else f"User {r['user_id']}"
+        tag = medals[i] if i < 3 else f"`#{i + 1}`"
+        lines.append(f"{tag} **{name}** — Level {_xp_level_for(r['xp'])} · {r['xp']:,} XP")
+    e = discord.Embed(
+        title="🏆 XP Leaderboard",
+        description="\n".join(lines),
+        color=0xF1C40F, timestamp=datetime.now(_EST_TZ),
+    )
+    e.set_footer(text="Different Meets • Top 10 by XP")
+    await ctx.send(embed=e)
+
+
+@bot.command(name="givexp")
+async def cmd_givexp(ctx, member: discord.Member, amount: int):
+    if not _xp_is_leadership(ctx.author):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    await _xp_apply_award(ctx.guild, member, amount)
+    row = _xp_db.get(ctx.guild.id, member.id)
+    total = row["xp"] if row else 0
+    await ctx.reply(
+        f"✅ Gave **{amount:,}** XP to {member.mention}. "
+        f"New total: **{total:,}** (Level {_xp_level_for(total)}).",
+        mention_author=False,
+    )
+
+
+@bot.command(name="takexp")
+async def cmd_takexp(ctx, member: discord.Member, amount: int):
+    if not _xp_is_leadership(ctx.author):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    await _xp_apply_award(ctx.guild, member, -abs(amount))
+    row = _xp_db.get(ctx.guild.id, member.id)
+    total = row["xp"] if row else 0
+    await ctx.reply(
+        f"✅ Removed **{abs(amount):,}** XP from {member.mention}. "
+        f"New total: **{total:,}** (Level {_xp_level_for(total)}).",
+        mention_author=False,
+    )
+
+
+@bot.command(name="setlevelchannel")
+async def cmd_setlevelchannel(ctx, channel: discord.TextChannel = None):
+    if not _xp_is_leadership(ctx.author):
+        return await ctx.reply("Leadership only.", mention_author=False)
+    cfg = _xp_config_load()
+    if channel is None:
+        cfg.pop("announce_channel_id", None)
+        _xp_config_save(cfg)
+        return await ctx.reply(
+            "✅ Level-up announcements disabled (members still get a DM).",
+            mention_author=False,
+        )
+    cfg["announce_channel_id"] = channel.id
+    _xp_config_save(cfg)
+    await ctx.reply(f"✅ Level-up announcements will post in {channel.mention}.", mention_author=False)
+
+
+@bot.command(name="xpinfo", aliases=["xphelp"])
+async def cmd_xpinfo(ctx):
+    ladder = "\n".join(f"• Level {lvl} → **{name}**" for lvl, name in _XP_ROLE_LADDER)
+    e = discord.Embed(
+        title="🎮 How XP Works",
+        description=(
+            "Earn XP by being active in DIFF Meets:\n"
+            f"• 💬 Chatting — **+{_XP_PER_MESSAGE}** XP (once / {_XP_MSG_COOLDOWN_SECS}s)\n"
+            f"• ✅ RSVP yes to roll call — **+{_XP_PER_RSVP_YES}** XP / meet\n"
+            f"• 📸 Posting lobby pics — **+{_XP_PER_LOBBY_PIC}** XP (up to {_XP_LOBBY_PIC_DAILY_CAP}/day)\n"
+            f"• 🏁 Attending a meet — **+{_XP_PER_MEET_ATTEND}** XP / meet\n"
+            f"• 🎙️ Hanging in voice — **+{_XP_PER_VC_TICK}** XP / {_XP_VC_TICK_MINUTES} min"
+        ),
+        color=0x5865F2,
+    )
+    e.add_field(name="🏅 Role Rewards", value=ladder, inline=False)
+    e.set_footer(text="Different Meets • !rank to see your level")
+    await ctx.send(embed=e)
+
+
+@tasks.loop(minutes=10)
+async def _xp_voice_loop():
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+        afk_id = guild.afk_channel.id if guild.afk_channel else None
+        for vc in guild.voice_channels:
+            if afk_id and vc.id == afk_id:
+                continue
+            active = [
+                m for m in vc.members
+                if not m.bot and m.voice and not m.voice.self_deaf and not m.voice.deaf
+            ]
+            if len(active) < 2:
+                continue
+            for m in active:
+                await _xp_apply_award(guild, m, _XP_PER_VC_TICK)
+    except Exception as _e:
+        print(f"[xp] voice loop error: {_e!r}")
+
+
+@_xp_voice_loop.before_loop
+async def _xp_voice_loop_before():
+    await bot.wait_until_ready()
 
 
 async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
@@ -22724,6 +23197,19 @@ async def _lp_handle_lobby_post(message: discord.Message) -> None:
     except Exception:
         pass
 
+    # --- XP: lobby-pic post (deduped per message, capped per day) ---
+    try:
+        _xday = datetime.now(_EST_TZ).strftime("%Y-%m-%d")
+        if _xp_db.count_awards_like(
+            message.guild.id, message.author.id, "lobbypic", _xday + ":%"
+        ) < _XP_LOBBY_PIC_DAILY_CAP:
+            await _xp_apply_award(
+                message.guild, message.author, _XP_PER_LOBBY_PIC,
+                kind="lobbypic", ref=f"{_xday}:{message.id}",
+            )
+    except Exception:
+        pass
+
     asyncio.create_task(_lp_ocr_followup(message.id, images[0].url, reply_msg))
 
     if _lp_wm_enabled_for(message.author.id):
@@ -23441,6 +23927,8 @@ async def on_ready():
         _re_engagement_loop.start()
     if not _health_score_update_loop.is_running():
         _health_score_update_loop.start()
+    if not _xp_voice_loop.is_running():
+        _xp_voice_loop.start()
 
     # ── Gateway watchdog: catches silent freezes (WiFi/gateway death) ──
     try:
@@ -38161,6 +38649,16 @@ async def on_message(message: discord.Message) -> None:
     # Track last message timestamp for inactivity system
     try:
         _activity_upsert(message.author.id, last_message=time.time())
+    except Exception:
+        pass
+
+    # --- XP: message activity (cooldown-gated, skips commands) ---
+    try:
+        if not message.content.startswith("!"):
+            _xnow = time.monotonic()
+            if _xnow - _xp_msg_cooldowns.get(message.author.id, 0) >= _XP_MSG_COOLDOWN_SECS:
+                _xp_msg_cooldowns[message.author.id] = _xnow
+                await _xp_apply_award(message.guild, message.author, _XP_PER_MESSAGE)
     except Exception:
         pass
 
