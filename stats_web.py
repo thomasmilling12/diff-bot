@@ -21,6 +21,7 @@ wrapped in try/except and degrades to "unavailable" rather than crashing.
 from __future__ import annotations
 
 import os
+import hmac
 import json
 import html
 import sqlite3
@@ -80,9 +81,13 @@ def _serve(main):
     port = int(os.environ.get("STATS_WEB_PORT", "8081"))
 
     def _auth_ok(auth):
+        if not auth:
+            return False
         want_user = os.environ.get("STATS_WEB_USER", "staff")
         want_pw = os.environ.get("STATS_WEB_PASSWORD", "")
-        return bool(auth) and auth.username == want_user and auth.password == want_pw
+        u_ok = hmac.compare_digest(auth.username or "", want_user)
+        p_ok = hmac.compare_digest(auth.password or "", want_pw)
+        return u_ok and p_ok
 
     def _requires_auth(fn):
         @functools.wraps(fn)
