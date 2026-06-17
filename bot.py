@@ -24163,42 +24163,58 @@ def _meet_recap_group_pics(guild_id):
     except Exception:
         return groups
     for mid, st in lobby.items():
-        if not isinstance(st, dict):
-            continue
-        if st.get("guild_id") and st.get("guild_id") != guild_id:
-            continue
-        mk = st.get("meet_key")
-        mts = st.get("meet_ts")
-        if not mk or not mts:
-            continue
-        g = groups.get(mk)
-        if g is None:
-            g = {
-                "meet_ts": int(mts),
-                "theme": st.get("meet_theme") or "DIFF Meet",
-                "attendees": set(),
-                "crews": {},
-                "pics": [],
-            }
-            groups[mk] = g
-        g["pics"].append((mid, st))
-        poster = st.get("poster_id")
-        if poster:
+        # Defensive per-record: one malformed/corrupt entry must never abort the
+        # whole recap tick (loop would otherwise re-fail every 20 min).
+        try:
+            if not isinstance(st, dict):
+                continue
+            if st.get("guild_id") and st.get("guild_id") != guild_id:
+                continue
+            mk = st.get("meet_key")
+            mts = st.get("meet_ts")
+            if not mk or mts is None:
+                continue
             try:
-                g["attendees"].add(int(poster))
-            except (ValueError, TypeError):
-                pass
-        ocr = st.get("ocr") or {}
-        for uid in (ocr.get("attended") or []):
-            try:
-                g["attendees"].add(int(uid))
+                mts = int(float(mts))
             except (ValueError, TypeError):
                 continue
-        for tag, cnt in (ocr.get("crew_counts") or {}).items():
-            try:
-                g["crews"][tag] = g["crews"].get(tag, 0) + int(cnt)
-            except (ValueError, TypeError):
-                continue
+            g = groups.get(mk)
+            if g is None:
+                g = {
+                    "meet_ts": mts,
+                    "theme": st.get("meet_theme") or "DIFF Meet",
+                    "attendees": set(),
+                    "crews": {},
+                    "pics": [],
+                }
+                groups[mk] = g
+            g["pics"].append((mid, st))
+            poster = st.get("poster_id")
+            if poster:
+                try:
+                    g["attendees"].add(int(poster))
+                except (ValueError, TypeError):
+                    pass
+            ocr = st.get("ocr")
+            if not isinstance(ocr, dict):
+                ocr = {}
+            attended = ocr.get("attended")
+            if isinstance(attended, list):
+                for uid in attended:
+                    try:
+                        g["attendees"].add(int(uid))
+                    except (ValueError, TypeError):
+                        continue
+            crew_counts = ocr.get("crew_counts")
+            if isinstance(crew_counts, dict):
+                for tag, cnt in crew_counts.items():
+                    try:
+                        g["crews"][tag] = g["crews"].get(tag, 0) + int(cnt)
+                    except (ValueError, TypeError):
+                        continue
+        except Exception as _e:
+            print(f"[meet-recap] skipped malformed lobby record {mid!r}: {_e!r}")
+            continue
     return groups
 
 
