@@ -15153,6 +15153,12 @@ class _RollCallDB:
         cur.execute("SELECT * FROM attendance_stats WHERE guild_id=?", (guild_id,))
         return cur.fetchall()
 
+    def get_actual_attendees(self, guild_id, meet_number) -> set:
+        cur = self.conn.cursor()
+        cur.execute("SELECT user_id FROM attendance_actual WHERE guild_id=? AND meet_number=?",
+                    (guild_id, meet_number))
+        return {r[0] for r in cur.fetchall()}
+
 
 _rc_db = _RollCallDB()
 
@@ -15739,6 +15745,164 @@ class _RcAdminView(discord.ui.View):
         super().__init__(timeout=None)
         for n in (1, 2, 3):
             self.add_item(_RcFinalizeBtn(n))
+
+
+def _rc_collect_detected_attendees(guild_id: int) -> dict:
+    """Map roll-call meet_number -> set(user_id) detected as actually present.
+
+    Source: lobby-picture OCR (ocr.attended) + the poster of each lobby pic,
+    matched to each roll-call meet's start time within _LP_MATCH_WINDOW_HOURS.
+    OCR is best-effort, so this is a candidate set for staff confirmation only."""
+    result = {1: set(), 2: set(), 3: set()}
+    try:
+        meets = _rc_db.get_meets(guild_id)
+    except Exception:
+        return result
+    meet_ts_by_num = {}
+    for row in meets:
+        try:
+            ts = _parse_meet_ts(row["date_text"] or "", row["start_time"] or "")
+            if ts:
+                meet_ts_by_num[row["meet_number"]] = ts
+        except Exception:
+            continue
+    if not meet_ts_by_num:
+        return result
+    window = _LP_MATCH_WINDOW_HOURS * 3600
+    try:
+        lobby = _lp_load_all() or {}
+    except Exception:
+        lobby = {}
+    for _mid, st in lobby.items():
+        if not isinstance(st, dict):
+            continue
+        if st.get("guild_id") and st.get("guild_id") != guild_id:
+            continue
+        lts = st.get("meet_ts")
+        if not lts:
+            continue
+        best_n, best_diff = None, window + 1
+        for n, mts in meet_ts_by_num.items():
+            diff = abs(float(lts) - float(mts))
+            if diff <= window and diff < best_diff:
+                best_n, best_diff = n, diff
+        if best_n is None:
+            continue
+        poster = st.get("poster_id")
+        if poster:
+            try:
+                result[best_n].add(int(poster))
+            except (ValueError, TypeError):
+                pass
+        for uid in ((st.get("ocr") or {}).get("attended") or []):
+            try:
+                result[best_n].add(int(uid))
+            except (ValueError, TypeError):
+                continue
+    return result
+
+
+class _RcAutoAttendView(discord.ui.View):
+    """Staff confirm view: applies auto-detected attendance and finalizes no-shows."""
+    def __init__(self, detected: dict, finalized: set) -> None:
+        super().__init__(timeout=300)
+        self.detected = detected
+        self.finalized = finalized
+
+    @discord.ui.button(label="Apply & Finalize", style=discord.ButtonStyle.success, emoji="✅")
+    async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _rc_is_admin(interaction.user):
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        gid = interaction.guild.id
+        summary, applied = [], 0
+        for n in (1, 2, 3):
+            det = self.detected.get(n) or set()
+            if n in self.finalized:
+                summary.append(f"Meet {n}: ⏭️ already finalized — skipped")
+                continue
+            if not det:
+                summary.append(f"Meet {n}: no detections — skipped")
+                continue
+            existing = _rc_db.get_actual_attendees(gid, n)
+            merged = sorted(existing | det)
+            _rc_db.set_actual_attendees(gid, n, merged)
+            attended, no_shows = _rc_db.finalize_no_shows(gid, n)
+            await _rc_log_attendance(interaction.guild, n, attended, no_shows, interaction.user)
+            summary.append(f"Meet {n}: ✅ present {len(attended)} · 👻 no-shows {len(no_shows)}")
+            applied += 1
+        if applied:
+            try:
+                await _rc_refresh_panel(interaction.guild)
+            except Exception:
+                pass
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+        await interaction.followup.send("\n".join(summary), ephemeral=True)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _rc_is_admin(interaction.user):
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="Cancelled — no changes made.", view=self)
+
+
+@bot.command(name="autoattend", aliases=["autoattendance", "ocrattend"])
+async def cmd_autoattend(ctx: commands.Context):
+    """Staff: auto-detect meet attendance from lobby-pic OCR, preview no-shows, then finalize."""
+    if not _rc_is_admin(ctx.author):
+        return await ctx.reply("Staff only.", mention_author=False)
+    gid = ctx.guild.id
+    detected = _rc_collect_detected_attendees(gid)
+    meets = {row["meet_number"]: row for row in _rc_db.get_meets(gid)}
+    responses = _rc_db.get_all_responses(gid)
+    finalized = {n for n in (1, 2, 3) if meets.get(n) and meets[n]["is_finalized"]}
+    if sum(len(v) for v in detected.values()) == 0:
+        return await ctx.reply(
+            "No lobby-picture attendance detected yet. Post lobby screenshots with PSNs visible "
+            "so OCR can match them to this week's meets, then try again.",
+            mention_author=False,
+        )
+    embed = discord.Embed(
+        title="🔎 Auto-Detected Attendance (from lobby pics)",
+        description=(
+            "Detected from lobby-picture OCR + posters. **OCR can miss people**, so review before "
+            "finalizing. Confirm to record attendance and mark no-shows (RSVP'd ✅ but not detected). "
+            "Each no-show gets a DM with a dispute button."
+        ),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(_EST_TZ),
+    )
+    for n in (1, 2, 3):
+        row = meets.get(n)
+        det = detected.get(n) or set()
+        no_show_cand = sorted(set(responses.get(n, {}).get("yes", [])) - det)
+        label = (row["class_name"] if row else "TBD") or "TBD"
+        when = (row["date_text"] if row else "") or ""
+        when_part = f" ({when})" if when and when != "TBD" else ""
+        if n in finalized:
+            status = "⏭️ Already finalized"
+        elif not det:
+            status = "— no detections"
+        else:
+            status = f"✅ detected **{len(det)}** · 👻 no-show candidates **{len(no_show_cand)}**"
+        det_txt = ", ".join(f"<@{u}>" for u in sorted(det)[:15]) or "*none*"
+        ns_txt = ", ".join(f"<@{u}>" for u in no_show_cand[:15]) or "*none*"
+        embed.add_field(
+            name=f"Meet {n} — {label}{when_part}",
+            value=f"{status}\n🎮 Detected: {det_txt}\n👻 No-show candidates: {ns_txt}"[:1024],
+            inline=False,
+        )
+    embed.set_footer(text="Different Meets • Confirm to finalize")
+    actionable = any((detected.get(n) and n not in finalized) for n in (1, 2, 3))
+    view = _RcAutoAttendView(detected, finalized) if actionable else None
+    await ctx.send(embed=embed, view=view)
 
 
 def _rc_classify_msg(msg: discord.Message, bot_id: int) -> str | None:
