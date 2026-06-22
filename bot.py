@@ -5934,6 +5934,9 @@ class AutoScheduleView(discord.ui.View):
         if not is_staff:
             await interaction.response.send_message("Only staff can rebuild the schedule.", ephemeral=True)
             return
+        # Heavy work below (panel rebuild, finalized post, RC sync, per-host DMs)
+        # easily exceeds Discord's 3s ack window — defer first, reply via followup.
+        await interaction.response.defer(ephemeral=True)
         schedule = _asched_build()
         await _asched_update_panel(interaction.client)
         # Only auto-post to upcoming-meet when every slot has a confirmed host
@@ -5990,7 +5993,7 @@ class AutoScheduleView(discord.ui.View):
             _rebuild_msg += f"\n📢 All 3 slots confirmed — schedule auto-posted to <#{UPCOMING_MEET_CHANNEL_ID}>."
         else:
             _rebuild_msg += f"\n⚠️ {_slots_filled}/{len(_HRSVP_DAYS)} slots filled — schedule will auto-post to <#{UPCOMING_MEET_CHANNEL_ID}> once all slots are confirmed."
-        await interaction.response.send_message(_rebuild_msg, ephemeral=True)
+        await interaction.followup.send(_rebuild_msg, ephemeral=True)
 
 
 def _asched_is_sched_msg(msg: discord.Message, bot_id: int) -> bool:
@@ -39705,22 +39708,29 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError) 
         )
     import traceback as _tb
     tb_str = "".join(_tb.format_exception(type(error), error, error.__traceback__))
-    log_ch = bot.get_channel(1485265848099799163)
-    if isinstance(log_ch, discord.TextChannel):
-        embed = discord.Embed(
-            title="⚠️ Unhandled Command Error",
-            color=discord.Color.red(),
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.add_field(name="Command", value=f"`{ctx.message.content[:300]}`", inline=False)
-        embed.add_field(name="User",    value=f"{ctx.author} (`{ctx.author.id}`)", inline=True)
-        embed.add_field(name="Channel", value=ctx.channel.mention, inline=True)
-        embed.add_field(name="Error",   value=f"```{str(error)[:900]}```",         inline=False)
-        embed.set_footer(text="DIFF Meets • Error Logger")
-        try:
+    try:
+        _bot_log.error("[CommandError] %s: %s", ctx.message.content[:300], tb_str)
+    except Exception:
+        pass
+    # Everything below is best-effort logging — must never raise (a DMChannel has no
+    # .mention, which previously bubbled up as an unhandled on_command_error event).
+    try:
+        log_ch = bot.get_channel(1485265848099799163)
+        if isinstance(log_ch, discord.TextChannel):
+            ch_val = getattr(ctx.channel, "mention", None) or f"`{ctx.channel}`"
+            embed = discord.Embed(
+                title="⚠️ Unhandled Command Error",
+                color=discord.Color.red(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.add_field(name="Command", value=f"`{ctx.message.content[:300]}`", inline=False)
+            embed.add_field(name="User",    value=f"{ctx.author} (`{ctx.author.id}`)", inline=True)
+            embed.add_field(name="Channel", value=ch_val, inline=True)
+            embed.add_field(name="Error",   value=f"```{str(error)[:900]}```",         inline=False)
+            embed.set_footer(text="DIFF Meets • Error Logger")
             await log_ch.send(embed=embed)
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 async def _update_join_ticket_complete(channel: discord.TextChannel) -> None:
