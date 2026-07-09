@@ -14778,7 +14778,10 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                     await log_ch.send(
                         f"🏁 **Meet Started**\nHost: {interaction.user.mention}\nChannel: {ch.mention}"
                     )
-                await interaction.followup.send(f"✅ Meet start message sent in {ch.mention}.", ephemeral=True)
+                await interaction.followup.send(
+                    f"✅ Meet start message sent in {ch.mention}.\n\n" + _om_live_checklist_text(),
+                    ephemeral=True,
+                )
             else:
                 await interaction.followup.send("Meet channel not found.", ephemeral=True)
             return
@@ -14838,7 +14841,10 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
 
                 # Roll call panel auto-updates to finalized state — no separate notice needed
 
-                await interaction.followup.send(f"✅ Meet end message sent in {ch.mention}.", ephemeral=True)
+                await interaction.followup.send(
+                    f"✅ Meet end message sent in {ch.mention}.\n\n" + _om_wrapup_checklist_text(),
+                    ephemeral=True,
+                )
             else:
                 await interaction.followup.send("Meet channel not found.", ephemeral=True)
             return
@@ -17920,6 +17926,38 @@ _om_rsvps: dict[int, dict[str, set]] = {}
 _om_lock = asyncio.Lock()
 
 
+def _om_live_checklist_text() -> str:
+    """Reminder checklist shown to hosts right after they start a meet."""
+    return (
+        "📋 **Host checklist — while live:**\n"
+        "• 🔱 Post the **Start Speech** (Host Hub → Live Meet Control)\n"
+        "• 📍 Post **location updates** when you move spots\n"
+        f"• 📸 Drop a **lobby screenshot** in <#{LOBBY_PICTURES_CHANNEL_ID}> — it powers attendance auto-match\n"
+        "• When it's over: ⏹ **End Meet** → 📌 **End Speech** → 📝 **Request Feedback**"
+    )
+
+
+def _om_wrapup_checklist_text() -> str:
+    """Reminder checklist shown to hosts right after they end a meet."""
+    return (
+        "📋 **Host checklist — wrap-up:**\n"
+        "• 📌 Post the **End Speech** (Host Hub → Live Meet Control)\n"
+        "• 📝 **Request Feedback** for the meet\n"
+        f"• 📸 Drop your **lobby screenshot** in <#{LOBBY_PICTURES_CHANNEL_ID}> if you haven't — "
+        "it's how attendance auto-matches"
+    )
+
+
+async def _om_dm_host(host_id: int, embed: discord.Embed) -> bool:
+    """Best-effort DM to a meet host. Returns True on success."""
+    try:
+        user = bot.get_user(host_id) or await bot.fetch_user(host_id)
+        await user.send(embed=embed)
+        return True
+    except Exception:
+        return False
+
+
 @dataclass
 class _OmRecord:
     message_id: int
@@ -17933,6 +17971,8 @@ class _OmRecord:
     fifteen_sent: bool = False
     dm_24h_sent: bool = False   # #4 DM-to-RSVPers reminder at T-24h
     dm_1h_sent: bool = False    # #4 DM-to-RSVPers reminder at T-1h
+    host_start_nudge_sent: bool = False  # host forgot ▶ Start Meet nudge (T+15m)
+    host_end_nudge_sent: bool = False    # host forgot ⏹ End Meet nudge (T+3.5h)
     started_at_ts: int | None = None
     ended_at_ts: int | None = None
     attendance_message_id: int | None = None
@@ -18566,9 +18606,21 @@ class _OfficialMeetRSVPView(discord.ui.View):
                     child.disabled = True
             await interaction.response.edit_message(view=self)
             await interaction.followup.send(
-                f"Meet marked as **live**. Attendance panel posted in <#{_CREW_CHAT_CHANNEL_ID}> and <#{_EVERYONE_CHAT_CHANNEL_ID}>.",
+                f"Meet marked as **live**. Attendance panel posted in <#{_CREW_CHAT_CHANNEL_ID}> and <#{_EVERYONE_CHAT_CHANNEL_ID}>.\n\n"
+                + _om_live_checklist_text(),
                 ephemeral=True,
             )
+            # Also DM the host the live checklist (the clicker may be staff)
+            try:
+                _cl_dm = discord.Embed(
+                    title="🏁 Your meet is live — quick checklist",
+                    description=_om_live_checklist_text(),
+                    color=0x57F287,
+                )
+                _cl_dm.set_footer(text="DIFF Meets • Host Checklist")
+                await _om_dm_host(record.host_id, _cl_dm)
+            except Exception:
+                pass
 
         elif action == "end":
             if record.ended:
@@ -18708,9 +18760,21 @@ class _OfficialMeetRSVPView(discord.ui.View):
             await interaction.followup.send(
                 "Meet marked as **ended**. Attendance stats saved and leaderboard updated."
                 + ((f"\n🧹 Original announcement deleted; the **DIFF Meet Closed** summary stays in the channel.{_extras_line}")
-                   if _deleted else ""),
+                   if _deleted else "")
+                + "\n\n" + _om_wrapup_checklist_text(),
                 ephemeral=True,
             )
+            # Also DM the host the wrap-up checklist (the clicker may be staff)
+            try:
+                _cl_dm = discord.Embed(
+                    title="🛑 Meet ended — finish the wrap-up",
+                    description=_om_wrapup_checklist_text(),
+                    color=0xED4245,
+                )
+                _cl_dm.set_footer(text="DIFF Meets • Host Checklist")
+                await _om_dm_host(record.host_id, _cl_dm)
+            except Exception:
+                pass
 
     @discord.ui.button(label="Attending (0)", style=discord.ButtonStyle.success, custom_id="diff_om_rsvp:yes", row=0)
     async def btn_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -18864,6 +18928,75 @@ async def _om_reminder_task(msg_id: int, delay_secs: int, reminder_type: str) ->
             return
         if reminder_type == "15m" and record.fifteen_sent:
             return
+
+        if reminder_type == "host_start":
+            # Host never pressed ▶ Start Meet — nudge once at T+15m.
+            if record.started or getattr(record, "host_start_nudge_sent", False):
+                return
+            _now = int(datetime.now(timezone.utc).timestamp())
+            if _now - record.timestamp > 21600:  # >6h past — stale, don't nudge
+                return
+            record.host_start_nudge_sent = True
+            _om_upsert_record(record)
+            _dm = discord.Embed(
+                title="⏰ Don't forget to start your meet!",
+                description=(
+                    f"Your meet **{record.theme}** was scheduled for <t:{record.timestamp}:t> "
+                    f"(<t:{record.timestamp}:R>) and hasn't been marked live yet.\n\n"
+                    f"Press **▶ Start Meet** on your meet card in <#{record.channel_id}> — it opens "
+                    "attendance tracking and lets lobby pictures auto-match to your meet."
+                ),
+                color=0xFEE75C,
+            )
+            _dm.set_footer(text="DIFF Meets • Host Reminder")
+            await _om_dm_host(record.host_id, _dm)
+            _ch = bot.get_channel(record.channel_id)
+            if isinstance(_ch, discord.TextChannel):
+                try:
+                    await _ch.send(
+                        f"<@{record.host_id}> ⏰ Friendly reminder — press **▶ Start Meet** on the "
+                        "meet card above so attendance tracking opens and lobby pics can auto-match.",
+                        allowed_mentions=discord.AllowedMentions(users=True),
+                    )
+                except Exception:
+                    pass
+            return
+
+        if reminder_type == "host_end":
+            # Meet started but never ended — nudge once ~3.5h after scheduled start.
+            if (not record.started) or getattr(record, "host_end_nudge_sent", False):
+                return
+            _now = int(datetime.now(timezone.utc).timestamp())
+            if _now - record.timestamp > 172800:  # >2 days past — stale
+                return
+            record.host_end_nudge_sent = True
+            _om_upsert_record(record)
+            _started_ref = record.started_at_ts or record.timestamp
+            _dm = discord.Embed(
+                title="🛑 Time to wrap up your meet",
+                description=(
+                    f"Your meet **{record.theme}** went live <t:{_started_ref}:R> and is still "
+                    "marked as running.\n\n"
+                    f"Press **⏹ End Meet** on your meet card in <#{record.channel_id}> to save "
+                    "attendance stats, then finish the wrap-up:\n\n"
+                    + _om_wrapup_checklist_text()
+                ),
+                color=0xED4245,
+            )
+            _dm.set_footer(text="DIFF Meets • Host Reminder")
+            await _om_dm_host(record.host_id, _dm)
+            _ch = bot.get_channel(record.channel_id)
+            if isinstance(_ch, discord.TextChannel):
+                try:
+                    await _ch.send(
+                        f"<@{record.host_id}> 🛑 Reminder — if the meet is over, press **⏹ End Meet** "
+                        "on the meet card above so attendance gets saved.",
+                        allowed_mentions=discord.AllowedMentions(users=True),
+                    )
+                except Exception:
+                    pass
+            return
+
         ch = bot.get_channel(record.channel_id)
         if isinstance(ch, discord.TextChannel):
             if reminder_type == "1h":
@@ -18921,6 +19054,12 @@ def _om_schedule_reminders(record: _OmRecord) -> None:
     if not record.fifteen_sent:
         delay = record.timestamp - now_ts - 900
         asyncio.create_task(_om_reminder_task(record.message_id, max(delay, 0), "15m"))
+    if not record.started and not getattr(record, "host_start_nudge_sent", False):
+        delay = record.timestamp - now_ts + 900       # T+15m
+        asyncio.create_task(_om_reminder_task(record.message_id, max(delay, 0), "host_start"))
+    if not record.ended and not getattr(record, "host_end_nudge_sent", False):
+        delay = record.timestamp - now_ts + 12600     # T+3.5h
+        asyncio.create_task(_om_reminder_task(record.message_id, max(delay, 0), "host_end"))
 
 
 async def _om_restore_on_ready() -> None:

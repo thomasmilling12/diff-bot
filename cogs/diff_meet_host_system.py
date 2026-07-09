@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import discord
 from discord.ext import commands
 
@@ -20,6 +22,22 @@ DIFF_LOGO_URL = (
 
 EMBED_COLOR = 0x111111
 PANEL_TAG   = "DIFF_HOST_MEET_SYSTEM_V1"
+
+
+def _host_checklist(kind: str) -> str:
+    """Fetch the shared host checklist text from bot.py (best-effort)."""
+    try:
+        _main = sys.modules.get("__main__")
+        fn = getattr(
+            _main,
+            "_om_live_checklist_text" if kind == "live" else "_om_wrapup_checklist_text",
+            None,
+        )
+        if fn:
+            return "\n\n" + fn()
+    except Exception:
+        pass
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +127,10 @@ class _StartMeetBtn(discord.ui.Button):
             interaction.guild,
             f"🏁 **Meet Started**\nHost: {interaction.user.mention}\nChannel: {meet_channel.mention}",
         )
-        await interaction.response.send_message(f"Meet start message sent in {meet_channel.mention}.", ephemeral=True)
+        await interaction.response.send_message(
+            f"Meet start message sent in {meet_channel.mention}." + _host_checklist("live"),
+            ephemeral=True,
+        )
 
 class _LocationUpdateBtn(discord.ui.Button):
     def __init__(self):
@@ -145,7 +166,10 @@ class _EndMeetBtn(discord.ui.Button):
             interaction.guild,
             f"🛑 **Meet Ended**\nHost: {interaction.user.mention}\nChannel: {meet_channel.mention}",
         )
-        await interaction.response.send_message(f"Meet end message sent in {meet_channel.mention}.", ephemeral=True)
+        await interaction.response.send_message(
+            f"Meet end message sent in {meet_channel.mention}." + _host_checklist("wrapup"),
+            ephemeral=True,
+        )
 
 
 class HostMeetControlView(discord.ui.View):
