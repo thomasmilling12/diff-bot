@@ -23536,11 +23536,12 @@ async def _before_join_micro_bump():
     await bot.wait_until_ready()
 
 # =========================
-# HOST POSTERS — persistent state + role-gated multi-action view
+# HOST POSTERS — persistent state + role-gated 📩 Received view
 # (upgrade May 26 2026: persistence, role-gate, theme/host/thumbnail, T-2h DM
-# + T-30m staff escalation, !editposter, user-ID tracking. Legacy custom_id
-# "diff_postmeet_received" kept for back-compat with messages from before the
-# upgrade — clicks on those are now treated as "Attending".)
+# + T-30m staff escalation, !editposter, user-ID tracking.
+#  Jul 2026: single "📩 Received" button replaces Attending/Can't/Help —
+# legacy custom_ids diff_postmeet_received / diff_hp_attending /
+# diff_hp_decline / diff_hp_help all route to "received" for back-compat.)
 # =========================
 _HOST_POSTERS_FILE = os.path.join(DATA_FOLDER, "diff_host_posters.json")
 _HOST_POSTER_RETENTION_HOURS = 48  # prune entries N hours after meet starts
@@ -23727,7 +23728,10 @@ async def _hp_dm_mirror(guild, state: dict, jump_url: str) -> None:
     sent: list[int] = []
     for uid in state.get("assigned_host_ids", []):
         if uid == state.get("poster_user_id"):
-            continue  # don't DM the person who posted it
+            # Intentional skip: they UPLOADED the poster themselves, so a
+            # "ready to download" DM is pointless — and the T-2h reminder
+            # loop still nudges them to tap 📩 Received either way.
+            continue
         member = guild.get_member(uid)
         if member is None or member.bot:
             continue
