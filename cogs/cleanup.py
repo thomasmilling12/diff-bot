@@ -268,46 +268,48 @@ class CleanupCog(commands.Cog, name="Cleanup"):
 
         # Escalation to Cleanup Review is silent — use !cleanupqueue to review
 
-        # 1. Newly flagged
-        if newly_flagged:
-            _MAX_SHOWN = 20
-            shown   = newly_flagged[:_MAX_SHOWN]
-            overflow = len(newly_flagged) - _MAX_SHOWN
-            ghost_lines    = []
-            at_risk_lines  = []
-            for name, ft, sc, di, rs in shown:
-                line = f"• **{discord.utils.escape_markdown(name)}** — Score {sc or 'N/A'} · inactive {di}d"
-                if ft == FLAG_GHOST:
-                    ghost_lines.append(line)
-                else:
-                    at_risk_lines.append(line)
-            if overflow > 0:
-                at_risk_lines.append(f"*…and {overflow} more.*")
+        # Single per-scan summary embed (flags + recoveries + DMs combined —
+        # previously two separate cards per scan cluttered staff-logs)
+        if newly_flagged or recovered_names or dms_sent_names:
             e = discord.Embed(
-                title=f"🚩 Newly Flagged — {len(newly_flagged)} member(s)",
-                color=_C_YELLOW,
+                title="🧹 Auto Cleanup Scan",
+                color=_C_YELLOW if newly_flagged else _C_GREEN,
                 timestamp=ts,
             )
-            if ghost_lines:
-                e.add_field(name=f"👻 Ghost ({len(ghost_lines)})", value="\n".join(ghost_lines), inline=False)
-            if at_risk_lines:
-                e.add_field(name=f"🟡 At Risk ({len(at_risk_lines)})", value="\n".join(at_risk_lines), inline=False)
-            e.set_footer(text="Different Meets • Auto Cleanup")
-            await self._log_staff(e)
-
-        # 3. Recoveries + DMs — one compact embed
-        if recovered_names or dms_sent_names:
-            e = discord.Embed(
-                title="📋 Scan Activity",
-                color=_C_GREEN,
-                timestamp=ts,
-            )
+            if newly_flagged:
+                _MAX_SHOWN = 20
+                shown   = newly_flagged[:_MAX_SHOWN]
+                overflow = len(newly_flagged) - _MAX_SHOWN
+                ghost_lines    = []
+                at_risk_lines  = []
+                for name, ft, sc, di, rs in shown:
+                    line = f"• **{discord.utils.escape_markdown(name)}** — Score {sc or 'N/A'} · inactive {di}d"
+                    if ft == FLAG_GHOST:
+                        ghost_lines.append(line)
+                    else:
+                        at_risk_lines.append(line)
+                ghost_count   = len(ghost_lines)
+                at_risk_count = len(at_risk_lines)
+                if overflow > 0:
+                    at_risk_lines.append(f"*…and {overflow} more.*")
+                if ghost_lines:
+                    e.add_field(
+                        name=f"🚩 Newly Flagged — Ghost ({ghost_count})",
+                        value="\n".join(ghost_lines)[:1024],
+                        inline=False,
+                    )
+                if at_risk_lines:
+                    e.add_field(
+                        name=f"🚩 Newly Flagged — At Risk ({at_risk_count})",
+                        value="\n".join(at_risk_lines)[:1024],
+                        inline=False,
+                    )
             if recovered_names:
                 sample = ", ".join(f"**{discord.utils.escape_markdown(n)}**" for n in recovered_names[:10])
                 extra  = f" *(+{len(recovered_names)-10} more)*" if len(recovered_names) > 10 else ""
                 e.add_field(
                     name=f"✅ Recovered ({len(recovered_names)})",
-                    value=sample + extra,
+                    value=(sample + extra)[:1024],
                     inline=False,
                 )
             if dms_sent_names:
@@ -315,7 +317,7 @@ class CleanupCog(commands.Cog, name="Cleanup"):
                 extra  = f" *(+{len(dms_sent_names)-10} more)*" if len(dms_sent_names) > 10 else ""
                 e.add_field(
                     name=f"📩 Re-engagement DMs ({len(dms_sent_names)})",
-                    value=sample + extra,
+                    value=(sample + extra)[:1024],
                     inline=False,
                 )
             e.set_footer(text="Different Meets • Auto Cleanup")
@@ -332,10 +334,6 @@ class CleanupCog(commands.Cog, name="Cleanup"):
     # ── Background loop ───────────────────────────────────────────────────────
     @tasks.loop(hours=6)
     async def cleanup_scan_loop(self):
-        # Register tick with bot.py loop health tracker (via sys.modules)
-        _main = __import__("sys").modules.get("__main__")
-        if _main and hasattr(_main, "_loop_success"):
-            _main._loop_success("cleanup_scan_loop")
         if self.scanning:
             return
         self.scanning = True

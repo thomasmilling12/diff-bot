@@ -337,6 +337,7 @@ class AutoModCog(commands.Cog):
         action_type = "left"      # "left" | "kicked" | "banned"
         actioned_by: discord.Member | None = None
         audit_reason: str | None = None
+        audit_ok = False          # True only if the audit-log scan completed
         try:
             await asyncio.sleep(1.0)   # give Discord a moment to write the audit log
             async for entry in member.guild.audit_logs(limit=8, oldest_first=False):
@@ -353,6 +354,7 @@ class AutoModCog(commands.Cog):
                             actioned_by = entry.user
                             audit_reason = entry.reason
                             break
+            audit_ok = True
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -444,6 +446,15 @@ class AutoModCog(commands.Cog):
 
         embed.add_field(name="🏷️ Roles", value=roles_str[:1024], inline=False)
         embed.set_footer(text="DIFF Meets • Leave Logs")
+        # Plain leaves are already fully covered by the richer Leave Analytics
+        # embed in bot.py (risk level, drop-off stage, reason tags) — posting
+        # both spammed staff-logs with two near-identical cards per leave.
+        # This log now only fires for kicks/bans, where the audit-log detail
+        # (who actioned it + reason) is unique. Fail-open: if the audit-log
+        # scan errored we can't rule out a kick/ban, so still post the card
+        # rather than risk silently dropping a moderation action.
+        if action_type == "left" and audit_ok:
+            return
         await self._send_log(embed, JOIN_LEAVE_LOG_CHANNEL_ID)
 
     @commands.Cog.listener()

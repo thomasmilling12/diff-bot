@@ -39029,6 +39029,16 @@ async def on_member_remove(member: discord.Member) -> None:
         )
         if join_ts:
             embed.add_field(name="Joined", value=f"<t:{int(join_ts)}:D>", inline=True)
+        # Account age (was only on the now-suppressed duplicate Leave Logs embed)
+        try:
+            if member.created_at:
+                embed.add_field(
+                    name="Account Created",
+                    value=f"<t:{int(member.created_at.timestamp())}:D>",
+                    inline=True,
+                )
+        except Exception:
+            pass
         embed.set_footer(text="DIFF Leave Analytics  |  !leavedm <user_id> to send survey")
 
         ch = member.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
@@ -47498,29 +47508,34 @@ async def _inactivity_daily_report_logic() -> None:
     stats = _memberstats_query()
     now = time.time()
 
-    # Build lists of inactive members (name+id) up to 10 each for readability
+    # Build lists of inactive members. Names as plain text (raw <@id> mentions
+    # don't resolve in embeds for uncached users). Buckets are EXCLUSIVE:
+    # 7+ days first, then 3–7 days — previously the same members appeared in
+    # both lists, doubling the wall of text for zero extra information.
     inactive_3d_names, inactive_7d_names = [], []
+    seven_plus_ids: set = set()
     with _activity_db() as conn:
         for row in conn.execute(
             """SELECT user_id FROM member_activity
                WHERE (last_message IS NULL OR last_message < ?)
-                 AND join_ts IS NOT NULL AND join_ts < ?
-               LIMIT 15""",
-            (now - 3 * 86400, now - 3 * 86400),
+                 AND join_ts IS NOT NULL AND join_ts < ?""",
+            (now - 7 * 86400, now - 7 * 86400),
         ).fetchall():
+            seven_plus_ids.add(row["user_id"])
             m = guild.get_member(row["user_id"])
-            if m:
-                inactive_3d_names.append(f"{m.mention} (`{m.display_name}`)")
+            if m and len(inactive_7d_names) < 10:
+                inactive_7d_names.append(f"**{discord.utils.escape_markdown(m.display_name)}**")
         for row in conn.execute(
             """SELECT user_id FROM member_activity
                WHERE (last_message IS NULL OR last_message < ?)
-                 AND join_ts IS NOT NULL AND join_ts < ?
-               LIMIT 10""",
-            (now - 7 * 86400, now - 7 * 86400),
+                 AND join_ts IS NOT NULL AND join_ts < ?""",
+            (now - 3 * 86400, now - 3 * 86400),
         ).fetchall():
+            if row["user_id"] in seven_plus_ids:
+                continue
             m = guild.get_member(row["user_id"])
-            if m:
-                inactive_7d_names.append(f"{m.mention} (`{m.display_name}`)")
+            if m and len(inactive_3d_names) < 10:
+                inactive_3d_names.append(f"**{discord.utils.escape_markdown(m.display_name)}**")
 
     embed = discord.Embed(
         title="📊 Daily Retention Report",
@@ -47539,13 +47554,13 @@ async def _inactivity_daily_report_logic() -> None:
         inline=False,
     )
     embed.add_field(
-        name="🟡 Inactive 3+ Days",
-        value=", ".join(inactive_3d_names[:8]) or "None" if inactive_3d_names else "None",
+        name="🔴 Inactive 7+ Days (flag for review)",
+        value=(", ".join(inactive_7d_names) if inactive_7d_names else "None")[:1024],
         inline=False,
     )
     embed.add_field(
-        name="🔴 Inactive 7+ Days (flag for review)",
-        value=", ".join(inactive_7d_names[:8]) or "None" if inactive_7d_names else "None",
+        name="🟡 Inactive 3–7 Days",
+        value=(", ".join(inactive_3d_names) if inactive_3d_names else "None")[:1024],
         inline=False,
     )
     if stats["unverified_24h"]:
