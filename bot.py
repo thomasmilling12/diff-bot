@@ -289,6 +289,60 @@ intents.presences = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ── Panel dropdown auto-reset ────────────────────────────────────────────────
+# Discord keeps a select menu's chosen option visually "stuck" after use, so
+# members must pick a *different* option before re-picking the same one.
+# Panels that re-render themselves (message_update responses) already reset
+# naturally; for panels that answer ephemerally / open a modal, we re-edit the
+# panel message with its live view right after the callback, which clears the
+# client-side selection. Wrapping happens centrally at bot.add_view() time so
+# every persistent panel (bot.py + all cogs) is covered with no per-site edits.
+_SELECT_TYPES = (
+    discord.ui.Select, discord.ui.ChannelSelect, discord.ui.UserSelect,
+    discord.ui.RoleSelect, discord.ui.MentionableSelect,
+)
+_NO_RESET_RESPONSES = (
+    discord.InteractionResponseType.message_update,
+    discord.InteractionResponseType.deferred_message_update,
+)
+
+
+def _wrap_select_for_reset(item):
+    if getattr(item, "_diff_reset_wrapped", False):
+        return
+    item._diff_reset_wrapped = True
+    _orig_cb = item.callback
+
+    async def _cb(interaction, _orig=_orig_cb, _item=item):
+        await _orig(interaction)
+        try:
+            if interaction.response.type in _NO_RESET_RESPONSES:
+                return  # panel re-rendered itself — selection already cleared
+            msg = interaction.message
+            if msg is not None and _item.view is not None:
+                await msg.edit(view=_item.view)
+        except Exception:
+            pass
+
+    item.callback = _cb
+
+
+_orig_bot_add_view = bot.add_view
+
+
+def _add_view_with_select_reset(view, *args, **kwargs):
+    try:
+        for _it in view.children:
+            if isinstance(_it, _SELECT_TYPES):
+                _wrap_select_for_reset(_it)
+    except Exception:
+        pass
+    return _orig_bot_add_view(view, *args, **kwargs)
+
+
+bot.add_view = _add_view_with_select_reset
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 async def _setup_hook():
     _cogs = [
