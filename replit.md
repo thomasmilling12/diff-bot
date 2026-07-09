@@ -1,27 +1,24 @@
 # Different Meets V2 — Discord Bot
 
-**Community:** DIFF Meets (PlayStation GTA car meet community)
-**Runtime:** Python 3.11 / discord.py 2.7.1
-**Deployed on:** Raspberry Pi 5 at `~/diff-bot/`  
-**Venv:** `/home/thomas/diff-bot/.venv/bin/python`  
-**Service:** `different-meets-v2` (systemd)  
-**Deploy (preferred):**
-```bash
-cd ~/diff-bot && bash deploy.sh
-```
-…which runs the equivalent of `git fetch origin && git reset --hard origin/main && sudo systemctl restart different-meets-v2`.
+**Community:** DIFF Meets (PS5 GTA car meet community)
+**Runtime:** Python 3.11+ / discord.py 2.7.1 (Pi runs python3.13 venv)
+**Deployed on:** Raspberry Pi 5 at `~/diff-bot/` (venv `.venv/`, systemd `different-meets-v2`)
+**Deploy:** `cd ~/diff-bot && bash deploy.sh` → `git fetch && git reset --hard origin/main && pip install -q -r requirements.txt && systemctl restart`. Data files are git-untracked, hard reset is safe.
 
-Data files are permanently untracked — `git reset --hard` is safe and never touches live data.
-
-**Agent push workflow:** local working copy lives at `/tmp/bot.py` (re-fetch via `curl` + `GITHUB_TOKEN` from raw GitHub if sandbox resets). Pushes are made via GitHub Git Data API (blob → tree → commit → PATCH ref) using `python3 + urllib`. Always `py_compile` before push. Repo: `thomasmilling12/diff-bot`. Secrets in env: `DISCORD_TOKEN`, `GITHUB_TOKEN`.
+**Agent push workflow:** edit `/home/runner/workspace/bot.py` → `py_compile` → push via GitHub Git Data API (blob → tree → commit → PATCH ref) with `python3 + urllib` (`/tmp/push.py`; recreate if /tmp resets). Repo: `thomasmilling12/diff-bot`, branch `main`. Secrets: `DISCORD_TOKEN`, `GITHUB_TOKEN`, `OPENAI_API_KEY`. Bot runs on Pi only — never start it here.
 
 ## Critical Rules
 - Timezone: always `ZoneInfo("America/New_York")` — never `"US/Eastern"`
-- Global slash commands are at cap (100). All new commands must be **prefix (`!`) or guild-scoped**
+- Global slash commands at cap (100) → all new commands must be **prefix (`!`) or guild-scoped**
 - Never mass-DM guild members from a task loop (Discord Developer Policy)
 - `sqlite3.Row`: use `row["key"]`, never `.get()`
-- `sys.modules`: never `import bot` in cog callbacks — use `sys.modules.get("__main__")`
+- In cogs: never `import bot` — use `sys.modules.get("__main__")`
 - PS5 only — never mention PS4 in user-facing embeds
+- `on_ready` is NOT single-shot (reconnects re-fire it). Any `bot.loop.create_task(...)` in `on_ready` needs a module-level task-handle guard. Ref: `_popup_auto_end_task`.
+- `@tasks.loop` "at most every N hours" gating timestamps MUST persist to disk, else every redeploy re-fires them. Ref: `diff_backup_state.json`.
+- Long-running/external calls (PSN, OCR, OpenAI) MUST use `asyncio.to_thread()` — Sony PSN API hang on May 22 2026 froze the event loop unrecoverably.
+- Interaction handlers: `defer()` BEFORE any lock acquire or slow operation (3s ack window). Ref: `_supp_open_ticket_flow`.
+- Requirements: keep pins as `>=` not `==` (`discord.py==2.3.2` once silently downgraded Pi's 2.7.1).
 
 ## Key IDs
 | Name | ID |
@@ -33,175 +30,93 @@ Data files are permanently untracked — `git reset --hard` is safe and never to
 | HOST_RSVP | 1485830232270307410 |
 | STAFF_LOGS | 1485265848099799163 |
 | JOIN_TICKET_CATEGORY | 1328457973583839282 |
+| LOBBY_PICTURES_CHANNEL_ID | 1089579004517953546 |
+| _POSTMEET_HOST_POSTERS_ID | 1091157191895023626 |
 
 ## Architecture
+- `bot.py` — ~44,600 lines. All core logic, prefix commands, event handlers. Single source of truth.
+- `cogs/` — auxiliary loaders: `diff_color_lab`, `diff_automod`, `diff_meet_host_system`, `diff_mod_hub`, `diff_full_moderation`, `diff_next_level_moderation`, `cleanup`.
+- **Disabled cog command stubs** (bot.py owns the richer version — stub stays commented so cog loads): `diff_full_moderation` → `hostprofile` • `diff_next_level_moderation` → `weeklyreport` • `diff_host_posters.py` DELETED (duplicate `postmeet`).
+- Logs: `logs/bot.log`. Loop health: `_loop_fail_counts` + `run_with_timeout()` + `trigger_system_restart()` (5 unique loops failing in 60s → `os._exit(1)`). Cmds: `!bothealth`, `!loopstatus`.
+- Staff-logs decluttered (Jul 2026): automod "Member Left" card only posts for kicks/bans (fail-open if audit-log read errors) — plain leaves covered by the Leave Analytics embed; Daily Retention Report uses plain display names + exclusive 7+/3–7d buckets; Auto Cleanup posts ONE `🧹 Auto Cleanup Scan` embed per scan.
 
-### Main file
-`bot.py` — ~41,300 lines. All core logic, all prefix commands, all event handlers.
-
-### Cogs (loaded via `_cogs` list in `_setup_hook`)
-Many cogs under `cogs/`. Notable ones: `diff_color_lab`, `diff_automod`, `diff_meet_host_system`, `diff_mod_hub`, `diff_full_moderation`, `diff_next_level_moderation`, `diff_postmeet`, `cleanup`, etc.
-
-**Known disabled command stubs (own name in bot.py, leave the stub commented in the cog so the cog still loads):**
-- `cogs/diff_full_moderation.py` → `hostprofile` (bot.py owns the richer version)
-- `cogs/diff_next_level_moderation.py` → `weeklyreport` (bot.py owns the richer version)
-- `cogs/diff_host_posters.py` was DELETED in May 26 2026 (its only command, `postmeet`, was a duplicate of bot.py's 90-line version). Loader entry also removed from `_cogs`.
-
-### Data files
-- `diff_data/diff_activity.db` — SQLite (member_activity, member_leaves, leave_surveys, health_score_history)
-- `diff_data/diff_partner_panel.json` — partnership panels
-- `diff_data/diff_partnerships.json` — partnership records
-- `diff_data/diff_csat.json` — ticket CSAT ratings (post-close DM survey)
-- `diff_data/diff_ticket_history.json` — recently-closed tickets per user (for "My Tickets")
-- `diff_data/diff_backup_state.json` — persists `_last_backup_ts` across restarts so the weekly backup loop is idempotent (prevents spam when bot is redeployed several times in a row)
-- `diff_data/diff_popup_meets.db` — SQLite, Pop-Up Meet system (meets, RSVPs, threads)
-
-### Logs
-- `logs/bot.log`
-
-## Feature Systems
-- Host activity tracking & hierarchy
-- Announcements & roll calls
-- Warnings & appeals (with `!deletewarn` for false-positive removal)
-- Crew recruitment
-- Reputation system
-- Meet attendance + no-show dispute button (DM crew on finalization)
-- Ticket workflow
-- Moderation
-- Marketplace
-- Leaderboards
-- Partnership system
-- Color Lab (`!color`, `!resetcolor`)
-- Loop health system (`!bothealth`, `!loopstatus`) — 19 loops, all with `run_with_timeout` + error recovery
-- **Member Retention System** — join/message/VC timestamps, leave analytics, drop-off stage detection, unverified DM reminders, re-engagement DMs, inactivity daily report
-- **Member Health Score System** — 0–100 score per member, 4 tiers (Strong/Active/At Risk/Ghost), 4h batch recalc loop, per-member breakdown, trend tracking, history table
-- **HP Session Cleanup** — hourly stale-session auto-close (24h+) with staff alert; daily 3 AM archive of sessions 60d+ old
-
-## Extra Commands Added (batch 3)
-| Command | Access | Description |
-|---|---|---|
-| `!deletewarn @user <id>` | Leadership | Remove a specific warning by ID |
-| `!clearnotes @user` | Leadership | Wipe all leadership notes for a host |
-| `!remindhost @user` | Leadership | DM a host their current week slot details |
-| `!exportstats` | Leadership | Export all host_stats as a dated CSV file |
-| `!hostsummary` | Leadership | Weekly host activity digest (sessions, scores, warnings) |
-| `!weeklydigest` | Leadership | Full weekly digest posted to staff logs (RC + HP + warnings) |
-| `!mystats` | Host + Crew | Self-lookup: HP score, streak, RC record, active warnings |
-
-## Data Files
+## Data Files (all in `diff_data/`)
 | File | Purpose |
 |---|---|
-| `diff_data/diff_host_performance.json` | HP sessions + host_stats |
-| `diff_data/diff_warnings.json` | Formal warnings per member |
-| `diff_data/diff_host_notes.json` | Leadership notes per host |
-| `diff_data/diff_rc_streaks.json` | RC attendance streaks |
-| `diff_data/diff_hp_session_archive.json` | Archived HP sessions (60d+) |
+| `diff_activity.db` | SQLite — member_activity, member_leaves, leave_surveys, health_score_history |
+| `diff_popup_meets.db` | SQLite — Pop-Up Meets (meets, RSVPs, threads) |
+| `diff_xp.db` | SQLite — XP: `xp` totals • `xp_awards` PK-dedup • `xp_week` per-ISO-week (MOTW source of truth) • `xp_badges` |
+| `diff_host_performance.json` | HP sessions + host_stats |
+| `diff_host_posters.json` | Host Posters embed state |
+| `diff_host_notes.json` | Leadership notes per host |
+| `diff_warnings.json` | Formal warnings per member (the store `!warnings` reads) |
+| `diff_rc_streaks.json` | Roll-call streaks (keys `streak`/`best` — NOT `current_streak`) |
+| `diff_rc_week_snapshot.json` | Pre-wipe snapshot of week's roll-call responses (Mon-00:00 reset writes; Mon-00:15 pruning report reads) |
+| `diff_rc_reminder_state.json` | Roll-call weekly-reset + Sunday-reminder once-per-week guards |
+| `diff_rc_strike_state.json` | Consecutive no-response streaks + strike candidates |
+| `diff_hp_session_archive.json` | Archived HP sessions (60d+) |
+| `diff_partner_panel.json` + `diff_partnerships.json` | Partnership panels + records |
+| `diff_csat.json` / `diff_ticket_history.json` / `diff_ticket_perf.json` / `diff_ticket_digest_state.json` / `diff_ticket_close_log.json` | Ticket CSAT • per-user closed history • SLA timestamps • 9 AM digest guard • rolling close log (7d ETA) |
+| `diff_canned_replies.json` / `diff_faq.json` | Staff canned replies • FAQ deflection entries |
+| `diff_anon_reports.json` | Anonymous tips (Leadership reveal only) |
+| `diff_backup_state.json` | Idempotent weekly backup `_last_backup_ts` |
+| `diff_lobby_pictures.json` / `diff_lobby_gallery_state.json` / `diff_lobby_wm_prefs.json` | Lobby pic state • weekly gallery guard • watermark prefs |
+| `diff_psn_map.json` | PSN→user_id (Lobby Pictures OCR — DO NOT DELETE) |
+| `diff_community_role.json` | ID of auto-created "Community Member" joiner role (≠ MEET_ATTENDER_ROLE_ID) |
+| `diff_xp_roles.json` / `diff_xp_config.json` | XP ladder role IDs • XP channels + `last_motw_week` guard |
+| `diff_recap_state.json` / `diff_meet_recap_state.json` | Weekly recap channel + week guard • per-meet recap channel + `seeded` + posted map |
+| `diff_aimod_state.json` | AI Mod Assist `{enabled, channel_id}` — cached in `_aimod_state_cache`, hot-path never reads disk |
 
-## Health Score System
+## Feature Systems (one-line map)
+Host activity & hierarchy • Announcements & roll calls • Warnings & appeals • Crew recruitment • Reputation • Meet attendance + no-show dispute • Support + Join tickets • Moderation • Marketplace • Leaderboards • Partnerships • Color Lab • Loop health • Member Retention • Member Health Score • Smart Auto Cleanup • Pop-Up Meets • Host Posters • Lobby Pictures • AI Pre-Ticket Triage • XP/Levels/Badges/MOTW • Weekly AI Recap • Per-Meet Recaps • AI Moderation Assist • GitHub backups • Stats dashboard.
 
-### Schema (member_activity)
-New columns: `last_health_score`, `prev_health_score`, `health_tier`, `score_updated_at`
+## XP / Levels / Badges / MOTW
+All award sites try/except, silent on failure. `award_once` commits dedup marker + XP in ONE transaction. Curve: XP for level L = `50*L*(L+1)` (`_xp_level_for` inverse uses `** 0.5`). Week key `_xp_week_key()` = "YYYY-Wnn" ISO ET.
+**Earning:** message +5 (60s cd) • RSVP-yes +10 • lobby-pic +15 (3/day) • meet-attend +50 (all finalizes) • voice +5/10min (≥2 non-deaf non-bot). **Ladder:** L5 Regular • L10 Veteran • L20 Elite • L35 Legend (keep highest only).
+**Badges (`_XP_BADGES`, 13):** attendance 1/5/15/30 • RC streak 4/8/16 • pics 5/20 • level 5/10/20/35. `_xp_compute_earned` → `_xp_check_badges` (idempotent insert, DM on fresh only). Lazy backfill on `!badges`.
+**MOTW:** `xp_week` bucket written in same transaction as XP. `_xp_motw_loop` (10 min) keys off most recently COMPLETED ISO week; seeds on first run; marks guard only AFTER successful post; prunes >8 weeks.
+**Cmds:** `!rank` `!xpboard` `!xpinfo` `!badges` `!badgeboard` `!motw` (members) • `!givexp` `!takexp` `!setlevelchannel` `!setmotwchannel` (Leadership).
+**Known edge (deferred):** RSVP/attend dedup key is week-at-award-time, not immutable meet id — rare post-rollover re-finalize could re-grant.
 
-New table: `health_score_history (id, user_id, score, tier, recorded_at)`
+## Member Health Score
+Tiers: 💚 80–100 • 🔵 60–79 • 🟡 40–59 • 🔴 0–39. Weights in `_HEALTH_W`. Loop `_health_score_update_loop` 4h. Cmds (staff): `!healthscore` `!healthleaderboard` `!healthstats` `!ghostmembers`.
 
-### Weights (`_HEALTH_W` dict — configurable)
-**Positive:** verified +20, application +15, first meet +20, extra meets +5 (cap 10), recent msg 7d +10, recent VC 7d +10, join age 30d+ +5  
-**Negative:** inactive 7d −10, 14d −20, 30d −30; unverified 24h −5, 72h −15 (stacks); ghost (no msg 48h+) −20
+## Smart Auto Cleanup + Recovery
+`cogs/cleanup.py` + `utils/cleanup_logic.py` + `utils/recovery_tracker.py` + `database/retention.db`. Lifecycle: Safe → flagged (At Risk|Ghost) → grace → Cleanup Review → staff decision; recovery resets to Safe. Exempt: all staff/host roles + joins <7d. One summary embed per 6h scan. Cmds: `!cleanupscan` `!cleanupqueue` `!recoveries` `!flagmember` `!clearflag` `!cleanupstats`.
 
-### Tiers
-- 💚 Strong (80–100)
-- 🔵 Active (60–79)
-- 🟡 At Risk (40–59)
-- 🔴 Ghost (0–39)
+## Pop-Up Meets / Host Posters
+**Pop-Up:** `cogs/diff_meet_host_system.py` panel + bot.py `_popup_*` • `diff_popup_meets.db`. Auto-close: live 3h from start, never-started 24h from create. Last-call DM only for live meets. Views re-hydrate on startup.
+**Host Posters:** image in `#hosts-posters`, caption `<date> | <time> [| <theme>]`, hosts = mentions (fallback author). Reply embed + 4 role-gated buttons (`_HostPosterActionsView`: Attending / Can't / Need help / 📸 Upload). Reminder loop 5 min: T-2h DM no-responders, T-30m zero-attending → ping staff+hosts. `!editposter` (reply to embed) re-parses. Legacy `diff_postmeet_received` custom_id still routes.
 
-### Commands (staff prefix only)
-| Command | Aliases | Description |
-|---|---|---|
-| `!healthscore [@user]` | `!score`, `!hs` | Full score breakdown with bar, factors, trend, recs |
-| `!healthleaderboard` | `!healthtop`, `!scoreboard` | Top 15 members by score |
-| `!healthstats` | `!tierstats`, `!scorestats` | Server-wide tier & trend breakdown |
-| `!ghostmembers` | `!ghosts`, `!deadweight` | List Ghost-tier members (score < 40) |
+## Support Ticket System
+Panel: My Tickets / Ask Q / Report / Apply / Urgent + Anonymous Tip. Single close entry point `_perform_ticket_close(channel, closer, reason_key)`; `_CSAT_SKIP_REASONS = {"spam","no_response"}`. Claim via topic `ticket_claimed_by=`. 48h warn → 72h auto-close. Urgent unclaimed 5min → pings support+leadership. Daily 9 AM digest (idempotent). Per-user open lock — `defer()` before acquire. 7-day reopen from CSAT DM. Anonymous tips: Leadership-only reveal, audit-logged. `_ti_*` helpers: close-log ETA, least-busy staff, keyword auto-tag (AI overrides). Join tickets: `JoinTicketView` + Quick Reply presets + micro-bump DM.
+**Staff cmds:** `!ticketstats` • `!canned*` • `!faq*` • `!staffload`.
 
-### Loop
-`_health_score_update_loop` — every 4h, calculates all tracked members; wired in `on_ready`
+## AI Features (all silent-fallback, `gpt-4o-mini`, JSON mode, `asyncio.to_thread`)
+Shared helpers: `_ai_enabled()` `_ai_chat()` `_AI_BASE_CTX`. If AI off/unparseable → exact pre-AI behavior. Pi needs `OPENAI_API_KEY` in the systemd unit.
+- **Pre-Ticket Triage:** `_AiAskQuestionModal` FAQ deflection (grounded in `_FAQ_DEFLECT_ENTRIES[:12]`) • `_AiUrgentDescribeModal` severity check (`_ai_check_urgent` defaults true on failure) • AI routing note + tag on ticket open.
+- **Weekly Recap (P3a):** `_community_recap_loop` — exact ISO-week bounds via `fromisocalendar`, all sources bounded to that week, no warnings shown. `!recap` preview • `!setrecapchannel`.
+- **Per-Meet Recaps (P3b):** `_meet_recap_loop` — groups lobby pics by meet_key, per-record try/except, eligible 8h–7d with ≥1 pic, hero = most-reacted. `!meetrecap` preview • `!setmeetrecap`.
+- **Mod Assist (P3c):** ADVISORY ONLY. Auto-scan default OFF; cheap prefilter before AI; cost gates: 120s/user + 40 calls/hr global. `!modcheck` on-demand • `!aimod on/off/channel`. Complementary to `cogs/diff_automod` (which owns real auto-actions).
+- Loop discipline (recaps + MOTW): completed-period keying • first-run seed (no backfill) • mark-after-success.
 
-## Smart Auto Cleanup + Recovery System
+## Lobby Pictures
+Non-image/non-Verified posts auto-deleted with DM (`process_commands` runs first). Auto-match to closest meet within `_LP_MATCH_WINDOW_HOURS=6`. HP 📸 button arms `_lp_pending_uploads` 600s fast-path. OCR (pytesseract, best-effort) → PSN tokens cross-ref `diff_psn_map.json` → grants MEET_ATTENDER role. Opt-in watermark (`!lobbywatermark`). Auto-pin top-reacted (6–30h window). Weekly gallery Monday 10 AM. 30d metadata retention. Cmds: `!setlobbypics` `!lobbystats` `!crewboard`. Gotcha: `_LobbyPicUploadBtn` added in `__init__` via try/except; `custom_id="diff_lp_upload"`.
 
-### File layout
-| File | Purpose |
-|---|---|
-| `cogs/cleanup.py` | Cog — background loop (6h), listeners, 6 prefix commands |
-| `utils/cleanup_logic.py` | Config, DB helpers, flag CRUD, exemption checks |
-| `utils/recovery_tracker.py` | Recovery event logging + status computation |
-| `database/retention.db` | SQLite — auto-created on boot |
+## Roll Call: Reminders, Leaderboards, Auto-Strike
+- **Weekly auto-reset:** `_rc_weekly_reset_loop` Monday 00:00 ET — snapshots to `diff_rc_week_snapshot.json` BEFORE wiping, then fresh panel + crew ping. Guard `last_weekly_reset` in `diff_rc_reminder_state.json`; first-run SEEDED (no wipe) so mid-week deploys can't erase a live week.
+- **Pruning report** (Mon 00:15) prefers the snapshot when same-Monday + guild matches + `reset_completed` — else reads live DB.
+- **Reminders:** Sat noon DM loop • Sunday 6 PM public channel nudge (disk-guarded) • `!rcremind [tag]` on-demand.
+- **Leaderboards:** `!attendanceboard` (persistent `attendance_stats` + show-up %) • `!streakboard` • `!mystats`.
+- **`!autoattend`:** cross-refs lobby-pic OCR with RSVPs → preview embed → Leadership "Apply & Finalize" → standard finalize pipeline (DMs no-shows w/ dispute view). Never auto-punishes. Finalized source of truth: `meet_state.attendance_finalized`, NOT `rollcall_meets.is_finalized`.
+- **Auto-strike:** `_rc_pruning_report_loop` tracks miss streaks (`diff_rc_strike_state.json`); ≥2 weeks → candidates embed w/ persistent confirm view; Leadership click issues formal warning into `diff_warnings.json` + DM. Exempt: Leadership + Host; all-"no" responders never struck.
 
-### Database tables (retention.db)
-- `cleanup_flags` — one row per flagged member (flag_type, grace, reminders, review_state, recovered, reason, score snapshot)
-- `recovery_events` — timestamped events per user (message, vc_join, meet_attend, verified, score_up)
-- `action_history` — full audit log of staff and automatic actions
+## Infrastructure / Backups
+- **Discord zip backup** (weekly, JSON-only → STAFF_LOGS) + **GitHub backup**: `_run_github_backup_once` pushes `diff_data/` (json raw + sqlite `.backup()` snapshots) to dedicated **`backups` branch** (deploy.sh only resets `main`). No force-push (retry-once on non-FF); `_gh_backup_lock`; all network in `to_thread`. `!githubbackup`. ⚠️ Repo must stay private. Restore: checkout `backups` → copy `diff_data/` to Pi.
+- **Stats dashboard** (`stats_web.py`): Flask daemon thread, starts from `on_ready` only if `STATS_WEB_PASSWORD` env set. Binds 127.0.0.1 (expose via cloudflared tunnel). Basic Auth, read-only, own `?mode=ro` sqlite conns per request, `html.escape` everywhere. Env: `STATS_WEB_PASSWORD` / `STATS_WEB_USER` (staff) / `STATS_WEB_PORT` (8081).
 
-### Config (`CLEANUP_CONFIG` in `utils/cleanup_logic.py`)
-All thresholds are editable at the top of the file:
-- `dm_reminders_enabled`, `auto_kick_enabled`, `require_staff_review`
-- `grace_period_at_risk` (3d) / `grace_period_ghost` (2d)
-- `max_reminders` (2), `reminder_cooldown_days` (3)
-- `min_join_age_days` (7), `inactivity_days_at_risk` (7), `inactivity_days_ghost` (14)
-- `scan_score_at_risk_max` (59), `scan_score_ghost_max` (39)
+## Extra Staff Commands
+`!deletewarn @u <id>` • `!clearnotes @u` • `!remindhost @u` • `!exportstats` • `!hostsummary` • `!weeklydigest` • `!mystats` (Host+Crew self-lookup).
 
-### Flag types & lifecycle
-`Safe` → flagged as `At Risk` or `Ghost` → grace period → `Cleanup Review` → staff decision  
-Recovery at any stage (message / VC join) resets to `Safe` + logs to staff channel.
-
-### Exempt roles (never flagged)
-Leader, Co-Leader, Manager, Moderator, Admin, Host, Senior Host, Head Host, Junior Host, Staff, Bot + any members who joined within `min_join_age_days`.
-
-### Commands (staff prefix only — all in `cogs/cleanup.py`)
-| Command | Aliases | Description |
-|---|---|---|
-| `!cleanupscan` | `!runscan`, `!forcescan` | Manually trigger a full scan |
-| `!cleanupqueue` | `!reviewqueue`, `!cqueue` | Show members in Cleanup Review |
-| `!recoveries` | `!recovered`, `!recoveredmembers` | Show recently recovered members |
-| `!flagmember @user` | `!manuallyflag`, `!addflag` | Manually flag for review |
-| `!clearflag @user` | `!removeflag`, `!unflag` | Remove a member's flag |
-| `!cleanupstats` | `!cstats`, `!flagstats` | Stats + current config overview |
-
-### Deploy note
-New files to copy on deploy:
-```
-scp -r utils/ thomas@192.168.1.211:/home/thomas/diff-bot/
-scp cogs/cleanup.py thomas@192.168.1.211:/home/thomas/diff-bot/cogs/cleanup.py
-scp bot.py thomas@192.168.1.211:/home/thomas/diff-bot/bot.py
-sudo systemctl restart different-meets-v2
-```
-
-## Loop Health
-All loops use:
-- `_loop_fail_counts` / `_loop_alerted` / `_loop_last_run` tracking
-- `run_with_timeout()` wrapper
-- `trigger_system_restart()` global failsafe (5 unique loops failing in 60s → `os._exit(1)`)
-
-### Restart-resilient state (important pattern)
-Module-level timestamps used by `@tasks.loop` gating MUST be persisted to disk, otherwise every redeploy resets them to 0 and re-fires the loop body immediately. Reference impl: `diff_backup_state.json` + `_backup_state_load_ts()`/`_backup_state_save_ts()`. Same pattern should be used for any future "fire at most every N hours" loop.
-
-### `on_ready` is not single-shot
-Discord reconnects fire `on_ready` again. Any `bot.loop.create_task(_loop())` in `on_ready` must be guarded by a module-level task handle (`if _task is None or _task.done(): _task = bot.loop.create_task(...)`) — otherwise reconnects spawn duplicate workers (and duplicate DMs / actions). Reference impl: `_popup_auto_end_task` guard in `on_ready`.
-
-## Pop-Up Meet System
-- `cogs/diff_meet_host_system.py` panel + bot.py `_popup_*` core
-- SQLite at `diff_data/diff_popup_meets.db` (table `popup_meets` with `is_started`, `started_at`, `is_ended`, etc.)
-- Auto-close uses **two separate caps** (May 26 2026 fix):
-  - **Live meets** (`is_started=1`) → `_POPUP_AUTO_END_HOURS` (3h) measured from `started_at`
-  - **Never-started meets** → `_POPUP_ABANDON_HOURS` (24h) measured from `created_at`
-  - Last-call DM (`~30 min before close`) only fires for live meets
-- Pop-up views are re-hydrated on startup (`[Popup] Re-hydrated N active meet view(s)`)
-
-## Support Ticket Panel UX (May 26 2026)
-- Buttons order: **My Tickets / Ask Q / Report / Apply / Urgent**
-- New tickets auto-post a context embed (member age, recent warning, etc.)
-- **Ask a Question** runs FAQ deflection first (6 default entries, build-rules text is PS5-only)
-- On close → CSAT DM to the ticket opener (rating saved to `diff_data/diff_csat.json`, reportable via `!csatreport`)
-- **My Tickets** lists recently-closed tickets from `diff_data/diff_ticket_history.json`
-- Appeal predictive suggestion when member has an active warning <30d old (`_FaqDeflectAppealButton` runs `_appeal_denial_check`, posts staff-logs, alerts mod-hub — parity with `AppealDropdown`)
-
-## Removed: PSN Host Status Board (May 22 2026)
-The PSN integration (psnawp + `_psn_*` helpers + `_psn_board_refresh_loop` + `!setpsn`/`!removepsn`/`!psnboard`/`!refreshpsnboard`/`!psntest`/`!psnlist` commands) was removed because Sony's PSN API was starving the default asyncio thread pool when it hung, freezing the entire event loop and causing silent bot offlines that required physical Pi reboots (systemd couldn't recover because the process was still alive). The `host_board_auto_refresh_loop` now always renders the static `build_status_embed()` instead of live PSN presence. The `psnawp` package was removed from `requirements.txt`. Data file `diff_data/diff_psn_map.json` is untouched and can be safely deleted on the Pi.
+## Removed Systems
+- **PSN Host Status Board** (May 22 2026): `psnawp` + `_psn_*` removed — Sony API hang froze the event loop. Host board renders static embed. `diff_psn_map.json` KEPT (Lobby Pictures OCR).
