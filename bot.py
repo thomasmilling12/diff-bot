@@ -18963,11 +18963,19 @@ async def _om_reminder_task(msg_id: int, delay_secs: int, reminder_type: str) ->
             return
 
         if reminder_type == "host_end":
-            # Meet started but never ended — nudge once ~3.5h after scheduled start.
+            # Meet started but never ended — nudge once ~3h after ACTUAL start
+            # (falls back to scheduled time if start ts is missing).
             if (not record.started) or getattr(record, "host_end_nudge_sent", False):
                 return
             _now = int(datetime.now(timezone.utc).timestamp())
-            if _now - record.timestamp > 172800:  # >2 days past — stale
+            _anchor = record.started_at_ts or record.timestamp
+            if _now - _anchor > 172800:  # >2 days past — stale
+                return
+            _remaining = _anchor + 10800 - _now
+            if _remaining > 60:
+                # Host started late — this task fired off the scheduled time;
+                # re-arm for 3h after the real start instead of nudging early.
+                asyncio.create_task(_om_reminder_task(msg_id, _remaining, "host_end"))
                 return
             record.host_end_nudge_sent = True
             _om_upsert_record(record)
@@ -25176,7 +25184,12 @@ async def on_ready():
     _safe_add_view(_OfficialMeetRSVPView(), "_OfficialMeetRSVPView")
     _safe_add_view(_OfficialMeetPanelView(), "_OfficialMeetPanelView")
     _safe_add_view(_OmAttendanceView(),     "_OmAttendanceView")
-    asyncio.create_task(_om_restore_on_ready())
+    # on_ready re-fires on reconnect — only restore/schedule OM reminders once
+    # per process, else duplicate nudge/reminder tasks stack up (flags make the
+    # duplicates benign, but there's no reason to stack them).
+    if not getattr(bot, "_om_restore_started", False):
+        bot._om_restore_started = True
+        asyncio.create_task(_om_restore_on_ready())
     _safe_add_view(_PopupMeetPanelView(),   "_PopupMeetPanelView")
     # Re-register per-meet RSVP views for any active popup meets (survives restarts)
     for _guild in bot.guilds:
