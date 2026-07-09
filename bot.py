@@ -23594,9 +23594,7 @@ def _hp_is_authorized(member) -> bool:
 def _hp_render_embed(state: dict) -> discord.Embed:
     resp = state.get("responses", {}) or {}
     statuses = {v.get("status") for v in resp.values()}
-    if "help" in statuses:
-        color = 0xF1C40F
-    elif "attending" in statuses:
+    if statuses & {"received", "attending"}:
         color = 0x2ECC71
     else:
         color = state.get("color", 0xE91E63)
@@ -23620,16 +23618,15 @@ def _hp_render_embed(state: dict) -> discord.Embed:
             inline=False,
         )
 
-    attending = [uid for uid, v in resp.items() if v.get("status") == "attending"]
-    declined  = [uid for uid, v in resp.items() if v.get("status") == "declined"]
-    helping   = [uid for uid, v in resp.items() if v.get("status") == "help"]
+    # Anyone who pressed the button counts as having received the poster
+    # ("attending" kept for records created before the single-button change).
+    received = [uid for uid, v in resp.items()
+                if v.get("status") in ("received", "attending")]
 
     def _fmt(ids):
         return ", ".join(f"<@{i}>" for i in ids) if ids else "—"
 
-    emb.add_field(name=f"✅ Attending ({len(attending)})", value=_fmt(attending), inline=True)
-    emb.add_field(name=f"❌ Can't attend ({len(declined)})", value=_fmt(declined), inline=True)
-    emb.add_field(name=f"🆘 Need help ({len(helping)})", value=_fmt(helping), inline=True)
+    emb.add_field(name=f"📩 Received ({len(received)})", value=_fmt(received), inline=False)
 
     img = state.get("poster_url")
     if img:
@@ -23689,64 +23686,40 @@ async def _hp_record_response(interaction: discord.Interaction, status: str) -> 
     except Exception as _e:
         print(f"[host-posters] edit_message failed: {_e!r}")
 
-    if status == "help":
-        try:
-            guild = interaction.guild
-            staff_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID) if guild else None
-            if isinstance(staff_ch, discord.TextChannel):
-                jump = interaction.message.jump_url
-                await staff_ch.send(
-                    f"🆘 **Host needs help** — {member.mention} requested help on a host poster.\n{jump}"
-                )
-        except Exception as _e:
-            print(f"[host-posters] staff help-ping failed: {_e!r}")
 
-
-class _HostPosterAttendingBtn(discord.ui.Button):
+class _HostPosterReceivedBtn(discord.ui.Button):
     def __init__(self):
-        super().__init__(style=discord.ButtonStyle.success, label="✅ Attending",
-                         custom_id="diff_hp_attending")
+        super().__init__(style=discord.ButtonStyle.success, label="📩 Received",
+                         custom_id="diff_hp_received")
     async def callback(self, interaction: discord.Interaction) -> None:
-        await _hp_record_response(interaction, "attending")
-
-class _HostPosterDeclineBtn(discord.ui.Button):
-    def __init__(self):
-        super().__init__(style=discord.ButtonStyle.danger, label="❌ Can't attend",
-                         custom_id="diff_hp_decline")
-    async def callback(self, interaction: discord.Interaction) -> None:
-        await _hp_record_response(interaction, "declined")
-
-class _HostPosterHelpBtn(discord.ui.Button):
-    def __init__(self):
-        super().__init__(style=discord.ButtonStyle.secondary, label="🆘 Need help",
-                         custom_id="diff_hp_help")
-    async def callback(self, interaction: discord.Interaction) -> None:
-        await _hp_record_response(interaction, "help")
+        await _hp_record_response(interaction, "received")
 
 class _HostPosterActionsView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(_HostPosterAttendingBtn())
-        self.add_item(_HostPosterDeclineBtn())
-        self.add_item(_HostPosterHelpBtn())
+        self.add_item(_HostPosterReceivedBtn())
         try:
             self.add_item(_LobbyPicUploadBtn())
         except Exception:
             pass
 
-# --- LEGACY back-compat: pre-upgrade messages still have the old custom_id
-# button. Keep it registered so old clicks don't silently fail.
-class _PostmeetReceivedButton(discord.ui.Button):
-    def __init__(self, count: int = 0):
-        super().__init__(style=discord.ButtonStyle.success, label="✅ Attending",
-                         custom_id="diff_postmeet_received")
+# --- LEGACY back-compat: older poster messages still carry the previous
+# custom_ids (Attending / Can't attend / Need help, and the original
+# "diff_postmeet_received"). Keep them registered so old clicks don't
+# silently fail — every legacy click now just records "received".
+class _HostPosterLegacyBtn(discord.ui.Button):
+    def __init__(self, custom_id: str):
+        super().__init__(style=discord.ButtonStyle.success, label="📩 Received",
+                         custom_id=custom_id)
     async def callback(self, interaction: discord.Interaction) -> None:
-        await _hp_record_response(interaction, "attending")
+        await _hp_record_response(interaction, "received")
 
 class _PostmeetReceivedView(discord.ui.View):
-    def __init__(self, count: int = 0):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(_PostmeetReceivedButton())
+        for _cid in ("diff_postmeet_received", "diff_hp_attending",
+                     "diff_hp_decline", "diff_hp_help"):
+            self.add_item(_HostPosterLegacyBtn(_cid))
 
 async def _hp_dm_mirror(guild, state: dict, jump_url: str) -> None:
     if guild is None:
@@ -23763,9 +23736,13 @@ async def _hp_dm_mirror(guild, state: dict, jump_url: str) -> None:
             dt_part = ""
             if state.get("meet_ts"):
                 dt_part = f"\n🕒 <t:{state['meet_ts']}:F>  (<t:{state['meet_ts']}:R>)"
+            dl_part = ""
+            if state.get("poster_url"):
+                dl_part = f"\n⬇️ Download it here: {state['poster_url']}"
             await member.send(
-                f"🏁 **You're hosting:** {theme}{dt_part}\n"
-                f"Tap **✅ Attending** on the bot's reply in #hosts-posters when you've seen it:\n{jump_url}"
+                f"🖼️ **Your poster is ready!** — {theme}{dt_part}\n"
+                f"It's been made and is ready to download — post it before your meet.{dl_part}\n"
+                f"Then tap **📩 Received** on the bot's reply in #hosts-posters so we know you've got it:\n{jump_url}"
             )
             sent.append(uid)
         except discord.Forbidden:
@@ -30360,11 +30337,13 @@ async def _host_posters_reminder_loop():
                             if m is None or m.bot:
                                 continue
                             try:
+                                _dl = state.get("poster_url")
                                 await m.send(
-                                    f"⏰ **2-hour reminder** — you haven't confirmed your meet yet.\n"
+                                    f"⏰ **2-hour reminder** — you haven't confirmed you received your poster yet.\n"
                                     f"Theme: **{state.get('theme') or 'Upcoming meet'}**\n"
                                     f"Start: <t:{meet_ts}:R>\n"
-                                    f"Please tap **✅ Attending** in #hosts-posters."
+                                    + (f"⬇️ Download it here: {_dl}\n" if _dl else "")
+                                    + "Please download + post it, then tap **📩 Received** in #hosts-posters."
                                 )
                             except Exception:
                                 pass
@@ -30378,9 +30357,9 @@ async def _host_posters_reminder_loop():
                     # Re-read responses fresh so we don't escalate a host who
                     # just clicked Attending during the await above.
                     fresh = _hp_load_all().get(key) or state
-                    attending = [v for v in fresh.get("responses", {}).values()
-                                 if v.get("status") == "attending"]
-                    if not attending and guild is not None:
+                    received = [v for v in fresh.get("responses", {}).values()
+                                if v.get("status") in ("received", "attending")]
+                    if not received and guild is not None:
                         staff_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
                         if isinstance(staff_ch, discord.TextChannel):
                             jump = (f"https://discord.com/channels/"
@@ -30390,7 +30369,7 @@ async def _host_posters_reminder_loop():
                             host_pings = " ".join(f"<@{u}>" for u in fresh.get("assigned_host_ids", []))
                             try:
                                 await staff_ch.send(
-                                    f"⚠️ **Host poster T-30m, no Attending confirmations** {host_pings}\n"
+                                    f"⚠️ **Host poster T-30m — no host has confirmed receiving their poster** {host_pings}\n"
                                     f"Meet starts <t:{meet_ts}:R>\n{jump}"
                                 )
                             except Exception as _e:
