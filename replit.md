@@ -106,7 +106,7 @@ Non-image/non-Verified posts auto-deleted with DM (`process_commands` runs first
 ## Roll Call: Reminders, Leaderboards, Auto-Strike
 - **Weekly auto-reset:** `_rc_weekly_reset_loop` Monday 00:00 ET — snapshots to `diff_rc_week_snapshot.json` BEFORE wiping, then fresh panel + crew ping. Guard `last_weekly_reset` in `diff_rc_reminder_state.json`; first-run SEEDED (no wipe) so mid-week deploys can't erase a live week.
 - **Pruning report** (Mon 00:15) prefers the snapshot when same-Monday + guild matches + `reset_completed` — else reads live DB.
-- **Reminders:** Sat noon DM loop • Sunday 6 PM public channel nudge (disk-guarded) • `!rcremind [tag]` on-demand.
+- **Reminders:** Sat noon DM loop • Sunday 6 PM public channel nudge (disk-guarded) • `!rcremind [tag]` on-demand • T-5h crew-chat ping of yes responders (`_rc_t5h_reminder_loop`, guard `t5h_sent` keyed `meet:start_ts` in `diff_rc_reminder_state.json`; maybe-list as display names in embed).
 - **Leaderboards:** `!attendanceboard` (persistent `attendance_stats` + show-up %) • `!streakboard` • `!mystats`.
 - **`!autoattend`:** cross-refs lobby-pic OCR with RSVPs → preview embed → Leadership "Apply & Finalize" → standard finalize pipeline (DMs no-shows w/ dispute view). Never auto-punishes. Finalized source of truth: `meet_state.attendance_finalized`, NOT `rollcall_meets.is_finalized`.
 - **Auto-strike:** `_rc_pruning_report_loop` tracks miss streaks (`diff_rc_strike_state.json`); ≥2 weeks → candidates embed w/ persistent confirm view; Leadership click issues formal warning into `diff_warnings.json` + DM. Exempt: Leadership + Host; all-"no" responders never struck.
