@@ -19434,6 +19434,7 @@ def _om_panel_lineup_field() -> tuple[str, str] | None:
         return None
     lines = []
     filled = 0
+    open_days = []
     for key in _OM_DAY_ORDER:
         slot = days.get(key) or {}
         host_id = slot.get("host_id")
@@ -19451,7 +19452,13 @@ def _om_panel_lineup_field() -> tuple[str, str] | None:
             tail = f" — {' • '.join(extras)}" if extras else ""
             lines.append(f"{emoji} **{day_label}** — {_readable_host(None, host_id)}{tail}")
         else:
-            lines.append(f"{emoji} **{day_label}** — ⚪ open slot")
+            open_days.append(day_label[:3])
+    # One compact line for open days instead of seven "open slot" rows
+    if open_days:
+        if filled == 0:
+            lines.append("⚪ All 7 days open — grab a slot!")
+        else:
+            lines.append(f"⚪ Open: {' · '.join(open_days)}")
     header = f"🗓️ This Week\'s Host Lineup  ({filled}/7 filled)"
     return header, "\n".join(lines)
 
@@ -19486,7 +19493,9 @@ def _om_panel_stats_field() -> tuple[str, str] | None:
                 total_yes += len(raw.get("rsvp_yes_ids") or [])
                 total_attended += len(raw.get("checked_in_ids") or [])
     avg_att = ""
-    if total_yes > 0 and completed > 0:
+    # Only show attendance % when there's real check-in data — "0% (0/43)"
+    # just cluttered the panel and looked broken.
+    if total_attended > 0 and total_yes > 0 and completed > 0:
         pct = int(round((total_attended / total_yes) * 100))
         avg_att = f"\n📈 Avg attendance (last 30d): **{pct}%**  ({total_attended}/{total_yes})"
     if month_count == 0 and not avg_att:
@@ -19537,11 +19546,7 @@ def _om_panel_recap_field() -> tuple[str, str] | None:
 def _om_panel_build_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🏁 DIFF Official Meet Hub",
-        description=(
-            "Your live dashboard for scheduled DIFF meets — upcoming meet, this week\'s host lineup, "
-            "and a recap of recent activity. Posts land in "
-            f"<#{_OFFICIAL_MEET_CHANNEL_ID}>."
-        ),
+        description=f"Live meet dashboard — posts land in <#{_OFFICIAL_MEET_CHANNEL_ID}>.",
         color=discord.Color.from_rgb(241, 196, 15),
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -19581,13 +19586,7 @@ def _om_panel_build_embed() -> discord.Embed:
     if stats:
         embed.add_field(name=stats[0], value=stats[1], inline=False)
 
-    embed.add_field(
-        name="🛠️ Hosts & Staff",
-        value="Tap **📋 Schedule Official Meet** to post one — the form walks you through it. Members can RSVP on any posted meet.",
-        inline=False,
-    )
-
-    embed.set_footer(text="DIFF Official Meet System • Refreshes hourly")
+    embed.set_footer(text="📋 Schedule Official Meet to post one • Members can RSVP on any meet • Refreshes hourly")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
