@@ -27019,10 +27019,38 @@ async def _cs_update_submission_message(submission: Dict[str, Any], *, disable_v
         pass
 
 
+_CS_CAR_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "diff_color_vote_car.png")
+
+
+def _cs_render_color_car(hex_code: str):
+    """Render the bundled silver car template tinted in the given hex color on a
+    dark studio backdrop. Used as the collage tile fallback when a candidate's
+    submission image can't be downloaded — a car in the color looks far better
+    than a flat swatch (dark hexes rendered as a near-blank tile).
+    Returns an RGB PIL Image, or None if the template is missing/unreadable."""
+    try:
+        tpl = Image.open(_CS_CAR_TEMPLATE_PATH).convert("RGBA")
+        rgb = _cs_hex_to_rgb(hex_code)
+        alpha = tpl.getchannel("A")
+        gray = tpl.convert("L")
+        # Pull the bright silver body down toward midtones so it takes the color.
+        gray = gray.point(lambda p: int(255 * (p / 255) ** 1.6))
+        white = tuple(min(255, c + 150) for c in rgb)
+        tinted = ImageOps.colorize(gray, black=(6, 7, 9), white=white, mid=rgb).convert("RGBA")
+        tinted.putalpha(alpha)
+        bg = Image.new("RGBA", tpl.size, (24, 28, 38, 255))
+        bg.alpha_composite(tinted)
+        return bg.convert("RGB")
+    except Exception as _te:
+        print(f"[ColorVote] car tint render failed ({_te}) — using swatch fallback")
+        return None
+
+
 async def _cs_build_vote_collage(candidates: List[Dict[str, Any]]) -> Optional[discord.File]:
     """Build the 2x2 vote collage. Resilient: a single dead/expired image URL no
     longer aborts the whole collage (which used to force the ugly stacked-embed
-    fallback) — failed downloads render as a solid swatch tile of that hex color."""
+    fallback) — failed downloads render as the template car tinted in that hex
+    color (solid swatch only if the template itself is unavailable)."""
     if not PIL_AVAILABLE:
         return None
     try:
@@ -27053,7 +27081,10 @@ async def _cs_build_vote_collage(candidates: List[Dict[str, Any]]) -> Optional[d
         for idx, c in enumerate(cands):
             img = images[idx]
             if img is None:
-                # Solid swatch of the candidate color itself — keeps the 2x2 layout.
+                # Template car tinted in the candidate color — far nicer than a swatch.
+                img = _cs_render_color_car(c["hex_code"])
+            if img is None:
+                # Last resort: solid swatch keeps the 2x2 layout intact.
                 img = Image.new("RGB", (w, h), _cs_hex_to_rgb(c["hex_code"]))
             col, row = idx % 2, idx // 2
             x = pad + col * (w + pad)
