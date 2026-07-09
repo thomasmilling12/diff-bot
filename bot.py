@@ -5401,30 +5401,59 @@ async def _asched_sync_panel_inner(bot_client, ping_roles: bool = False) -> None
         pass
 
     # ── Optional finalize ping: a single short line, not a new panel ──
+    # Idempotent: if this exact schedule was already announced, do NOT re-ping the
+    # server (a double Rebuild click previously posted two ping lines minutes apart).
     ping_id = None
+    ping_sig = ""
     if ping_roles:
-        parts = []
-        ps5_role    = guild.get_role(PS5_ROLE_ID)
-        notify_role = guild.get_role(NOTIFY_ROLE_ID)
-        if ps5_role:
-            parts.append(ps5_role.mention)
-        if notify_role:
-            parts.append(notify_role.mention)
-        if parts:
-            try:
-                ping_msg = await channel.send(
-                    content=" ".join(parts) + " — 📅 **This week's DIFF meet schedule is up — RSVP on the panel above!**",
-                    allowed_mentions=discord.AllowedMentions(roles=True),
-                )
-                ping_id = ping_msg.id
-            except Exception as e:
-                print(f"[AutoSched] finalize ping failed: {e}")
+        try:
+            sig_parts = []
+            for d in _HRSVP_DAYS:
+                e = sched["days"].get(d, {}) if isinstance(sched.get("days"), dict) else {}
+                sig_parts.append(f"{d}:{e.get('day','')}:{e.get('time','')}:{e.get('class','')}:{e.get('host_id','')}")
+            ping_sig = "|".join(sig_parts)
+        except Exception:
+            ping_sig = ""
+        prev_sig = sched.get("panel_ping_sig") or ""
+        prev_ping_id = sched.get("panel_ping_msg_id")
+        if ping_sig and prev_ping_id and ping_sig == prev_sig:
+            # Same schedule already announced — keep the existing ping line, no re-ping.
+            ping_id = prev_ping_id
+        else:
+            # Schedule changed (or first announce): remove the stale ping line so only
+            # one ever exists, then post a fresh one.
+            if prev_ping_id:
+                try:
+                    old_ping = await channel.fetch_message(int(prev_ping_id))
+                    await old_ping.delete()
+                except Exception:
+                    pass
+            parts = []
+            ps5_role    = guild.get_role(PS5_ROLE_ID)
+            notify_role = guild.get_role(NOTIFY_ROLE_ID)
+            if ps5_role:
+                parts.append(ps5_role.mention)
+            if notify_role:
+                parts.append(notify_role.mention)
+            if parts:
+                try:
+                    ping_msg = await channel.send(
+                        content=" ".join(parts) + " — 📅 **This week's DIFF meet schedule is up — RSVP on the panel above!**",
+                        allowed_mentions=discord.AllowedMentions(roles=True),
+                    )
+                    ping_id = ping_msg.id
+                except Exception as e:
+                    print(f"[AutoSched] finalize ping failed: {e}")
 
     # ── Persist ids ──
     sched = _asched_load()
     sched["panel_message_id"]  = None
     sched["panel_message_ids"] = {"header": header_msg.id, "cards": new_cards}
-    sched["panel_ping_msg_id"] = ping_id
+    if ping_roles:
+        # Only ping runs may touch these — the 15-min refresh (ping_roles=False)
+        # previously wiped panel_ping_msg_id every tick, orphaning old ping lines.
+        sched["panel_ping_msg_id"] = ping_id
+        sched["panel_ping_sig"]    = ping_sig
     sched["panel_legacy_cleanup_done"] = True
     _asched_save(sched)
 
