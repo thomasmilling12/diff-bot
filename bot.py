@@ -25682,10 +25682,19 @@ async def _rc_t5h_reminder_loop() -> None:
                     color=0x5865F2,
                 )
                 if maybe_ids:
+                    # Display names, not <@id> — mentions inside embeds render
+                    # as raw numbers on clients that haven't cached the user.
+                    _maybe_names = []
+                    for _mid in maybe_ids[:30]:
+                        _mm = guild.get_member(_mid)
+                        _maybe_names.append(_mm.display_name if _mm else f"User {_mid}")
+                    if len(maybe_ids) > 30:
+                        _maybe_names.append(f"(+{len(maybe_ids) - 30} more)")
+                    _maybe_val = (", ".join(_maybe_names)
+                                  + "\nLock in your answer on the roll call if you can make it!")
                     emb.add_field(
                         name="🤔 Still a maybe?",
-                        value=(_mentions(maybe_ids, cap=30)
-                               + "\nLock in your answer on the roll call if you can make it!"),
+                        value=_maybe_val[:1024],
                         inline=False,
                     )
                 emb.set_footer(text="Different Meets • Roll Call Reminder")
