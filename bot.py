@@ -41056,15 +41056,18 @@ async def on_message(message: discord.Message) -> None:
     if message.channel.id == _IG_CHANNEL_ID:
         _ig_m = _IG_LINK_RE.search(message.content)
         if _ig_m:
-            await _social_handle_drop(message.channel, _ig_m.group(1), "instagram")
+            await _social_handle_drop(message.channel, _ig_m.group(1), "instagram",
+                                      dropped_by=message.author)
             return
         _tt_m = _TT_LINK_RE.search(message.content)
         if _tt_m:
-            await _social_handle_drop(message.channel, _tt_m.group(1), "tiktok")
+            await _social_handle_drop(message.channel, _tt_m.group(1), "tiktok",
+                                      dropped_by=message.author)
             return
         _yt_m = _YT_LINK_RE.search(message.content)
         if _yt_m:
-            await _social_handle_drop(message.channel, _yt_m.group(1), "youtube")
+            await _social_handle_drop(message.channel, _yt_m.group(1), "youtube",
+                                      dropped_by=message.author)
             return
         return
 
@@ -45935,7 +45938,8 @@ class _SocialDropModal(discord.ui.Modal):
             await interaction.response.send_message("Can only post in a text channel.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        await _social_handle_drop(channel, m.group(1), self.platform)
+        await _social_handle_drop(channel, m.group(1), self.platform,
+                                  dropped_by=interaction.user)
         await interaction.followup.send("Posted!", ephemeral=True)
 
 
@@ -46015,17 +46019,61 @@ async def _ig_panel_post_or_refresh(guild: discord.Guild):
         pass
 
 
-async def _social_handle_drop(channel: discord.TextChannel, link: str, platform: str = "instagram"):
+def _social_fetch_preview_sync(link: str, platform: str) -> dict:
+    """Best-effort oEmbed preview (title / author / thumbnail) for TikTok and
+    YouTube — both endpoints are public, no API key. Instagram's oEmbed needs
+    an app token, so IG drops keep the plain format. Silent {} on any failure.
+    MUST be called via asyncio.to_thread (blocking urllib)."""
+    import urllib.request as _ureq
+    import urllib.parse as _uparse
+    try:
+        if platform == "youtube":
+            u = ("https://www.youtube.com/oembed?format=json&url="
+                 + _uparse.quote(link, safe=""))
+        elif platform == "tiktok":
+            u = "https://www.tiktok.com/oembed?url=" + _uparse.quote(link, safe="")
+        else:
+            return {}
+        req = _ureq.Request(u, headers={"User-Agent": "Mozilla/5.0 (DIFF-Meets-Bot)"})
+        with _ureq.urlopen(req, timeout=8) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+        return {
+            "title":  (d.get("title") or "").strip()[:220],
+            "author": (d.get("author_name") or "").strip()[:80],
+            "thumb":  d.get("thumbnail_url") or "",
+        }
+    except Exception:
+        return {}
+
+
+async def _social_handle_drop(channel: discord.TextChannel, link: str,
+                              platform: str = "instagram",
+                              dropped_by: discord.abc.User | None = None):
     """Post a formatted social-media drop embed and add reactions."""
     meta = _PLATFORM_META.get(platform, _PLATFORM_META["instagram"])
     ping = f"<@&{_IG_PING_ROLE_ID}>"
+
+    # Best-effort rich preview (never blocks the event loop, silent fallback)
+    preview: dict = {}
+    try:
+        preview = await asyncio.to_thread(_social_fetch_preview_sync, link, platform)
+    except Exception:
+        preview = {}
+
+    desc_lines = []
+    if preview.get("title"):
+        desc_lines.append(f"🎬 **{preview['title']}**")
+    if preview.get("author"):
+        desc_lines.append(f"👤 {preview['author']}")
+    if not desc_lines:
+        desc_lines.append("A new DIFF post is live.")
+    desc_lines.append("")
+    desc_lines.append(meta["support_msg"])
+    desc_lines.append(f"🔗 **Link:** {link}")
+
     embed = discord.Embed(
         title=meta["drop_title"],
-        description=(
-            "A new DIFF post is live.\n\n"
-            f"{meta['support_msg']}\n"
-            f"🔗 **Link:** {link}"
-        ),
+        description="\n".join(desc_lines),
         color=meta["color"],
         timestamp=datetime.now(timezone.utc),
     )
@@ -46034,11 +46082,29 @@ async def _social_handle_drop(channel: discord.TextChannel, link: str, platform:
         value="🔥 This was hard  •  📸 I was there  •  🏁 Pulling up next meet",
         inline=False,
     )
+    if preview.get("thumb"):
+        embed.set_image(url=preview["thumb"])
     embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text="Different Meets • DIFF Social Feed")
+    footer = "Different Meets • DIFF Social Feed"
+    if dropped_by is not None:
+        footer += f" • Shared by {getattr(dropped_by, 'display_name', dropped_by)}"
+    embed.set_footer(text=footer)
+
+    # URL buttons need no custom_id / persistence — they work forever
+    btn_view = discord.ui.View(timeout=None)
+    try:
+        btn_view.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.link,
+            label=f"{meta['emoji']} Open on {meta['label']}",
+            url=link[:512],
+        ))
+    except Exception:
+        btn_view = None
+
     sent = await channel.send(
         content=f"{ping}\n\n{meta['drop_header']}",
         embed=embed,
+        view=btn_view,
         allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
     )
     for emoji in _IG_AUTO_REACTIONS:
@@ -46070,7 +46136,8 @@ async def _cmd_igpost(ctx: commands.Context, *, link: str = ""):
     except Exception:
         pass
     if isinstance(ctx.channel, discord.TextChannel):
-        await _ig_handle_drop(ctx.channel, m.group(1))
+        await _social_handle_drop(ctx.channel, m.group(1), "instagram",
+                                  dropped_by=ctx.author)
 
 
 @bot.command(name="postigpanel")
