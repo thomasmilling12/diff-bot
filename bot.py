@@ -26906,16 +26906,28 @@ async def _cs_update_submission_message(submission: Dict[str, Any], *, disable_v
 
 
 async def _cs_build_vote_collage(candidates: List[Dict[str, Any]]) -> Optional[discord.File]:
-    if not PIL_AVAILABLE or aiohttp is None:
+    """Build the 2x2 vote collage. Resilient: a single dead/expired image URL no
+    longer aborts the whole collage (which used to force the ugly stacked-embed
+    fallback) — failed downloads render as a solid swatch tile of that hex color."""
+    if not PIL_AVAILABLE:
         return None
     try:
-        async with aiohttp.ClientSession() as session:
-            images = []
-            for c in candidates:
-                async with session.get(c["image_url"], timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                    if resp.status != 200:
-                        return None
-                    images.append(Image.open(io.BytesIO(await resp.read())).convert("RGB"))
+        cands = candidates[:4]
+        images: List[Any] = [None] * len(cands)
+        if aiohttp is not None:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    for i, c in enumerate(cands):
+                        try:
+                            async with session.get(c["image_url"], timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                                if resp.status == 200:
+                                    images[i] = Image.open(io.BytesIO(await resp.read())).convert("RGB")
+                                else:
+                                    print(f"[ColorVote] collage image {i + 1} HTTP {resp.status} — using swatch fallback")
+                        except Exception as _ie:
+                            print(f"[ColorVote] collage image {i + 1} download failed ({_ie}) — using swatch fallback")
+            except Exception as _se:
+                print(f"[ColorVote] collage session failed ({_se}) — all tiles will be swatches")
         w, h, pad, lh = 420, 300, 16, 54
         canvas = Image.new("RGB", (w * 2 + pad * 3, h * 2 + lh * 2 + pad * 3), (18, 24, 38))
         draw = ImageDraw.Draw(canvas)
@@ -26924,19 +26936,24 @@ async def _cs_build_vote_collage(candidates: List[Dict[str, Any]]) -> Optional[d
             font_sm = ImageFont.truetype("arial.ttf", 20)
         except Exception:
             font = font_sm = ImageFont.load_default()
-        for idx, img in enumerate(images[:4]):
+        for idx, c in enumerate(cands):
+            img = images[idx]
+            if img is None:
+                # Solid swatch of the candidate color itself — keeps the 2x2 layout.
+                img = Image.new("RGB", (w, h), _cs_hex_to_rgb(c["hex_code"]))
             col, row = idx % 2, idx // 2
             x = pad + col * (w + pad)
             y = pad + row * (h + lh + pad)
             canvas.paste(ImageOps.fit(img, (w, h), method=Image.LANCZOS), (x, y))
             draw.rectangle([x, y + h, x + w, y + h + lh], fill=(10, 14, 24))
-            draw.text((x + 14, y + h + 12), f"{idx + 1}. {candidates[idx]['color_name']}", font=font, fill=(255, 255, 255))
-            draw.text((x + 14, y + h + 32), candidates[idx]["hex_code"], font=font_sm, fill=(180, 190, 210))
+            draw.text((x + 14, y + h + 12), f"{idx + 1}. {c['color_name']}", font=font, fill=(255, 255, 255))
+            draw.text((x + 14, y + h + 32), c["hex_code"], font=font_sm, fill=(180, 190, 210))
         bio = io.BytesIO()
         canvas.save(bio, format="PNG")
         bio.seek(0)
         return discord.File(bio, filename="diff_color_vote.png")
-    except Exception:
+    except Exception as _ce:
+        print(f"[ColorVote] collage build failed entirely: {_ce}")
         return None
 
 
