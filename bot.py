@@ -13541,6 +13541,39 @@ def _rc_strike_state_save(data: dict) -> None:
     _atomic_json_save(_RC_STRIKE_STATE_FILE, data)
 
 
+_RC_WEEK_SNAPSHOT_FILE = os.path.join("diff_data", "diff_rc_week_snapshot.json")
+
+
+def _rc_week_snapshot_load() -> dict:
+    try:
+        with open(_RC_WEEK_SNAPSHOT_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _rc_week_snapshot_save(guild_id: int) -> None:
+    """Snapshot the current week's roll-call responses to disk. Called immediately
+    BEFORE the weekly reset wipes the DB, so the Monday-00:15 pruning report (which
+    runs AFTER the Monday-00:00 wipe) can read the real ending-week data instead of
+    an empty table — the wipe-then-report ordering used to mark the ENTIRE crew as
+    'no response' every week, zero all streaks, and mass-generate strike candidates."""
+    from zoneinfo import ZoneInfo as _ZI
+    from datetime import timedelta as _td
+    now_est = datetime.now(_ZI("America/New_York"))
+    monday  = (now_est - _td(days=now_est.weekday())).strftime("%Y-%m-%d")
+    try:
+        responses = _rc_db.get_all_responses(guild_id)
+    except Exception:
+        responses = {}
+    _atomic_json_save(_RC_WEEK_SNAPSHOT_FILE, {
+        "guild_id": str(guild_id),
+        "week_monday": monday,
+        "saved_at": now_est.isoformat(),
+        "responses": {str(k): v for k, v in (responses or {}).items()},
+    })
+
+
 def _rc_strike_exempt(member) -> bool:
     """Leadership and hosts are never auto-struck for missing roll call."""
     try:
@@ -16128,6 +16161,12 @@ async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False, res
             pass
 
     if reset:
+        # Snapshot the ending week's responses BEFORE the wipe — the Monday-00:15
+        # pruning report reads this snapshot (the live DB is already empty by then).
+        try:
+            _rc_week_snapshot_save(guild.id)
+        except Exception as _sne:
+            print(f"[RollCall] week snapshot failed: {_sne}")
         _rc_db.reset_week(guild.id)   # wipe responses, meets, finalized flags + message rows → fresh slate
     else:
         _rc_db.clear_messages(guild.id)   # only drop stale message-id rows; keep responses + meets
@@ -25328,7 +25367,20 @@ async def _rc_pruning_report_loop() -> None:
                 continue
 
             crew_members = [m for m in crew_role.members if not m.bot]
+            # Prefer the pre-wipe snapshot: the Monday-00:00 weekly reset wipes the
+            # live DB 15 minutes before this report runs, so live data is empty here.
+            # The snapshot (written just before the wipe) holds the real ending week.
             responses = _rc_db.get_all_responses(guild.id)
+            try:
+                _snap = _rc_week_snapshot_load()
+                if (
+                    _snap.get("week_monday") == today_key
+                    and str(_snap.get("guild_id")) == str(guild.id)
+                    and isinstance(_snap.get("responses"), dict)
+                ):
+                    responses = _snap["responses"]
+            except Exception as _sne:
+                print(f"[PruningReport] snapshot read failed ({_sne}) — using live DB")
 
             # Build per-member response map for this week
             yes_responders:  set = set()
