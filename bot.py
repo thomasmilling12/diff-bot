@@ -5222,7 +5222,7 @@ def _asched_build_header_embed(guild: discord.Guild | None = None) -> discord.Em
     elif next_row and next_row["ts"]:
         cnt = len(layout)
         embed.description = (
-            f"⏰ **Next meet** <t:{next_row['ts']}:R> — <t:{next_row['ts']}:F>\n"
+            f"⏰ **Next meet** <t:{next_row['ts']}:R>\n"
             f"-# {cnt} meet{'s' if cnt != 1 else ''} this week · RSVP with the buttons below 👇"
         )
     else:
@@ -5240,23 +5240,32 @@ def _asched_build_header_embed(guild: discord.Guild | None = None) -> discord.Em
         time_val  = entry.get("time",  "TBD")
         date_val  = entry.get("day",   "TBD")
         badge = _NUM_EMOJI[pos - 1] if pos <= len(_NUM_EMOJI) else f"{pos}\uFE0F\u20E3"
+        # Mobile-first layout: short field titles (no mid-title wrapping), one fact
+        # per line in the value, countdown as small subtext, spacer between meets.
         if is_past:
-            fname = f"{badge}  ✅  {class_val}  ·  Completed"
+            fname = f"{badge} ✅ {class_val} — Completed"
         elif is_next:
-            fname = f"{badge}  🏎️  {class_val}  ·  👉 NEXT UP"
+            fname = f"{badge} 🏎️ {class_val} — NEXT UP 👉"
         else:
-            fname = f"{badge}  🏎️  {class_val}"
+            fname = f"{badge} 🏎️ {class_val}"
         if meet_ts:
-            flines = [f"🗓️ <t:{meet_ts}:F>  ·  ⏳ <t:{meet_ts}:R>"]
+            flines = [f"🗓️ <t:{meet_ts}:F>"]
         else:
-            flines = [f"📅 {date_val}  ·  🕒 {time_val}"]
-        flines.append(f"🎮 **Host:** {_asched_host_str(entry)}")
-        hint = _theme_detail_hint(class_val)
-        if hint and not is_past:
-            flines.append(f"-# 🚗 {hint}")
+            flines = [f"📅 {date_val} · 🕒 {time_val}"]
+        flines.append(f"🎮 {_asched_host_str(entry)}")
         if not is_past:
+            sub_bits = []
+            if meet_ts:
+                sub_bits.append(f"⏳ <t:{meet_ts}:R>")
+            hint = _theme_detail_hint(class_val)
+            if hint:
+                sub_bits.append(f"🚗 {hint}")
+            if sub_bits:
+                flines.append("-# " + " · ".join(sub_bits))
             n = len(_asched_attendees(entry))
             flines.append(f"🙌 **{n}** going" if n else "-# Be the first to RSVP 👇")
+        if pos < len(layout):
+            flines.append("\u200b")   # breathing room before the next meet card
         embed.add_field(name=fname[:256], value="\n".join(flines)[:1024], inline=False)
 
     _banner = _asched_banner_url()
