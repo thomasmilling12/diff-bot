@@ -27923,6 +27923,82 @@ async def force_color_winner(interaction: discord.Interaction):
             await interaction.followup.send("No active vote to close.", ephemeral=True)
 
 
+@bot.command(name="rebuildcolorvote", aliases=["fixcolorvote", "refreshcolorvote"])
+@commands.guild_only()
+async def _cmd_rebuild_color_vote(ctx: commands.Context):
+    """Leadership only: re-render the ACTIVE vote message in place with a fresh 2x2
+    collage — votes already cast are preserved (reactions survive message edits).
+    Use when the collage failed to render (e.g. an expired image URL)."""
+    if not isinstance(ctx.author, discord.Member) or not _cs_is_color_admin(ctx.author):
+        await ctx.send("Founders, Executives, and Server Operations only.", delete_after=6)
+        return
+    data = _cs_load()
+    current_vote = data.get("current_vote")
+    if not current_vote or current_vote.get("closed", False):
+        await ctx.send("No active color vote to rebuild.", delete_after=10)
+        return
+    try:
+        channel = await _cs_fetch_channel(int(current_vote["channel_id"]))
+        vote_msg = await channel.fetch_message(int(current_vote["message_id"]))
+    except Exception:
+        await ctx.send(
+            "⚠️ Could not fetch the active vote message (deleted?). "
+            "Use `/force-color-winner` to clear the stuck vote, then `/force-color-vote`.",
+            delete_after=15,
+        )
+        return
+    candidate_ids = current_vote.get("candidate_submission_ids", [])
+    candidates = [data["submissions"].get(cid) for cid in candidate_ids]
+    candidates = [c for c in candidates if c][:4]
+    if not candidates:
+        await ctx.send("⚠️ The active vote has no resolvable candidates.", delete_after=10)
+        return
+    async with ctx.typing():
+        collage = await _cs_build_vote_collage(candidates)
+    if collage is None:
+        await ctx.send("⚠️ Collage could not be built (image tooling unavailable on this host).", delete_after=10)
+        return
+    # Rebuild the message body exactly like the original announcement.
+    crew_role = ctx.guild.get_role(CREW_MEMBER_ROLE_ID)
+    ping = crew_role.mention if crew_role else ""
+    lines = []
+    if ping:
+        lines += [ping, ""]
+    lines += [
+        "*Crew Color will be voted on this week.*", "",
+        "*The color with the most votes will be the crew color for the following week.*", "",
+    ]
+    for idx, c in enumerate(candidates):
+        lines.append(f"{['1️⃣', '2️⃣', '3️⃣', '4️⃣'][idx]} **{c['color_name']}** — `{c['hex_code']}`")
+    lines += ["", "*Color order starts from left to right.*", "", "*Please choose one color below* 👇"]
+    _now_v = datetime.now(COLOR_TZ)
+    _days_until_mon = (7 - _now_v.weekday()) % 7 or 7
+    _deadline = (_now_v + timedelta(days=_days_until_mon)).replace(
+        hour=COLOR_SCHEDULE_HOUR, minute=0, second=0, microsecond=0
+    )
+    _dl_ts = int(_deadline.timestamp())
+    embed = discord.Embed(color=discord.Color.blurple(), timestamp=datetime.now(COLOR_TZ))
+    embed.add_field(
+        name="⏰ Voting Closes",
+        value=f"<t:{_dl_ts}:F>  (<t:{_dl_ts}:R>)",
+        inline=False,
+    )
+    embed.set_image(url="attachment://diff_color_vote.png")
+    embed.set_footer(text="DIFF • Weekly Crew Color Vote")
+    try:
+        await vote_msg.edit(content="\n".join(lines), embed=embed, attachments=[collage])
+    except Exception as _ee:
+        await ctx.send(f"⚠️ Failed to edit the vote message: {_ee}", delete_after=15)
+        return
+    # Best-effort: make sure the number reactions are present (edits keep them anyway).
+    for emoji in NUMBER_EMOJIS[:len(candidates)]:
+        try:
+            await vote_msg.add_reaction(emoji)
+        except Exception:
+            pass
+    await ctx.send("✅ Vote message rebuilt — the 2x2 color collage is back. All existing votes were preserved.", delete_after=20)
+
+
 @bot.command(name="setcolorwinner", aliases=["manualcolorwinner", "pickcolorwinner", "colorwinner"])
 @commands.guild_only()
 async def _cmd_set_color_winner(ctx: commands.Context, *, color_name: str):
