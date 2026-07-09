@@ -5787,6 +5787,11 @@ class _ASchedOverrideModal(discord.ui.Modal, title="🛠️ Override Schedule Sl
                          "day": day_val, "time": time_val, "class": class_val,
                          "host_name": member.display_name if member else None})
             slot["locked"] = True   # lock so Rebuild Schedule doesn't overwrite
+            # Manual edit: drop any pinned timestamp so the new (possibly
+            # identical-text) day/time re-parses fresh instead of reusing a
+            # stale pin from a previous week.
+            slot.pop("pinned_ts", None)
+            slot.pop("pinned_sig", None)
             schedule["updated_at"] = utc_now().isoformat()
             _asched_save(schedule)
 
