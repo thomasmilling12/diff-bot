@@ -13562,10 +13562,10 @@ def _rc_week_snapshot_save(guild_id: int) -> None:
     from datetime import timedelta as _td
     now_est = datetime.now(_ZI("America/New_York"))
     monday  = (now_est - _td(days=now_est.weekday())).strftime("%Y-%m-%d")
-    try:
-        responses = _rc_db.get_all_responses(guild_id)
-    except Exception:
-        responses = {}
+    # No fallback here: if the DB read fails we must NOT write an empty snapshot
+    # (the report would prefer it and falsely mark everyone no-response). Let the
+    # exception propagate — the caller logs it and the report falls back to live DB.
+    responses = _rc_db.get_all_responses(guild_id)
     _atomic_json_save(_RC_WEEK_SNAPSHOT_FILE, {
         "guild_id": str(guild_id),
         "week_monday": monday,
@@ -16163,11 +16163,23 @@ async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False, res
     if reset:
         # Snapshot the ending week's responses BEFORE the wipe — the Monday-00:15
         # pruning report reads this snapshot (the live DB is already empty by then).
+        _snap_ok = False
         try:
             _rc_week_snapshot_save(guild.id)
+            _snap_ok = True
         except Exception as _sne:
             print(f"[RollCall] week snapshot failed: {_sne}")
         _rc_db.reset_week(guild.id)   # wipe responses, meets, finalized flags + message rows → fresh slate
+        if _snap_ok:
+            # Mark the wipe as completed AFTER it succeeds — the report only prefers
+            # the snapshot when this flag is set (if the wipe threw, live DB is still
+            # intact and is the better source).
+            try:
+                _sd = _rc_week_snapshot_load()
+                _sd["reset_completed"] = True
+                _atomic_json_save(_RC_WEEK_SNAPSHOT_FILE, _sd)
+            except Exception:
+                pass
     else:
         _rc_db.clear_messages(guild.id)   # only drop stale message-id rows; keep responses + meets
 
@@ -25377,6 +25389,7 @@ async def _rc_pruning_report_loop() -> None:
                     _snap.get("week_monday") == today_key
                     and str(_snap.get("guild_id")) == str(guild.id)
                     and isinstance(_snap.get("responses"), dict)
+                    and _snap.get("reset_completed") is True
                 ):
                     responses = _snap["responses"]
             except Exception as _sne:
