@@ -5320,8 +5320,9 @@ async def _asched_sync_panel(bot_client, ping_roles: bool = False) -> None:
     """Maintain ONE persistent schedule panel by editing in place — never delete +
     repost the whole thing. The header lives permanently and is only edited; meet
     cards are reused by position (add/trim only the delta). On `ping_roles` a single
-    short ping line is posted (and cleaned up on the next sync) so the panel itself
-    is never re-posted week to week.
+    short ping line is posted idempotently — deduped by schedule signature, with the
+    stale line replaced only when the schedule actually changed — so the panel itself
+    is never re-posted week to week and repeated rebuilds can't re-ping the server.
 
     Serialized via `_asched_sync_lock` so the 15-min refresh loop, a staff finalize,
     and any manual trigger can never overlap and post a duplicate set of cards."""
