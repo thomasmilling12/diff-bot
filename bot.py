@@ -4404,6 +4404,11 @@ def _asched_build() -> dict:
         slot["day"]         = day_val
         slot["time"]        = time_val
         slot["class"]       = theme_val
+        # New week / reassigned slot: drop the pinned timestamp so identical
+        # day/time text (e.g. "Thursday 10 PM" every week) re-parses fresh
+        # instead of keeping last week's (now past) pinned date.
+        slot.pop("pinned_ts", None)
+        slot.pop("pinned_sig", None)
     schedule["updated_at"] = utc_now().isoformat()
     _asched_save(schedule)
     return schedule
@@ -4697,12 +4702,38 @@ def _asched_reconcile_attendees(schedule: dict) -> bool:
 
 
 def _asched_sorted_slots(schedule: dict):
-    """Return slot rows sorted soonest-first (future → past → TBD) + now_ts."""
+    """Return slot rows sorted soonest-first (future → past → TBD) + now_ts.
+
+    Timestamps are PINNED per slot (`pinned_ts` + `pinned_sig`): weekday-only
+    dates like "Thursday" re-parse to NEXT week's occurrence once the meet time
+    passes, which made completed meets jump to a random future date instead of
+    showing as Completed. The first successful parse is persisted and reused
+    until the slot's day/time text changes (sig mismatch), the weekly Rebuild
+    clears it, or it goes stale (>6 days past — can't be this week's meet)."""
     now_ts = int(utc_now().timestamp())
     rows = []
+    pins_changed = False
     for key in _HRSVP_DAYS:
         entry = schedule.get("days", {}).get(key, {})
-        mt = _parse_meet_ts(entry.get("day", "TBD"), entry.get("time", "TBD"))
+        sig = f"{entry.get('day', 'TBD')}|{entry.get('time', 'TBD')}"
+        pinned = entry.get("pinned_ts")
+        if (
+            entry.get("pinned_sig") == sig
+            and isinstance(pinned, (int, float))
+            and now_ts - int(pinned) < 6 * 86400
+        ):
+            mt = int(pinned)
+        else:
+            mt = _parse_meet_ts(entry.get("day", "TBD"), entry.get("time", "TBD"))
+            if mt is not None:
+                if entry.get("pinned_ts") != mt or entry.get("pinned_sig") != sig:
+                    entry["pinned_ts"] = mt
+                    entry["pinned_sig"] = sig
+                    pins_changed = True
+            elif "pinned_ts" in entry or "pinned_sig" in entry:
+                entry.pop("pinned_ts", None)
+                entry.pop("pinned_sig", None)
+                pins_changed = True
         if mt is None:
             cat, sortk = 2, (2, 0)
         elif mt < now_ts:
@@ -4710,6 +4741,11 @@ def _asched_sorted_slots(schedule: dict):
         else:
             cat, sortk = 0, (0, mt)
         rows.append({"key": key, "entry": entry, "ts": mt, "cat": cat, "sortk": sortk})
+    if pins_changed:
+        try:
+            _asched_save(schedule)
+        except Exception:
+            pass
     rows.sort(key=lambda r: r["sortk"])
     return rows, now_ts
 
