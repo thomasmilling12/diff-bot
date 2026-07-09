@@ -41909,8 +41909,8 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
     )
     build_photos = discord.ui.Label(
         text="Your build photos",
-        description=f"Attach up to 10 clear pics of your clean builds — {MIN_GARAGE_PHOTOS} total needed for review.",
-        component=discord.ui.FileUpload(required=False, min_values=0, max_values=10),
+        description=f"Attach clear pics of your clean builds — {MIN_GARAGE_PHOTOS} total needed for review.",
+        component=discord.ui.FileUpload(required=True, min_values=1, max_values=10),
     )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
