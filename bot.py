@@ -46052,6 +46052,9 @@ async def _social_handle_drop(channel: discord.TextChannel, link: str,
     """Post a formatted social-media drop embed and add reactions."""
     meta = _PLATFORM_META.get(platform, _PLATFORM_META["instagram"])
     ping = f"<@&{_IG_PING_ROLE_ID}>"
+    # The [^\s]+ link regexes can swallow trailing punctuation from pasted
+    # text — strip it so the oEmbed lookup and link button don't 404.
+    link = link.rstrip(").,>]}'\"")
 
     # Best-effort rich preview (never blocks the event loop, silent fallback)
     preview: dict = {}
