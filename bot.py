@@ -332,9 +332,10 @@ _orig_bot_add_view = bot.add_view
 
 def _add_view_with_select_reset(view, *args, **kwargs):
     try:
-        for _it in view.children:
-            if isinstance(_it, _SELECT_TYPES):
-                _wrap_select_for_reset(_it)
+        if not getattr(view, "_disable_auto_select_reset", False):
+            for _it in view.children:
+                if isinstance(_it, _SELECT_TYPES):
+                    _wrap_select_for_reset(_it)
     except Exception:
         pass
     return _orig_bot_add_view(view, *args, **kwargs)
