@@ -23215,6 +23215,40 @@ async def __join_auto_bump_loop_logic():
             # Skip 2h and 6h escalations if a staff member already claimed the ticket,
             # or if the application is on hold. We still escalate at 24h if truly abandoned.
             if ("join_claimed_by=" in topic or entry.get("on_hold")) and bump_level < 2:
+                # Claimed tickets escape the 2h/6h bumps — but if 12h pass after
+                # photos with still no decision, nudge the claimer once.
+                if ("join_claimed_by=" in topic and not entry.get("on_hold")
+                        and not entry.get("claimed_nudge_sent")):
+                    _cn_pts = entry.get("photos_complete_at")
+                    _cn_m = re.search(r"join_claimed_by=(\d+)", topic)
+                    if _cn_pts and _cn_m:
+                        try:
+                            _cn_at = datetime.fromisoformat(_cn_pts)
+                            if _cn_at.tzinfo is None:
+                                _cn_at = _cn_at.replace(tzinfo=timezone.utc)
+                            if (now_utc - _cn_at).total_seconds() / 3600 >= 12:
+                                _cn_emb = discord.Embed(
+                                    title="⏳ Claimed — Decision Still Pending (12h)",
+                                    description=(
+                                        "You claimed this application, but it has now had all "
+                                        "required photos for **over 12 hours** with no accept, "
+                                        "deny, or hold decision.\n\n"
+                                        "Please action it — or unclaim/hand it off so someone "
+                                        "else can."
+                                    ),
+                                    color=discord.Color.orange(),
+                                    timestamp=now_utc,
+                                )
+                                _cn_emb.set_footer(text="Different Meets • Join Hub Auto-Bump")
+                                await ch.send(
+                                    content=f"<@{_cn_m.group(1)}>",
+                                    embed=_cn_emb,
+                                    allowed_mentions=discord.AllowedMentions(users=True),
+                                )
+                                entry["claimed_nudge_sent"] = True
+                                changed = True
+                        except Exception:
+                            pass
                 extra[ch_key] = entry
                 continue
             photos_ts = entry.get("photos_complete_at")
@@ -35840,6 +35874,73 @@ class SupportCloseButton(discord.ui.View):
             ephemeral=True,
         )
 
+    @discord.ui.button(label="Catch Me Up", emoji="🧠", style=discord.ButtonStyle.secondary, custom_id="diff_ticket_catchup")
+    async def catch_me_up(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Staff-only ephemeral AI summary of the ticket so far. Advisory only."""
+        if not isinstance(interaction.user, discord.Member):
+            return
+        is_staff = any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles)
+        if not is_staff:
+            return await interaction.response.send_message("Only staff can use this.", ephemeral=True)
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            return await interaction.response.send_message("Ticket channels only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not _ai_enabled():
+            return await interaction.followup.send(
+                "🧠 AI summaries aren't available right now.", ephemeral=True
+            )
+        lines: list[str] = []
+        try:
+            msgs = [m async for m in channel.history(limit=60)]
+        except Exception:
+            msgs = []
+        for m in reversed(msgs):
+            content = (m.content or "").strip()
+            if not content and m.embeds:
+                e0 = m.embeds[0]
+                content = ((e0.title or "") + " " + (e0.description or "")).strip()[:150]
+            if not content:
+                continue
+            if isinstance(m.author, discord.Member) and any(
+                r.id in _LEADERSHIP_HOST_ROLE_IDS for r in m.author.roles
+            ):
+                who = "STAFF"
+            elif m.author.bot:
+                who = "BOT"
+            else:
+                who = "MEMBER"
+            lines.append(f"[{who}] {m.author.display_name}: {content[:200]}")
+        convo = "\n".join(lines)[-3500:]
+        if not convo.strip():
+            return await interaction.followup.send("Nothing to summarize yet.", ephemeral=True)
+        summary = None
+        try:
+            summary = await _ai_chat(
+                "You summarize Discord support tickets for staff of a PS5 GTA car-meet "
+                "community. Given the transcript, reply in plain text with: "
+                "1) one-line issue summary, 2) what has been done/said so far, "
+                "3) what the member is still waiting on, 4) suggested next step for staff. "
+                "Be concise — under 150 words. No markdown headers.",
+                convo,
+                json_mode=False,
+                max_tokens=400,
+            )
+        except Exception:
+            summary = None
+        if not summary or not str(summary).strip():
+            return await interaction.followup.send(
+                "Couldn't generate a summary right now — try again in a bit.", ephemeral=True
+            )
+        emb = discord.Embed(
+            title="🧠 Ticket Catch-Up",
+            description=str(summary).strip()[:4000],
+            color=discord.Color.blurple(),
+        )
+        emb.set_footer(text="AI summary — advisory only • Different Meets")
+        await interaction.followup.send(embed=emb, ephemeral=True)
+
+
 class SupportApplicationReviewView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -37618,6 +37719,7 @@ class SupportDropdownView(discord.ui.View):
 
 _TICKET_WARN_HOURS  = 48   # warn after this many hours of silence
 _TICKET_CLOSE_HOURS = 72   # auto-close after this many hours of silence
+_TI_CLAIMER_NUDGE_HOURS = 4  # claimed ticket: member's msg unanswered this long → ping claimer
 
 async def __ticket_inactivity_monitor_logic():
     guild = bot.get_guild(GUILD_ID)
@@ -37720,6 +37822,33 @@ async def __ticket_inactivity_monitor_logic():
                 except Exception:
                     pass
 
+        elif age_hours >= _TI_CLAIMER_NUDGE_HOURS and "ticket_claimed_by=" in topic:
+            # Claimed ticket where the MEMBER spoke last and staff went quiet.
+            # Self-guarding: our nudge becomes the channel's last message, so
+            # the (last author == owner) condition can't re-fire until the
+            # member writes again.
+            owner_id_raw = _supp_parse_topic(topic, "ticket_owner")
+            claimer_raw = _supp_parse_topic(topic, "ticket_claimed_by")
+            if (owner_id_raw and claimer_raw
+                    and str(last_msg.author.id) == owner_id_raw):
+                try:
+                    await channel.send(
+                        content=f"<@{claimer_raw}>",
+                        embed=discord.Embed(
+                            title="💬 Member Waiting on You",
+                            description=(
+                                f"<@{owner_id_raw}>'s last message has gone "
+                                f"**{age_hours:.0f}h** without a staff reply.\n"
+                                "You claimed this ticket — please follow up, "
+                                "or close it if it's resolved."
+                            ),
+                            color=discord.Color.orange(),
+                        ),
+                        allowed_mentions=discord.AllowedMentions(users=True),
+                    )
+                except Exception:
+                    pass
+
 @tasks.loop(minutes=30)
 async def _ticket_inactivity_monitor() -> None:
     _loop_success('_ticket_inactivity_monitor')
@@ -37739,16 +37868,25 @@ async def _before_ticket_monitor():
 
 _TICKET_DIGEST_STATE_FILE = os.path.join(DATA_FOLDER, "diff_ticket_digest_state.json")
 
-def _digest_load_ts() -> float:
+def _digest_state_load() -> dict:
     try:
         with open(_TICKET_DIGEST_STATE_FILE) as f:
-            return float(json.load(f).get("last_digest_ts", 0))
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def _digest_load_ts() -> float:
+    try:
+        return float(_digest_state_load().get("last_digest_ts", 0))
     except Exception:
         return 0.0
 
 def _digest_save_ts(ts: float) -> None:
     try:
-        _atomic_json_save(_TICKET_DIGEST_STATE_FILE, {"last_digest_ts": ts})
+        st = _digest_state_load()
+        st["last_digest_ts"] = ts
+        _atomic_json_save(_TICKET_DIGEST_STATE_FILE, st)
     except Exception:
         pass
 
@@ -38526,6 +38664,110 @@ async def __ticket_daily_digest_logic():
         _digest_save_ts(now_ts)
     except Exception:
         pass
+
+    # ── Weekly performance report (Mondays, right after the daily digest) ──
+    if now_est.weekday() == 0:
+        try:
+            last_wk = float(_digest_state_load().get("last_weekly_report_ts", 0))
+        except Exception:
+            last_wk = 0.0
+        if now_ts - last_wk >= 3 * 86400:
+            try:
+                wk_embed = _ticket_weekly_report_embed(guild, len(open_tickets), len(unclaimed))
+                await logs.send(embed=wk_embed, allowed_mentions=discord.AllowedMentions.none())
+                st = _digest_state_load()
+                st["last_weekly_report_ts"] = now_ts
+                _atomic_json_save(_TICKET_DIGEST_STATE_FILE, st)
+            except Exception:
+                pass
+
+
+def _ticket_weekly_report_embed(guild: discord.Guild, open_count: int, unclaimed_count: int) -> discord.Embed:
+    """Weekly (Monday) ticket performance summary built from the rolling close
+    log + CSAT store. Pure disk reads — safe to call from the digest loop."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+
+    closes: list[dict] = []
+    for e in _ti_close_log_load():
+        try:
+            t = datetime.fromisoformat(e.get("ts", ""))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            if t >= cutoff:
+                closes.append(e)
+        except Exception:
+            continue
+
+    durs = [float(e.get("duration_s", 0)) for e in closes if e.get("duration_s")]
+    avg_close_h = (sum(durs) / len(durs) / 3600) if durs else None
+
+    per_staff: dict = {}
+    per_type: dict = {}
+    for e in closes:
+        sid = e.get("staff_id")
+        if sid:
+            per_staff[sid] = per_staff.get(sid, 0) + 1
+        tk = e.get("ticket_key") or "support"
+        per_type[tk] = per_type.get(tk, 0) + 1
+
+    ratings: list[int] = []
+    for _sid, d in _csat_load().items():
+        for r in d.get("ratings", []):
+            try:
+                t = datetime.fromisoformat(r.get("at", ""))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+                if t >= cutoff:
+                    ratings.append(int(r.get("rating", 0)))
+            except Exception:
+                continue
+
+    def _staff_name(uid) -> str:
+        try:
+            m = guild.get_member(int(uid))
+            return m.display_name if m else f"User {uid}"
+        except Exception:
+            return f"User {uid}"
+
+    emb = discord.Embed(
+        title="📈 Weekly Ticket Report",
+        description="Ticket performance over the **last 7 days**.",
+        color=discord.Color.teal(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    emb.add_field(name="📦 Closed", value=f"**{len(closes)}** ticket(s)", inline=True)
+    emb.add_field(
+        name="⏱ Avg Claim→Close",
+        value=(f"**{avg_close_h:.1f}h**" if avg_close_h is not None else "*no data*"),
+        inline=True,
+    )
+    emb.add_field(
+        name="🌟 CSAT",
+        value=(f"**{sum(ratings)/len(ratings):.2f}/5** ({len(ratings)} rating(s))"
+               if ratings else "*no ratings*"),
+        inline=True,
+    )
+    emb.add_field(
+        name="📬 Open Right Now",
+        value=f"**{open_count}** open • **{unclaimed_count}** unclaimed",
+        inline=False,
+    )
+    if per_type:
+        top_types = sorted(per_type.items(), key=lambda kv: kv[1], reverse=True)[:6]
+        emb.add_field(
+            name="🗂 Closes by Type",
+            value="\n".join(f"• {k} — **{v}**" for k, v in top_types)[:1024],
+            inline=False,
+        )
+    if per_staff:
+        top_staff = sorted(per_staff.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        emb.add_field(
+            name="🏆 Top Closers",
+            value="\n".join(f"• {_staff_name(sid)} — **{n}**" for sid, n in top_staff)[:1024],
+            inline=False,
+        )
+    emb.set_footer(text="Different Meets • Weekly Ticket Report • Mondays 9 AM EST")
+    return emb
 
 @tasks.loop(minutes=15)
 async def _ticket_daily_digest_loop() -> None:
@@ -43088,6 +43330,23 @@ class JoinTicketView(discord.ui.View):
             onboard_embed.add_field(
                 name="🚗 Step 3 — Show Up to a Meet",
                 value="Stay ready. When a meet drops, join the voice chat and follow the host's instructions.",
+                inline=False,
+            )
+            onboard_embed.add_field(
+                name="📸 Step 4 — Post Your Lobby Pictures",
+                value=(
+                    "Snap shots at meets and drop them in the lobby pictures channel — "
+                    "they can auto-count you as attended and earn you XP."
+                ),
+                inline=False,
+            )
+            onboard_embed.add_field(
+                name="🏆 Step 5 — Level Up",
+                value=(
+                    "You earn XP for chatting, attending meets, and posting pics. "
+                    "Check `!rank` for your level, `!badges` for your badges, and "
+                    "`!xpinfo` for how it all works."
+                ),
                 inline=False,
             )
             onboard_embed.add_field(
