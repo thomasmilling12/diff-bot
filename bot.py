@@ -40079,6 +40079,179 @@ async def _update_join_ticket_complete(channel: discord.TextChannel) -> None:
         pass
 
 
+_JOIN_MODAL_UPLOAD_MARK = "📸 Build photos submitted with the application by"
+
+
+def _join_is_applicant_photo_msg(m: discord.Message, applicant_id: int) -> bool:
+    """True if a ticket message's image attachments should count toward the
+    applicant's photo requirement: authored by the applicant, OR a bot-posted
+    batch carrying the modal-upload marker (photos attached in the join form)."""
+    if m.author.id == applicant_id:
+        return True
+    return bool(m.author.bot and _JOIN_MODAL_UPLOAD_MARK in (m.content or ""))
+
+
+async def _join_process_photo_batch(channel: discord.TextChannel, applicant, raw_images: list, join_user_id: str, batch_cap: int = 5) -> None:
+    """Shared join-ticket photo pipeline: dedup hashing, the Photo Progress
+    embed, and the Ready-for-Review notification once the minimum is hit.
+    Used by on_message (applicant uploads in-channel) and by JoinPsnModal
+    (photos attached directly in the application form, re-posted by the bot).
+    Caller must hold _join_photo_lock(channel.id)."""
+    spam_ignored = max(0, len(raw_images) - batch_cap)
+    candidates = raw_images[:batch_cap]
+
+    photo_hashes = _photo_hashes_load()
+    user_hashes: list = photo_hashes.setdefault(join_user_id, [])
+    accepted = 0
+    dupes = 0
+    for att in candidates:
+        h = _attachment_hash(att)
+        if h in user_hashes:
+            dupes += 1
+        else:
+            user_hashes.append(h)
+            accepted += 1
+    _photo_hashes_save(photo_hashes)
+
+    history = [m async for m in channel.history(limit=200)]
+    total_images = sum(
+        len([a for a in m.attachments if a.content_type and a.content_type.startswith("image/")])
+        for m in history
+        if _join_is_applicant_photo_msg(m, applicant.id)
+    )
+    prev_total = total_images - len(raw_images)
+    capped = min(total_images, MIN_GARAGE_PHOTOS)
+
+    total_unique   = len(user_hashes)
+    remaining      = max(0, MIN_GARAGE_PHOTOS - capped)
+    complete       = capped >= MIN_GARAGE_PHOTOS
+    progress_color = discord.Color.green() if complete else discord.Color.blue()
+
+    bar = "🟦" * capped + "⬛" * remaining
+
+    title = (
+        "📸 Photo Progress — ✅ Complete!"
+        if complete
+        else f"📸 Photo Progress — {capped}/{MIN_GARAGE_PHOTOS}"
+    )
+    desc_parts = [f"**{applicant.mention}** is submitting their garage photos."]
+    if complete:
+        desc_parts.append("🎉 All required photos have been received!")
+
+    progress_embed = discord.Embed(
+        title       = title,
+        description = "\n".join(desc_parts),
+        color       = progress_color,
+        timestamp   = utc_now(),
+    )
+    progress_embed.set_thumbnail(url=applicant.display_avatar.url)
+
+    progress_embed.add_field(
+        name  = f"📊 {capped}/{MIN_GARAGE_PHOTOS} submitted",
+        value = bar,
+        inline=False,
+    )
+
+    if accepted:
+        progress_embed.add_field(name="✅ New This Batch",   value=str(accepted),     inline=True)
+    if dupes:
+        progress_embed.add_field(name="🔁 Duplicates",       value=str(dupes),        inline=True)
+    if spam_ignored:
+        progress_embed.add_field(name="⚠️ Over Limit",       value=str(spam_ignored), inline=True)
+
+    if total_unique > accepted or total_images > len(raw_images):
+        progress_embed.add_field(name="📸 Total Unique",     value=str(total_unique), inline=True)
+
+    if not complete:
+        progress_embed.add_field(name="📌 Still Needed",     value=f"{remaining} more photo{'s' if remaining != 1 else ''}", inline=True)
+
+    progress_embed.set_footer(text="Different Meets • Photo Review System")
+
+    prev_progress = next(
+        (m for m in history
+         if m.author.id == bot.user.id
+         and m.embeds
+         and "Photo Progress" in (m.embeds[0].title or "")),
+        None,
+    )
+    if prev_progress:
+        try:
+            await prev_progress.edit(embed=progress_embed)
+        except Exception:
+            await channel.send(embed=progress_embed)
+    else:
+        await channel.send(embed=progress_embed)
+
+    already_notified = any(
+        m.author.id == bot.user.id
+        and m.embeds
+        and m.embeds[0].title == "✅ Application Ready for Review"
+        for m in history
+    )
+
+    if not already_notified and prev_total < MIN_GARAGE_PHOTOS <= total_images:
+        ticket_support_role = channel.guild.get_role(TICKET_SUPPORT_ROLE_ID)
+        mentions = ticket_support_role.mention if ticket_support_role else None
+
+        review_embed = discord.Embed(
+            title       = "✅ Application Ready for Review",
+            description = f"{applicant.mention} has submitted all **{MIN_GARAGE_PHOTOS}** required photos and is ready to be reviewed.",
+            color       = discord.Color.green(),
+            timestamp   = utc_now(),
+        )
+        review_embed.add_field(name="📸 Valid Photos",  value=f"{capped}/{MIN_GARAGE_PHOTOS}", inline=True)
+        review_embed.add_field(name="📋 Channel",       value=channel.mention,                inline=True)
+        # Auto pre-screen: cheap metadata-only quality stats so reviewers
+        # know upfront if photos are likely usable.
+        try:
+            _all_imgs = []
+            for _hm in history:
+                if _join_is_applicant_photo_msg(_hm, applicant.id):
+                    for _a in _hm.attachments:
+                        if _a.content_type and _a.content_type.startswith("image/"):
+                            _all_imgs.append(_a)
+            _sizes_kb = [int(getattr(a, "size", 0) or 0) // 1024 for a in _all_imgs]
+            _dims = [(getattr(a, "width", 0) or 0, getattr(a, "height", 0) or 0) for a in _all_imgs]
+            _tiny_kb   = sum(1 for s in _sizes_kb if 0 < s < 50)
+            _small_dim = sum(1 for w, h in _dims if w and h and (w < 400 or h < 400))
+            _avg_kb    = (sum(_sizes_kb) // len(_sizes_kb)) if _sizes_kb else 0
+            _quality_bits = [f"avg `{_avg_kb} KB`"]
+            if _tiny_kb:   _quality_bits.append(f"⚠️ {_tiny_kb} tiny file{'s' if _tiny_kb != 1 else ''}")
+            if _small_dim: _quality_bits.append(f"⚠️ {_small_dim} low-res")
+            if not _tiny_kb and not _small_dim:
+                _quality_bits.append("✅ no auto flags")
+            review_embed.add_field(
+                name="🔍 Auto Pre-Screen",
+                value=" · ".join(_quality_bits),
+                inline=False,
+            )
+        except Exception:
+            pass
+        review_embed.set_thumbnail(url=applicant.display_avatar.url)
+        review_embed.set_footer(text="Different Meets • Application System")
+        await channel.send(
+            content=mentions if mentions else None,
+            embed=review_embed,
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+        log_ch = channel.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if isinstance(log_ch, discord.TextChannel):
+            try:
+                await log_ch.send(embed=discord.Embed(
+                    title="✅ Application Ready For Review",
+                    description="\n".join([
+                        f"**User:** <@{join_user_id}>",
+                        f"**Channel:** {channel.mention}",
+                        f"**Valid Photos:** {capped}/{MIN_GARAGE_PHOTOS}",
+                    ]),
+                    color=discord.Color.green(),
+                    timestamp=utc_now(),
+                ))
+            except Exception:
+                pass
+        await _update_join_ticket_complete(channel)
+
+
 # ===================== AI Moderation Assist (Phase 3c) =====================
 # Advisory ONLY — never deletes, warns, or punishes. Two entry points:
 #  (1) automatic cheap pre-filter on messages → spends an AI call only on
@@ -40580,159 +40753,7 @@ async def on_message(message: discord.Message) -> None:
         raw_images = [a for a in message.attachments if a.content_type and a.content_type.startswith("image/")]
         if raw_images:
             async with _join_photo_lock(message.channel.id):
-                spam_ignored = max(0, len(raw_images) - 5)
-                candidates = raw_images[:5]
-
-                photo_hashes = _photo_hashes_load()
-                user_hashes: list = photo_hashes.setdefault(join_user_id, [])
-                accepted = 0
-                dupes = 0
-                for att in candidates:
-                    h = _attachment_hash(att)
-                    if h in user_hashes:
-                        dupes += 1
-                    else:
-                        user_hashes.append(h)
-                        accepted += 1
-                _photo_hashes_save(photo_hashes)
-
-                history = [m async for m in message.channel.history(limit=200)]
-                total_images = sum(
-                    len([a for a in m.attachments if a.content_type and a.content_type.startswith("image/")])
-                    for m in history
-                    if m.author.id == message.author.id
-                )
-                prev_total = total_images - len(raw_images)
-                capped = min(total_images, MIN_GARAGE_PHOTOS)
-
-                total_unique   = len(user_hashes)
-                remaining      = max(0, MIN_GARAGE_PHOTOS - capped)
-                complete       = capped >= MIN_GARAGE_PHOTOS
-                progress_color = discord.Color.green() if complete else discord.Color.blue()
-
-                bar = "🟦" * capped + "⬛" * remaining
-
-                title = (
-                    "📸 Photo Progress — ✅ Complete!"
-                    if complete
-                    else f"📸 Photo Progress — {capped}/{MIN_GARAGE_PHOTOS}"
-                )
-                desc_parts = [f"**{message.author.mention}** is submitting their garage photos."]
-                if complete:
-                    desc_parts.append("🎉 All required photos have been received!")
-
-                progress_embed = discord.Embed(
-                    title       = title,
-                    description = "\n".join(desc_parts),
-                    color       = progress_color,
-                    timestamp   = utc_now(),
-                )
-                progress_embed.set_thumbnail(url=message.author.display_avatar.url)
-
-                progress_embed.add_field(
-                    name  = f"📊 {capped}/{MIN_GARAGE_PHOTOS} submitted",
-                    value = bar,
-                    inline=False,
-                )
-
-                if accepted:
-                    progress_embed.add_field(name="✅ New This Batch",   value=str(accepted),     inline=True)
-                if dupes:
-                    progress_embed.add_field(name="🔁 Duplicates",       value=str(dupes),        inline=True)
-                if spam_ignored:
-                    progress_embed.add_field(name="⚠️ Over Limit",       value=str(spam_ignored), inline=True)
-
-                if total_unique > accepted or total_images > len(raw_images):
-                    progress_embed.add_field(name="📸 Total Unique",     value=str(total_unique), inline=True)
-
-                if not complete:
-                    progress_embed.add_field(name="📌 Still Needed",     value=f"{remaining} more photo{'s' if remaining != 1 else ''}", inline=True)
-
-                progress_embed.set_footer(text="Different Meets • Photo Review System")
-
-                prev_progress = next(
-                    (m for m in history
-                     if m.author.id == bot.user.id
-                     and m.embeds
-                     and "Photo Progress" in (m.embeds[0].title or "")),
-                    None,
-                )
-                if prev_progress:
-                    try:
-                        await prev_progress.edit(embed=progress_embed)
-                    except Exception:
-                        await message.channel.send(embed=progress_embed)
-                else:
-                    await message.channel.send(embed=progress_embed)
-
-                already_notified = any(
-                    m.author.id == bot.user.id
-                    and m.embeds
-                    and m.embeds[0].title == "✅ Application Ready for Review"
-                    for m in history
-                )
-
-                if not already_notified and prev_total < MIN_GARAGE_PHOTOS <= total_images:
-                    ticket_support_role = message.guild.get_role(TICKET_SUPPORT_ROLE_ID)
-                    mentions = ticket_support_role.mention if ticket_support_role else None
-
-                    review_embed = discord.Embed(
-                        title       = "✅ Application Ready for Review",
-                        description = f"{message.author.mention} has submitted all **{MIN_GARAGE_PHOTOS}** required photos and is ready to be reviewed.",
-                        color       = discord.Color.green(),
-                        timestamp   = utc_now(),
-                    )
-                    review_embed.add_field(name="📸 Valid Photos",  value=f"{capped}/{MIN_GARAGE_PHOTOS}", inline=True)
-                    review_embed.add_field(name="📋 Channel",       value=message.channel.mention,        inline=True)
-                    # Auto pre-screen: cheap metadata-only quality stats so reviewers
-                    # know upfront if photos are likely usable.
-                    try:
-                        _all_imgs = []
-                        for _hm in history:
-                            if _hm.author.id == message.author.id:
-                                for _a in _hm.attachments:
-                                    if _a.content_type and _a.content_type.startswith("image/"):
-                                        _all_imgs.append(_a)
-                        _sizes_kb = [int(getattr(a, "size", 0) or 0) // 1024 for a in _all_imgs]
-                        _dims = [(getattr(a, "width", 0) or 0, getattr(a, "height", 0) or 0) for a in _all_imgs]
-                        _tiny_kb   = sum(1 for s in _sizes_kb if 0 < s < 50)
-                        _small_dim = sum(1 for w, h in _dims if w and h and (w < 400 or h < 400))
-                        _avg_kb    = (sum(_sizes_kb) // len(_sizes_kb)) if _sizes_kb else 0
-                        _quality_bits = [f"avg `{_avg_kb} KB`"]
-                        if _tiny_kb:   _quality_bits.append(f"⚠️ {_tiny_kb} tiny file{'s' if _tiny_kb != 1 else ''}")
-                        if _small_dim: _quality_bits.append(f"⚠️ {_small_dim} low-res")
-                        if not _tiny_kb and not _small_dim:
-                            _quality_bits.append("✅ no auto flags")
-                        review_embed.add_field(
-                            name="🔍 Auto Pre-Screen",
-                            value=" · ".join(_quality_bits),
-                            inline=False,
-                        )
-                    except Exception:
-                        pass
-                    review_embed.set_thumbnail(url=message.author.display_avatar.url)
-                    review_embed.set_footer(text="Different Meets • Application System")
-                    await message.channel.send(
-                        content=mentions if mentions else None,
-                        embed=review_embed,
-                        allowed_mentions=discord.AllowedMentions(roles=True),
-                    )
-                    log_ch = message.guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-                    if isinstance(log_ch, discord.TextChannel):
-                        try:
-                            await log_ch.send(embed=discord.Embed(
-                                title="✅ Application Ready For Review",
-                                description="\n".join([
-                                    f"**User:** <@{join_user_id}>",
-                                    f"**Channel:** {message.channel.mention}",
-                                    f"**Valid Photos:** {capped}/{MIN_GARAGE_PHOTOS}",
-                                ]),
-                                color=discord.Color.green(),
-                                timestamp=utc_now(),
-                            ))
-                        except Exception:
-                            pass
-                    await _update_join_ticket_complete(message.channel)
+                await _join_process_photo_batch(message.channel, message.author, raw_images, join_user_id)
         return
 
     # --- Staff ticket message tracking ---
@@ -41805,33 +41826,44 @@ class JoinPlatformSelect(discord.ui.Select):
 
 
 class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
-    psn_name = discord.ui.TextInput(
-        label="Your PSN / Gamertag",
-        placeholder="Example: Frostyy2003",
-        required=True,
-        max_length=28,
-        min_length=2,
+    psn_name = discord.ui.Label(
+        text="Your PSN / Gamertag",
+        component=discord.ui.TextInput(
+            placeholder="Example: Frostyy2003",
+            required=True,
+            max_length=28,
+            min_length=2,
+        ),
     )
-    car_type = discord.ui.TextInput(
-        label="Your main car style",
-        placeholder="e.g. Stanced, JDM, Muscle, Lowrider, Open",
-        required=True,
-        max_length=80,
+    car_type = discord.ui.Label(
+        text="Your main car style",
+        component=discord.ui.TextInput(
+            placeholder="e.g. Stanced, JDM, Muscle, Lowrider, Open",
+            required=True,
+            max_length=80,
+        ),
     )
-    heard_from = discord.ui.TextInput(
-        label="How did you find DIFF Meets?",
-        placeholder="e.g. Friend, TikTok, YouTube, Reddit, In-game",
-        required=True,
-        max_length=100,
+    heard_from = discord.ui.Label(
+        text="How did you find DIFF Meets?",
+        component=discord.ui.TextInput(
+            placeholder="e.g. Friend, TikTok, YouTube, Reddit, In-game",
+            required=True,
+            max_length=100,
+        ),
+    )
+    build_photos = discord.ui.Label(
+        text="Your build photos",
+        description=f"Attach up to 10 clear pics of your clean builds — {MIN_GARAGE_PHOTOS} total needed for review.",
+        component=discord.ui.FileUpload(required=False, min_values=0, max_values=10),
     )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
 
-        clean_psn = _join_sanitize_psn(str(self.psn_name))
-        car_type_val = str(self.car_type).strip()
-        heard_from_val = str(self.heard_from).strip()
+        clean_psn = _join_sanitize_psn(str(self.psn_name.component.value or ""))
+        car_type_val = str(self.car_type.component.value or "").strip()
+        heard_from_val = str(self.heard_from.component.value or "").strip()
 
         try:
             await interaction.response.defer(ephemeral=True)
@@ -41924,6 +41956,44 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
                 await channel.send(embeds=_ex_embeds)
         except Exception as _ex_err:
             _bot_log.warning(f"[JoinHub] car-examples gallery failed: {_ex_err}")
+
+        # ── Photos attached directly in the application form ─────────────────
+        # Re-post them into the ticket (marker line lets the photo tracker count
+        # them) and run the shared progress pipeline. Best-effort: never let a
+        # photo failure block ticket creation.
+        try:
+            _form_atts = [
+                a for a in (self.build_photos.component.values or [])
+                if a.content_type and a.content_type.startswith("image/")
+            ]
+        except Exception:
+            _form_atts = []
+        if _form_atts:
+            _files = []
+            for _att in _form_atts[:10]:
+                try:
+                    _files.append(await _att.to_file())
+                except Exception as _fe:
+                    print(f"[JoinHub] form photo download failed: {_fe}")
+            if _files:
+                try:
+                    _up_msg = await channel.send(
+                        content=f"{_JOIN_MODAL_UPLOAD_MARK} {interaction.user.mention}",
+                        files=_files,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    _up_imgs = [
+                        a for a in _up_msg.attachments
+                        if a.content_type and a.content_type.startswith("image/")
+                    ]
+                    if _up_imgs:
+                        async with _join_photo_lock(channel.id):
+                            await _join_process_photo_batch(
+                                channel, interaction.user, _up_imgs,
+                                str(interaction.user.id), batch_cap=10,
+                            )
+                except Exception as _pe:
+                    print(f"[JoinHub] form photo post failed: {_pe}")
 
         # Save extra application data
         extra = _join_extra_load()
