@@ -5340,14 +5340,9 @@ async def _asched_sync_panel_inner(bot_client, ping_roles: bool = False) -> None
     layout = _asched_layout_slots(sched)
     ids    = _asched_panel_ids(sched)
 
-    # Clear any transient ping line from a previous sync.
-    old_ping = sched.get("panel_ping_msg_id")
-    if old_ping:
-        try:
-            m = await channel.fetch_message(int(old_ping))
-            await m.delete()
-        except Exception:
-            pass
+    # NOTE: the announce ping line is managed exclusively in the finalize-ping block
+    # below (dedupe + stale cleanup). Deleting it up-front here used to race with the
+    # dedupe logic and could leave zero or duplicate ping lines.
 
     keep: set = set()
 
@@ -5388,11 +5383,23 @@ async def _asched_sync_panel_inner(bot_client, ping_roles: bool = False) -> None
     # (old header, orphaned card from a prior race) that isn't part of the panel we
     # just reconciled. Runs every sync — #upcoming-meet is dedicated to this panel, so
     # a scan is cheap and removes duplicates instead of letting them pile up forever.
+    # The tracked announce ping line is kept; UNTRACKED duplicate ping lines (e.g.
+    # from a past double-rebuild) are swept too.
+    tracked_ping = sched.get("panel_ping_msg_id")
+    if tracked_ping:
+        try:
+            keep.add(int(tracked_ping))
+        except Exception:
+            pass
     try:
         async for m in channel.history(limit=100):
             if m.id in keep:
                 continue
-            if _asched_is_public_panel_msg(m, bot_id):
+            is_stray_ping = (
+                m.author.id == bot_id
+                and "DIFF meet schedule is up" in (m.content or "")
+            )
+            if _asched_is_public_panel_msg(m, bot_id) or is_stray_ping:
                 try:
                     await m.delete()
                 except Exception:
@@ -5416,16 +5423,22 @@ async def _asched_sync_panel_inner(bot_client, ping_roles: bool = False) -> None
             ping_sig = ""
         prev_sig = sched.get("panel_ping_sig") or ""
         prev_ping_id = sched.get("panel_ping_msg_id")
-        if ping_sig and prev_ping_id and ping_sig == prev_sig:
-            # Same schedule already announced — keep the existing ping line, no re-ping.
+        existing_ping = None
+        if prev_ping_id:
+            try:
+                existing_ping = await channel.fetch_message(int(prev_ping_id))
+            except Exception:
+                existing_ping = None
+        if ping_sig and existing_ping is not None and ping_sig == prev_sig:
+            # Same schedule already announced and the ping line still exists —
+            # keep it, no re-ping.
             ping_id = prev_ping_id
         else:
-            # Schedule changed (or first announce): remove the stale ping line so only
-            # one ever exists, then post a fresh one.
-            if prev_ping_id:
+            # Schedule changed / first announce / old ping missing: remove the stale
+            # ping line (if any) so only one ever exists, then post a fresh one.
+            if existing_ping is not None:
                 try:
-                    old_ping = await channel.fetch_message(int(prev_ping_id))
-                    await old_ping.delete()
+                    await existing_ping.delete()
                 except Exception:
                     pass
             parts = []
