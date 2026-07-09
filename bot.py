@@ -40088,7 +40088,8 @@ def _join_is_applicant_photo_msg(m: discord.Message, applicant_id: int) -> bool:
     batch carrying the modal-upload marker (photos attached in the join form)."""
     if m.author.id == applicant_id:
         return True
-    return bool(m.author.bot and _JOIN_MODAL_UPLOAD_MARK in (m.content or ""))
+    content = m.content or ""
+    return bool(m.author.bot and _JOIN_MODAL_UPLOAD_MARK in content and f"<@{applicant_id}>" in content)
 
 
 async def _join_process_photo_batch(channel: discord.TextChannel, applicant, raw_images: list, join_user_id: str, batch_cap: int = 5) -> None:
