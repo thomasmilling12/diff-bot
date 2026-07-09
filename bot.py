@@ -25146,6 +25146,11 @@ async def on_ready():
     _rcwr = globals().get("_rc_weekly_reset_task")
     if _rcwr is None or _rcwr.done():
         _rc_weekly_reset_task = bot.loop.create_task(_rc_weekly_reset_loop())
+    # T-5h crew-chat reminder for roll-call yes/maybe responders
+    global _rc_t5h_reminder_task
+    _rct5 = globals().get("_rc_t5h_reminder_task")
+    if _rct5 is None or _rct5.done():
+        _rc_t5h_reminder_task = bot.loop.create_task(_rc_t5h_reminder_loop())
     bot.loop.create_task(_hp_session_cleanup_loop())
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
@@ -25581,6 +25586,132 @@ async def _rc_public_reminder_loop() -> None:
             _rc_reminder_state_save(st)
         except Exception as _e:
             print(f"[RcPublicReminder] Loop error: {_e}")
+
+
+# =========================
+# CREW T-5H MEET REMINDER LOOP
+# =========================
+async def _rc_t5h_reminder_loop() -> None:
+    """~5 hours before each scheduled roll-call meet: post in crew chat pinging
+    the crew members who responded ✅ Yes (with a softer nudge for 🤔 Maybe).
+    Once per meet, disk-guarded ("t5h_sent" in diff_rc_reminder_state.json,
+    keyed meet_number:start_ts) so a redeploy can't re-fire it and a
+    rescheduled meet re-arms naturally."""
+    await bot.wait_until_ready()
+    T5H = 5 * 3600
+    while not bot.is_closed():
+        await asyncio.sleep(300)
+        try:
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+            meets = _rc_db.get_meets(GUILD_ID)
+            if not meets:
+                continue
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            st = _rc_reminder_state_load()
+            sent_map = st.get("t5h_sent") or {}
+            # Prune guard entries for meets >2 days in the past
+            _changed = False
+            for _k in list(sent_map.keys()):
+                try:
+                    if now_ts - int(_k.rsplit(":", 1)[1]) > 172800:
+                        del sent_map[_k]
+                        _changed = True
+                except Exception:
+                    del sent_map[_k]
+                    _changed = True
+
+            for meet in meets:
+                mn         = meet["meet_number"]
+                class_name = meet["class_name"] or "TBD"
+                start_time = meet["start_time"] or "TBD"
+                date_text  = meet["date_text"] or "TBD"
+                if start_time == "TBD" or date_text == "TBD":
+                    continue
+                if bool(meet["is_finalized"]):
+                    continue
+                ts = _parse_meet_ts(date_text, start_time)
+                if not ts:
+                    continue
+                secs_to_meet = ts - now_ts
+                # Fire once inside the [T-5h .. start] window (loop tick is 5
+                # min; the window floor avoids reminding for meets already live)
+                if secs_to_meet > T5H or secs_to_meet <= 0:
+                    continue
+                key = f"{mn}:{ts}"
+                if sent_map.get(key):
+                    continue
+
+                cur = _rc_db.conn.cursor()
+                cur.execute(
+                    "SELECT user_id, status FROM rollcall_responses "
+                    "WHERE guild_id=? AND meet_number=? AND status IN ('yes','maybe')",
+                    (GUILD_ID, mn),
+                )
+                rows = cur.fetchall()
+                yes_ids   = [r["user_id"] for r in rows if r["status"] == "yes"]
+                maybe_ids = [r["user_id"] for r in rows if r["status"] == "maybe"]
+                if not yes_ids and not maybe_ids:
+                    # Nobody to remind — still mark so we don't rescan forever
+                    sent_map[key] = True
+                    _changed = True
+                    continue
+
+                crew_ch = guild.get_channel(_CREW_CHAT_CHANNEL_ID)
+                if not isinstance(crew_ch, discord.TextChannel):
+                    continue
+
+                def _mentions(ids, cap=50):
+                    parts = [f"<@{i}>" for i in ids[:cap]]
+                    if len(ids) > cap:
+                        parts.append(f"(+{len(ids) - cap} more)")
+                    return " ".join(parts)
+
+                host_text = _readable_host(guild, meet["host_id"]) or "TBD"
+                emb = discord.Embed(
+                    title=f"⏰ Meet {mn} starts in ~5 hours!",
+                    description=(
+                        f"🎮 **Class:** {class_name}\n"
+                        f"🎤 **Host:** {host_text}\n"
+                        f"🕒 **Start:** <t:{ts}:F>  (<t:{ts}:R>)\n\n"
+                        "You confirmed on the roll call — clean your car, "
+                        "charge the controller and be on PSN on time. "
+                        "Session gets full fast! 🏁"
+                    ),
+                    color=0x5865F2,
+                )
+                if maybe_ids:
+                    emb.add_field(
+                        name="🤔 Still a maybe?",
+                        value=(_mentions(maybe_ids, cap=30)
+                               + "\nLock in your answer on the roll call if you can make it!"),
+                        inline=False,
+                    )
+                emb.set_footer(text="Different Meets • Roll Call Reminder")
+                content = _mentions(yes_ids) if yes_ids else None
+                try:
+                    await crew_ch.send(
+                        content=content,
+                        embed=emb,
+                        allowed_mentions=discord.AllowedMentions(
+                            users=True, roles=False, everyone=False
+                        ),
+                    )
+                    sent_map[key] = True
+                    _changed = True
+                    print(f"[RcT5h] Sent T-5h reminder for meet {mn} "
+                          f"({len(yes_ids)} yes / {len(maybe_ids)} maybe)")
+                except Exception as _send_err:
+                    print(f"[RcT5h] send failed for meet {mn}: {_send_err!r}")
+
+            if _changed:
+                # Re-read fresh so we can't clobber flags other loops write
+                fresh_st = _rc_reminder_state_load()
+                fresh_st["t5h_sent"] = sent_map
+                _rc_reminder_state_save(fresh_st)
+        except Exception as _e:
+            print(f"[RcT5h] Loop error: {_e}")
 
 
 # =========================
