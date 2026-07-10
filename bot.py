@@ -35911,7 +35911,7 @@ class SupportCloseButton(discord.ui.View):
             else:
                 who = "MEMBER"
             lines.append(f"[{who}] {m.author.display_name}: {content[:200]}")
-        convo = "\n".join(lines)[-3500:]
+        convo = "\n".join(lines)[-6000:]
         if not convo.strip():
             return await interaction.followup.send("Nothing to summarize yet.", ephemeral=True)
         summary = None
@@ -35925,6 +35925,8 @@ class SupportCloseButton(discord.ui.View):
                 convo,
                 json_mode=False,
                 max_tokens=400,
+                timeout=25,
+                max_input=6000,
             )
         except Exception:
             summary = None
@@ -37987,33 +37989,43 @@ def _ai_enabled() -> bool:
         return False
 
 
-def _ai_chat_sync(system: str, user: str, json_mode: bool = True, max_tokens: int = 350) -> "str|None":
+def _ai_chat_sync(system: str, user: str, json_mode: bool = True, max_tokens: int = 350,
+                  timeout: "float|None" = None, max_input: "int|None" = None) -> "str|None":
     if not _ai_enabled():
         return None
     try:
+        client = _AI_CLIENT
+        if timeout:
+            try:
+                client = _AI_CLIENT.with_options(timeout=timeout)
+            except Exception:
+                client = _AI_CLIENT
+        cap = max_input if (max_input and max_input > 0) else _AI_MAX_INPUT_CHARS
         kw = dict(
             model=_AI_MODEL,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": user[:_AI_MAX_INPUT_CHARS]},
+                {"role": "user", "content": user[:cap]},
             ],
             max_tokens=max_tokens,
             temperature=0.2,
         )
         if json_mode:
             kw["response_format"] = {"type": "json_object"}
-        resp = _AI_CLIENT.chat.completions.create(**kw)
+        resp = client.chat.completions.create(**kw)
         return (resp.choices[0].message.content or "").strip()
     except Exception as _e:
         log.warning(f"[AI] chat call failed: {_e}")
         return None
 
 
-async def _ai_chat(system: str, user: str, json_mode: bool = True, max_tokens: int = 350) -> "str|None":
+async def _ai_chat(system: str, user: str, json_mode: bool = True, max_tokens: int = 350,
+                   timeout: "float|None" = None, max_input: "int|None" = None) -> "str|None":
+    eff = timeout if (timeout and timeout > 0) else _AI_TIMEOUT_S
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(_ai_chat_sync, system, user, json_mode, max_tokens),
-            timeout=_AI_TIMEOUT_S + 2,
+            asyncio.to_thread(_ai_chat_sync, system, user, json_mode, max_tokens, timeout, max_input),
+            timeout=eff + 2,
         )
     except Exception:
         return None
