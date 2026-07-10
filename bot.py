@@ -42681,6 +42681,16 @@ class JoinPlatformView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(JoinPlatformSelect())
         self.add_item(_CarRequirementsButton(row=2, key="jh"))
+        # Clear the platform dropdown's selection after each use — even on
+        # freshly posted/refreshed panels. The global add_view hook only wraps
+        # the persistent instance (which handles interactions after a restart);
+        # panels sent directly via channel.send(view=JoinPlatformView()) bypass
+        # it, so on mobile the picked option stays "stuck" selected until the
+        # next restart. Wrapping here is idempotent (guarded by
+        # _diff_reset_wrapped) so it never double-wraps the add_view path.
+        for _it in self.children:
+            if isinstance(_it, _SELECT_TYPES):
+                _wrap_select_for_reset(_it)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
