@@ -20466,7 +20466,7 @@ class _OfficialMeetPanelView(discord.ui.View):
             ts = None
             if day_val and time_val and time_val.upper() != "TBD":
                 try:
-                    ts = _parse_meet_ts(day_val, time_val)
+                    ts = _asched_slot_ts(entry)
                 except Exception:
                     ts = None
             if ts:
@@ -23145,7 +23145,7 @@ def _status_next_meet_label() -> str | None:
             time_val = slot.get("time", "")
             if not day_val or not time_val:
                 continue
-            ts = _parse_meet_ts(day_val, time_val)
+            ts = _asched_slot_ts(slot)
             if ts and ts > now.timestamp():
                 if best_ts is None or ts < best_ts:
                     best_ts  = ts
