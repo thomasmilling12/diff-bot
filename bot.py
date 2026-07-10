@@ -3725,7 +3725,7 @@ def _hrsvp_build_embed() -> discord.Embed:
                 if isinstance(e, dict):
                     dv = e.get('day', 'TBD')
                     tv = e.get('time', 'TBD')
-                    ts = _parse_meet_ts(dv, tv) if not tv.startswith("<t:") else None
+                    ts = _hrsvp_entry_ts(e) if not tv.startswith("<t:") else None
                     if ts:
                         when_display = f"<t:{ts}:F>  (<t:{ts}:R>)"
                     elif tv.startswith("<t:"):
@@ -3836,7 +3836,7 @@ def _hrsvp_build_meet_embed(day: str) -> discord.Embed:
         s_day  = sched_entry.get("day", "TBD")
         s_time = sched_entry.get("time", "TBD")
         _known = s_day not in ("TBD", "-", None, "") and s_time not in ("TBD", "-", None, "")
-        s_ts   = _parse_meet_ts(s_day, s_time) if _known else None
+        s_ts   = _asched_slot_ts(sched_entry) if _known else None
         if s_ts:
             when_sub = f"🗓️ <t:{s_ts}:F>  (<t:{s_ts}:R>)"
         elif _known:
@@ -3851,7 +3851,7 @@ def _hrsvp_build_meet_embed(day: str) -> discord.Embed:
             if isinstance(e, dict):
                 dv = e.get('day', 'TBD')
                 tv = e.get('time', 'TBD')
-                ts = _parse_meet_ts(dv, tv) if not tv.startswith("<t:") else None
+                ts = _hrsvp_entry_ts(e) if not tv.startswith("<t:") else None
                 if ts:
                     when_display = f"<t:{ts}:F>  (<t:{ts}:R>)"
                 elif tv.startswith("<t:"):
@@ -3976,7 +3976,7 @@ class _HrsvpMyStatusBtn(discord.ui.Button):
                     if isinstance(e, dict):
                         dv = e.get('day', 'TBD')
                         tv = e.get('time', 'TBD')
-                        ts = _parse_meet_ts(dv, tv) if dv and tv != 'TBD' else None
+                        ts = _hrsvp_entry_ts(e) if dv and tv != 'TBD' else None
                         when_str = f"<t:{ts}:F>" if ts else f"{dv} · {tv}"
                         lines.append(
                             f"✅ **{day}** — {when_str} · 🎮 {e.get('theme','TBD')}"
@@ -4058,7 +4058,8 @@ class _HostAvailModal(discord.ui.Modal):
             slot = data.setdefault(self.day, {"yes": [], "no": [], "maybe": []})
             for c in ("yes", "no", "maybe"):
                 slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
-            slot["yes"].append({"uid": uid, "day": day_val, "time": time_val, "theme": theme_val})
+            _entry_ts = _this_week_weekday_ts(day_val, time_val) or _parse_meet_ts(day_val, time_val)
+            slot["yes"].append({"uid": uid, "day": day_val, "time": time_val, "theme": theme_val, "ts": _entry_ts})
             _hrsvp_save(data)
             _hrel_track_rsvp(uid)
             await _hrsvp_update_panel(interaction.client)
@@ -4318,7 +4319,7 @@ def _asched_save(data: dict) -> None:
 
 
 def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple:
-    """Returns (uid, status, day_val, time, theme)."""
+    """Returns (uid, status, day_val, time, theme, ts)."""
     day_data = rsvp.get(day, {})
     yes_entries = list(day_data.get("yes", []))
     maybe_hosts = list(day_data.get("maybe", []))
@@ -4330,14 +4331,15 @@ def _asched_pick_host(day: str, rsvp: dict, assigned_counts: dict) -> tuple:
         day_val = chosen.get("day", "TBD") if isinstance(chosen, dict) else "TBD"
         time_val = chosen.get("time", "TBD") if isinstance(chosen, dict) else "TBD"
         theme_val = chosen.get("theme", "TBD") if isinstance(chosen, dict) else "TBD"
-        return uid, "yes", day_val, time_val, theme_val
+        chosen_ts = _hrsvp_entry_ts(chosen)
+        return uid, "yes", day_val, time_val, theme_val, chosen_ts
     if maybe_hosts:
         maybe_hosts.sort(key=lambda e: assigned_counts.get(_hrsvp_uid(e), 0))
         chosen = maybe_hosts[0]
         uid = _hrsvp_uid(chosen)
         assigned_counts[uid] = assigned_counts.get(uid, 0) + 1
-        return uid, "maybe", "TBD", "TBD", "TBD"
-    return None, "none", "TBD", "TBD", "TBD"
+        return uid, "maybe", "TBD", "TBD", "TBD", None
+    return None, "none", "TBD", "TBD", "TBD", None
 
 
 def _parse_meet_ts(date_val: str, time_val: str) -> int | None:
@@ -4445,6 +4447,84 @@ def _parse_meet_ts(date_val: str, time_val: str) -> int | None:
     return int(target.timestamp())
 
 
+def _this_week_weekday_ts(date_val: str, time_val: str) -> int | None:
+    """Resolve a BARE weekday ("Thursday") + time to THIS schedule-week's
+    occurrence (Monday-anchored), NOT the next future occurrence.
+
+    Host availability + the weekly schedule are always for the current Mon–Sun
+    week (data resets every Monday). `_parse_meet_ts` rolls a bare weekday to the
+    NEXT occurrence, so once a meet's day passes it drifts a full week forward
+    (host picked Thu Jul 9 → Rebuild re-projected Jul 16, same time/theme). This
+    keeps it pinned to the week's actual day (shown as completed once past).
+
+    Returns None when the text carries an explicit date or Discord <t:> stamp —
+    those are unambiguous, so `_parse_meet_ts` should own them."""
+    import re as _re
+    combined = f"{date_val} {time_val}".lower()
+    if _re.search(r'<t:\d+', combined):
+        return None
+    if any(m in combined for m in (
+        "january", "february", "march", "april", "may", "june", "july",
+        "august", "september", "october", "november", "december",
+    )):
+        return None
+    if _re.search(r'\b\d{1,2}[/\-]\d{1,2}\b', combined):
+        return None
+    _DAY_MAP = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6,
+    }
+    day_num = next((n for k, n in _DAY_MAP.items() if k in combined), None)
+    if day_num is None:
+        return None
+    base = _parse_meet_ts(date_val, time_val)  # gives hour/min + tz (next occ.)
+    if base is None:
+        return None
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        tz  = _ZI("America/New_York")
+        now = datetime.now(tz)
+        dt  = datetime.fromtimestamp(base, tz)
+        monday = (now - timedelta(days=now.weekday())).date()
+        target_date = monday + timedelta(days=day_num)
+        shifted = dt.replace(
+            year=target_date.year, month=target_date.month, day=target_date.day
+        )
+        return int(shifted.timestamp())
+    except Exception:
+        return base
+
+
+def _hrsvp_entry_ts(entry) -> int | None:
+    """Authoritative meet timestamp for a host RSVP entry.
+    Prefers the absolute `ts` captured when the host submitted (never drifts),
+    then this-week weekday resolution, then `_parse_meet_ts`."""
+    if not isinstance(entry, dict):
+        return None
+    t = entry.get("ts")
+    if isinstance(t, (int, float)) and t > 0:
+        return int(t)
+    dv, tv = entry.get("day", "TBD"), entry.get("time", "TBD")
+    return _this_week_weekday_ts(dv, tv) or _parse_meet_ts(dv, tv)
+
+
+def _asched_slot_ts(slot) -> int | None:
+    """Authoritative meet timestamp for a built schedule slot.
+    Honors the pinned host-chosen timestamp (set at build from the host's RSVP)
+    when it still matches the slot's day/time text, else falls back to this-week
+    weekday resolution, then `_parse_meet_ts`."""
+    if not isinstance(slot, dict):
+        return None
+    p = slot.get("pinned_ts")
+    if (
+        isinstance(p, (int, float)) and p > 0
+        and slot.get("pinned_sig") == f"{slot.get('day', 'TBD')}|{slot.get('time', 'TBD')}"
+    ):
+        return int(p)
+    dv, tv = slot.get("day", "TBD"), slot.get("time", "TBD")
+    return _this_week_weekday_ts(dv, tv) or _parse_meet_ts(dv, tv)
+
+
 def _asched_build() -> dict:
     rsvp = _hrsvp_load()
     schedule = _asched_load()
@@ -4453,17 +4533,23 @@ def _asched_build() -> dict:
         slot = schedule["days"].setdefault(day, {})
         if slot.get("locked"):          # 🔒 locked — skip auto-assignment
             continue
-        host_id, host_status, day_val, time_val, theme_val = _asched_pick_host(day, rsvp, assigned_counts)
+        host_id, host_status, day_val, time_val, theme_val, chosen_ts = _asched_pick_host(day, rsvp, assigned_counts)
         slot["host_id"]     = int(host_id) if host_id else None
         slot["host_status"] = host_status
         slot["day"]         = day_val
         slot["time"]        = time_val
         slot["class"]       = theme_val
-        # New week / reassigned slot: drop the pinned timestamp so identical
-        # day/time text (e.g. "Thursday 10 PM" every week) re-parses fresh
-        # instead of keeping last week's (now past) pinned date.
-        slot.pop("pinned_ts", None)
-        slot.pop("pinned_sig", None)
+        # Pin the exact date/time the chosen host selected when they RSVP'd, so a
+        # bare weekday ("Thursday") never drifts to NEXT week's occurrence once
+        # this week's meet passes (host picked Jul 9 → keep Jul 9 shown as
+        # completed, not fabricate Jul 16 with the same time/theme). No host →
+        # clear the pin so an empty slot re-parses fresh.
+        if chosen_ts:
+            slot["pinned_ts"]  = int(chosen_ts)
+            slot["pinned_sig"] = f"{day_val}|{time_val}"
+        else:
+            slot.pop("pinned_ts", None)
+            slot.pop("pinned_sig", None)
     schedule["updated_at"] = utc_now().isoformat()
     _asched_save(schedule)
     return schedule
@@ -4547,7 +4633,7 @@ def _asched_build_embed() -> discord.Embed:
                 status_tag = "🔴 Open Slot"
                 avail_line = None
 
-        meet_ts = _parse_meet_ts(date_val, time_val)
+        meet_ts = _asched_slot_ts(entry)
 
         if meet_ts:
             when_line = f"📅 <t:{meet_ts}:D>  ·  🕒 <t:{meet_ts}:t>  ·  <t:{meet_ts}:R>"
@@ -4672,7 +4758,7 @@ def _asched_build_console_meet_embed(idx: int, day: str) -> discord.Embed:
             avail_line = None
             color = 0xEB459E
 
-    meet_ts = _parse_meet_ts(date_val, time_val)
+    meet_ts = _asched_slot_ts(entry)
     if meet_ts:
         when_line = f"📅 <t:{meet_ts}:D>  ·  🕒 <t:{meet_ts}:t>  ·  <t:{meet_ts}:R>"
     else:
@@ -4779,7 +4865,7 @@ def _asched_sorted_slots(schedule: dict):
         ):
             mt = int(pinned)
         else:
-            mt = _parse_meet_ts(entry.get("day", "TBD"), entry.get("time", "TBD"))
+            mt = _this_week_weekday_ts(entry.get("day", "TBD"), entry.get("time", "TBD")) or _parse_meet_ts(entry.get("day", "TBD"), entry.get("time", "TBD"))
             if mt is not None:
                 if entry.get("pinned_ts") != mt or entry.get("pinned_sig") != sig:
                     entry["pinned_ts"] = mt
@@ -5232,7 +5318,7 @@ def _asched_slot_scheduled(entry: dict) -> bool:
     cls = (entry.get("class") or "").strip()
     if cls and cls.upper() != "TBD":
         return True
-    if _parse_meet_ts(entry.get("day", "TBD"), entry.get("time", "TBD")):
+    if _asched_slot_ts(entry):
         return True
     return False
 
@@ -5592,7 +5678,7 @@ async def _asched_rsvp_toggle(interaction: discord.Interaction, slot_key: str) -
     slot  = sched.get("days", {}).get(slot_key)
     if not isinstance(slot, dict):
         return await interaction.followup.send("That meet is no longer on the schedule.", ephemeral=True)
-    mt = _parse_meet_ts(slot.get("day", "TBD"), slot.get("time", "TBD"))
+    mt = _asched_slot_ts(slot)
     if mt and mt < int(utc_now().timestamp()):
         return await interaction.followup.send("That meet has already happened.", ephemeral=True)
 
@@ -5706,7 +5792,7 @@ class _ASchedReminderBtn(discord.ui.Button):
             cls_val  = entry.get('class', 'TBD')
             time_val = entry.get('time', 'TBD')
             date_val = entry.get('day', '')
-            meet_ts  = _parse_meet_ts(date_val, time_val) if date_val and time_val != 'TBD' else None
+            meet_ts  = _asched_slot_ts(entry) if date_val and time_val != 'TBD' else None
             when_str = f"<t:{meet_ts}:F>  ·  <t:{meet_ts}:R>" if meet_ts else f"🕒 {time_val}"
             lines.append(f"**{day}** — 🎮 {cls_val} | 📅 {when_str} | 👤 {host_str}")
         remind_embed = discord.Embed(
@@ -9846,7 +9932,7 @@ class _MeetInfoNextMeetButton(discord.ui.Button):
                 status = (entry.get("host_status") or "").lower()
                 if status not in ("yes", "confirmed", "assigned", "maybe"):
                     continue
-                _ts = _parse_meet_ts(entry.get("day") or "", entry.get("time") or "")
+                _ts = _asched_slot_ts(entry)
                 if not _ts or _ts < now_ts:
                     continue
                 hosts_list = [entry["host_id"]] if entry.get("host_id") else []
@@ -23944,7 +24030,7 @@ def _lp_find_meet_for_timestamp(now_ts: float) -> dict | None:
     try:
         sched = _asched_load() or {}
         for slot_name, entry in (sched.get("days") or {}).items():
-            mts = _parse_meet_ts(entry.get("day") or "", entry.get("time") or "")
+            mts = _asched_slot_ts(entry)
             if not mts:
                 continue
             diff = abs(now_ts - float(mts))
@@ -26181,11 +26267,11 @@ async def _hrsvp_escalation_loop() -> None:
                 if entry.get("host_id"):
                     _HRSVP_ESCALATED.discard(day)
                     continue
-                ts = _parse_meet_ts(entry.get("day", ""), entry.get("time", ""))
+                ts = _asched_slot_ts(entry)
                 if not ts:
                     continue
                 days_until = (ts - int(utc_now().timestamp())) / 86400
-                if days_until <= 3 and day not in _HRSVP_ESCALATED:
+                if 0 <= days_until <= 3 and day not in _HRSVP_ESCALATED:
                     _HRSVP_ESCALATED.add(day)
                     slot_data  = rsvp.get(day, {})
                     maybe_ents = slot_data.get("maybe", [])
