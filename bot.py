@@ -4063,7 +4063,7 @@ class _HostAvailModal(discord.ui.Modal):
             _hrsvp_save(data)
             _hrel_track_rsvp(uid)
             await _hrsvp_update_panel(interaction.client)
-            ts = _parse_meet_ts(day_val, time_val)
+            ts = _entry_ts
             time_display = f"<t:{ts}:F>  (<t:{ts}:R>)" if ts else time_val
             await interaction.followup.send(
                 f"✅ **{self.day}** — you're marked available!\n"
@@ -9618,7 +9618,7 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
         _candidates = []
         for _day_key in _HRSVP_DAYS:
             _entry = _sched.get("days", {}).get(_day_key, {})
-            _mt = _parse_meet_ts(_entry.get("day", "TBD"), _entry.get("time", "TBD"))
+            _mt = _asched_slot_ts(_entry)
             if _mt and _mt > _now_ts:
                 _candidates.append((_mt, _entry))
         if _candidates:
@@ -21317,7 +21317,7 @@ async def _om_autopost_from_schedule_loop():
                     continue
                 if str(class_val).upper() == "TBD":
                     continue
-                meet_ts = _parse_meet_ts(date_val, time_val)
+                meet_ts = _asched_slot_ts(entry)
                 if not meet_ts:
                     continue
                 hours_until = (meet_ts - now_ts) / 3600
@@ -21363,7 +21363,7 @@ async def autopostnow_cmd(ctx):
         if "TBD" in (str(date_val).upper(), str(time_val).upper(), str(class_val).upper()):
             results.append(f"• `{day_key}` — skipped (TBD fields)")
             continue
-        meet_ts = _parse_meet_ts(date_val, time_val)
+        meet_ts = _asched_slot_ts(entry)
         if not meet_ts:
             results.append(f"• `{day_key}` — skipped (couldn\'t parse `{date_val} {time_val}`)")
             continue
