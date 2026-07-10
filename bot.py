@@ -5676,46 +5676,54 @@ async def _asched_refresh_layout(bot_client) -> None:
 async def _asched_stale_alert_maybe(bot_client) -> None:
     """Once per ISO week, warn STAFF_LOGS if any LOCKED slot is stuck on a prior
     week's pinned date (Rebuild skips locked slots, so their date never refreshes).
-    Guarded by `last_stale_alert_week` in the schedule JSON so it never spams."""
+    Guarded by `last_stale_alert_week` in the schedule JSON so it never spams.
+
+    Serialized under `_asched_sync_lock` and the guard is RE-CHECKED after the lock
+    is held (load → check → send → save all inside the lock), so two concurrent
+    refresh triggers (15-min loop + manual refresh) can't both send this week."""
     from zoneinfo import ZoneInfo as _ZI
-    schedule = _asched_load()
-    stale = _asched_stale_locked_slots(schedule)
-    if not stale:
-        return
     cur_wk = datetime.now(_ZI("America/New_York")).isocalendar()
     wk_key = f"{cur_wk[0]}-W{cur_wk[1]:02d}"
-    if schedule.get("last_stale_alert_week") == wk_key:
+    # Cheap pre-check outside the lock: bail early when there's nothing to do.
+    if not _asched_stale_locked_slots(_asched_load()):
         return
-    guild = bot_client.get_guild(GUILD_ID)
-    if guild is None:
-        return
-    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-    if log_ch is None:
-        return
-    lines = []
-    for key, slot, p in stale:
-        host_str = _readable_host(guild, slot.get("host_id")) or "*unassigned*"
-        lines.append(f"🔒 **{key}** — {host_str} • pinned to <t:{p}:D> (<t:{p}:R>)")
-    embed = discord.Embed(
-        title="⚠️ Stale Locked Schedule Slots",
-        description=(
-            "These slots are **locked**, so Rebuild Schedule skips them and their date "
-            "never refreshes — they're still showing a **prior week's** meet:\n\n"
-            + "\n".join(lines)
-            + "\n\n**Fix:** `!unlockslot <slot>` then Rebuild, or `!clearslot <slot>` to reset. "
-            "(Run `!schedcheck` anytime.)"
-        ),
-        color=0xE67E22,
-    )
-    try:
-        await log_ch.send(embed=embed)
-    except Exception:
-        return
-    schedule["last_stale_alert_week"] = wk_key
-    try:
-        _asched_save(schedule)
-    except Exception:
-        pass
+    async with _asched_sync_lock:
+        schedule = _asched_load()
+        if schedule.get("last_stale_alert_week") == wk_key:
+            return
+        stale = _asched_stale_locked_slots(schedule)
+        if not stale:
+            return
+        guild = bot_client.get_guild(GUILD_ID)
+        if guild is None:
+            return
+        log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if log_ch is None:
+            return
+        lines = []
+        for key, slot, p in stale:
+            host_str = _readable_host(guild, slot.get("host_id")) or "*unassigned*"
+            lines.append(f"🔒 **{key}** — {host_str} • pinned to <t:{p}:D> (<t:{p}:R>)")
+        embed = discord.Embed(
+            title="⚠️ Stale Locked Schedule Slots",
+            description=(
+                "These slots are **locked**, so Rebuild Schedule skips them and their date "
+                "never refreshes — they're still showing a **prior week's** meet:\n\n"
+                + "\n".join(lines)
+                + "\n\n**Fix:** `!unlockslot <slot>` then Rebuild, or `!clearslot <slot>` to reset. "
+                "(Run `!schedcheck` anytime.)"
+            ),
+            color=0xE67E22,
+        )
+        try:
+            await log_ch.send(embed=embed)
+        except Exception:
+            return
+        schedule["last_stale_alert_week"] = wk_key
+        try:
+            _asched_save(schedule)
+        except Exception:
+            pass
 
 
 async def _asched_rsvp_toggle(interaction: discord.Interaction, slot_key: str) -> None:
