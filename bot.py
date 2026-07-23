@@ -27944,6 +27944,13 @@ class _CcDoneView(discord.ui.View):
         if not pending or pending.get("done"):
             return await interaction.response.send_message(
                 "✅ This one's already marked done — thank you!", ephemeral=True)
+        if interaction.user.id not in _cc_changer_ids():
+            _g = bot.get_guild(GUILD_ID)
+            _m = _g.get_member(interaction.user.id) if _g else None
+            if not (_m and _is_staff_member(_m)):
+                return await interaction.response.send_message(
+                    "⚠️ Only the current crew-color changers (or staff) can mark this done.",
+                    ephemeral=True)
         pending["done"] = True
         pending["done_by"] = interaction.user.id
         pending["done_at"] = datetime.now(timezone.utc).isoformat()
