@@ -6717,6 +6717,13 @@ class _HostAutoDB:
         cur.execute("UPDATE blacklist_entries SET evidence=? WHERE id=?", (evidence, entry_id))
         self.conn.commit()
 
+    def count_active(self, guild_id):
+        cur = self.conn.cursor()
+        cur.execute("SELECT COUNT(*) AS c FROM blacklist_entries WHERE guild_id=? AND status='active'",
+                    (guild_id,))
+        row = cur.fetchone()
+        return int(row["c"]) if row else 0
+
     def is_blacklisted(self, guild_id, user_id):
         cur = self.conn.cursor()
         cur.execute("""
@@ -7037,6 +7044,22 @@ async def _bl_start_flow(interaction: discord.Interaction) -> None:
         view=_BlacklistFlowView(), ephemeral=True)
 
 
+def _bl_evidence_links(evidence: str | None) -> tuple[str | None, str | None]:
+    """Parse a stored evidence string into (jump_link, image_url). Both best-effort."""
+    jump = img = None
+    try:
+        for tok in (evidence or "").split():
+            if not tok.startswith("http"):
+                continue
+            if "/channels/" in tok and jump is None:
+                jump = tok
+            elif ("cdn.discordapp" in tok or "media.discordapp" in tok) and img is None:
+                img = tok
+    except Exception:
+        pass
+    return jump, img
+
+
 class _BlacklistSearchModal(discord.ui.Modal, title="🔎 Search Host Blacklist"):
     query = discord.ui.TextInput(label="Name, PSN, Discord ID, or keyword", required=True, max_length=100)
 
@@ -7055,8 +7078,13 @@ class _BlacklistSearchModal(discord.ui.Modal, title="🔎 Search Host Blacklist"
             color=discord.Color.dark_grey(),
             timestamp=utc_now(),
         )
+        hero_img = None
         for row in rows:
             who = row["discord_tag"] or (f"User ID {row['user_id']}" if row["user_id"] else "Unknown")
+            jump, img = _bl_evidence_links(row["evidence"])
+            ev_line = f"\n**Evidence:** [View entry]({jump})" if jump else ""
+            if hero_img is None and img:
+                hero_img = img
             embed.add_field(
                 name=f"Entry #{row['id']} • {row['severity']}",
                 value=(
@@ -7064,9 +7092,13 @@ class _BlacklistSearchModal(discord.ui.Modal, title="🔎 Search Host Blacklist"
                     f"**PSN:** {row['psn'] or 'No PSN'}\n"
                     f"**Reason:** {row['reason'][:120]}\n"
                     f"**Date:** {row['created_at'][:10]}"
+                    + ev_line
                 ),
                 inline=False,
             )
+        if hero_img:
+            embed.set_image(url=hero_img)
+            embed.add_field(name="🖼️ Evidence preview", value="Showing the newest matching entry's screenshot.", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -12655,6 +12687,32 @@ def _hp_hub_embed() -> discord.Embed:
     return embed
 
 
+_HP_MEET_MILESTONES = [1, 5, 10, 25, 50, 100]
+
+
+def _hp_progress_bar(current: float, target: float, width: int = 10) -> str:
+    try:
+        filled = max(0, min(width, int(round(width * current / target)))) if target else width
+    except Exception:
+        filled = 0
+    return "█" * filled + "░" * (width - filled)
+
+
+def _hp_crew_averages() -> tuple[float, float, int]:
+    """(avg meets hosted, avg attendance per meet, host count) across all tracked hosts."""
+    try:
+        all_stats = _hp_load().get("host_stats", {})
+        rows = [s for s in all_stats.values() if s.get("meets_hosted", 0) > 0]
+        if not rows:
+            return 0.0, 0.0, 0
+        meets_avg = sum(s.get("meets_hosted", 0) for s in rows) / len(rows)
+        att_avg = (sum(s.get("total_attendance_sum", 0) for s in rows)
+                   / max(1, sum(s.get("meets_hosted", 0) for s in rows)))
+        return round(meets_avg, 1), round(att_avg, 1), len(rows)
+    except Exception:
+        return 0.0, 0.0, 0
+
+
 def _hp_stats_embed(user: discord.abc.User, stats: dict) -> discord.Embed:
     meets = stats.get("meets_hosted", 0)
     avg_att = round(stats.get("total_attendance_sum", 0) / meets, 1) if meets else 0
@@ -12685,6 +12743,25 @@ def _hp_stats_embed(user: discord.abc.User, stats: dict) -> discord.Embed:
         ),
         inline=False,
     )
+    next_ms = next((m for m in _HP_MEET_MILESTONES if m > meets), None)
+    if next_ms:
+        bar = _hp_progress_bar(meets, next_ms)
+        embed.add_field(
+            name="🎯 Next Milestone",
+            value=f"`{bar}` **{meets}/{next_ms}** meets hosted",
+            inline=False,
+        )
+    crew_meets, crew_att, crew_n = _hp_crew_averages()
+    if crew_n:
+        att_cmp = "🔥 above" if avg_att > crew_att else ("👌 around" if avg_att == crew_att else "📈 below")
+        embed.add_field(
+            name=f"👥 vs Crew Average ({crew_n} tracked hosts)",
+            value=(
+                f"Meets hosted: **{meets}** (crew avg **{crew_meets}**)\n"
+                f"Your avg attendance: **{avg_att}** — {att_cmp} the crew avg of **{crew_att}**"
+            ),
+            inline=False,
+        )
     embed.set_footer(text="Consistency is what builds trust in a host")
     return embed
 
@@ -14945,6 +15022,50 @@ _UNIFIED_HOSTHUB_OLD_TITLES: set[str] = {
 }
 
 
+def _hosthub_live_lines() -> str:
+    """Best-effort live status block for the hub panel. Never raises."""
+    lines = []
+    # 🔴 Meet live right now? (official meet records: started, not ended)
+    try:
+        now_ts = int(utc_now().timestamp())
+        for raw in _om_load_records().values():
+            if raw.get("started") and not raw.get("ended"):
+                st = raw.get("started_at_ts") or raw.get("timestamp") or 0
+                if now_ts - int(st) < 12 * 3600:  # ignore stale/orphaned records
+                    theme = raw.get("theme") or "Official Meet"
+                    host = _readable_host(None, raw.get("host_id")) or "the host"
+                    lines.append(f"🔴 **LIVE NOW:** {theme} — hosted by {host}")
+                    break
+    except Exception:
+        pass
+    # 📅 Next scheduled meet
+    try:
+        rows, now_ts = _asched_sorted_slots(_asched_load())
+        for r in rows:
+            if r["cat"] == 0 and r["entry"].get("host_id"):
+                e = r["entry"]
+                host = _readable_host(None, e.get("host_id")) or "TBD"
+                theme = e.get("class") or ""
+                theme_txt = f" • {theme}" if theme and theme.upper() != "TBD" else ""
+                lines.append(f"📅 **Next meet:** <t:{r['ts']}:F> (<t:{r['ts']}:R>) — {host}{theme_txt}")
+                break
+    except Exception:
+        pass
+    # 🏆 Top host + 🚫 blacklist count
+    try:
+        top = _hauto_db.top_points(GUILD_ID, 1)
+        if top:
+            name = _readable_host(None, top[0]["user_id"]) or f"User {top[0]['user_id']}"
+            lines.append(f"🏆 **Top host:** {name} — {top[0]['points']} pts")
+    except Exception:
+        pass
+    try:
+        lines.append(f"🚫 **Active blacklist entries:** {_hauto_db.count_active(GUILD_ID)}")
+    except Exception:
+        pass
+    return "\n".join(lines) if lines else "No live data right now."
+
+
 def _unified_hosthub_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🏁 DIFF Host Hub",
@@ -14952,6 +15073,11 @@ def _unified_hosthub_embed() -> discord.Embed:
         color=0xC9A227,
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
+    embed.add_field(
+        name="📡 Right Now",
+        value=_hosthub_live_lines(),
+        inline=False,
+    )
     embed.add_field(
         name="📚 Reference & Guides",
         value="Host rules, role breakdowns, reminders, and prep checklists.",
@@ -14990,6 +15116,8 @@ class _HostHubReferenceSelect(discord.ui.Select):
                                      description="Important reminders before hosting"),
                 discord.SelectOption(label="Host Checklist", value="host_checklist", emoji="📝",
                                      description="Quick pre-meet prep checklist"),
+                discord.SelectOption(label="DM Me the Pre-Meet Checklist", value="dm_checklist", emoji="🔔",
+                                     description="Get the full host-flow checklist in your DMs"),
             ],
             custom_id="diff_unified_hosthub:reference",
             row=0,
@@ -14997,6 +15125,21 @@ class _HostHubReferenceSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         val = self.values[0]
+        if val == "dm_checklist":
+            await interaction.response.defer(ephemeral=True)
+            dm_embed = _om_pregame_checklist_embed(None)
+            try:
+                await interaction.user.send(embed=dm_embed)
+                await interaction.followup.send(
+                    "📬 Sent — check your DMs! (You'll also get this automatically about an "
+                    "hour before any official meet you're hosting.)", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "⚠️ I couldn't DM you — your DMs are closed for this server. "
+                    "Here it is instead:", embed=dm_embed, ephemeral=True)
+            except Exception:
+                await interaction.followup.send("⚠️ Couldn't send the checklist — try again in a bit.", ephemeral=True)
+            return
         if val == "host_guide":
             embed = _hosthub_guide_embed()
         elif val == "role_assignments":
@@ -15045,184 +15188,272 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                 "Only approved hosts or staff can use this.", ephemeral=True
             )
         val = self.values[0]
+        warn = _lmc_stage_warning(interaction.user.id, val)
+        if warn:
+            return await interaction.response.send_message(
+                warn, view=_LmcConfirmView(val), ephemeral=True)
+        await _lmc_execute(interaction, val)
 
-        if val == "voice_script":
-            await interaction.response.send_message(
-                _hostflow_voice_script(interaction.user.mention), ephemeral=True
+
+# ── Stage-aware Live Meet Control ────────────────────────────────────────────
+# Soft ordering guard: Start Meet → Start Speech → (location updates) →
+# End Meet → End Speech → Request Feedback. Out-of-order picks get a
+# double-check prompt with a "Post Anyway" override (never a hard block —
+# in-memory state resets on restart, and _om records fill the gaps).
+_LMC_TRACKED = {"start_meet", "start_speech", "end_meet", "end_speech", "request_feedback"}
+_lmc_state: dict[int, dict[str, int]] = {}
+
+
+def _lmc_note_action(host_id: int, val: str) -> None:
+    if val in _LMC_TRACKED:
+        _lmc_state.setdefault(host_id, {})[val] = int(utc_now().timestamp())
+
+
+def _lmc_recent(host_id: int, actions, window_s: int) -> bool:
+    now = int(utc_now().timestamp())
+    st = _lmc_state.get(host_id, {})
+    return any(now - st.get(a, 0) < window_s for a in actions if st.get(a))
+
+
+def _lmc_om_state(host_id: int) -> tuple[bool, bool]:
+    """(has started-not-ended official meet, has meet ended <12h) from disk records."""
+    started = ended = False
+    try:
+        now = int(utc_now().timestamp())
+        for raw in _om_load_records().values():
+            if raw.get("host_id") != host_id:
+                continue
+            if raw.get("started") and not raw.get("ended"):
+                st = raw.get("started_at_ts") or raw.get("timestamp") or 0
+                if now - int(st) < 12 * 3600:
+                    started = True
+            if raw.get("ended"):
+                et = raw.get("ended_at_ts") or 0
+                if et and now - int(et) < 12 * 3600:
+                    ended = True
+    except Exception:
+        pass
+    return started, ended
+
+
+def _lmc_stage_warning(host_id: int, val: str) -> str | None:
+    om_started, om_ended = _lmc_om_state(host_id)
+    started = om_started or _lmc_recent(host_id, ("start_meet", "start_speech"), 12 * 3600)
+    ended = om_ended or _lmc_recent(host_id, ("end_meet", "end_speech"), 12 * 3600)
+    if val == "start_meet" and _lmc_recent(host_id, ("start_meet",), 6 * 3600):
+        return ("\u26A0\uFE0F You already posted a **Meet Start** notice in the last few hours. "
+                "Post another one?")
+    if val == "start_speech" and _lmc_recent(host_id, ("start_speech",), 6 * 3600):
+        return ("\u26A0\uFE0F You already posted a **Start Speech** in the last few hours. "
+                "Post it again?")
+    if val in ("end_meet", "end_speech") and not started:
+        label = "End Meet notice" if val == "end_meet" else "End Speech"
+        return (f"\u26A0\uFE0F I don't have a **meet start** on record for you today \u2014 "
+                f"usually **Start Meet / Start Speech** comes before the **{label}**.\n"
+                "If you're mid-meet (e.g. after a bot restart), just press **Post Anyway**.")
+    if val == "request_feedback" and not ended:
+        return ("\u26A0\uFE0F I don't see an **ended meet** on record for you \u2014 usually "
+                "**End Meet \u2192 End Speech** comes before **Request Feedback**.\n"
+                "If everything's fine, press **Post Anyway**.")
+    return None
+
+
+class _LmcConfirmView(discord.ui.View):
+    def __init__(self, val: str):
+        super().__init__(timeout=300)
+        self.val = val
+
+    @discord.ui.button(label="Post Anyway", style=discord.ButtonStyle.danger)
+    async def post_anyway(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await _lmc_execute(interaction, self.val)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="\u274C Cancelled \u2014 nothing was posted.", view=None)
+
+
+async def _lmc_execute(interaction: discord.Interaction, val: str) -> None:
+    _lmc_note_action(interaction.user.id, val)
+
+    if val == "voice_script":
+        await interaction.response.send_message(
+            _hostflow_voice_script(interaction.user.mention), ephemeral=True
+        )
+        return
+
+    if val == "location_update":
+        await interaction.response.send_modal(_UnifiedLocationUpdateModal())
+        return
+
+    if val == "start_speech":
+        await interaction.response.defer(ephemeral=True)
+        ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
+            _ping, _embed = _hostflow_start_embed(_readable_host(None, interaction.user.id), interaction.guild)
+            await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
+            await interaction.followup.send(f"✅ Welcome speech posted in {ch.mention}.", ephemeral=True)
+        else:
+            await interaction.followup.send("Meet channel not found.", ephemeral=True)
+        return
+
+    if val == "end_speech":
+        await interaction.response.defer(ephemeral=True)
+        ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
+            _ping, _embed = _hostflow_end_embed(interaction.guild)
+            await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
+            log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(log_ch, discord.TextChannel):
+                await log_ch.send(_hostflow_log_msg(interaction.user.mention))
+            await interaction.followup.send(
+                f"✅ Ending speech posted in {ch.mention} and activity logged.", ephemeral=True
             )
-            return
+            try:
+                _om_mark_flow_action("end_speech", interaction.user.id)
+            except Exception:
+                pass
+        else:
+            await interaction.followup.send("Meet channel not found.", ephemeral=True)
+        return
 
-        if val == "location_update":
-            await interaction.response.send_modal(_UnifiedLocationUpdateModal())
-            return
-
-        if val == "start_speech":
-            await interaction.response.defer(ephemeral=True)
-            ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
-            if isinstance(ch, discord.TextChannel):
-                _ping, _embed = _hostflow_start_embed(_readable_host(None, interaction.user.id), interaction.guild)
-                await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
-                await interaction.followup.send(f"✅ Welcome speech posted in {ch.mention}.", ephemeral=True)
-            else:
-                await interaction.followup.send("Meet channel not found.", ephemeral=True)
-            return
-
-        if val == "end_speech":
-            await interaction.response.defer(ephemeral=True)
-            ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
-            if isinstance(ch, discord.TextChannel):
-                _ping, _embed = _hostflow_end_embed(interaction.guild)
-                await ch.send(content=_ping, embed=_embed, allowed_mentions=discord.AllowedMentions(roles=True))
-                log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
-                if isinstance(log_ch, discord.TextChannel):
-                    await log_ch.send(_hostflow_log_msg(interaction.user.mention))
-                await interaction.followup.send(
-                    f"✅ Ending speech posted in {ch.mention} and activity logged.", ephemeral=True
+    if val == "start_meet":
+        await interaction.response.defer(ephemeral=True)
+        ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
+            ps_role = f"<@&{PS5_ROLE_ID}>"
+            cm_role = f"<@&{NOTIFY_ROLE_ID}>"
+            embed = discord.Embed(
+                title="🏁  DIFF Official Meet — Now Live",
+                color=0x2ecc71,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="Host", value=_readable_host(None, interaction.user.id), inline=True)
+            embed.add_field(name="Status", value="🟢 Live", inline=True)
+            embed.add_field(
+                name="Use this channel for",
+                value=(
+                    "• Meet start updates\n"
+                    "• Meet locations\n"
+                    "• Host instructions\n"
+                    "• Movement between spots"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Important",
+                value="Stay ready and follow host directions at all times.",
+                inline=False,
+            )
+            embed.set_image(url=DIFF_LOGO_URL)
+            embed.set_footer(text="DIFF Meet Start Notice")
+            await ch.send(
+                content=f"{ps_role} {cm_role}",
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
+            log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(log_ch, discord.TextChannel):
+                await log_ch.send(
+                    f"🏁 **Meet Started**\nHost: {interaction.user.mention}\nChannel: {ch.mention}"
                 )
+            await interaction.followup.send(
+                f"✅ Meet start message sent in {ch.mention}.\n\n" + _om_live_checklist_text(),
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send("Meet channel not found.", ephemeral=True)
+        return
+
+    if val == "end_meet":
+        await interaction.response.defer(ephemeral=True)
+        ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
+            embed = discord.Embed(
+                title="🛑  DIFF Meet — Ended",
+                color=0xe74c3c,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="Host", value=_readable_host(None, interaction.user.id), inline=True)
+            embed.add_field(name="Status", value="🔴 Ended", inline=True)
+            embed.add_field(
+                name="Thank You",
+                value=(
+                    "Thank you to everyone who attended and helped keep the meet clean.\n"
+                    "Watch for the next official announcement and future events."
+                ),
+                inline=False,
+            )
+            embed.set_image(url=DIFF_LOGO_URL)
+            embed.set_footer(text="DIFF Meet End Notice")
+            await ch.send(embed=embed)
+            log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(log_ch, discord.TextChannel):
+                await log_ch.send(
+                    f"🛑 **Meet Ended**\nHost: {interaction.user.mention}\nChannel: {ch.mention}"
+                )
+
+            # ── Auto-post recap to recap channel ───────────────────────────
+            recap_ch = interaction.client.get_channel(RECAP_CHANNEL_ID)
+            if isinstance(recap_ch, discord.TextChannel):
                 try:
-                    _om_mark_flow_action("end_speech", interaction.user.id)
-                except Exception:
-                    pass
-            else:
-                await interaction.followup.send("Meet channel not found.", ephemeral=True)
-            return
-
-        if val == "start_meet":
-            await interaction.response.defer(ephemeral=True)
-            ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
-            if isinstance(ch, discord.TextChannel):
-                ps_role = f"<@&{PS5_ROLE_ID}>"
-                cm_role = f"<@&{NOTIFY_ROLE_ID}>"
-                embed = discord.Embed(
-                    title="🏁  DIFF Official Meet — Now Live",
-                    color=0x2ecc71,
-                    timestamp=datetime.now(timezone.utc),
-                )
-                embed.add_field(name="Host", value=_readable_host(None, interaction.user.id), inline=True)
-                embed.add_field(name="Status", value="🟢 Live", inline=True)
-                embed.add_field(
-                    name="Use this channel for",
-                    value=(
-                        "• Meet start updates\n"
-                        "• Meet locations\n"
-                        "• Host instructions\n"
-                        "• Movement between spots"
-                    ),
-                    inline=False,
-                )
-                embed.add_field(
-                    name="Important",
-                    value="Stay ready and follow host directions at all times.",
-                    inline=False,
-                )
-                embed.set_image(url=DIFF_LOGO_URL)
-                embed.set_footer(text="DIFF Meet Start Notice")
-                await ch.send(
-                    content=f"{ps_role} {cm_role}",
-                    embed=embed,
-                    allowed_mentions=discord.AllowedMentions(roles=True),
-                )
-                log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
-                if isinstance(log_ch, discord.TextChannel):
-                    await log_ch.send(
-                        f"🏁 **Meet Started**\nHost: {interaction.user.mention}\nChannel: {ch.mention}"
+                    hp_data = _hp_load()
+                    hstats = hp_data.get("host_stats", {}).get(str(interaction.user.id), {})
+                    meets_total = hstats.get("meets_hosted", 0)
+                    score = hstats.get("score_total", 0)
+                    avg_att = round(
+                        hstats.get("total_attendance_sum", 0) / meets_total, 1
+                    ) if meets_total else 0
+                    recap_embed = discord.Embed(
+                        title="📋 DIFF Meet Recap",
+                        color=0x5865F2,
+                        timestamp=datetime.now(timezone.utc),
                     )
-                await interaction.followup.send(
-                    f"✅ Meet start message sent in {ch.mention}.\n\n" + _om_live_checklist_text(),
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send("Meet channel not found.", ephemeral=True)
-            return
+                    recap_embed.add_field(name="Host", value=_readable_host(None, interaction.user.id), inline=True)
+                    recap_embed.add_field(name="Meets Hosted (lifetime)", value=str(meets_total), inline=True)
+                    recap_embed.add_field(name="Host Score", value=str(score), inline=True)
+                    recap_embed.add_field(name="Avg Attendance", value=str(avg_att), inline=True)
+                    recap_embed.set_footer(text="DIFF Meets • Official Meet Recap")
+                    await recap_ch.send(embed=recap_embed)
+                except Exception as _re:
+                    print(f"[Recap] Post failed: {_re}")
 
-        if val == "end_meet":
-            await interaction.response.defer(ephemeral=True)
-            ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
-            if isinstance(ch, discord.TextChannel):
-                embed = discord.Embed(
-                    title="🛑  DIFF Meet — Ended",
-                    color=0xe74c3c,
-                    timestamp=datetime.now(timezone.utc),
-                )
-                embed.add_field(name="Host", value=_readable_host(None, interaction.user.id), inline=True)
-                embed.add_field(name="Status", value="🔴 Ended", inline=True)
-                embed.add_field(
-                    name="Thank You",
-                    value=(
-                        "Thank you to everyone who attended and helped keep the meet clean.\n"
-                        "Watch for the next official announcement and future events."
-                    ),
-                    inline=False,
-                )
-                embed.set_image(url=DIFF_LOGO_URL)
-                embed.set_footer(text="DIFF Meet End Notice")
-                await ch.send(embed=embed)
-                log_ch = interaction.client.get_channel(STAFF_LOGS_CHANNEL_ID)
-                if isinstance(log_ch, discord.TextChannel):
-                    await log_ch.send(
-                        f"🛑 **Meet Ended**\nHost: {interaction.user.mention}\nChannel: {ch.mention}"
-                    )
+            # Roll call panel auto-updates to finalized state — no separate notice needed
 
-                # ── Auto-post recap to recap channel ───────────────────────────
-                recap_ch = interaction.client.get_channel(RECAP_CHANNEL_ID)
-                if isinstance(recap_ch, discord.TextChannel):
-                    try:
-                        hp_data = _hp_load()
-                        hstats = hp_data.get("host_stats", {}).get(str(interaction.user.id), {})
-                        meets_total = hstats.get("meets_hosted", 0)
-                        score = hstats.get("score_total", 0)
-                        avg_att = round(
-                            hstats.get("total_attendance_sum", 0) / meets_total, 1
-                        ) if meets_total else 0
-                        recap_embed = discord.Embed(
-                            title="📋 DIFF Meet Recap",
-                            color=0x5865F2,
-                            timestamp=datetime.now(timezone.utc),
-                        )
-                        recap_embed.add_field(name="Host", value=_readable_host(None, interaction.user.id), inline=True)
-                        recap_embed.add_field(name="Meets Hosted (lifetime)", value=str(meets_total), inline=True)
-                        recap_embed.add_field(name="Host Score", value=str(score), inline=True)
-                        recap_embed.add_field(name="Avg Attendance", value=str(avg_att), inline=True)
-                        recap_embed.set_footer(text="DIFF Meets • Official Meet Recap")
-                        await recap_ch.send(embed=recap_embed)
-                    except Exception as _re:
-                        print(f"[Recap] Post failed: {_re}")
+            await interaction.followup.send(
+                f"✅ Meet end message sent in {ch.mention}.\n\n" + _om_wrapup_checklist_text(),
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send("Meet channel not found.", ephemeral=True)
+        return
 
-                # Roll call panel auto-updates to finalized state — no separate notice needed
-
-                await interaction.followup.send(
-                    f"✅ Meet end message sent in {ch.mention}.\n\n" + _om_wrapup_checklist_text(),
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send("Meet channel not found.", ephemeral=True)
-            return
-
-        if val == "request_feedback":
-            await interaction.response.defer(ephemeral=True)
-            ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
-            if isinstance(ch, discord.TextChannel):
-                fb_embed = discord.Embed(
-                    title="📝 Leave Your Meet Feedback",
-                    description=(
-                        f"**{interaction.user.display_name}** is requesting feedback from tonight's meet!\n\n"
-                        "Let us know how it went — your thoughts help us improve every event.\n\n"
-                        "▢ Rate the meet experience\n"
-                        "▢ Comment on the host's performance\n"
-                        "▢ Share suggestions for next time"
-                    ),
-                    color=0x1F6FEB,
-                )
-                fb_embed.set_footer(text="Different Meets • Meet Feedback • All responses are appreciated")
-                await ch.send(embed=fb_embed, view=HostFeedbackRequestView())
-                await interaction.followup.send(f"✅ Feedback request posted in {ch.mention}.", ephemeral=True)
-                try:
-                    _om_mark_flow_action("request_feedback", interaction.user.id)
-                except Exception:
-                    pass
-            else:
-                await interaction.followup.send("Meet flow channel not found.", ephemeral=True)
-            return
+    if val == "request_feedback":
+        await interaction.response.defer(ephemeral=True)
+        ch = interaction.client.get_channel(MEET_FLOW_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
+            fb_embed = discord.Embed(
+                title="📝 Leave Your Meet Feedback",
+                description=(
+                    f"**{interaction.user.display_name}** is requesting feedback from tonight's meet!\n\n"
+                    "Let us know how it went — your thoughts help us improve every event.\n\n"
+                    "▢ Rate the meet experience\n"
+                    "▢ Comment on the host's performance\n"
+                    "▢ Share suggestions for next time"
+                ),
+                color=0x1F6FEB,
+            )
+            fb_embed.set_footer(text="Different Meets • Meet Feedback • All responses are appreciated")
+            await ch.send(embed=fb_embed, view=HostFeedbackRequestView())
+            await interaction.followup.send(f"✅ Feedback request posted in {ch.mention}.", ephemeral=True)
+            try:
+                _om_mark_flow_action("request_feedback", interaction.user.id)
+            except Exception:
+                pass
+        else:
+            await interaction.followup.send("Meet flow channel not found.", ephemeral=True)
+        return
 
 
 class _UnifiedLocationUpdateModal(discord.ui.Modal, title="DIFF Meet Location Update"):
@@ -15374,7 +15605,7 @@ class UnifiedHostHubView(discord.ui.View):
         self.add_item(_HostHubPerformanceSelect())
 
 
-async def _unified_hosthub_post_or_refresh() -> None:
+async def _unified_hosthub_post_or_refresh(embed_only: bool = False) -> None:
     channel = bot.get_channel(HOST_HUB_CHANNEL_ID)
     if not isinstance(channel, discord.TextChannel):
         try:
@@ -15413,15 +15644,35 @@ async def _unified_hosthub_post_or_refresh() -> None:
 
     if unified_msg:
         try:
-            await unified_msg.edit(embed=embed, view=view)
+            if embed_only:
+                await unified_msg.edit(embed=embed)
+            else:
+                await unified_msg.edit(embed=embed, view=view)
             return
         except Exception:
             pass
+
+    if embed_only:
+        return  # background refresh never re-posts the panel
 
     try:
         await channel.send(embed=embed, view=view)
     except Exception as e:
         print(f"[UnifiedHostHub] Post failed: {e}")
+
+
+@tasks.loop(minutes=15)
+async def _hosthub_live_panel_loop():
+    """Keep the hub panel's 📡 Right Now block fresh (embed-only edit)."""
+    try:
+        await _unified_hosthub_post_or_refresh(embed_only=True)
+    except Exception as e:
+        print(f"[UnifiedHostHub] live refresh failed: {e!r}")
+
+
+@_hosthub_live_panel_loop.before_loop
+async def _hosthub_live_panel_loop_before():
+    await bot.wait_until_ready()
 
 
 # =========================
@@ -25671,6 +25922,12 @@ async def on_ready():
     _safe_add_view(HostSessionView(),       "HostSessionView")
     _safe_add_view(UnifiedHostHubView(),    "UnifiedHostHubView")
     await _unified_hosthub_post_or_refresh()
+    try:
+        if not _hosthub_live_panel_loop.is_running():
+            _hosthub_live_panel_loop.start()
+            print("[UnifiedHostHub] live panel refresh loop started")
+    except Exception as _e:
+        print(f"[UnifiedHostHub] failed to start refresh loop: {_e!r}")
     _safe_add_view(_RcRollCallView(),       "_RcRollCallView")
     _safe_add_view(_RcAdminView(),          "_RcAdminView")
     _safe_add_view(_OfficialMeetRSVPView(), "_OfficialMeetRSVPView")
@@ -50677,22 +50934,7 @@ async def _smart_meet_dm_reminder_loop():
             # Host pre-game checklist DM (same window as 1h RSVPer DM) — automates
             # the founder's "don't forget the buttons tonight" message.
             if not getattr(rec, "host_pregame_dm_sent", False) and 50 * 60 <= delta <= 70 * 60:
-                _pg = discord.Embed(
-                    title="🏁 Your meet is in about an hour — quick checklist",
-                    description=(
-                        f"**{rec.theme}** starts <t:{rec.timestamp}:R>. Here's the full host flow:\n\n"
-                        "**When it starts:**\n"
-                        f"• ▶ **Start Meet** on your meet card in <#{rec.channel_id}>\n"
-                        f"• 🔱 **Post Start Speech** (Host Hub → Live Meet Control, <#{HOST_HUB_CHANNEL_ID}>)\n"
-                        f"• 📸 Drop a **lobby screenshot** in <#{LOBBY_PICTURES_CHANNEL_ID}>\n\n"
-                        "**When it's over:**\n"
-                        "• ⏹ **End Meet** on the meet card\n"
-                        "• 📌 **Post End Speech** → 📝 **Request Feedback** (Live Meet Control)\n\n"
-                        "Have a great meet tonight! 🙌"
-                    ),
-                    color=0x57F287,
-                )
-                _pg.set_footer(text="DIFF Meets • Host Pre-Meet Checklist")
+                _pg = _om_pregame_checklist_embed(rec)
                 if await _om_dm_host(rec.host_id, _pg):
                     rec.host_pregame_dm_sent = True
                     _om_upsert_record(rec)
