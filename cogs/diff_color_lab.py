@@ -881,12 +881,11 @@ class ColorLabPanelView(discord.ui.View):
     def __init__(self, cog: "ColorLabCog"):
         super().__init__(timeout=None)
         self.cog = cog
-        self.add_item(_ColorLabPanelSelect(cog))
 
     @discord.ui.button(
-        label="Open Color Request", emoji="🎫",
+        label="Open Color Request", emoji="🎨",
         style=discord.ButtonStyle.primary,
-        custom_id="diff_color_lab_open_private_request_v2", row=1,
+        custom_id="diff_color_lab_open_private_request_v2", row=0,
     )
     async def open_private_request(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ColorTicketRequestModal(self.cog))
@@ -904,33 +903,19 @@ class ColorLabCog(commands.Cog):
         bot.add_view(self._panel_view)
         bot.add_view(self._ticket_view)
         bot.add_view(_LegacyTicketActionsView(self))
+        _legacy_panel = discord.ui.View(timeout=None)
+        _legacy_panel.add_item(_ColorLabPanelSelect(self))
+        bot.add_view(_legacy_panel)
 
     # ------------------------------------------------------------------
     def _build_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="🎨 DIFF Color Lab",
             description=(
-                "Need help recreating a custom GTA color?\n"
-                "The **Color Team** will match it for you in a **private ticket**.\n\n"
-                "Use the dropdown below to get started or learn more.\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━"
+                "Want a custom GTA color matched? Hit the button, drop the **hex code** "
+                "(or *Unknown*) and a **photo** — the **Color Team** handles the rest in a private ticket."
             ),
             color=EMBED_COLOR,
-        )
-        embed.add_field(
-            name="🎫 Private Tickets",
-            value="One-on-one help — only you, the Color Team, and admins can see your ticket.",
-            inline=False,
-        )
-        embed.add_field(
-            name="✅ Official Results",
-            value="Every matched color is posted as a formal result embed inside your ticket.",
-            inline=False,
-        )
-        embed.add_field(
-            name="📦 Archived for Records",
-            value="Completed tickets are archived with a full transcript saved to staff logs.",
-            inline=False,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
         embed.set_footer(text=f"DIFF Color Lab • Private Request System • {PANEL_TAG}")
