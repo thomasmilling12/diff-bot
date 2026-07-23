@@ -25924,13 +25924,22 @@ async def _rc_t5h_reminder_loop() -> None:
                 cur = _rc_db.conn.cursor()
                 cur.execute(
                     "SELECT user_id, status FROM rollcall_responses "
-                    "WHERE guild_id=? AND meet_number=? AND status IN ('yes','maybe')",
+                    "WHERE guild_id=? AND meet_number=?",
                     (GUILD_ID, mn),
                 )
                 rows = cur.fetchall()
                 yes_ids   = [r["user_id"] for r in rows if r["status"] == "yes"]
                 maybe_ids = [r["user_id"] for r in rows if r["status"] == "maybe"]
-                if not yes_ids and not maybe_ids:
+                responded_ids = {r["user_id"] for r in rows}
+                # Crew members who haven't answered the roll call at all get a
+                # "complete it before the meet" ping (owner request Jul 2026).
+                _crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+                nonresp_ids = (
+                    [m.id for m in _crew_role.members
+                     if not m.bot and m.id not in responded_ids]
+                    if _crew_role else []
+                )
+                if not yes_ids and not maybe_ids and not nonresp_ids:
                     # Nobody to remind — still mark so we don't rescan forever
                     sent_map[key] = True
                     _changed = True
@@ -25975,8 +25984,17 @@ async def _rc_t5h_reminder_loop() -> None:
                         value=_maybe_val[:1024],
                         inline=False,
                     )
+                if nonresp_ids:
+                    rc_url = f"https://discord.com/channels/{GUILD_ID}/{ROLL_CALL_CHANNEL_ID}"
+                    emb.add_field(
+                        name=f"📋 Haven't done the roll call? ({len(nonresp_ids)})",
+                        value=(f"You're tagged above — **[complete the roll call]({rc_url})** "
+                               "before the meet starts so the host knows who's coming."),
+                        inline=False,
+                    )
                 emb.set_footer(text="Different Meets • Roll Call Reminder")
-                content = _mentions(yes_ids) if yes_ids else None
+                _ping_ids = yes_ids + [i for i in nonresp_ids if i not in yes_ids]
+                content = _mentions(_ping_ids) if _ping_ids else None
                 try:
                     await crew_ch.send(
                         content=content,
