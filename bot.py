@@ -7481,7 +7481,8 @@ async def _hosthub_cmd(ctx: commands.Context):
     except Exception:
         pass
     await _unified_hosthub_post_or_refresh()
-    await ctx.reply("✅ Unified Host Hub posted/refreshed.", mention_author=False, delete_after=8)
+    # ctx.reply would reference the just-deleted message → 400 Unknown message
+    await ctx.send("✅ Unified Host Hub posted/refreshed.", delete_after=8)
 
 
 @bot.command(name="blacklistsearch")
