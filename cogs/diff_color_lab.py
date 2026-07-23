@@ -285,7 +285,7 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
                 "This can only be used inside the server.", ephemeral=True
             )
 
-        if COLOR_TEAM_ROLE_ID == 0 or TICKET_CATEGORY_ID == 0 or ARCHIVE_CATEGORY_ID == 0:
+        if COLOR_TEAM_ROLE_ID == 0 or TICKET_CATEGORY_ID == 0:
             return await interaction.response.send_message(
                 "The Color Lab ticket system is not fully configured yet. "
                 "Please ask staff to set the Color Team role and ticket categories.",
@@ -504,12 +504,6 @@ async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog"
             "This only works inside a ticket channel.", ephemeral=True
         )
 
-    archive_cat = guild.get_channel(ARCHIVE_CATEGORY_ID)
-    if not isinstance(archive_cat, discord.CategoryChannel):
-        return await interaction.response.send_message(
-            "Archive category not configured. Contact staff.", ephemeral=True
-        )
-
     await interaction.response.defer(ephemeral=True)
 
     transcript_html = await _build_transcript(channel)
@@ -528,53 +522,18 @@ async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog"
         except Exception:
             pass
 
-    color_team_role = guild.get_role(COLOR_TEAM_ROLE_ID)
-    new_overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        guild.me: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            manage_channels=True, manage_messages=True, read_message_history=True,
-        ),
-    }
-    if color_team_role:
-        new_overwrites[color_team_role] = discord.PermissionOverwrite(
-            view_channel=True, send_messages=False,
-            read_message_history=True, manage_messages=True, manage_channels=True,
-        )
-
-    try:
-        await channel.edit(
-            name=f"archived-{channel.name}"[:100],
-            category=archive_cat,
-            topic=(channel.topic or "") + " | status:archived",
-            overwrites=new_overwrites,
-            reason=f"Archived by {interaction.user}",
-        )
-    except Exception as e:
-        return await interaction.followup.send(f"Failed to archive: {e}", ephemeral=True)
-
-    archive_embed = discord.Embed(
-        title="📦 Ticket Archived",
-        description=(
-            "This ticket has been **archived**.\n"
-            "A full transcript has been saved to staff logs for records."
-        ),
-        color=WARNING_COLOR,
-        timestamp=datetime.now(timezone.utc),
-    )
-    archive_embed.set_thumbnail(url=DIFF_LOGO_URL)
-    archive_embed.set_footer(text=f"Archived by {interaction.user.display_name} • DIFF Color Lab")
-    await channel.send(embed=archive_embed)
-
     transcript_file = discord.File(transcript_path, filename=os.path.basename(transcript_path))
     await cog.log_action(
         guild,
-        f"📦 Archived color ticket `#{channel.name}` by {interaction.user.mention}",
+        f"🗑️ Deleted color ticket `#{channel.name}` by {interaction.user.mention} — transcript attached",
         file=transcript_file,
     )
-    await interaction.followup.send(
-        "Ticket archived and transcript saved to staff logs.", ephemeral=True
-    )
+
+    try:
+        await channel.delete(reason=f"Color ticket deleted by {interaction.user}")
+        return  # channel gone — nothing left to respond to
+    except Exception as e:
+        return await interaction.followup.send(f"Failed to delete channel: {e}", ephemeral=True)
 
 
 class _TicketActionsSelect(discord.ui.Select):
@@ -693,7 +652,7 @@ class ColorTicketControlsView(discord.ui.View):
         self.cog = cog
 
     @discord.ui.button(
-        label="Post Result", emoji="✅",
+        label="Set to DIFF Custom", emoji="✅",
         style=discord.ButtonStyle.success,
         custom_id="diff_color_lab_ticket_post_result_v2", row=0,
     )
@@ -701,9 +660,38 @@ class ColorTicketControlsView(discord.ui.View):
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if not member or not _is_color_team(member):
             return await interaction.response.send_message(
-                "Only the Color Team or staff can post results.", ephemeral=True
+                "Only the Color Team or staff can mark colors as set.", ephemeral=True
             )
-        await interaction.response.send_modal(ColorResultModal())
+        channel = interaction.channel
+        guild = interaction.guild
+        owner = None
+        if guild and isinstance(channel, discord.TextChannel) and channel.topic and "color_request_user_id:" in channel.topic:
+            try:
+                uid = int(channel.topic.split("color_request_user_id:")[1].split("|")[0].strip())
+                owner = guild.get_member(uid)
+            except Exception:
+                owner = None
+        done_embed = discord.Embed(
+            title="✅ Color Set — DIFF Custom",
+            description=(
+                (f"{owner.mention}, y" if owner else "Y") +
+                "our color has been set as the **DIFF custom crew color**!\n"
+                "Hop in game and grab it from the crew colors. 🎨"
+            ),
+            color=SUCCESS_COLOR,
+            timestamp=datetime.now(timezone.utc),
+        )
+        done_embed.set_footer(text=f"Set by {member.display_name} • DIFF Color Lab")
+        await interaction.response.send_message(
+            content=owner.mention if owner else None,
+            embed=done_embed,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+        if owner:
+            try:
+                await owner.send(embed=done_embed)
+            except Exception:
+                pass
 
     @discord.ui.button(
         label="Add Note", emoji="📝",
@@ -719,7 +707,7 @@ class ColorTicketControlsView(discord.ui.View):
         await interaction.response.send_modal(ColorTeamNoteModal())
 
     @discord.ui.button(
-        label="Archive & Close", emoji="📦",
+        label="Delete Ticket", emoji="🗑️",
         style=discord.ButtonStyle.danger,
         custom_id="diff_color_lab_ticket_archive_v2", row=0,
     )
@@ -727,7 +715,7 @@ class ColorTicketControlsView(discord.ui.View):
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if not member or not _is_color_team(member):
             return await interaction.response.send_message(
-                "Only the Color Team or staff can archive tickets.", ephemeral=True
+                "Only the Color Team or staff can delete tickets.", ephemeral=True
             )
         await _run_archive_flow(interaction, self.cog)
 
