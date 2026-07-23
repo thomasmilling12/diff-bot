@@ -36003,26 +36003,10 @@ def _supp_build_support_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🎟️ DIFF Support Center",
         description=(
-            "Need help? Pick the option that fits your situation below — "
-            "your ticket will be private between you and DIFF staff."
+            "Need help? Pick a button below — every ticket is private between you and DIFF staff.\n"
+            f"Most questions are already answered in <#{RULES_CHANNEL_ID}>."
         ),
         color=discord.Color.from_rgb(88, 101, 242),
-    )
-    embed.add_field(
-        name="📋 What you can do here",
-        value=(
-            "🛡️ **Report a Member** — Rule violations, toxic behavior, meet disruptions\n"
-            "❓ **Ask a Question** — Help with roles, channels, meets, anything DIFF\n"
-            "📩 **Apply for Staff** — Join the DIFF staff team\n"
-            "🚨 **Urgent** — Active raid, threat, or anything needing staff **now**\n"
-            "📂 **My Tickets** — Jump to any ticket you currently have open"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📜 Before opening a ticket",
-        value=f"Most questions are answered in <#{RULES_CHANNEL_ID}>.",
-        inline=False,
     )
     embed.set_footer(text="DIFF Support • Avg response ~2h • Reviewed by Host+ team")
     if DIFF_LOGO_URL:
@@ -36034,30 +36018,11 @@ def _supp_build_appeals_embed() -> discord.Embed:
     embed = discord.Embed(
         title="⚖️ Appeal Center",
         description=(
-            "Disagree with a staff action? Use the **dropdown below** to submit an appeal. "
-            "Be specific — include case IDs, dates, and any evidence to speed up review."
+            "Disagree with a staff action? Pick the appeal type in the **dropdown below** — "
+            "include case IDs, dates, and evidence to speed up review.\n"
+            "✅ Warnings, timeouts, and bans are reversed automatically when accepted."
         ),
         color=discord.Color.from_rgb(245, 158, 11),
-    )
-    embed.add_field(
-        name="What you can appeal",
-        value=(
-            "⚠️ **Warning** — Appeal a warning or write-up\n"
-            "⏰ **Timeout** — Appeal a timeout or mute\n"
-            "🔨 **Ban** — Appeal a ban and request reinstatement\n"
-            "👢 **Kick** — Request a review of a kick\n"
-            "🚙 **Build Denial** — Appeal a denied build at a meet\n"
-            "🏁 **Meet Exclusion** — Appeal being excluded from a meet"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="✅ Auto-Reversal on Acceptance",
-        value=(
-            "Warnings, timeouts, and bans are reversed automatically when accepted. "
-            "Kicks require a manual reinvite."
-        ),
-        inline=False,
     )
     embed.set_footer(text="Different Meets • Appeal System")
     return embed
