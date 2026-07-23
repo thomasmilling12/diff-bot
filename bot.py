@@ -6781,6 +6781,13 @@ class _HostAutoDB:
         row = cur.fetchone()
         return int(row["points"]) if row else 0
 
+    def get_points(self, guild_id, user_id) -> int:
+        cur = self.conn.cursor()
+        cur.execute("SELECT points FROM host_points WHERE guild_id=? AND user_id=?",
+                    (guild_id, user_id))
+        row = cur.fetchone()
+        return int(row["points"]) if row else 0
+
     def top_points(self, guild_id, limit=10):
         cur = self.conn.cursor()
         cur.execute("""
@@ -15625,7 +15632,7 @@ class _HostHubMyDayBtn(discord.ui.Button):
         # Live meet of theirs?
         try:
             for raw in _om_load_records().values():
-                if raw.get("host_id") == uid and raw.get("started") and not raw.get("ended"):
+                if int(raw.get("host_id") or 0) == uid and raw.get("started") and not raw.get("ended"):
                     st = raw.get("started_at_ts") or raw.get("timestamp") or 0
                     if now_ts - int(st) < 12 * 3600:
                         lines.append(f"\U0001F534 **You're live right now:** {raw.get('theme') or 'Official Meet'} \u2014 don't forget \u23F9 End Meet \u2192 \U0001F4CC End Speech \u2192 \U0001F4DD Request Feedback when you wrap up.")
@@ -15653,7 +15660,7 @@ class _HostHubMyDayBtn(discord.ui.Button):
         # Pending wrap-up on a recently ended meet
         try:
             for raw in _om_load_records().values():
-                if raw.get("host_id") != uid or not raw.get("ended"):
+                if int(raw.get("host_id") or 0) != uid or not raw.get("ended"):
                     continue
                 et = raw.get("ended_at_ts") or 0
                 if not et or now_ts - int(et) > 24 * 3600:
@@ -15671,14 +15678,10 @@ class _HostHubMyDayBtn(discord.ui.Button):
         # Their host stats snapshot
         try:
             stats = _hp_load().get("host_stats", {}).get(str(uid), {})
-            pts = 0
             try:
-                for row in _hauto_db.top_points(GUILD_ID, 100):
-                    if int(row["user_id"]) == uid:
-                        pts = int(row["points"])
-                        break
+                pts = _hauto_db.get_points(GUILD_ID, uid)
             except Exception:
-                pass
+                pts = 0
             meets = stats.get("meets_hosted", 0)
             if meets or pts:
                 lines.append(f"\U0001F4CA **Your totals:** {meets} meets hosted \u2022 {pts} host pts \u2022 {host_performance_tier(pts)}")
