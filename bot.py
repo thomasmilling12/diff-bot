@@ -6835,18 +6835,16 @@ async def _hauto_update_leaderboard(guild: discord.Guild) -> None:
 
 # ── Blacklist submission: guided flow ───────────────────────────────────────
 # Member picked from a dropdown (typed name only needed if they already left),
-# severity from a dropdown, reason/PSN in a modal, and evidence is a REQUIRED
-# image upload (phone-friendly) captured as the submitter's next message.
-
-_bl_evidence_waiting: set[int] = set()  # user_ids currently in the upload step
+# severity from a dropdown, and reason/PSN + a REQUIRED image upload all in
+# ONE form (Discord modal FileUpload component — drag & drop or browse).
 
 
-async def _bl_finalize_entry(channel: discord.TextChannel, guild: discord.Guild,
+async def _bl_finalize_entry(guild: discord.Guild,
                              submitter: discord.Member, target_member,
                              name_text: str, psn: str, reason: str, severity: str,
-                             evidence_msg: discord.Message) -> None:
+                             attachments: list) -> None:
     """Create the blacklist entry and post it (with the uploaded images) to the
-    blacklist channel. Called after the required evidence upload arrives."""
+    blacklist channel. Evidence attachments come straight from the modal."""
     # Resolve to a real guild Member — UserSelect can hand back a plain
     # discord.User; non-members go down the typed-name path safely.
     if target_member is not None:
@@ -6896,15 +6894,13 @@ async def _bl_finalize_entry(channel: discord.TextChannel, guild: discord.Guild,
     embed.set_footer(text=f"Submitted by {submitter} • Different Meets • Host Blacklist")
 
     # Re-upload evidence images alongside the embed so they live permanently
-    # in the blacklist channel (original message gets cleaned up). Keep the
-    # original upload message if posting fails so evidence is never lost.
+    # in the blacklist channel.
     files = []
-    for att in evidence_msg.attachments[:4]:
-        if (att.content_type or "").startswith("image/"):
-            try:
-                files.append(await att.to_file())
-            except Exception:
-                pass
+    for att in attachments[:4]:
+        try:
+            files.append(await att.to_file())
+        except Exception:
+            pass
     if files:
         embed.set_image(url=f"attachment://{files[0].filename}")
 
@@ -6920,8 +6916,7 @@ async def _bl_finalize_entry(channel: discord.TextChannel, guild: discord.Guild,
             urls = " ".join(a.url for a in posted.attachments) or posted.jump_url
             _hauto_db.update_blacklist_evidence(entry_id, f"{posted.jump_url} {urls}"[:1000])
         else:
-            # Posting failed — keep the original upload as the evidence link
-            _hauto_db.update_blacklist_evidence(entry_id, f"(post failed) {evidence_msg.jump_url}"[:1000])
+            _hauto_db.update_blacklist_evidence(entry_id, "(channel post failed — evidence not stored)")
     except Exception:
         pass
 
@@ -6934,24 +6929,21 @@ async def _bl_finalize_entry(channel: discord.TextChannel, guild: discord.Guild,
         except Exception:
             pass
 
-    if posted is not None:
-        try:
-            await evidence_msg.delete()
-        except Exception:
-            pass
-    try:
-        await channel.send(f"✅ {submitter.mention} Blacklist entry **#{entry_id}** submitted with evidence.", delete_after=15)
-    except Exception:
-        pass
+    return entry_id, posted
 
 
-class _BlacklistDetailsModal(discord.ui.Modal, title="🚫 Blacklist Details"):
+class _BlacklistDetailsModal(discord.ui.Modal, title="\U0001F6AB Blacklist Details"):
     name_field = discord.ui.TextInput(
         label="Name (only if they LEFT the server)", required=False, max_length=100,
         placeholder="Leave empty if you picked a member from the dropdown")
     psn_field = discord.ui.TextInput(label="PSN / GamerTag", required=False, max_length=100)
     reason = discord.ui.TextInput(label="Reason for Blacklisting", style=discord.TextStyle.paragraph,
                                   required=True, max_length=1000)
+    evidence = discord.ui.Label(
+        text="Evidence (required)",
+        description="Attach screenshot(s) proving the violation — up to 4 images.",
+        component=discord.ui.FileUpload(required=True, min_values=1, max_values=4),
+    )
 
     def __init__(self, target_member, severity: str):
         super().__init__()
@@ -6966,56 +6958,32 @@ class _BlacklistDetailsModal(discord.ui.Modal, title="🚫 Blacklist Details"):
         name_text = self.name_field.value.strip()
         if not self._target and not name_text:
             return await interaction.response.send_message(
-                "⚠️ Pick a member from the dropdown, or type their name in the details form if they already left.",
+                "\u26A0\uFE0F Pick a member from the dropdown, or type their name in the details form if they already left.",
                 ephemeral=True)
         if self._target and _hauto_db.is_blacklisted(guild.id, self._target.id):
             return await interaction.response.send_message(
                 "That user already has an active blacklist entry.", ephemeral=True)
-        if submitter.id in _bl_evidence_waiting:
+        atts = [a for a in (self.evidence.component.values or [])
+                if (a.content_type or "").startswith("image/")]
+        if not atts:
             return await interaction.response.send_message(
-                "You already have an evidence upload in progress — finish that one first.", ephemeral=True)
+                "\u26A0\uFE0F Evidence must be **image** file(s) — please resubmit with screenshots.",
+                ephemeral=True)
 
-        await interaction.response.send_message(
-            "📸 **Last step — evidence is required.**\n"
-            "Send the screenshot(s) **as your next message in this channel** (upload straight from "
-            "your phone photos). You have **5 minutes**. The image gets attached to the blacklist "
-            "entry and your upload message is cleaned up automatically.",
-            ephemeral=True)
-
-        channel = interaction.channel
-        _bl_evidence_waiting.add(submitter.id)
-
-        async def _wait_for_evidence():
-            try:
-                def _check(m: discord.Message) -> bool:
-                    return (m.author.id == submitter.id and m.channel.id == channel.id
-                            and any((a.content_type or "").startswith("image/") for a in m.attachments))
-                try:
-                    msg = await bot.wait_for("message", check=_check, timeout=300)
-                except asyncio.TimeoutError:
-                    try:
-                        await interaction.followup.send(
-                            "⌛ No image received in 5 minutes — blacklist submission cancelled. "
-                            "Press **Submit Blacklist** to start again.", ephemeral=True)
-                    except Exception:
-                        pass
-                    return
-                await _bl_finalize_entry(
-                    channel, guild, submitter, self._target, name_text,
-                    self.psn_field.value.strip(), self.reason.value.strip(),
-                    self._severity, msg)
-            except Exception as _e:
-                print(f"[Blacklist] evidence flow error: {_e}")
-                try:
-                    await interaction.followup.send(
-                        "⚠️ Something went wrong finishing your blacklist entry — "
-                        "please try again or ping Leadership.", ephemeral=True)
-                except Exception:
-                    pass
-            finally:
-                _bl_evidence_waiting.discard(submitter.id)
-
-        asyncio.create_task(_wait_for_evidence())
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            entry_id, posted = await _bl_finalize_entry(
+                guild, submitter, self._target, name_text,
+                self.psn_field.value.strip(), self.reason.value.strip(),
+                self._severity, atts)
+        except Exception as _e:
+            print(f"[Blacklist] submit error: {_e}")
+            return await interaction.followup.send(
+                "\u26A0\uFE0F Something went wrong submitting your blacklist entry — "
+                "please try again or ping Leadership.", ephemeral=True)
+        link = f" \u2192 {posted.jump_url}" if posted else ""
+        await interaction.followup.send(
+            f"\u2705 Blacklist entry **#{entry_id}** submitted with evidence.{link}", ephemeral=True)
 
 
 class _BlacklistFlowView(discord.ui.View):
@@ -7060,7 +7028,7 @@ async def _bl_start_flow(interaction: discord.Interaction) -> None:
         "🚫 **Host Blacklist Submission**\n"
         "1️⃣ Pick the member from the dropdown (searchable — start typing their name).\n"
         "2️⃣ Pick the severity.\n"
-        "3️⃣ Press **Next** for the reason — then upload your screenshot (required).",
+        "3️⃣ Press **Next** — reason + screenshot upload are all in one form.",
         view=_BlacklistFlowView(), ephemeral=True)
 
 
