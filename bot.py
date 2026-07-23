@@ -25379,6 +25379,8 @@ async def on_ready():
     _spawn_bg_task("_season_loop", _season_loop)
     _spawn_bg_task("_hrsvp_auto_reset_loop", _hrsvp_auto_reset_loop)
     _spawn_bg_task("_host_avail_nudge_loop", _host_avail_nudge_loop)
+    _spawn_bg_task("_cc_reminder_loop", _cc_reminder_loop)
+    _safe_add_view(_CcDoneView(), "_CcDoneView")
     _spawn_bg_task("_hrsvp_escalation_loop", _hrsvp_escalation_loop)
     # Singleton guard — on_ready can fire multiple times on reconnect; without
     # this, each reconnect would spawn another auto-end worker and cause
@@ -27882,6 +27884,199 @@ async def _cs_build_vote_collage(candidates: List[Dict[str, Any]]) -> Optional[d
         return None
 
 
+# ── Crew-color change task: DM changers w/ Done button, remind until done ───
+_CC_FILE = os.path.join("diff_data", "diff_color_change_state.json")
+_COLOR_CHANGE_ADMINS = [983557795767021578, 531671176976662532]  # Azi, Chris
+
+
+def _cc_load() -> dict:
+    try:
+        with open(_CC_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _cc_save(data: dict) -> None:
+    _atomic_json_save(_CC_FILE, data)
+
+
+def _cc_changer_ids() -> list:
+    st = _cc_load()
+    ids = st.get("changer_ids")
+    return [int(i) for i in ids] if ids else list(_COLOR_CHANGE_ADMINS)
+
+
+def _cc_build_dm_embed(pending: dict, *, reminder: bool = False) -> discord.Embed:
+    try:
+        col = discord.Color.from_str(pending.get("hex_code") or "#5865F2")
+    except Exception:
+        col = discord.Color.blurple()
+    emb = discord.Embed(
+        title=("⏰ Reminder — Crew Color Still Not Updated" if reminder
+               else "🎨 Update the Crew Color on Rockstar Social Club"),
+        description=(
+            f"This week's winning crew color is:\n\n"
+            f"**{pending.get('color_name', '?')}**\n"
+            f"HEX: `{pending.get('hex_code', '?')}`\n\n"
+            "Please update the crew color on **Rockstar Social Club** to match, "
+            "then press **✅ Done** below so the team knows it's handled."
+            + ("\n\n*You'll keep getting this reminder every ~12 hours until "
+               "someone presses Done.*" if reminder else "")
+        ),
+        color=col,
+        timestamp=datetime.now(timezone.utc),
+    )
+    if pending.get("image_url"):
+        emb.set_image(url=pending["image_url"])
+    emb.set_footer(text="DIFF Meets • Crew Color System")
+    return emb
+
+
+class _CcDoneView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="✅ Done — color updated", style=discord.ButtonStyle.success, custom_id="diff_cc_done")
+    async def _done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        st = _cc_load()
+        pending = st.get("pending")
+        if not pending or pending.get("done"):
+            return await interaction.response.send_message(
+                "✅ This one's already marked done — thank you!", ephemeral=True)
+        pending["done"] = True
+        pending["done_by"] = interaction.user.id
+        pending["done_at"] = datetime.now(timezone.utc).isoformat()
+        _cc_save(st)
+        try:
+            await interaction.response.send_message(
+                f"🙌 Thank you! **{pending.get('color_name', 'The crew color')}** is marked as updated — "
+                "no more reminders for this week.")
+        except Exception:
+            pass
+        try:
+            log_ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(log_ch, discord.TextChannel):
+                await log_ch.send(embed=discord.Embed(
+                    title="🎨 Crew Color Updated",
+                    description=(f"**{interaction.user.display_name}** confirmed the crew color was "
+                                 f"changed to **{pending.get('color_name', '?')}** "
+                                 f"(`{pending.get('hex_code', '?')}`) on Rockstar Social Club."),
+                    color=discord.Color.green(),
+                    timestamp=datetime.now(timezone.utc),
+                ))
+        except Exception:
+            pass
+
+
+async def _cc_dm_changers(guild: discord.Guild, pending: dict, *, reminder: bool = False) -> int:
+    """DM every configured changer. Returns how many DMs went through."""
+    emb = _cc_build_dm_embed(pending, reminder=reminder)
+    sent = 0
+    for uid in _cc_changer_ids():
+        try:
+            member = guild.get_member(uid) or await guild.fetch_member(uid)
+            if member:
+                await member.send(embed=emb, view=_CcDoneView())
+                sent += 1
+        except Exception as _e:
+            print(f"[CcTask] DM to {uid} failed: {_e}")
+    return sent
+
+
+async def _cc_open_task(guild: discord.Guild, winner: Dict[str, Any]) -> None:
+    """Open a tracked crew-color-change task for this week's winner and send
+    the first DM round."""
+    st = _cc_load()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    st["pending"] = {
+        "color_name": winner.get("color_name", "?"),
+        "hex_code": winner.get("hex_code", ""),
+        "image_url": winner.get("image_url", ""),
+        "opened_at": now_iso,
+        "last_dm_ts": time.time(),
+        "done": False,
+    }
+    _cc_save(st)
+    await _cc_dm_changers(guild, st["pending"], reminder=False)
+
+
+async def _cc_reminder_loop() -> None:
+    """Every ~12h (daytime 9AM–9PM ET only), re-DM the crew-color changers
+    until one of them presses ✅ Done. Auto-expires after 7 days with a
+    staff-logs note. Disk-guarded — survives redeploys."""
+    await bot.wait_until_ready()
+    from zoneinfo import ZoneInfo as _ZI
+    while not bot.is_closed():
+        await asyncio.sleep(600)
+        try:
+            st = _cc_load()
+            pending = st.get("pending")
+            if not pending or pending.get("done"):
+                continue
+            now_et = datetime.now(_ZI("America/New_York"))
+            if not (9 <= now_et.hour <= 21):
+                continue
+            if time.time() - float(pending.get("last_dm_ts") or 0) < 12 * 3600:
+                continue
+            # Auto-expire after 7 days so a dead task can't nag forever
+            try:
+                opened = datetime.fromisoformat(pending["opened_at"])
+                if (datetime.now(timezone.utc) - opened).days >= 7:
+                    pending["done"] = True
+                    pending["expired"] = True
+                    _cc_save(st)
+                    log_ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
+                    if isinstance(log_ch, discord.TextChannel):
+                        await log_ch.send(
+                            "⚠️ Crew-color change task for "
+                            f"**{pending.get('color_name', '?')}** was never confirmed "
+                            "after 7 days of reminders — expiring it.")
+                    continue
+            except Exception:
+                pass
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+            if await _cc_dm_changers(guild, pending, reminder=True):
+                pending["last_dm_ts"] = time.time()
+                _cc_save(st)
+                print(f"[CcTask] Sent 12h color-change reminder ({pending.get('color_name')}).")
+        except Exception as _e:
+            print(f"[CcTask] Loop error: {_e}")
+
+
+@bot.command(name="colorchangedone")
+async def _cmd_colorchangedone(ctx: commands.Context):
+    """Manually mark this week's crew-color change as done (staff only)."""
+    if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
+        return await ctx.send("Staff only.", delete_after=6)
+    st = _cc_load()
+    pending = st.get("pending")
+    if not pending or pending.get("done"):
+        return await ctx.send("✅ Nothing pending — the crew color is already marked done.", delete_after=10)
+    pending["done"] = True
+    pending["done_by"] = ctx.author.id
+    pending["done_at"] = datetime.now(timezone.utc).isoformat()
+    _cc_save(st)
+    await ctx.send(f"✅ Marked **{pending.get('color_name', '?')}** as updated — reminders stopped.", delete_after=10)
+
+
+@bot.command(name="setcolorchangers")
+async def _cmd_setcolorchangers(ctx: commands.Context, *members: discord.Member):
+    """Set who gets the crew-color change DMs (Leadership only)."""
+    if not isinstance(ctx.author, discord.Member) or not _cs_is_color_admin(ctx.author):
+        return await ctx.send("Leadership only.", delete_after=6)
+    if not members:
+        names = ", ".join(f"<@{i}>" for i in _cc_changer_ids())
+        return await ctx.send(f"🎨 Current crew-color changers: {names}\n"
+                              "Usage: `!setcolorchangers @user1 @user2`", delete_after=15)
+    st = _cc_load()
+    st["changer_ids"] = [m.id for m in members]
+    _cc_save(st)
+    await ctx.send("✅ Crew-color changers set: " + ", ".join(m.mention for m in members), delete_after=10)
+
+
 async def _cs_post_winner_announcement(guild: discord.Guild, winner: Dict[str, Any], manual: bool = False, vote_info: Optional[Dict[str, Any]] = None):
     channel = await _cs_fetch_channel(COLOR_ANNOUNCEMENT_CHANNEL_ID)
     crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
@@ -27969,28 +28164,12 @@ async def _cs_post_winner_announcement(guild: discord.Guild, winner: Dict[str, A
     except Exception as _dme:
         print(f"[ColorWinner] DM to winner failed: {_dme}")
 
-    # DM Azi and Chris to update the crew color on Rockstar Social Club
-    _COLOR_CHANGE_ADMINS = [983557795767021578, 531671176976662532]
-    admin_embed = discord.Embed(
-        title="🎨 Update the Crew Color on Rockstar Social Club",
-        description=(
-            f"This week's winning crew color is:\n\n"
-            f"**{winner['color_name']}**\n"
-            f"HEX: `{winner['hex_code']}`\n\n"
-            "Please update the crew color on **Rockstar Social Club** to match."
-        ),
-        color=embed_color,
-        timestamp=datetime.now(COLOR_TZ),
-    )
-    admin_embed.set_image(url=winner["image_url"])
-    admin_embed.set_footer(text="DIFF Meets • Crew Color System")
-    for admin_id in _COLOR_CHANGE_ADMINS:
-        try:
-            admin_member = guild.get_member(admin_id) or await guild.fetch_member(admin_id)
-            if admin_member:
-                await admin_member.send(embed=admin_embed)
-        except Exception as _ae:
-            print(f"[ColorWinner] Admin DM to {admin_id} failed: {_ae}")
+    # DM the crew-color changers (with a ✅ Done button) and open a tracked
+    # task — the reminder loop keeps nudging them every 12h until confirmed.
+    try:
+        await _cc_open_task(guild, winner)
+    except Exception as _ae:
+        print(f"[ColorWinner] Could not open color-change task: {_ae}")
 
     return msg
 
