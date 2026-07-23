@@ -80,14 +80,16 @@ def _set_last_ping_msg_id(guild_id: int, message_id: Optional[int]) -> None:
     _save(d)
 
 
-def _get_last_auto_ping_date() -> Optional[str]:
-    v = _load().get("last_auto_ping_date")
-    return str(v) if v else None
+def _get_last_reminder_ts() -> float:
+    try:
+        return float(_load().get("last_reminder_ts") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
-def _set_last_auto_ping_date(date_str: str) -> None:
+def _set_last_reminder_ts(ts: float) -> None:
     d = _load()
-    d["last_auto_ping_date"] = date_str
+    d["last_reminder_ts"] = ts
     _save(d)
 
 
@@ -212,8 +214,9 @@ class PingButton(discord.ui.Button):
 
         await _post_verification_reminder(interaction.channel, role, sender_name)
 
-        # A manual ping also counts as today's reminder — skip the auto-ping.
-        _set_last_auto_ping_date(datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d"))
+        # A manual ping counts as a recent reminder — the auto-loop skips its
+        # next slot if this happened within the last ~2.5 hours.
+        _set_last_reminder_ts(time.time())
 
         confirm = f"✅ Pinged the unverified role — **{count}** member(s) notified in channel."
         await interaction.followup.send(confirm, ephemeral=True)
@@ -320,16 +323,17 @@ class UnverifiedPanelCog(commands.Cog):
     def cog_unload(self):
         self._daily_auto_ping.cancel()
 
-    @tasks.loop(time=datetime.now(ZoneInfo("America/New_York")).replace(
-        hour=12, minute=0, second=0, microsecond=0
-    ).timetz())
+    @tasks.loop(time=[
+        datetime(2000, 1, 1, h, 0, tzinfo=ZoneInfo("America/New_York")).timetz()
+        for h in (0, 3, 6, 9, 12, 15, 18, 21)
+    ])
     async def _daily_auto_ping(self):
-        """Daily noon-ET Verification Reminder — replaces the manual button press.
-        Disk-guarded (one per calendar day, ET) so redeploys never double-post;
-        a manual button press earlier the same day also skips it."""
+        """Verification Reminder every 3 hours ET (12/3/6/9 AM+PM) — replaces
+        the manual button press. Disk-guarded: skips the slot if ANY reminder
+        (auto or manual) went out within the last ~2.5h, so redeploys never
+        double-post and manual presses just delay the next auto-ping."""
         try:
-            today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-            if _get_last_auto_ping_date() == today:
+            if time.time() - _get_last_reminder_ts() < 2.5 * 3600:
                 return
             channel = await self._get_channel()
             if channel is None:
@@ -338,14 +342,14 @@ class UnverifiedPanelCog(commands.Cog):
             if role is None:
                 return
             if not _unverified_members(channel.guild):
-                # Nobody unverified — mark done for today, no ping needed.
-                _set_last_auto_ping_date(today)
+                # Nobody unverified — mark the slot done, no ping needed.
+                _set_last_reminder_ts(time.time())
                 return
-            await _post_verification_reminder(channel, role, "DIFF Bot (daily auto-reminder)")
-            _set_last_auto_ping_date(today)
-            print("[UnverifiedPanel] Daily auto-ping sent.")
+            await _post_verification_reminder(channel, role, "DIFF Bot (auto-reminder)")
+            _set_last_reminder_ts(time.time())
+            print("[UnverifiedPanel] Auto-ping sent.")
         except Exception as e:
-            print(f"[UnverifiedPanel] Daily auto-ping failed: {e}")
+            print(f"[UnverifiedPanel] Auto-ping failed: {e}")
 
     @_daily_auto_ping.before_loop
     async def _before_daily_auto_ping(self):
