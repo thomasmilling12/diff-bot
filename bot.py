@@ -15022,6 +15022,20 @@ _UNIFIED_HOSTHUB_OLD_TITLES: set[str] = {
 }
 
 
+def _hosthub_name(host_id) -> str:
+    """Display-name-only label for the hub panel (no duplicate mention noise)."""
+    if not host_id:
+        return "TBD"
+    try:
+        g = bot.get_guild(GUILD_ID)
+        m = g.get_member(int(host_id)) if g else None
+        if m:
+            return f"**{m.display_name}**"
+    except Exception:
+        pass
+    return f"<@{host_id}>"
+
+
 def _hosthub_live_lines() -> str:
     """Best-effort live status block for the hub panel. Never raises."""
     lines = []
@@ -15033,7 +15047,7 @@ def _hosthub_live_lines() -> str:
                 st = raw.get("started_at_ts") or raw.get("timestamp") or 0
                 if now_ts - int(st) < 12 * 3600:  # ignore stale/orphaned records
                     theme = raw.get("theme") or "Official Meet"
-                    host = _readable_host(None, raw.get("host_id")) or "the host"
+                    host = _hosthub_name(raw.get("host_id"))
                     lines.append(f"🔴 **LIVE NOW:** {theme} — hosted by {host}")
                     break
     except Exception:
@@ -15044,7 +15058,7 @@ def _hosthub_live_lines() -> str:
         for r in rows:
             if r["cat"] == 0 and r["entry"].get("host_id"):
                 e = r["entry"]
-                host = _readable_host(None, e.get("host_id")) or "TBD"
+                host = _hosthub_name(e.get("host_id"))
                 theme = e.get("class") or ""
                 theme_txt = f" • {theme}" if theme and theme.upper() != "TBD" else ""
                 lines.append(f"📅 **Next meet:** <t:{r['ts']}:F> (<t:{r['ts']}:R>) — {host}{theme_txt}")
@@ -15054,9 +15068,9 @@ def _hosthub_live_lines() -> str:
     # 🏆 Top host + 🚫 blacklist count
     try:
         top = _hauto_db.top_points(GUILD_ID, 1)
-        if top:
-            name = _readable_host(None, top[0]["user_id"]) or f"User {top[0]['user_id']}"
-            lines.append(f"🏆 **Top host:** {name} — {top[0]['points']} pts")
+        if top and int(top[0]["points"]) > 0:
+            name = _hosthub_name(top[0]["user_id"])
+            lines.append(f"\U0001F3C6 **Top host:** {name} \u2014 {top[0]['points']} pts")
     except Exception:
         pass
     try:
@@ -15596,6 +15610,91 @@ class _HostHubPerformanceSelect(discord.ui.Select):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+class _HostHubMyDayBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="My Day", emoji="\U0001F31F", style=discord.ButtonStyle.primary,
+            custom_id="diff_unified_hosthub:myday", row=4,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        uid = interaction.user.id
+        now_ts = int(utc_now().timestamp())
+        lines: list[str] = []
+        # Live meet of theirs?
+        try:
+            for raw in _om_load_records().values():
+                if raw.get("host_id") == uid and raw.get("started") and not raw.get("ended"):
+                    st = raw.get("started_at_ts") or raw.get("timestamp") or 0
+                    if now_ts - int(st) < 12 * 3600:
+                        lines.append(f"\U0001F534 **You're live right now:** {raw.get('theme') or 'Official Meet'} \u2014 don't forget \u23F9 End Meet \u2192 \U0001F4CC End Speech \u2192 \U0001F4DD Request Feedback when you wrap up.")
+                        break
+        except Exception:
+            pass
+        # Their next scheduled meet
+        try:
+            rows, _n = _asched_sorted_slots(_asched_load())
+            for r in rows:
+                e = r["entry"]
+                try:
+                    e_host = int(e.get("host_id") or 0)
+                except (TypeError, ValueError):
+                    e_host = 0
+                if r["cat"] == 0 and e_host == uid:
+                    theme = e.get("class") or ""
+                    theme_txt = f" \u2022 {theme}" if theme and theme.upper() != "TBD" else ""
+                    lines.append(f"\U0001F4C5 **Your next meet:** <t:{r['ts']}:F> (<t:{r['ts']}:R>){theme_txt}")
+                    break
+            else:
+                pass
+        except Exception:
+            pass
+        # Pending wrap-up on a recently ended meet
+        try:
+            for raw in _om_load_records().values():
+                if raw.get("host_id") != uid or not raw.get("ended"):
+                    continue
+                et = raw.get("ended_at_ts") or 0
+                if not et or now_ts - int(et) > 24 * 3600:
+                    continue
+                missing = []
+                if not raw.get("end_speech_done"):
+                    missing.append("\U0001F4CC End Speech")
+                if not raw.get("feedback_req_done"):
+                    missing.append("\U0001F4DD Request Feedback")
+                if missing:
+                    lines.append(f"\u26A0\uFE0F **Wrap-up pending** for *{raw.get('theme') or 'your last meet'}*: {' + '.join(missing)} (Live Meet Control above).")
+                break
+        except Exception:
+            pass
+        # Their host stats snapshot
+        try:
+            stats = _hp_load().get("host_stats", {}).get(str(uid), {})
+            pts = 0
+            try:
+                for row in _hauto_db.top_points(GUILD_ID, 100):
+                    if int(row["user_id"]) == uid:
+                        pts = int(row["points"])
+                        break
+            except Exception:
+                pass
+            meets = stats.get("meets_hosted", 0)
+            if meets or pts:
+                lines.append(f"\U0001F4CA **Your totals:** {meets} meets hosted \u2022 {pts} host pts \u2022 {host_performance_tier(pts)}")
+        except Exception:
+            pass
+        if not lines:
+            lines.append("Nothing on your plate \u2014 no upcoming meets scheduled and no pending wrap-ups. \U0001F698 Grab a slot on the schedule when you're ready!")
+        embed = discord.Embed(
+            title=f"\U0001F31F Your Day \u2014 {interaction.user.display_name}",
+            description="\n\n".join(lines),
+            color=0xC9A227,
+        )
+        embed.set_footer(text="DIFF Meets \u2022 Host Hub \u2022 only you can see this")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 class UnifiedHostHubView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -15603,6 +15702,7 @@ class UnifiedHostHubView(discord.ui.View):
         self.add_item(_HostHubLiveMeetSelect())
         self.add_item(_HostHubBlacklistSelect())
         self.add_item(_HostHubPerformanceSelect())
+        self.add_item(_HostHubMyDayBtn())
 
 
 async def _unified_hosthub_post_or_refresh(embed_only: bool = False) -> None:
