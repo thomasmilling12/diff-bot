@@ -6842,7 +6842,7 @@ async def _hauto_update_leaderboard(guild: discord.Guild) -> None:
 async def _bl_finalize_entry(guild: discord.Guild,
                              submitter: discord.Member, target_member,
                              name_text: str, psn: str, reason: str, severity: str,
-                             attachments: list) -> None:
+                             attachments: list):
     """Create the blacklist entry and post it (with the uploaded images) to the
     blacklist channel. Evidence attachments come straight from the modal."""
     # Resolve to a real guild Member — UserSelect can hand back a plain
@@ -6981,9 +6981,14 @@ class _BlacklistDetailsModal(discord.ui.Modal, title="\U0001F6AB Blacklist Detai
             return await interaction.followup.send(
                 "\u26A0\uFE0F Something went wrong submitting your blacklist entry — "
                 "please try again or ping Leadership.", ephemeral=True)
-        link = f" \u2192 {posted.jump_url}" if posted else ""
-        await interaction.followup.send(
-            f"\u2705 Blacklist entry **#{entry_id}** submitted with evidence.{link}", ephemeral=True)
+        if posted:
+            await interaction.followup.send(
+                f"\u2705 Blacklist entry **#{entry_id}** submitted with evidence. \u2192 {posted.jump_url}",
+                ephemeral=True)
+        else:
+            await interaction.followup.send(
+                f"\u26A0\uFE0F Entry **#{entry_id}** was recorded, but posting to the blacklist channel "
+                "failed — evidence was NOT stored. Please ping Leadership.", ephemeral=True)
 
 
 class _BlacklistFlowView(discord.ui.View):
