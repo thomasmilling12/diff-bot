@@ -519,10 +519,6 @@ class CrewEventsPanelView(discord.ui.View):
                 label="View Open Check-ins", value="attendance_view", emoji="📋",
                 description="See any currently active attendance sessions",
             ),
-            discord.SelectOption(
-                label="Refresh Panel", value="refresh_panel", emoji="♻️",
-                description="Re-post this panel (staff only)",
-            ),
         ],
     )
     async def combined_select(self, interaction: discord.Interaction, select: discord.ui.Select):
@@ -721,31 +717,12 @@ class CrewEventsCog(commands.Cog):
         embed = discord.Embed(
             title="🎮 DIFF Crew Events & Attendance",
             description=(
-                "Your hub for crew events, collabs, and meet attendance tracking.\n"
-                "Select an action from the dropdown — responses are **only visible to you**."
+                "Events, collabs, and meet check-ins — pick an action from the **dropdown below**.\n"
+                "Responses are **only visible to you**."
             ),
             color=EMBED_COLOR,
         )
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-        embed.add_field(
-            name="📅 Crew Events",
-            value=(
-                "› **Create Event** — post a new scheduled crew event *(staff only)*\n"
-                "› **View Upcoming Events** — see all events with RSVP counts\n"
-                "› **Request Collab** — submit a private crew collab request\n"
-                "› Events are posted here with RSVP buttons for members"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="🧠 Meet Attendance",
-            value=(
-                "› **Start Attendance Session** — open a live check-in when a meet begins *(staff only)*\n"
-                "› **View Open Check-ins** — see any currently active sessions\n"
-                "› Tracks who actually showed up vs. who RSVPed"
-            ),
-            inline=False,
-        )
         embed.set_footer(text="Different Meets • Crew Events & Attendance  |  Responses are private")
         return embed
 
