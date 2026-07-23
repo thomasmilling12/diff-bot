@@ -25378,6 +25378,7 @@ async def on_ready():
     _spawn_bg_task("_ft_auto_progression_loop", _ft_auto_progression_loop)
     _spawn_bg_task("_season_loop", _season_loop)
     _spawn_bg_task("_hrsvp_auto_reset_loop", _hrsvp_auto_reset_loop)
+    _spawn_bg_task("_host_avail_nudge_loop", _host_avail_nudge_loop)
     _spawn_bg_task("_hrsvp_escalation_loop", _hrsvp_escalation_loop)
     # Singleton guard — on_ready can fire multiple times on reconnect; without
     # this, each reconnect would spawn another auto-end worker and cause
@@ -26360,6 +26361,158 @@ async def _hrsvp_auto_reset_loop() -> None:
                 )
         except Exception as _e:
             print(f"[HRSVP AutoReset] {_e}")
+
+
+# =========================
+# HOST AVAILABILITY NUDGE + COVERAGE ALERT LOOP
+# =========================
+_HOST_NUDGE_STATE_FILE = os.path.join("diff_data", "diff_host_nudge_state.json")
+
+
+def _host_nudge_state_load() -> dict:
+    try:
+        with open(_HOST_NUDGE_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+async def _host_nudge_post_once(guild: discord.Guild) -> bool:
+    """Build + post the host-team nudge: pings hosts who haven't marked any
+    availability this week, and flags meets with zero available hosts.
+    Returns True if a message was posted (or nothing was owed)."""
+    rsvp_data = _hrsvp_load()
+    host_role = guild.get_role(HOST_ROLE_ID)
+    if host_role is None:
+        return False
+
+    resp_uids: set = set()
+    uncovered: list = []
+    for day in _HRSVP_DAYS:
+        slot = rsvp_data.get(day, {})
+        yes  = slot.get("yes", []) or []
+        for _bkt in (yes, slot.get("no", []) or [], slot.get("maybe", []) or []):
+            for _e in _bkt:
+                _u = _hrsvp_uid(_e)
+                if _u:
+                    resp_uids.add(str(_u))
+        if not yes:
+            uncovered.append(day)
+
+    nonresp = [m for m in host_role.members
+               if not m.bot and str(m.id) not in resp_uids]
+
+    if not nonresp and not uncovered:
+        return True  # everyone responded and every meet has a host — stay quiet
+
+    ch = guild.get_channel(_HOST_TEAM_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return False
+
+    emb = discord.Embed(
+        title="📋 Host Availability Check",
+        color=discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    if nonresp:
+        emb.add_field(
+            name=f"⏳ No availability marked yet ({len(nonresp)})",
+            value=(f"You're tagged above — please mark **Available or Unavailable** "
+                   f"for Meet 1, Meet 2 and Meet 3 in <#{HOST_RSVP_CHANNEL_ID}>.\n"
+                   "If you can't host, pressing **Unavailable** takes seconds and "
+                   "keeps the schedule accurate."),
+            inline=False,
+        )
+    if uncovered:
+        emb.add_field(
+            name=f"🚨 Meets still needing a host ({len(uncovered)})",
+            value=("**" + ", ".join(uncovered) + "** have no available host yet. "
+                   f"If you can cover one, submit your details in <#{HOST_RSVP_CHANNEL_ID}>."),
+            inline=False,
+        )
+    emb.set_footer(text="DIFF Meets • Host Availability Reminder")
+
+    _ids = [m.id for m in nonresp[:50]]
+    content = " ".join(f"<@{i}>" for i in _ids) if _ids else None
+    if nonresp and len(nonresp) > 50:
+        content += f" (+{len(nonresp) - 50} more)"
+    if uncovered and not nonresp:
+        content = host_role.mention
+    await ch.send(
+        content=content,
+        embed=emb,
+        allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
+    )
+    print(f"[HostNudge] Posted ({len(nonresp)} non-responder(s), "
+          f"{len(uncovered)} uncovered meet(s)).")
+    return True
+
+
+async def _host_avail_nudge_loop() -> None:
+    """Automates the founder's manual #host-team follow-ups: Tuesday and
+    Thursday at 6 PM ET, ping ONLY hosts who haven't marked availability on the
+    Host Schedule Panel, and flag meets that still have no available host.
+    Once per day, disk-guarded (survives redeploys). Silent when everyone has
+    responded and all meets are covered."""
+    await bot.wait_until_ready()
+    from zoneinfo import ZoneInfo as _ZI
+    while not bot.is_closed():
+        await asyncio.sleep(300)
+        try:
+            now_et = datetime.now(_ZI("America/New_York"))
+            if now_et.weekday() not in (1, 3) or now_et.hour != 18:
+                continue
+            today = now_et.strftime("%Y-%m-%d")
+            st = _host_nudge_state_load()
+            if st.get("last_nudge_date") == today:
+                continue
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+            if await _host_nudge_post_once(guild):
+                st["last_nudge_date"] = today
+                _atomic_json_save(_HOST_NUDGE_STATE_FILE, st)
+        except Exception as _e:
+            print(f"[HostNudge] Loop error: {_e}")
+
+
+@bot.command(name="hostnudge")
+async def _cmd_hostnudge(ctx: commands.Context):
+    """Post the host availability nudge on demand (staff only)."""
+    if not isinstance(ctx.author, discord.Member) or not _is_staff_member(ctx.author):
+        return await ctx.send("Staff only.", delete_after=6)
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+    guild = ctx.guild
+    if not guild:
+        return
+    rsvp_data = _hrsvp_load()
+    host_role = guild.get_role(HOST_ROLE_ID)
+    resp_uids = set()
+    uncovered = []
+    for day in _HRSVP_DAYS:
+        slot = rsvp_data.get(day, {})
+        yes  = slot.get("yes", []) or []
+        for _bkt in (yes, slot.get("no", []) or [], slot.get("maybe", []) or []):
+            for _e in _bkt:
+                _u = _hrsvp_uid(_e)
+                if _u:
+                    resp_uids.add(str(_u))
+        if not yes:
+            uncovered.append(day)
+    nonresp = [m for m in (host_role.members if host_role else [])
+               if not m.bot and str(m.id) not in resp_uids]
+    if not nonresp and not uncovered:
+        return await ctx.send("✅ Every host has responded and all meets have a host — nothing to nudge.", delete_after=10)
+    ok = await _host_nudge_post_once(guild)
+    await ctx.send(
+        f"📣 Nudge posted — {len(nonresp)} host(s) missing availability, "
+        f"{len(uncovered)} meet(s) uncovered." if ok
+        else "⚠️ Couldn't post the nudge — check the host-team channel.",
+        delete_after=10,
+    )
 
 
 # =========================
