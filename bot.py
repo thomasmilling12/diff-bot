@@ -15821,6 +15821,272 @@ async def _unified_hosthub_post_or_refresh(embed_only: bool = False) -> None:
         print(f"[UnifiedHostHub] Post failed: {e}")
 
 
+# ── Blacklist expiry & tiers ─────────────────────────────────────────────────
+# Warning entries come up for review after 30d, Serious after 90d, Permanent never.
+# Nothing auto-expires silently: staff get a review card with Expire / Keep buttons.
+_BL_EXPIRY_FILE = os.path.join(DATA_FOLDER, "diff_bl_expiry.json")
+_BL_EXPIRY_DAYS = {"Warning": 30, "Serious": 90}   # Permanent: never reviewed
+_BL_KEEP_SNOOZE_DAYS = 90
+
+
+def _blx_load() -> dict:
+    try:
+        with open(_BL_EXPIRY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"entries": {}, "msg_map": {}}
+
+
+def _blx_save(st: dict) -> None:
+    try:
+        with open(_BL_EXPIRY_FILE, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
+
+
+class _BlxReviewView(discord.ui.View):
+    """Persistent — one registered template backs every review card.
+    Entry id resolved via msg_map (message_id → entry_id) in diff_bl_expiry.json."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    def _resolve(self, interaction: discord.Interaction) -> int | None:
+        st = _blx_load()
+        eid = st.get("msg_map", {}).get(str(interaction.message.id))
+        return int(eid) if eid else None
+
+    @staticmethod
+    def _is_staff(user) -> bool:
+        return any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in getattr(user, "roles", []))
+
+    async def _finish(self, interaction: discord.Interaction, note: str):
+        st = _blx_load()
+        eid = st.get("msg_map", {}).pop(str(interaction.message.id), None)
+        if eid is not None:
+            st.setdefault("entries", {}).setdefault(str(eid), {})["resolved"] = True
+        _blx_save(st)
+        embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        if embed:
+            embed.color = discord.Color.dark_grey()
+            embed.add_field(name="Decision", value=note, inline=False)
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @discord.ui.button(label="Let it expire", emoji="\u2705", style=discord.ButtonStyle.success,
+                       custom_id="diff_blx_expire")
+    async def expire_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_staff(interaction.user):
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
+        eid = self._resolve(interaction)
+        if eid is None:
+            return await interaction.response.send_message(
+                "Couldn't match this card to an entry (state reset?) — use the blacklist tools instead.",
+                ephemeral=True)
+        ok = _hauto_db.clear_entry(GUILD_ID, eid)
+        note = (f"\u2705 Expired by {interaction.user.mention}" if ok
+                else f"\u26A0\uFE0F Entry #{eid} was already inactive \u2014 closed by {interaction.user.mention}")
+        await self._finish(interaction, note)
+
+    @discord.ui.button(label="Keep active (+90d)", emoji="\U0001F501", style=discord.ButtonStyle.secondary,
+                       custom_id="diff_blx_keep")
+    async def keep_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_staff(interaction.user):
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
+        eid = self._resolve(interaction)
+        if eid is not None:
+            st = _blx_load()
+            ent = st.setdefault("entries", {}).setdefault(str(eid), {})
+            ent["snooze_until"] = int(utc_now().timestamp()) + _BL_KEEP_SNOOZE_DAYS * 86400
+            ent["resolved"] = False
+            st.get("msg_map", {}).pop(str(interaction.message.id), None)
+            _blx_save(st)
+        embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        if embed:
+            embed.color = discord.Color.dark_grey()
+            embed.add_field(name="Decision",
+                            value=f"\U0001F501 Kept active by {interaction.user.mention} \u2014 next review in {_BL_KEEP_SNOOZE_DAYS} days.",
+                            inline=False)
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+@tasks.loop(hours=6)
+async def _bl_expiry_loop():
+    """Every 6h: flag active Warning/Serious entries past their tier window for staff review."""
+    try:
+        st = _blx_load()
+        now = int(utc_now().timestamp())
+        ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            return
+        cur = _hauto_db.conn.cursor()
+        cur.execute("""
+            SELECT id, discord_tag, user_id, psn, reason, severity, created_at
+            FROM blacklist_entries WHERE guild_id=? AND status='active'
+        """, (GUILD_ID,))
+        posted = 0
+        for row in cur.fetchall():
+            days = _BL_EXPIRY_DAYS.get(row["severity"])
+            if not days:
+                continue  # Permanent (or unknown) — never auto-reviewed
+            try:
+                created = datetime.fromisoformat(row["created_at"])
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            if now - int(created.timestamp()) < days * 86400:
+                continue
+            ent = st.get("entries", {}).get(str(row["id"]), {})
+            if ent.get("resolved") is True:
+                continue
+            if ent.get("snooze_until", 0) > now:
+                continue
+            if ent.get("pending_msg_id") and str(ent["pending_msg_id"]) in st.get("msg_map", {}):
+                continue  # review card already open
+            who = row["discord_tag"] or (f"User ID {row['user_id']}" if row["user_id"] else "Unknown")
+            embed = discord.Embed(
+                title=f"\u23F3 Blacklist Review \u2014 Entry #{row['id']}",
+                description=(
+                    f"This **{row['severity']}** entry is past its {days}-day review window.\n"
+                    "Should it expire, or stay on the list?"
+                ),
+                color=discord.Color.orange(),
+                timestamp=utc_now(),
+            )
+            embed.add_field(name="User", value=who, inline=True)
+            embed.add_field(name="PSN", value=row["psn"] or "No PSN", inline=True)
+            embed.add_field(name="Listed", value=row["created_at"][:10], inline=True)
+            embed.add_field(name="Reason", value=(row["reason"] or "")[:1000], inline=False)
+            embed.set_footer(text="DIFF Meets \u2022 Blacklist tier review \u2022 Warning 30d / Serious 90d")
+            msg = await ch.send(embed=embed, view=_BlxReviewView())
+            st.setdefault("msg_map", {})[str(msg.id)] = row["id"]
+            st.setdefault("entries", {}).setdefault(str(row["id"]), {})["pending_msg_id"] = msg.id
+            posted += 1
+            if posted >= 5:
+                break  # don't flood staff-logs in one pass
+        if posted:
+            _blx_save(st)
+    except Exception as e:
+        print(f"[BlacklistExpiry] loop error: {e!r}")
+
+
+@_bl_expiry_loop.before_loop
+async def _bl_expiry_before():
+    await bot.wait_until_ready()
+
+
+# ── Host onboarding flow ─────────────────────────────────────────────────────
+_HOST_ONBOARD_FILE = os.path.join(DATA_FOLDER, "diff_host_onboarding.json")
+
+
+def _hob_load() -> dict:
+    try:
+        with open(_HOST_ONBOARD_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _hob_save(st: dict) -> None:
+    try:
+        with open(_HOST_ONBOARD_FILE, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
+
+
+async def _hob_send_welcome(member: discord.Member) -> bool:
+    """DM course for a freshly promoted host: welcome + guide + checklist."""
+    try:
+        welcome = discord.Embed(
+            title="\U0001F389 Welcome to the DIFF host team!",
+            description=(
+                f"Congrats on the **Meet Hosts** role, {member.display_name}!\n\n"
+                "Here's your starter pack \u2014 two quick reads below:\n"
+                "\U0001F4D8 the **Host Guide** (rules & expectations)\n"
+                "\U0001F3C1 the **Pre-Meet Checklist** (your button-by-button flow)\n\n"
+                f"Everything lives in <#{HOST_HUB_CHANNEL_ID}> \u2014 dropdowns for Live Meet Control, "
+                "blacklist tools, and your stats (try the \U0001F31F **My Day** button!).\n\n"
+                "I'll check in after your first meet. Any questions \u2014 ask Leadership anytime. \U0001F698"
+            ),
+            color=0xC9A227,
+        )
+        welcome.set_footer(text="DIFF Meets \u2022 Host Onboarding")
+        await member.send(embed=welcome)
+        try:
+            await member.send(embed=_hosthub_guide_embed())
+            await member.send(embed=_om_pregame_checklist_embed(None))
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+@tasks.loop(hours=1)
+async def _host_onboard_loop():
+    """First-meet follow-up: once an onboarded host's first official meet ended 2h+ ago, DM a check-in."""
+    try:
+        st = _hob_load()
+        if not st:
+            return
+        now = int(utc_now().timestamp())
+        changed = False
+        recs = None
+        for uid, ent in st.items():
+            if ent.get("followup_sent") or not ent.get("welcomed_ts"):
+                continue
+            if recs is None:
+                try:
+                    recs = list(_om_load_records().values())
+                except Exception:
+                    recs = []
+            first_end = None
+            for raw in recs:
+                if int(raw.get("host_id") or 0) != int(uid) or not raw.get("ended"):
+                    continue
+                et = int(raw.get("ended_at_ts") or 0)
+                if et > int(ent["welcomed_ts"]) and (first_end is None or et < first_end):
+                    first_end = et
+            if not first_end or now - first_end < 2 * 3600:
+                continue
+            g = bot.get_guild(GUILD_ID)
+            m = g.get_member(int(uid)) if g else None
+            if not m:
+                ent["followup_sent"] = True  # left the server — stop tracking
+                changed = True
+                continue
+            try:
+                embed = discord.Embed(
+                    title="\U0001F3C1 First meet done \u2014 how did it go?",
+                    description=(
+                        "You just wrapped your first official meet as a DIFF host \u2014 nice work! \U0001F44F\n\n"
+                        "A few things worth doing while it's fresh:\n"
+                        f"\U0001F4F8 Post your lobby pics in <#{LOBBY_PICTURES_CHANNEL_ID}> (that's how attendance gets credited)\n"
+                        "\U0001F4CC Make sure you hit **End Speech** and **Request Feedback** in Live Meet Control\n"
+                        "\U0001F6AB If anyone caused problems, submit them via **Blacklist Tools** while you remember names\n\n"
+                        "Rough edges? Totally normal on meet one. Ask Leadership anything \u2014 we've got you. \U0001F698"
+                    ),
+                    color=0x57F287,
+                )
+                embed.set_footer(text="DIFF Meets \u2022 Host Onboarding \u2022 first-meet check-in")
+                await m.send(embed=embed)
+            except Exception:
+                pass  # DMs closed — don't retry forever
+            ent["followup_sent"] = True
+            changed = True
+        if changed:
+            _hob_save(st)
+    except Exception as e:
+        print(f"[HostOnboard] loop error: {e!r}")
+
+
+@_host_onboard_loop.before_loop
+async def _host_onboard_before():
+    await bot.wait_until_ready()
+
+
 _HOST_SPOTLIGHT_FILE = os.path.join(DATA_FOLDER, "diff_host_spotlight.json")
 
 
@@ -26187,6 +26453,7 @@ async def on_ready():
     _safe_add_view(HostPerformanceHubView(), "HostPerformanceHubView")
     _safe_add_view(HostSessionView(),       "HostSessionView")
     _safe_add_view(UnifiedHostHubView(),    "UnifiedHostHubView")
+    _safe_add_view(_BlxReviewView(),        "_BlxReviewView")
     await _unified_hosthub_post_or_refresh()
     try:
         if not _hosthub_live_panel_loop.is_running():
@@ -26195,6 +26462,12 @@ async def on_ready():
         if not _host_spotlight_loop.is_running():
             _host_spotlight_loop.start()
             print("[HostSpotlight] weekly spotlight loop started")
+        if not _bl_expiry_loop.is_running():
+            _bl_expiry_loop.start()
+            print("[BlacklistExpiry] tier review loop started")
+        if not _host_onboard_loop.is_running():
+            _host_onboard_loop.start()
+            print("[HostOnboard] follow-up loop started")
     except Exception as _e:
         print(f"[UnifiedHostHub] failed to start refresh loop: {_e!r}")
     _safe_add_view(_RcRollCallView(),       "_RcRollCallView")
@@ -42105,6 +42378,16 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     before_ids = {r.id for r in before.roles}
     after_ids = {r.id for r in after.roles}
     if HOST_ROLE_ID not in before_ids and HOST_ROLE_ID in after_ids:
+        if not _hauto_db.is_blacklisted(after.guild.id, after.id):
+            try:
+                st = _hob_load()
+                if str(after.id) not in st:
+                    ok = await _hob_send_welcome(after)
+                    st[str(after.id)] = {"welcomed_ts": int(utc_now().timestamp()),
+                                         "dm_ok": bool(ok), "followup_sent": False}
+                    _hob_save(st)
+            except Exception:
+                pass
         if _hauto_db.is_blacklisted(after.guild.id, after.id):
             host_role = after.guild.get_role(HOST_ROLE_ID)
             if host_role:
