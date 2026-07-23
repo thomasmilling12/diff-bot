@@ -44148,7 +44148,7 @@ async def _join_build_transcript(
 class JoinPlatformSelect(discord.ui.Select):
     def __init__(self) -> None:
         super().__init__(
-            placeholder="🎮  Start your PS5 join, ask a question, or learn more…",
+            placeholder="🎮  Join on PS5 or get answers…",
             min_values=1,
             max_values=1,
             custom_id="diff_join_platform_select",
@@ -44156,27 +44156,23 @@ class JoinPlatformSelect(discord.ui.Select):
                 discord.SelectOption(
                     label="PlayStation 5",
                     value="playstation",
-                    description="Open a private ticket, get renamed, and join our meets.",
+                    description="Start your join ticket.",
                     emoji="🎮",
                 ),
                 discord.SelectOption(
                     label="How to Join the Crew",
                     value="join_crew",
-                    description="Steps to become an official DIFF crew member.",
+                    description="Become an official DIFF crew member.",
                     emoji="📋",
                 ),
                 discord.SelectOption(
                     label="FAQ",
                     value="faq",
-                    description="Answers to the most common questions about our meets.",
+                    description="Quick answers about meets and joining.",
                     emoji="❓",
                 ),
-                discord.SelectOption(
-                    label="Server Info",
-                    value="server_info",
-                    description="Learn about DIFF Meets and our community.",
-                    emoji="ℹ️",
-                ),
+                # "Server Info" option removed (panel description covers it) —
+                # its callback branch is KEPT so legacy panels still route.
             ],
         )
 
@@ -44636,7 +44632,7 @@ class JoinPlatformView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
         self.add_item(JoinPlatformSelect())
-        self.add_item(_CarRequirementsButton(row=2, key="jh"))
+        self.add_item(_CarRequirementsButton(row=1, key="jh"))
         # Clear the platform dropdown's selection after each use — even on
         # freshly posted/refreshed panels. The global add_view hook only wraps
         # the persistent instance (which handles interactions after a restart);
@@ -44692,24 +44688,6 @@ class JoinPlatformView(discord.ui.View):
                 f"You'll be pinged when meets are announced — you're now part of a squad of **{new_count:,}**.",
                 ephemeral=True,
             )
-
-    @discord.ui.button(
-        label="❓ Just Asking",
-        style=discord.ButtonStyle.secondary,
-        custom_id="diff_join_just_asking",
-        row=1,
-    )
-    async def just_asking(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        try:
-            await interaction.response.send_message(
-                f"❓ Not joining today? No problem.\n"
-                f"Head to <#{SUPPORT_TICKETS_CHANNEL_ID}> to open a support ticket — staff respond there.\n"
-                f"Or pick **FAQ** in the dropdown above for quick answers.",
-                ephemeral=True,
-            )
-        except Exception:
-            pass
-
 
 _JOIN_DENY_PRESETS = [
     ("neon_underglow",   "Neon lights / underglow",          "Your build has neon lights or underglow. Clean builds only — no neon, underglow, or tire lettering allowed at DIFF meets."),
