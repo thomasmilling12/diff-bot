@@ -27887,6 +27887,7 @@ async def _cs_build_vote_collage(candidates: List[Dict[str, Any]]) -> Optional[d
 # ── Crew-color change task: DM changers w/ Done button, remind until done ───
 _CC_FILE = os.path.join("diff_data", "diff_color_change_state.json")
 _COLOR_CHANGE_ADMINS = [983557795767021578, 531671176976662532]  # Azi, Chris
+_CC_TEAM_CHANNEL_ID = 1485453653916520549  # color-team channel (owner request)
 
 
 def _cc_load() -> dict:
@@ -27977,7 +27978,8 @@ class _CcDoneView(discord.ui.View):
 
 
 async def _cc_dm_changers(guild: discord.Guild, pending: dict, *, reminder: bool = False) -> int:
-    """DM every configured changer. Returns how many DMs went through."""
+    """DM every configured changer AND ping them in the color-team channel
+    (harder to miss than a DM). Returns how many sends went through."""
     emb = _cc_build_dm_embed(pending, reminder=reminder)
     sent = 0
     for uid in _cc_changer_ids():
@@ -27988,6 +27990,20 @@ async def _cc_dm_changers(guild: discord.Guild, pending: dict, *, reminder: bool
                 sent += 1
         except Exception as _e:
             print(f"[CcTask] DM to {uid} failed: {_e}")
+    # Channel ping in #color-team with the same Done button
+    try:
+        ch = guild.get_channel(_CC_TEAM_CHANNEL_ID)
+        if isinstance(ch, discord.TextChannel):
+            mentions = " ".join(f"<@{i}>" for i in _cc_changer_ids())
+            await ch.send(
+                content=mentions or None,
+                embed=emb,
+                view=_CcDoneView(),
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            sent += 1
+    except Exception as _e:
+        print(f"[CcTask] Color-team channel ping failed: {_e}")
     return sent
 
 
