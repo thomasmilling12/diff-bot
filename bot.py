@@ -7945,6 +7945,10 @@ class HostFlowView(discord.ui.View):
         if isinstance(log_ch, discord.TextChannel):
             await log_ch.send(_hostflow_log_msg(interaction.user.mention))
         await interaction.response.send_message(f"✅ Ending speech posted in {ch.mention} and activity logged.", ephemeral=True)
+        try:
+            _om_mark_flow_action("end_speech")
+        except Exception:
+            pass
 
     @discord.ui.button(label="Voice Script", emoji="🎤", style=discord.ButtonStyle.primary, custom_id="diff_hostflow:voice_script")
     async def voice_script_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7974,6 +7978,10 @@ class HostFlowView(discord.ui.View):
         embed.set_footer(text="Different Meets • Meet Feedback • All responses are appreciated")
         await ch.send(embed=embed, view=HostFeedbackRequestView())
         await interaction.response.send_message(f"✅ Feedback request posted in {ch.mention}.", ephemeral=True)
+        try:
+            _om_mark_flow_action("request_feedback")
+        except Exception:
+            pass
 
 
 class HostFeedbackRequestView(discord.ui.View):
@@ -15067,6 +15075,10 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                     f"✅ Meet end message sent in {ch.mention}.\n\n" + _om_wrapup_checklist_text(),
                     ephemeral=True,
                 )
+                try:
+                    _om_mark_flow_action("end_speech")
+                except Exception:
+                    pass
             else:
                 await interaction.followup.send("Meet channel not found.", ephemeral=True)
             return
@@ -15089,6 +15101,10 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                 fb_embed.set_footer(text="Different Meets • Meet Feedback • All responses are appreciated")
                 await ch.send(embed=fb_embed, view=HostFeedbackRequestView())
                 await interaction.followup.send(f"✅ Feedback request posted in {ch.mention}.", ephemeral=True)
+                try:
+                    _om_mark_flow_action("request_feedback")
+                except Exception:
+                    pass
             else:
                 await interaction.followup.send("Meet flow channel not found.", ephemeral=True)
             return
@@ -18197,6 +18213,10 @@ class _OmRecord:
     dm_1h_sent: bool = False    # #4 DM-to-RSVPers reminder at T-1h
     host_start_nudge_sent: bool = False  # host forgot ▶ Start Meet nudge (T+15m)
     host_end_nudge_sent: bool = False    # host forgot ⏹ End Meet nudge (T+3.5h)
+    host_pregame_dm_sent: bool = False   # T-1h host checklist DM (start/end buttons, posters, lobby pic)
+    end_speech_done: bool = False        # host posted End Speech via Live Meet Control
+    feedback_req_done: bool = False      # host posted Request Feedback via Live Meet Control
+    host_wrapup_nudge_sent: bool = False # post-end chase DM for missing End Speech / Request Feedback
     started_at_ts: int | None = None
     ended_at_ts: int | None = None
     attendance_message_id: int | None = None
@@ -18861,6 +18881,11 @@ class _OfficialMeetRSVPView(discord.ui.View):
                 _bot_log.warning("[EndMeet] defer failed: %s", _e)
             record.ended = True
             record.ended_at_ts = int(datetime.now(timezone.utc).timestamp())
+            # Chase End Speech / Request Feedback 45 min after End Meet
+            try:
+                asyncio.create_task(_om_reminder_task(record.message_id, 2700, "host_wrapup"))
+            except Exception:
+                pass
             rsvp_pool = set(record.rsvp_yes_ids) | set(record.rsvp_maybe_ids)
             if not rsvp_pool:
                 rsvp_pool = set(x for x in _om_rsvps.get(record.message_id, {}).get("yes", set()))
@@ -19141,12 +19166,79 @@ async def _om_staff_log(title: str, record: _OmRecord, acted_by: discord.Member)
         pass
 
 
+def _om_mark_flow_action(action: str) -> None:
+    """Mark end_speech_done / feedback_req_done on the most relevant official
+    meet record (started-but-not-ended, else most recently ended within 24h).
+    Best-effort — Live Meet Control isn't bound to a specific meet card."""
+    try:
+        data = _om_load_records()
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        best_key, best_score = None, None
+        for key, raw in data.items():
+            try:
+                rec = _OmRecord(**{k: v for k, v in raw.items() if k in _OmRecord.__dataclass_fields__})
+            except Exception:
+                continue
+            if rec.started and not rec.ended:
+                score = (2, rec.started_at_ts or rec.timestamp)
+            elif rec.ended and (now_ts - (rec.ended_at_ts or rec.timestamp)) <= 86400:
+                score = (1, rec.ended_at_ts or rec.timestamp)
+            else:
+                continue
+            if best_score is None or score > best_score:
+                best_key, best_score = key, score
+        if best_key is None:
+            return
+        raw = data[best_key]
+        if action == "end_speech":
+            raw["end_speech_done"] = True
+        elif action == "request_feedback":
+            raw["feedback_req_done"] = True
+        _om_save_records(data)
+    except Exception as _e:
+        print(f"[OfficialMeet] mark_flow_action failed: {_e}")
+
+
 async def _om_reminder_task(msg_id: int, delay_secs: int, reminder_type: str) -> None:
     try:
         if delay_secs > 0:
             await asyncio.sleep(delay_secs)
         record = _om_get_record(msg_id)
-        if not record or record.ended:
+        if not record:
+            return
+        if record.ended and reminder_type != "host_wrapup":
+            return
+
+        if reminder_type == "host_wrapup":
+            # After ⏹ End Meet: chase the End Speech / Request Feedback buttons
+            # (the founder used to DM hosts about these manually).
+            if not record.ended or getattr(record, "host_wrapup_nudge_sent", False):
+                return
+            _now = int(datetime.now(timezone.utc).timestamp())
+            if _now - (record.ended_at_ts or record.timestamp) > 172800:  # >2 days — stale
+                return
+            missing = []
+            if not getattr(record, "end_speech_done", False):
+                missing.append("📌 **Post End Speech**")
+            if not getattr(record, "feedback_req_done", False):
+                missing.append("📝 **Request Feedback**")
+            if not missing:
+                return
+            record.host_wrapup_nudge_sent = True
+            _om_upsert_record(record)
+            _dm = discord.Embed(
+                title="📋 A couple of wrap-up steps left!",
+                description=(
+                    f"Nice one ending **{record.theme}** — just don't forget to finish the wrap-up:\n\n"
+                    + "\n".join(f"• {m}" for m in missing)
+                    + f"\n\nBoth are in **Host Hub → Live Meet Control** (<#{HOST_HUB_CHANNEL_ID}>).\n"
+                    f"And if you haven't yet, drop your **lobby screenshot** in "
+                    f"<#{LOBBY_PICTURES_CHANNEL_ID}> so attendance auto-matches."
+                ),
+                color=0xFEE75C,
+            )
+            _dm.set_footer(text="DIFF Meets • Host Wrap-Up Reminder")
+            await _om_dm_host(record.host_id, _dm)
             return
         if reminder_type == "1h" and record.one_hour_sent:
             return
@@ -19292,6 +19384,10 @@ def _om_schedule_reminders(record: _OmRecord) -> None:
     if not record.ended and not getattr(record, "host_end_nudge_sent", False):
         delay = record.timestamp - now_ts + 12600     # T+3.5h
         asyncio.create_task(_om_reminder_task(record.message_id, max(delay, 0), "host_end"))
+    if record.ended and not getattr(record, "host_wrapup_nudge_sent", False) and (
+            not getattr(record, "end_speech_done", False) or not getattr(record, "feedback_req_done", False)):
+        delay = (record.ended_at_ts or record.timestamp) + 2700 - now_ts
+        asyncio.create_task(_om_reminder_task(record.message_id, max(delay, 0), "host_wrapup"))
 
 
 async def _om_restore_on_ready() -> None:
@@ -50461,6 +50557,28 @@ async def _smart_meet_dm_reminder_loop():
                         )
                 except Exception:
                     pass
+            # Host pre-game checklist DM (same window as 1h RSVPer DM) — automates
+            # the founder's "don't forget the buttons tonight" message.
+            if not getattr(rec, "host_pregame_dm_sent", False) and 50 * 60 <= delta <= 70 * 60:
+                _pg = discord.Embed(
+                    title="🏁 Your meet is in about an hour — quick checklist",
+                    description=(
+                        f"**{rec.theme}** starts <t:{rec.timestamp}:R>. Here's the full host flow:\n\n"
+                        "**When it starts:**\n"
+                        f"• ▶ **Start Meet** on your meet card in <#{rec.channel_id}>\n"
+                        f"• 🔱 **Post Start Speech** (Host Hub → Live Meet Control, <#{HOST_HUB_CHANNEL_ID}>)\n"
+                        f"• 📸 Drop a **lobby screenshot** in <#{LOBBY_PICTURES_CHANNEL_ID}>\n\n"
+                        "**When it's over:**\n"
+                        "• ⏹ **End Meet** on the meet card\n"
+                        "• 📌 **Post End Speech** → 📝 **Request Feedback** (Live Meet Control)\n\n"
+                        "Have a great meet tonight! 🙌"
+                    ),
+                    color=0x57F287,
+                )
+                _pg.set_footer(text="DIFF Meets • Host Pre-Meet Checklist")
+                await _om_dm_host(rec.host_id, _pg)
+                rec.host_pregame_dm_sent = True
+                _om_upsert_record(rec)
             # 1h window
             if not rec.dm_1h_sent and 50 * 60 <= delta <= 70 * 60:
                 count = await _dm_rsvp_attendees(rec, "1h")
