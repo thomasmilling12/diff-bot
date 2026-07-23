@@ -6838,7 +6838,6 @@ async def _hauto_update_leaderboard(guild: discord.Guild) -> None:
 # severity from a dropdown, reason/PSN in a modal, and evidence is a REQUIRED
 # image upload (phone-friendly) captured as the submitter's next message.
 
-_BL_SEVERITIES = ["Warning", "Serious", "Permanent"]
 _bl_evidence_waiting: set[int] = set()  # user_ids currently in the upload step
 
 
