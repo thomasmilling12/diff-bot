@@ -25117,6 +25117,22 @@ async def on_resumed():
     print(f"[Gateway] ✅  Bot session resumed — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
 
+_bg_task_handles: dict = {}
+
+
+def _spawn_bg_task(name: str, factory) -> None:
+    """Spawn a background worker as a per-name singleton. on_ready RE-FIRES on
+    every gateway reconnect — spawning `while True` workers unguarded stacks
+    duplicates (duplicate DMs, double weekly reports, double autoposts). A new
+    task is only created when the previous one is gone or finished, so one-shot
+    startup refreshers still re-run after completing while infinite loops never
+    duplicate."""
+    t = _bg_task_handles.get(name)
+    if t is not None and not t.done():
+        return
+    _bg_task_handles[name] = bot.loop.create_task(factory())
+
+
 @bot.event
 async def on_ready():
     global status_message_id, _bot_start_time
@@ -25268,16 +25284,19 @@ async def on_ready():
             except Exception:
                 pass
 
-    bot.loop.create_task(application_timeout_loop())
-    bot.loop.create_task(_tab_refresh_all_panels())
-    bot.loop.create_task(_startup_refresh_all_panels())
-    bot.loop.create_task(_auto_weekly_loop())
-    bot.loop.create_task(_auto_staff_dashboard_loop())
-    bot.loop.create_task(_daily_crew_invite_check())
-    bot.loop.create_task(_ft_auto_progression_loop())
-    bot.loop.create_task(_season_loop())
-    bot.loop.create_task(_hrsvp_auto_reset_loop())
-    bot.loop.create_task(_hrsvp_escalation_loop())
+    # on_ready RE-FIRES on every reconnect — each `while True` worker below MUST
+    # be spawned through _spawn_bg_task (singleton per name) or duplicates stack
+    # up across reconnects: duplicate DMs, double weekly reports, double autoposts.
+    _spawn_bg_task("application_timeout_loop", application_timeout_loop)
+    _spawn_bg_task("_tab_refresh_all_panels", _tab_refresh_all_panels)
+    _spawn_bg_task("_startup_refresh_all_panels", _startup_refresh_all_panels)
+    _spawn_bg_task("_auto_weekly_loop", _auto_weekly_loop)
+    _spawn_bg_task("_auto_staff_dashboard_loop", _auto_staff_dashboard_loop)
+    _spawn_bg_task("_daily_crew_invite_check", _daily_crew_invite_check)
+    _spawn_bg_task("_ft_auto_progression_loop", _ft_auto_progression_loop)
+    _spawn_bg_task("_season_loop", _season_loop)
+    _spawn_bg_task("_hrsvp_auto_reset_loop", _hrsvp_auto_reset_loop)
+    _spawn_bg_task("_hrsvp_escalation_loop", _hrsvp_escalation_loop)
     # Singleton guard — on_ready can fire multiple times on reconnect; without
     # this, each reconnect would spawn another auto-end worker and cause
     # duplicate close actions / host DMs.
@@ -25285,9 +25304,9 @@ async def on_ready():
     _t = globals().get("_popup_auto_end_task")
     if _t is None or _t.done():
         _popup_auto_end_task = bot.loop.create_task(_popup_auto_end_loop())
-    bot.loop.create_task(_om_panel_auto_refresh_loop())
-    bot.loop.create_task(_om_recur_loop())
-    bot.loop.create_task(_om_autopost_from_schedule_loop())
+    _spawn_bg_task("_om_panel_auto_refresh_loop", _om_panel_auto_refresh_loop)
+    _spawn_bg_task("_om_recur_loop", _om_recur_loop)
+    _spawn_bg_task("_om_autopost_from_schedule_loop", _om_autopost_from_schedule_loop)
 
     # Re-register persistent views for every active pop-up meet so buttons
     # (Pulling Up / Edit / DM Attendees / End) survive bot restarts.
@@ -25310,9 +25329,9 @@ async def on_ready():
             print(f"[Popup] Re-hydrated {_rehydrated} active meet view(s) on startup.")
     except Exception as _re:
         print(f"[Popup] view rehydration error: {_re}")
-    bot.loop.create_task(_rc_auto_archive_loop())
-    bot.loop.create_task(_rc_saturday_reminder_loop())
-    bot.loop.create_task(_rc_pruning_report_loop())
+    _spawn_bg_task("_rc_auto_archive_loop", _rc_auto_archive_loop)
+    _spawn_bg_task("_rc_saturday_reminder_loop", _rc_saturday_reminder_loop)
+    _spawn_bg_task("_rc_pruning_report_loop", _rc_pruning_report_loop)
     # on_ready can fire again on reconnect — guard so we don't spawn duplicate loops
     global _rc_public_reminder_task
     _rcprt = globals().get("_rc_public_reminder_task")
@@ -25328,7 +25347,7 @@ async def on_ready():
     _rct5 = globals().get("_rc_t5h_reminder_task")
     if _rct5 is None or _rct5.done():
         _rc_t5h_reminder_task = bot.loop.create_task(_rc_t5h_reminder_loop())
-    bot.loop.create_task(_hp_session_cleanup_loop())
+    _spawn_bg_task("_hp_session_cleanup_loop", _hp_session_cleanup_loop)
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
     _safe_add_view(_ASchedAnnounceView(),   "_ASchedAnnounceView")
