@@ -5840,6 +5840,8 @@ class _ASchedReminderBtn(discord.ui.Button):
         )
         if not is_staff:
             return await interaction.response.send_message("Only staff can send meet reminders.", ephemeral=True)
+        # Channel send below can be slow — ack within the 3s window first.
+        await interaction.response.defer(ephemeral=True)
         schedule = _asched_load()
         lines = []
         for day in _HRSVP_DAYS:
@@ -5866,11 +5868,11 @@ class _ASchedReminderBtn(discord.ui.Button):
             ping = notify_role.mention if notify_role else ""
             try:
                 await everyone_ch.send(content=ping or None, embed=remind_embed)
-                await interaction.response.send_message("✅ Meet reminders posted to everyone chat.", ephemeral=True)
+                await interaction.followup.send("✅ Meet reminders posted to everyone chat.", ephemeral=True)
             except Exception as _e:
-                await interaction.response.send_message(f"Failed to post reminder: {_e}", ephemeral=True)
+                await interaction.followup.send(f"Failed to post reminder: {_e}", ephemeral=True)
         else:
-            await interaction.response.send_message("Everyone chat channel not found.", ephemeral=True)
+            await interaction.followup.send("Everyone chat channel not found.", ephemeral=True)
 
 
 class _ASchedSubmitBtn(discord.ui.Button):
@@ -5895,6 +5897,9 @@ class _ASchedSubmitBtn(discord.ui.Button):
         if not guild:
             await interaction.response.send_message("Server not found.", ephemeral=True)
             return
+        # Roll-call sync edits multiple messages and can exceed the 3s ack
+        # window ("The application didn't respond in time") — defer first.
+        await interaction.response.defer(ephemeral=True)
         schedule = _asched_load()
         rc_meets = []
         for idx, day in enumerate(_HRSVP_DAYS, 1):
@@ -5908,7 +5913,7 @@ class _ASchedSubmitBtn(discord.ui.Button):
                 "is_finalized": False,
             })
         await _rc_sync_from_schedule(guild, rc_meets)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "✅ Schedule submitted to the roll call — class, time, and host updated for all 3 meets.",
             ephemeral=True,
         )
@@ -6213,8 +6218,12 @@ class AutoScheduleView(discord.ui.View):
 
     @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id=_ASCHED_REFRESH_ID)
     async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Panel sync fetches + edits messages under _asched_sync_lock and can
+        # easily exceed Discord's 3s ack window (seen as "The application didn't
+        # respond in time") — defer FIRST, then do the work, reply via followup.
+        await interaction.response.defer(ephemeral=True)
         await _asched_update_panel(interaction.client)
-        await interaction.response.send_message("Schedule panel refreshed.", ephemeral=True)
+        await interaction.followup.send("Schedule panel refreshed.", ephemeral=True)
 
     @discord.ui.button(label="Rebuild Schedule", emoji="🧠", style=discord.ButtonStyle.primary, custom_id=_ASCHED_REBUILD_ID)
     async def rebuild_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
