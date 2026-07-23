@@ -12901,6 +12901,14 @@ class HostSessionView(discord.ui.View):
         stats["last_session_at"] = session["ended_at"]
         _hp_save(data)
 
+        # Post-meet blacklist follow-up: DM the host while names are fresh
+        try:
+            asyncio.create_task(_bln_open_task(
+                session["host_id"], session.get("meet_name", ""),
+                str(session.get("session_id") or f"{session['host_id']}:{session['ended_at']}")))
+        except Exception as _bln_e:
+            print(f"[BlnTask] Could not open blacklist follow-up: {_bln_e}")
+
         await self._refresh_embed(interaction.channel, session)
 
         staff_ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
@@ -25383,6 +25391,8 @@ async def on_ready():
     _spawn_bg_task("_host_avail_nudge_loop", _host_avail_nudge_loop)
     _spawn_bg_task("_cc_reminder_loop", _cc_reminder_loop)
     _safe_add_view(_CcDoneView(), "_CcDoneView")
+    _spawn_bg_task("_bln_reminder_loop", _bln_reminder_loop)
+    _safe_add_view(_BlnView(), "_BlnView")
     _spawn_bg_task("_hrsvp_escalation_loop", _hrsvp_escalation_loop)
     # Singleton guard — on_ready can fire multiple times on reconnect; without
     # this, each reconnect would spawn another auto-end worker and cause
@@ -28089,6 +28099,178 @@ async def _cmd_colorchangedone(ctx: commands.Context):
     pending["done_at"] = datetime.now(timezone.utc).isoformat()
     _cc_save(st)
     await ctx.send(f"✅ Marked **{pending.get('color_name', '?')}** as updated — reminders stopped.", delete_after=10)
+
+
+# ── Post-meet blacklist nudge: DM the host to blacklist blocked members ─────
+_BLN_FILE = os.path.join("diff_data", "diff_blacklist_nudge.json")
+
+
+def _bln_load() -> dict:
+    try:
+        with open(_BLN_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _bln_save(data: dict) -> None:
+    _atomic_json_save(_BLN_FILE, data)
+
+
+def _bln_build_embed(task: dict, *, reminder: bool = False) -> discord.Embed:
+    emb = discord.Embed(
+        title=("⏰ Reminder — Blacklist Your Blocked Members" if reminder
+               else "🚫 Blocked anyone at your meet?"),
+        description=(
+            f"Your session **{task.get('meet_name') or 'your meet'}** just wrapped up.\n\n"
+            "If you **blocked anyone** during the meet, submit them to the blacklist "
+            f"**while the names are still fresh** — use the **Submit Blacklist** button "
+            f"in <#{HOST_HUB_CHANNEL_ID}>.\n"
+            "💡 Tip: your **PlayStation block list** has the exact PSNs.\n\n"
+            "Then press a button below so you stop getting reminded:"
+            if not reminder else
+            f"You haven't confirmed the blacklist follow-up for "
+            f"**{task.get('meet_name') or 'your last meet'}** yet.\n\n"
+            f"If you blocked anyone, submit them via **Submit Blacklist** in "
+            f"<#{HOST_HUB_CHANNEL_ID}> — check your **PlayStation block list** "
+            "if you forgot the names. Then press a button below."
+        ),
+        color=discord.Color.red() if reminder else discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    emb.set_footer(text="DIFF Meets • Host Blacklist Follow-Up")
+    return emb
+
+
+class _BlnView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _resolve(self, interaction: discord.Interaction, *, submitted: bool):
+        st = _bln_load()
+        tasks = st.get("tasks") or {}
+        # Find this host's oldest open task
+        open_key = None
+        for k, t in sorted(tasks.items(), key=lambda kv: kv[1].get("ended_at", "")):
+            if int(t.get("host_id") or 0) == interaction.user.id and not t.get("done"):
+                open_key = k
+                break
+        if open_key is None:
+            return await interaction.response.send_message(
+                "✅ Nothing pending — you're all set.", ephemeral=True)
+        t = tasks[open_key]
+        t["done"] = True
+        t["done_at"] = datetime.now(timezone.utc).isoformat()
+        t["outcome"] = "submitted" if submitted else "nobody_blocked"
+        _bln_save(st)
+        await interaction.response.send_message(
+            "🙌 Thanks for submitting the blacklist entries — noted!" if submitted
+            else "👍 Got it — nobody blocked at that meet. No more reminders.")
+        try:
+            log_ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
+            if isinstance(log_ch, discord.TextChannel):
+                await log_ch.send(
+                    f"🚫 Blacklist follow-up for **{t.get('meet_name') or 'a meet'}**: "
+                    f"**{interaction.user.display_name}** confirmed "
+                    + ("blacklist entries were **submitted**." if submitted
+                       else "**nobody was blocked**."))
+        except Exception:
+            pass
+
+    @discord.ui.button(label="✅ Submitted the blacklist", style=discord.ButtonStyle.success, custom_id="diff_bln_done")
+    async def _done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._resolve(interaction, submitted=True)
+
+    @discord.ui.button(label="👍 Nobody blocked", style=discord.ButtonStyle.secondary, custom_id="diff_bln_none")
+    async def _none(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._resolve(interaction, submitted=False)
+
+
+async def _bln_open_task(host_id: int, meet_name: str, session_id: str) -> None:
+    """Open a blacklist follow-up for a just-ended host session and DM the host."""
+    st = _bln_load()
+    tasks = st.setdefault("tasks", {})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    task = {
+        "host_id": int(host_id),
+        "meet_name": meet_name or "",
+        "ended_at": now_iso,
+        "last_dm_ts": time.time(),
+        "done": False,
+    }
+    tasks[str(session_id)] = task
+    _bln_save(st)
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        member = (guild.get_member(int(host_id)) if guild else None) or \
+                 (await guild.fetch_member(int(host_id)) if guild else None)
+        if member:
+            await member.send(embed=_bln_build_embed(task), view=_BlnView())
+    except Exception as _e:
+        print(f"[BlnTask] Initial DM to host {host_id} failed: {_e}")
+
+
+async def _bln_reminder_loop() -> None:
+    """Every 30 min: re-DM hosts every 24h (9AM–9PM ET) about unconfirmed
+    blacklist follow-ups; expire after 3 days with a staff-log note."""
+    await bot.wait_until_ready()
+    from zoneinfo import ZoneInfo as _ZI
+    while not bot.is_closed():
+        await asyncio.sleep(1800)
+        try:
+            st = _bln_load()
+            tasks = st.get("tasks") or {}
+            if not tasks:
+                continue
+            now_et = datetime.now(_ZI("America/New_York"))
+            changed = False
+            guild = bot.get_guild(GUILD_ID)
+            for key, t in list(tasks.items()):
+                if t.get("done"):
+                    # Prune resolved tasks older than 14 days
+                    try:
+                        if (datetime.now(timezone.utc) - datetime.fromisoformat(t["ended_at"])).days >= 14:
+                            del tasks[key]
+                            changed = True
+                    except Exception:
+                        del tasks[key]
+                        changed = True
+                    continue
+                try:
+                    age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(t["ended_at"])).days
+                except Exception:
+                    age_days = 99
+                if age_days >= 3:
+                    t["done"] = True
+                    t["outcome"] = "expired"
+                    changed = True
+                    try:
+                        log_ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
+                        if isinstance(log_ch, discord.TextChannel):
+                            await log_ch.send(
+                                f"⚠️ Blacklist follow-up for **{t.get('meet_name') or 'a meet'}** "
+                                f"(<@{t.get('host_id')}>) was never confirmed after 3 days — expiring it.")
+                    except Exception:
+                        pass
+                    continue
+                if not (9 <= now_et.hour <= 21):
+                    continue
+                if time.time() - float(t.get("last_dm_ts") or 0) < 24 * 3600:
+                    continue
+                try:
+                    member = (guild.get_member(int(t["host_id"])) if guild else None) or \
+                             (await guild.fetch_member(int(t["host_id"])) if guild else None)
+                    if member:
+                        await member.send(embed=_bln_build_embed(t, reminder=True), view=_BlnView())
+                        t["last_dm_ts"] = time.time()
+                        changed = True
+                        print(f"[BlnTask] 24h blacklist reminder sent to {t['host_id']}.")
+                except Exception as _e:
+                    print(f"[BlnTask] Reminder DM to {t.get('host_id')} failed: {_e}")
+            if changed:
+                _bln_save(st)
+        except Exception as _e:
+            print(f"[BlnTask] Loop error: {_e}")
 
 
 @bot.command(name="setcolorchangers")
