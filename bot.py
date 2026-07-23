@@ -6848,6 +6848,13 @@ async def _bl_finalize_entry(channel: discord.TextChannel, guild: discord.Guild,
                              evidence_msg: discord.Message) -> None:
     """Create the blacklist entry and post it (with the uploaded images) to the
     blacklist channel. Called after the required evidence upload arrives."""
+    # Resolve to a real guild Member — UserSelect can hand back a plain
+    # discord.User; non-members go down the typed-name path safely.
+    if target_member is not None:
+        target_member = guild.get_member(target_member.id)
+        if target_member is None and not name_text:
+            name_text = "Unknown (left the server)"
+
     removed_host_role = False
     display_text = name_text
     user_id_val = None
@@ -6890,7 +6897,8 @@ async def _bl_finalize_entry(channel: discord.TextChannel, guild: discord.Guild,
     embed.set_footer(text=f"Submitted by {submitter} • Different Meets • Host Blacklist")
 
     # Re-upload evidence images alongside the embed so they live permanently
-    # in the blacklist channel (original message gets cleaned up).
+    # in the blacklist channel (original message gets cleaned up). Keep the
+    # original upload message if posting fails so evidence is never lost.
     files = []
     for att in evidence_msg.attachments[:4]:
         if (att.content_type or "").startswith("image/"):
@@ -6908,12 +6916,15 @@ async def _bl_finalize_entry(channel: discord.TextChannel, guild: discord.Guild,
             posted = await bl_ch.send(embed=embed, files=files)
         except Exception:
             pass
-    if posted is not None:
-        try:
+    try:
+        if posted is not None:
             urls = " ".join(a.url for a in posted.attachments) or posted.jump_url
             _hauto_db.update_blacklist_evidence(entry_id, f"{posted.jump_url} {urls}"[:1000])
-        except Exception:
-            pass
+        else:
+            # Posting failed — keep the original upload as the evidence link
+            _hauto_db.update_blacklist_evidence(entry_id, f"(post failed) {evidence_msg.jump_url}"[:1000])
+    except Exception:
+        pass
 
     log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
     if isinstance(log_ch, discord.TextChannel):
@@ -6924,10 +6935,11 @@ async def _bl_finalize_entry(channel: discord.TextChannel, guild: discord.Guild,
         except Exception:
             pass
 
-    try:
-        await evidence_msg.delete()
-    except Exception:
-        pass
+    if posted is not None:
+        try:
+            await evidence_msg.delete()
+        except Exception:
+            pass
     try:
         await channel.send(f"✅ {submitter.mention} Blacklist entry **#{entry_id}** submitted with evidence.", delete_after=15)
     except Exception:
@@ -6995,6 +7007,12 @@ class _BlacklistDetailsModal(discord.ui.Modal, title="🚫 Blacklist Details"):
                     self._severity, msg)
             except Exception as _e:
                 print(f"[Blacklist] evidence flow error: {_e}")
+                try:
+                    await interaction.followup.send(
+                        "⚠️ Something went wrong finishing your blacklist entry — "
+                        "please try again or ping Leadership.", ephemeral=True)
+                except Exception:
+                    pass
             finally:
                 _bl_evidence_waiting.discard(submitter.id)
 
