@@ -365,23 +365,13 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
         ticket_embed = discord.Embed(
             title="🎨 Color Request Opened",
             description=(
-                f"Hey {requester.mention}, your private Color Lab ticket is now open.\n"
-                f"The **Color Team** will review your request and reply here shortly.\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━"
+                f"Hey {requester.mention} — the **Color Team** will match your color "
+                "and post the official result right here."
             ),
             color=EMBED_COLOR,
             timestamp=datetime.now(timezone.utc),
         )
         ticket_embed.add_field(name="🎨 Hex Code",   value=f"`{str(self.hex_code)}`",    inline=True)
-        ticket_embed.add_field(
-            name="📋 What happens next",
-            value=(
-                "› The Color Team will match your color in GTA\n"
-                "› An official result will be posted in this ticket\n"
-                "› Once complete, the ticket will be archived"
-            ),
-            inline=False,
-        )
         ticket_embed.set_thumbnail(url=DIFF_LOGO_URL)
         ticket_embed.set_footer(text="DIFF Color Lab • Private Ticket")
 
@@ -690,16 +680,22 @@ class _TicketActionsSelect(discord.ui.Select):
             await _run_archive_flow(interaction, self.cog)
 
 
+class _LegacyTicketActionsView(discord.ui.View):
+    """Keeps the old dropdown on previously opened tickets working. Not sent on new tickets."""
+    def __init__(self, cog: "ColorLabCog"):
+        super().__init__(timeout=None)
+        self.add_item(_TicketActionsSelect(cog))
+
+
 class ColorTicketControlsView(discord.ui.View):
     def __init__(self, cog: "ColorLabCog"):
         super().__init__(timeout=None)
         self.cog = cog
-        self.add_item(_TicketActionsSelect(cog))
 
     @discord.ui.button(
         label="Post Result", emoji="✅",
         style=discord.ButtonStyle.success,
-        custom_id="diff_color_lab_ticket_post_result_v2", row=1,
+        custom_id="diff_color_lab_ticket_post_result_v2", row=0,
     )
     async def post_result(self, interaction: discord.Interaction, button: discord.ui.Button):
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
@@ -710,9 +706,22 @@ class ColorTicketControlsView(discord.ui.View):
         await interaction.response.send_modal(ColorResultModal())
 
     @discord.ui.button(
-        label="Archive Ticket", emoji="📦",
+        label="Add Note", emoji="📝",
+        style=discord.ButtonStyle.secondary,
+        custom_id="diff_color_lab_ticket_note_v2", row=0,
+    )
+    async def add_note(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if not member or not _is_color_team(member):
+            return await interaction.response.send_message(
+                "Only the Color Team or staff can add notes.", ephemeral=True
+            )
+        await interaction.response.send_modal(ColorTeamNoteModal())
+
+    @discord.ui.button(
+        label="Archive & Close", emoji="📦",
         style=discord.ButtonStyle.danger,
-        custom_id="diff_color_lab_ticket_archive_v2", row=1,
+        custom_id="diff_color_lab_ticket_archive_v2", row=0,
     )
     async def archive_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
@@ -894,6 +903,7 @@ class ColorLabCog(commands.Cog):
         self._ticket_view = ColorTicketControlsView(self)
         bot.add_view(self._panel_view)
         bot.add_view(self._ticket_view)
+        bot.add_view(_LegacyTicketActionsView(self))
 
     # ------------------------------------------------------------------
     def _build_embed(self) -> discord.Embed:
