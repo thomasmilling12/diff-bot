@@ -13874,14 +13874,23 @@ def _rc_build_public_reminder(guild, tag_individuals: bool = False):
     else:
         ping_content = crew_role.mention
     embed = discord.Embed(
-        title="⏰ Roll Call Reminder",
+        title="⏰ Weekly Crew Reminder — Roll Call & Crew Color Vote",
         description=(
             f"**{n} crew member{plural}** still haven't done this week's roll call.\n\n"
-            f"👉 **[Complete it here]({rc_url})** — it only takes a few seconds.\n\n"
+            f"👉 **[Complete it here]({rc_url})** — mark **Going, Maybe, or Not Going** "
+            "for each meet. It only takes a few seconds.\n\n"
             "Roll call resets **Monday**. Repeatedly missing it may result in a **strike**."
         ),
         color=discord.Color.orange(),
         timestamp=datetime.now(_EST_TZ),
+    )
+    embed.add_field(
+        name="🎨 Crew Color Vote",
+        value=(
+            f"Don't forget to **[vote for this week's crew color]({COLOR_CHANNEL_URL})** — "
+            "it helps choose the crew color for next week."
+        ),
+        inline=False,
     )
     embed.set_footer(text="DIFF Meets • Roll Call System")
     return ping_content, embed, non
