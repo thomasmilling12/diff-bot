@@ -507,18 +507,6 @@ class CrewEventsPanelView(discord.ui.View):
                 label="View Upcoming Events", value="view_upcoming", emoji="📌",
                 description="See all scheduled events with RSVP counts",
             ),
-            discord.SelectOption(
-                label="Request Collab", value="request_collab", emoji="🤝",
-                description="Submit a private crew collab request",
-            ),
-            discord.SelectOption(
-                label="Start Attendance Session", value="attendance_create", emoji="🧠",
-                description="Open a live check-in for an active meet (staff only)",
-            ),
-            discord.SelectOption(
-                label="View Open Check-ins", value="attendance_view", emoji="📋",
-                description="See any currently active attendance sessions",
-            ),
         ],
     )
     async def combined_select(self, interaction: discord.Interaction, select: discord.ui.Select):
