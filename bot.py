@@ -45692,18 +45692,19 @@ async def reassign_ticket(ctx: commands.Context, member: discord.Member) -> None
 
 @bot.tree.command(name="post-join-panel", description="Post the DIFF Join Hub platform selector panel (staff only)")
 async def post_join_panel(interaction: discord.Interaction) -> None:
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles) \
-            and not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message("Staff only.", ephemeral=True)
-    channel = interaction.guild.get_channel(JOIN_PANEL_CHANNEL_ID)
-    if not isinstance(channel, discord.TextChannel):
-        return await interaction.response.send_message("Join panel channel not found.", ephemeral=True)
+    # Defer FIRST — the 3s ack window is easy to miss if the loop is busy.
     try:
         await interaction.response.defer(ephemeral=True)
-    except discord.NotFound:
+    except (discord.NotFound, discord.HTTPException):
         return
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.followup.send("Server only.", ephemeral=True)
+    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.followup.send("Staff only.", ephemeral=True)
+    channel = interaction.guild.get_channel(JOIN_PANEL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return await interaction.followup.send("Join panel channel not found.", ephemeral=True)
     try:
         async for msg in channel.history(limit=30):
             if msg.author.id == bot.user.id and any(e.title and "JOIN HUB" in e.title.upper() for e in msg.embeds):
@@ -45719,18 +45720,19 @@ async def post_join_panel(interaction: discord.Interaction) -> None:
 
 @bot.tree.command(name="refresh-join-panel", description="Refresh the DIFF Join Hub panel in place, or repost it if missing (staff only)")
 async def refresh_join_panel(interaction: discord.Interaction) -> None:
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await interaction.response.send_message("Server only.", ephemeral=True)
-    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles) \
-            and not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message("Staff only.", ephemeral=True)
-    channel = interaction.guild.get_channel(JOIN_PANEL_CHANNEL_ID)
-    if not isinstance(channel, discord.TextChannel):
-        return await interaction.response.send_message("Join panel channel not found.", ephemeral=True)
+    # Defer FIRST — the 3s ack window is easy to miss if the loop is busy.
     try:
         await interaction.response.defer(ephemeral=True)
-    except discord.NotFound:
+    except (discord.NotFound, discord.HTTPException):
         return
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.followup.send("Server only.", ephemeral=True)
+    if not any(r.id in _LEADERSHIP_HOST_ROLE_IDS for r in interaction.user.roles) \
+            and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.followup.send("Staff only.", ephemeral=True)
+    channel = interaction.guild.get_channel(JOIN_PANEL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return await interaction.followup.send("Join panel channel not found.", ephemeral=True)
     existing: discord.Message | None = None
     try:
         async for msg in channel.history(limit=30):
