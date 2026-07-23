@@ -39709,6 +39709,19 @@ async def on_member_join(member: discord.Member) -> None:
         except Exception:
             pass
 
+    # Also give every new member the Meet Attender role (owner request Jul 2026 —
+    # everyone gets it on join, aware this makes it a general member role rather
+    # than a strict attendance marker).
+    try:
+        _ma_role = member.guild.get_role(MEET_ATTENDER_ROLE_ID)
+        if _ma_role and _ma_role not in member.roles:
+            await member.add_roles(_ma_role, reason="New member — auto Meet Attender role")
+    except Exception as _e:
+        try:
+            print(f"[meet_attender_role] assign failed for {member}: {_e!r}")
+        except Exception:
+            pass
+
     await _send_welcome_dm(member)
 
 
