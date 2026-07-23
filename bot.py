@@ -4268,24 +4268,27 @@ async def _hrsvp_update_panel(bot_client) -> None:
 
     # Cards are edited by POSITION (message ids ascend in post order) so the
     # soonest meet is always the top card — even on already-posted panels.
+    # The day→message remap is ATOMIC: persisted only if all 3 edits succeed,
+    # so a partial failure can never leave two days pointing at one message.
     pos_ids = sorted(int(ids[d]) for d in _HRSVP_DAYS)
-    remap = False
+    if len(set(pos_ids)) != len(_HRSVP_DAYS):
+        return await _hrsvp_render_layout(bot_client, ping=False)
+    proposed: dict = {}
+    all_ok = True
     for pos, day in enumerate(_hrsvp_days_sorted()):
         mid = pos_ids[pos]
         try:
             mm = await channel.fetch_message(mid)
             await mm.edit(embed=_hrsvp_build_meet_embed(day), view=_HrsvpMeetView(day))
+            proposed[day] = mid
         except discord.NotFound:
             return await _hrsvp_render_layout(bot_client, ping=False)
         except Exception:
-            continue
-        if int(ids.get(day, 0)) != mid:
-            ids[day] = mid
-            remap = True
-    if remap:
+            all_ok = False
+    if all_ok and proposed != {d: int(ids.get(d, 0)) for d in _HRSVP_DAYS}:
         try:
             fresh = _hrsvp_load()
-            fresh["panel_message_ids"] = ids
+            fresh["panel_message_ids"] = {"header": ids["header"], **proposed}
             _hrsvp_save(fresh)
         except Exception:
             pass
@@ -17382,24 +17385,35 @@ async def _rc_refresh_panel(guild: discord.Guild):
                 await _rc_post_new_panel(guild, ping_roles=False)
                 return
             pos_ids = sorted(int(m) for m in raw_ids)
+            if len(set(pos_ids)) != 3:
+                print("[RcPanel] duplicate meet message ids — reposting layout")
+                await _rc_post_new_panel(guild, ping_roles=False)
+                return
+            # Remap is ATOMIC: meet{n}→message ids are only persisted if all 3
+            # edits succeed, so a partial failure can't corrupt the mapping.
+            proposed: dict = {}
+            all_ok = True
             for pos, n in enumerate(_rc_meet_render_order(guild.id)):
                 mid = pos_ids[pos]
                 try:
                     mm     = await channel.fetch_message(mid)
                     locked = _rc_meet_is_locked(meets_by_num.get(n))
                     await mm.edit(embed=_rc_build_meet_embed(guild, n), view=_RcMeetView(n, locked))
+                    proposed[n] = mid
                 except discord.NotFound:
                     print(f"[RcPanel] meet{n} message gone — reposting layout")
                     await _rc_post_new_panel(guild, ping_roles=False)
                     return
                 except Exception as e:
                     print(f"[RcPanel] meet{n} edit error: {e}")
-                    continue
-                if int(msgs.get(f"meet{n}") or 0) != mid:
-                    try:
-                        _rc_db.set_message(guild.id, f"meet{n}", mid)
-                    except Exception:
-                        pass
+                    all_ok = False
+            if all_ok:
+                for n, mid in proposed.items():
+                    if int(msgs.get(f"meet{n}") or 0) != mid:
+                        try:
+                            _rc_db.set_message(guild.id, f"meet{n}", mid)
+                        except Exception:
+                            pass
         except Exception as _task_err:
             print(f"[RcPanel] _do_refresh unhandled error: {_task_err}")
             import traceback as _tb; _tb.print_exc()
