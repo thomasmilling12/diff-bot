@@ -26449,28 +26449,30 @@ async def _host_nudge_post_once(guild: discord.Guild) -> bool:
 
 
 async def _host_avail_nudge_loop() -> None:
-    """Automates the founder's manual #host-team follow-ups: Tuesday and
-    Thursday at 6 PM ET, ping ONLY hosts who haven't marked availability on the
-    Host Schedule Panel, and flag meets that still have no available host.
-    Once per day, disk-guarded (survives redeploys). Silent when everyone has
-    responded and all meets are covered."""
+    """Automates the founder's manual #host-team follow-ups: every day, every
+    3 hours (9 AM–9 PM ET: 9/12/15/18/21), ping ONLY hosts who haven't marked
+    availability on the Host Schedule Panel and flag meets that still have no
+    available host — repeating until every slot is covered and every host has
+    responded, then it goes quiet automatically. Disk-guarded timestamp
+    (min 2.5 h between posts) so redeploys can't double-fire."""
     await bot.wait_until_ready()
     from zoneinfo import ZoneInfo as _ZI
     while not bot.is_closed():
         await asyncio.sleep(300)
         try:
             now_et = datetime.now(_ZI("America/New_York"))
-            if now_et.weekday() not in (1, 3) or now_et.hour != 18:
+            if now_et.hour not in (9, 12, 15, 18, 21):
                 continue
-            today = now_et.strftime("%Y-%m-%d")
             st = _host_nudge_state_load()
-            if st.get("last_nudge_date") == today:
+            last_ts = float(st.get("last_nudge_ts") or 0)
+            if time.time() - last_ts < 2.5 * 3600:
                 continue
             guild = bot.get_guild(GUILD_ID)
             if not guild:
                 continue
             if await _host_nudge_post_once(guild):
-                st["last_nudge_date"] = today
+                st["last_nudge_ts"] = time.time()
+                st.pop("last_nudge_date", None)
                 _atomic_json_save(_HOST_NUDGE_STATE_FILE, st)
         except Exception as _e:
             print(f"[HostNudge] Loop error: {_e}")
