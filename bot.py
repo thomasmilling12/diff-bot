@@ -12105,10 +12105,11 @@ def _build_unified_hub_embed() -> discord.Embed:
         reverse=True,
     )[:3]
     medals = ["🥇", "🥈", "🥉"]
-    top_lines = (
-        [f"{medals[i]} <@{e['user_id']}> — {e.get('attendance_count', 0)} meet(s)" for i, e in enumerate(top3)]
-        or ["No top members yet."]
-    )
+    top_lines = [
+        f"{medals[i]} <@{e['user_id']}> — {e.get('attendance_count', 0)} meet(s)"
+        for i, e in enumerate(top3)
+        if int(e.get("attendance_count", 0)) > 0
+    ]
 
     improved = _get_most_improved()
     if improved:
@@ -12125,29 +12126,27 @@ def _build_unified_hub_embed() -> discord.Embed:
 
     embed = discord.Embed(
         title="📌 DIFF Crew Control Hub",
-        description="*The all-in-one crew hub for Different Meets.*",
+        description=(
+            "*The all-in-one crew hub for Different Meets.*\n"
+            "Pick anything from the **dropdown below** — 📝 Roll Call and 🎨 Color Voting are the buttons."
+        ),
         color=discord.Color.from_str("#0F3460"),
         timestamp=datetime.now(timezone.utc),
     )
     embed.set_thumbnail(url=DIFF_LOGO)
-    embed.add_field(name="👥 Tracked Members", value=str(total_tracked), inline=True)
-    embed.add_field(name="🔥 Active Members", value=str(active), inline=True)
-    embed.add_field(name="✅ Total Attended", value=str(total_attendance), inline=True)
-    embed.add_field(name="🏁 Meets Hosted", value=str(total_hosted), inline=True)
-    embed.add_field(name="📋 Crew Approved", value=str(completed_apps), inline=True)
-    embed.add_field(name="🚀 Most Improved", value=improved_text, inline=True)
-    embed.add_field(name="🏆 Top 3 Right Now", value="\n".join(top_lines), inline=False)
-    embed.add_field(name="📅 Latest Meet", value=latest_value, inline=False)
-    embed.add_field(
-        name="🛠️ Available Actions",
-        value=(
-            "Use the **dropdown below** to access any feature:\n"
-            "⚠️ Strike · 🧥 Jackets · 📋 Roles · 📈 My Stats\n"
-            "🏆 Leaderboard · 📅 Latest Meet · 📊 Promotions *(staff)* · 🔄 Refresh\n\n"
-            "📝 **Crew Roll Call** and 🎨 **Color Voting** are the link buttons above."
-        ),
-        inline=False,
+    stats_line = (
+        f"👥 **{total_tracked}** tracked · 🔥 **{active}** active · "
+        f"✅ **{total_attendance}** attended · 🏁 **{total_hosted}** hosted"
     )
+    if completed_apps:
+        stats_line += f" · 📋 **{completed_apps}** approved"
+    embed.add_field(name="📊 Crew Stats", value=stats_line, inline=False)
+    if top_lines:
+        if improved:
+            top_lines.append(f"🚀 Most improved: {improved_text}")
+        embed.add_field(name="🏆 Top Right Now", value="\n".join(top_lines), inline=False)
+    if latest:
+        embed.add_field(name="📅 Latest Meet", value=latest_value, inline=False)
     embed.set_footer(text="DIFF Crew Control Hub  •  Stay active, stay consistent")
     return embed
 
