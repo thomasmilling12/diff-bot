@@ -11926,11 +11926,6 @@ class UnifiedCrewHubView(discord.ui.View):
             discord.SelectOption(label="Strike System",         emoji="⚠️", value="strike",      description="Review conduct rules and warnings"),
             discord.SelectOption(label="Crew Jackets",          emoji="🧥", value="jackets",     description="View official DIFF crew outfits"),
             discord.SelectOption(label="Roles & Responsibility",emoji="📋", value="roles",       description="Learn each role and expectations"),
-            discord.SelectOption(label="My Stats",              emoji="📈", value="my_stats",    description="Your personal DIFF activity snapshot"),
-            discord.SelectOption(label="Leaderboard",           emoji="🏆", value="leaderboard", description="See the top crew members"),
-            discord.SelectOption(label="Latest Meet",           emoji="📅", value="latest_meet", description="View the latest attendance panel"),
-            discord.SelectOption(label="Promotion Suggestions", emoji="📊", value="promotions",  description="Staff: view promotion suggestions"),
-            discord.SelectOption(label="Refresh Hub",           emoji="🔄", value="refresh",     description="Update live stats on this panel"),
         ],
     )
     async def hub_select(self, interaction: discord.Interaction, select: discord.ui.Select):
