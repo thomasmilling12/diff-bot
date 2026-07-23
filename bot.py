@@ -26006,7 +26006,8 @@ async def _rc_t5h_reminder_loop() -> None:
                     sent_map[key] = True
                     _changed = True
                     print(f"[RcT5h] Sent T-5h reminder for meet {mn} "
-                          f"({len(yes_ids)} yes / {len(maybe_ids)} maybe)")
+                          f"({len(yes_ids)} yes / {len(maybe_ids)} maybe / "
+                          f"{len(nonresp_ids)} no-response)")
                 except Exception as _send_err:
                     print(f"[RcT5h] send failed for meet {mn}: {_send_err!r}")
 
