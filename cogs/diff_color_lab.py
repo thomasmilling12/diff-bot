@@ -373,7 +373,6 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
             timestamp=datetime.now(timezone.utc),
         )
         ticket_embed.add_field(name="🎨 Hex Code",   value=f"`{str(self.hex_code)}`",    inline=True)
-        ticket_embed.add_field(name="📸 Reference Photos", value=f"{len(atts)} attached", inline=True)
         ticket_embed.add_field(
             name="📋 What happens next",
             value=(
@@ -392,6 +391,10 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
                 files.append(await att.to_file())
             except Exception:
                 pass
+        ticket_embed.insert_field_at(
+            1, name="📸 Reference Photos",
+            value=f"{len(files)} attached" if files else "⚠️ Upload failed — please re-post your screenshot here",
+            inline=True)
         if files:
             ticket_embed.set_image(url=f"attachment://{files[0].filename}")
 
