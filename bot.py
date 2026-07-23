@@ -16035,7 +16035,10 @@ async def _host_onboard_loop():
         changed = False
         recs = None
         for uid, ent in st.items():
-            if ent.get("followup_sent") or not ent.get("welcomed_ts"):
+            try:
+                if not isinstance(ent, dict) or ent.get("followup_sent") or not ent.get("welcomed_ts"):
+                    continue
+            except Exception:
                 continue
             if recs is None:
                 try:
@@ -42378,7 +42381,8 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     before_ids = {r.id for r in before.roles}
     after_ids = {r.id for r in after.roles}
     if HOST_ROLE_ID not in before_ids and HOST_ROLE_ID in after_ids:
-        if not _hauto_db.is_blacklisted(after.guild.id, after.id):
+        _is_bl = _hauto_db.is_blacklisted(after.guild.id, after.id)
+        if not _is_bl:
             try:
                 st = _hob_load()
                 if str(after.id) not in st:
@@ -42388,7 +42392,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                     _hob_save(st)
             except Exception:
                 pass
-        if _hauto_db.is_blacklisted(after.guild.id, after.id):
+        if _is_bl:
             host_role = after.guild.get_role(HOST_ROLE_ID)
             if host_role:
                 try:
