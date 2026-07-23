@@ -263,32 +263,15 @@ async def _build_transcript(channel: discord.TextChannel) -> str:
 # MODALS
 # =========================================================
 class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Request"):
-    reference = discord.ui.TextInput(
-        label="Reference Image Link or Description",
-        placeholder="Paste an image link or describe the exact color/build",
-        required=True, max_length=300,
-        style=discord.TextStyle.paragraph,
-    )
     hex_code = discord.ui.TextInput(
-        label="Hex Code (if known)",
+        label="Hex Code",
         placeholder="#A9E3D6 — or type Unknown",
         required=True, max_length=30,
     )
-    car_name = discord.ui.TextInput(
-        label="Car Name",
-        placeholder="Example: Vorschlaghammer",
-        required=True, max_length=100,
-    )
-    finish = discord.ui.TextInput(
-        label="Finish Type",
-        placeholder="Metallic / Pearlescent / Matte / Worn / Unknown",
-        required=True, max_length=100,
-    )
-    extra_notes = discord.ui.TextInput(
-        label="Extra Notes (optional)",
-        placeholder="Lighting, angle, or anything else the Color Team should know",
-        required=False, max_length=400,
-        style=discord.TextStyle.paragraph,
+    photo = discord.ui.Label(
+        text="Reference Photo (required)",
+        description="Upload a screenshot of the color/car you want matched — up to 4 images.",
+        component=discord.ui.FileUpload(required=True, min_values=1, max_values=4),
     )
 
     def __init__(self, cog: "ColorLabCog"):
@@ -336,6 +319,14 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
             open_tickets.pop(str(requester.id), None)
             _save_tickets(open_tickets)
 
+        atts = [a for a in (self.photo.component.values or [])
+                if (a.content_type or "").startswith("image/")]
+        if not atts:
+            return await interaction.response.send_message(
+                "⚠️ The reference photo must be **image** file(s) — please resubmit with a screenshot.",
+                ephemeral=True,
+            )
+
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             requester: discord.PermissionOverwrite(
@@ -381,12 +372,8 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
             color=EMBED_COLOR,
             timestamp=datetime.now(timezone.utc),
         )
-        ticket_embed.add_field(name="📎 Reference",  value=str(self.reference),          inline=False)
         ticket_embed.add_field(name="🎨 Hex Code",   value=f"`{str(self.hex_code)}`",    inline=True)
-        ticket_embed.add_field(name="🚗 Car Name",   value=str(self.car_name),           inline=True)
-        ticket_embed.add_field(name="✨ Finish",      value=str(self.finish),             inline=True)
-        if str(self.extra_notes).strip():
-            ticket_embed.add_field(name="📝 Extra Notes", value=str(self.extra_notes),   inline=False)
+        ticket_embed.add_field(name="📸 Reference Photos", value=f"{len(atts)} attached", inline=True)
         ticket_embed.add_field(
             name="📋 What happens next",
             value=(
@@ -399,9 +386,19 @@ class ColorTicketRequestModal(discord.ui.Modal, title="Open Private Color Reques
         ticket_embed.set_thumbnail(url=DIFF_LOGO_URL)
         ticket_embed.set_footer(text="DIFF Color Lab • Private Ticket")
 
+        files = []
+        for att in atts[:4]:
+            try:
+                files.append(await att.to_file())
+            except Exception:
+                pass
+        if files:
+            ticket_embed.set_image(url=f"attachment://{files[0].filename}")
+
         await ticket_ch.send(
             content=f"{requester.mention} {color_team_role.mention}",
             embed=ticket_embed,
+            files=files,
             view=ColorTicketControlsView(self.cog),
             allowed_mentions=discord.AllowedMentions(users=True, roles=True),
         )
@@ -506,13 +503,18 @@ class ColorTeamNoteModal(discord.ui.Modal, title="Add Color Team Note"):
 # =========================================================
 async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog") -> None:
     """Shared logic for archiving a color ticket — called from both the
-    Archive & Close dropdown and the standalone Archive Ticket button.
-    Builds a transcript, logs it to staff, then deletes the channel."""
+    Archive & Close dropdown and the standalone Archive Ticket button."""
     channel = interaction.channel
     guild   = interaction.guild
     if not isinstance(channel, discord.TextChannel) or guild is None:
         return await interaction.response.send_message(
             "This only works inside a ticket channel.", ephemeral=True
+        )
+
+    archive_cat = guild.get_channel(ARCHIVE_CATEGORY_ID)
+    if not isinstance(archive_cat, discord.CategoryChannel):
+        return await interaction.response.send_message(
+            "Archive category not configured. Contact staff.", ephemeral=True
         )
 
     await interaction.response.defer(ephemeral=True)
@@ -522,8 +524,6 @@ async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog"
     transcript_path = os.path.join(TRANSCRIPTS_DIR, f"{channel.name}_{_ts()}.html")
     with open(transcript_path, "w", encoding="utf-8") as f:
         f.write(transcript_html)
-
-    channel_name = channel.name
 
     if channel.topic and "color_request_user_id:" in channel.topic:
         try:
@@ -535,21 +535,53 @@ async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog"
         except Exception:
             pass
 
+    color_team_role = guild.get_role(COLOR_TEAM_ROLE_ID)
+    new_overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            manage_channels=True, manage_messages=True, read_message_history=True,
+        ),
+    }
+    if color_team_role:
+        new_overwrites[color_team_role] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=False,
+            read_message_history=True, manage_messages=True, manage_channels=True,
+        )
+
+    try:
+        await channel.edit(
+            name=f"archived-{channel.name}"[:100],
+            category=archive_cat,
+            topic=(channel.topic or "") + " | status:archived",
+            overwrites=new_overwrites,
+            reason=f"Archived by {interaction.user}",
+        )
+    except Exception as e:
+        return await interaction.followup.send(f"Failed to archive: {e}", ephemeral=True)
+
+    archive_embed = discord.Embed(
+        title="📦 Ticket Archived",
+        description=(
+            "This ticket has been **archived**.\n"
+            "A full transcript has been saved to staff logs for records."
+        ),
+        color=WARNING_COLOR,
+        timestamp=datetime.now(timezone.utc),
+    )
+    archive_embed.set_thumbnail(url=DIFF_LOGO_URL)
+    archive_embed.set_footer(text=f"Archived by {interaction.user.display_name} • DIFF Color Lab")
+    await channel.send(embed=archive_embed)
+
     transcript_file = discord.File(transcript_path, filename=os.path.basename(transcript_path))
     await cog.log_action(
         guild,
-        f"📦 Closed color ticket `#{channel_name}` by {interaction.user.mention}",
+        f"📦 Archived color ticket `#{channel.name}` by {interaction.user.mention}",
         file=transcript_file,
     )
-
     await interaction.followup.send(
-        "Ticket closed and transcript saved to staff logs.", ephemeral=True
+        "Ticket archived and transcript saved to staff logs.", ephemeral=True
     )
-
-    try:
-        await channel.delete(reason=f"Color ticket closed by {interaction.user}")
-    except Exception as e:
-        pass
 
 
 class _TicketActionsSelect(discord.ui.Select):
@@ -742,7 +774,7 @@ class _ColorLabPanelSelect(discord.ui.Select):
             )
             embed.add_field(
                 name="Step 1 — Open a Request",
-                value="Click **Open a Color Request** and fill out the short form with your car info and reference.",
+                value="Click **Open a Color Request** — just paste the hex code (or Unknown) and upload a photo, all in one form.",
                 inline=False,
             )
             embed.add_field(
@@ -776,28 +808,18 @@ class _ColorLabPanelSelect(discord.ui.Select):
                 color=EMBED_COLOR,
             )
             embed.add_field(
-                name="📎 Reference Image",
-                value="A clear screenshot or photo of the car color you want to match. Direct image links work best.",
-                inline=False,
-            )
-            embed.add_field(
                 name="🎨 Hex Code",
                 value="If you know it, paste the exact hex code (e.g. `#A9E3D6`). If not, type **Unknown**.",
                 inline=False,
             )
             embed.add_field(
-                name="🚗 Car Name",
-                value="The GTA vehicle name (e.g. Vorschlaghammer, Zentorno). This helps narrow down finish results.",
+                name="📸 Reference Photo",
+                value="Upload a clear screenshot of the car color you want matched — right in the form (up to 4 images).",
                 inline=False,
             )
             embed.add_field(
-                name="✨ Finish Type",
-                value="Metallic / Pearlescent / Matte / Worn — or **Unknown** if you're not sure.",
-                inline=False,
-            )
-            embed.add_field(
-                name="📝 Extra Notes",
-                value="Lighting conditions, angle the photo was taken, or any other context that might help.",
+                name="💡 Tip",
+                value="Good lighting and a straight-on angle in your screenshot make matching much faster.",
                 inline=False,
             )
             embed.set_thumbnail(url=DIFF_LOGO_URL)
