@@ -28149,12 +28149,20 @@ class _BlnView(discord.ui.View):
     async def _resolve(self, interaction: discord.Interaction, *, submitted: bool):
         st = _bln_load()
         tasks = st.get("tasks") or {}
-        # Find this host's oldest open task
-        open_key = None
-        for k, t in sorted(tasks.items(), key=lambda kv: kv[1].get("ended_at", "")):
-            if int(t.get("host_id") or 0) == interaction.user.id and not t.get("done"):
-                open_key = k
-                break
+        # Bind the click to the exact session this message was sent for
+        # (message_id map written on every send); fall back to the host's
+        # oldest open task for messages sent before the map existed.
+        msg_map = st.get("msg_map") or {}
+        open_key = msg_map.get(str(interaction.message.id)) if interaction.message else None
+        if open_key is not None and (open_key not in tasks or tasks[open_key].get("done")):
+            return await interaction.response.send_message(
+                "✅ This follow-up is already resolved (or expired) — you're all set.",
+                ephemeral=True)
+        if open_key is None:
+            for k, t in sorted(tasks.items(), key=lambda kv: kv[1].get("ended_at", "")):
+                if int(t.get("host_id") or 0) == interaction.user.id and not t.get("done"):
+                    open_key = k
+                    break
         if open_key is None:
             return await interaction.response.send_message(
                 "✅ Nothing pending — you're all set.", ephemeral=True)
@@ -28205,7 +28213,10 @@ async def _bln_open_task(host_id: int, meet_name: str, session_id: str) -> None:
         member = (guild.get_member(int(host_id)) if guild else None) or \
                  (await guild.fetch_member(int(host_id)) if guild else None)
         if member:
-            await member.send(embed=_bln_build_embed(task), view=_BlnView())
+            _msg = await member.send(embed=_bln_build_embed(task), view=_BlnView())
+            st = _bln_load()
+            st.setdefault("msg_map", {})[str(_msg.id)] = str(session_id)
+            _bln_save(st)
     except Exception as _e:
         print(f"[BlnTask] Initial DM to host {host_id} failed: {_e}")
 
@@ -28261,13 +28272,17 @@ async def _bln_reminder_loop() -> None:
                     member = (guild.get_member(int(t["host_id"])) if guild else None) or \
                              (await guild.fetch_member(int(t["host_id"])) if guild else None)
                     if member:
-                        await member.send(embed=_bln_build_embed(t, reminder=True), view=_BlnView())
+                        _msg = await member.send(embed=_bln_build_embed(t, reminder=True), view=_BlnView())
+                        st.setdefault("msg_map", {})[str(_msg.id)] = key
                         t["last_dm_ts"] = time.time()
                         changed = True
                         print(f"[BlnTask] 24h blacklist reminder sent to {t['host_id']}.")
                 except Exception as _e:
                     print(f"[BlnTask] Reminder DM to {t.get('host_id')} failed: {_e}")
             if changed:
+                mm = st.get("msg_map") or {}
+                if mm:
+                    st["msg_map"] = {m: k for m, k in mm.items() if k in tasks}
                 _bln_save(st)
         except Exception as _e:
             print(f"[BlnTask] Loop error: {_e}")
