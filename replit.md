@@ -62,7 +62,7 @@
 | `diff_backup_state.json` | Idempotent weekly backup `_last_backup_ts` |
 | `diff_lobby_pictures.json` / `diff_lobby_gallery_state.json` / `diff_lobby_wm_prefs.json` | Lobby pic state • weekly gallery guard • watermark prefs |
 | `diff_psn_map.json` | PSN→user_id (Lobby Pictures OCR — DO NOT DELETE) |
-| `diff_community_role.json` | ID of auto-created "Community Member" joiner role (≠ MEET_ATTENDER_ROLE_ID) |
+| `diff_community_role.json` | ID of auto-created "Community Member" joiner role (≠ MEET_ATTENDER_ROLE_ID). NOTE (Jul 2026, owner request): on_member_join ALSO auto-grants MEET_ATTENDER_ROLE_ID to every joiner — it is no longer a strict attendance-earned marker |
 | `diff_xp_roles.json` / `diff_xp_config.json` | XP ladder role IDs • XP channels + `last_motw_week` guard |
 | `diff_recap_state.json` / `diff_meet_recap_state.json` | Weekly recap channel + week guard • per-meet recap channel + `seeded` + posted map |
 | `diff_aimod_state.json` | AI Mod Assist `{enabled, channel_id}` — cached in `_aimod_state_cache`, hot-path never reads disk |
