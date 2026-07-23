@@ -38402,23 +38402,27 @@ class AppealDropdown(discord.ui.Select):
     _APPEAL_KEYS = ("warning", "timeout", "ban", "kick", "build", "exclusion")
 
     def __init__(self) -> None:
+        # Clean labels (no doubled emoji — the option emoji already shows one).
+        _clean = {
+            "warning":   "Warning",
+            "timeout":   "Timeout / Mute",
+            "ban":       "Ban",
+            "kick":      "Kick",
+            "build":     "Build Denial",
+            "exclusion": "Meet Exclusion",
+        }
         options = [
             discord.SelectOption(
-                label=_TICKET_TYPES[k].label,
+                label=_clean.get(k, _TICKET_TYPES[k].label),
                 value=k,
                 description=_TICKET_TYPES[k].description[:100],
                 emoji=_TICKET_TYPES[k].emoji,
             )
             for k in self._APPEAL_KEYS
             if k in _TICKET_TYPES
-        ] + [
-            discord.SelectOption(
-                label="🔍 Check Appeal Status",
-                value="status",
-                description="See if you have an open appeal ticket.",
-                emoji="🔍",
-            )
         ]
+        # "Check Appeal Status" option removed — the My Tickets button covers it;
+        # the "status" callback branch is KEPT so legacy panels still route.
         super().__init__(
             placeholder="⚖️  Appeal options — select appeal type...",
             min_values=1,
