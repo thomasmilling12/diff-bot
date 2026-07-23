@@ -7946,7 +7946,7 @@ class HostFlowView(discord.ui.View):
             await log_ch.send(_hostflow_log_msg(interaction.user.mention))
         await interaction.response.send_message(f"✅ Ending speech posted in {ch.mention} and activity logged.", ephemeral=True)
         try:
-            _om_mark_flow_action("end_speech")
+            _om_mark_flow_action("end_speech", interaction.user.id)
         except Exception:
             pass
 
@@ -7979,7 +7979,7 @@ class HostFlowView(discord.ui.View):
         await ch.send(embed=embed, view=HostFeedbackRequestView())
         await interaction.response.send_message(f"✅ Feedback request posted in {ch.mention}.", ephemeral=True)
         try:
-            _om_mark_flow_action("request_feedback")
+            _om_mark_flow_action("request_feedback", interaction.user.id)
         except Exception:
             pass
 
@@ -14964,6 +14964,10 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                 await interaction.followup.send(
                     f"✅ Ending speech posted in {ch.mention} and activity logged.", ephemeral=True
                 )
+                try:
+                    _om_mark_flow_action("end_speech", interaction.user.id)
+                except Exception:
+                    pass
             else:
                 await interaction.followup.send("Meet channel not found.", ephemeral=True)
             return
@@ -15075,10 +15079,6 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                     f"✅ Meet end message sent in {ch.mention}.\n\n" + _om_wrapup_checklist_text(),
                     ephemeral=True,
                 )
-                try:
-                    _om_mark_flow_action("end_speech")
-                except Exception:
-                    pass
             else:
                 await interaction.followup.send("Meet channel not found.", ephemeral=True)
             return
@@ -15102,7 +15102,7 @@ class _HostHubLiveMeetSelect(discord.ui.Select):
                 await ch.send(embed=fb_embed, view=HostFeedbackRequestView())
                 await interaction.followup.send(f"✅ Feedback request posted in {ch.mention}.", ephemeral=True)
                 try:
-                    _om_mark_flow_action("request_feedback")
+                    _om_mark_flow_action("request_feedback", interaction.user.id)
                 except Exception:
                     pass
             else:
@@ -19166,10 +19166,10 @@ async def _om_staff_log(title: str, record: _OmRecord, acted_by: discord.Member)
         pass
 
 
-def _om_mark_flow_action(action: str) -> None:
+def _om_mark_flow_action(action: str, actor_id: int | None = None) -> None:
     """Mark end_speech_done / feedback_req_done on the most relevant official
-    meet record (started-but-not-ended, else most recently ended within 24h).
-    Best-effort — Live Meet Control isn't bound to a specific meet card."""
+    meet record OF THE ACTOR (started-but-not-ended, else most recently ended
+    within 24h). Best-effort — Live Meet Control isn't bound to a meet card."""
     try:
         data = _om_load_records()
         now_ts = int(datetime.now(timezone.utc).timestamp())
@@ -19179,10 +19179,12 @@ def _om_mark_flow_action(action: str) -> None:
                 rec = _OmRecord(**{k: v for k, v in raw.items() if k in _OmRecord.__dataclass_fields__})
             except Exception:
                 continue
+            if actor_id is not None and int(rec.host_id) != int(actor_id):
+                continue
             if rec.started and not rec.ended:
                 score = (2, rec.started_at_ts or rec.timestamp)
             elif rec.ended and (now_ts - (rec.ended_at_ts or rec.timestamp)) <= 86400:
-                score = (1, rec.ended_at_ts or rec.timestamp)
+                score = (1, rec.ended_at_ts or rec.timestamp or 0)
             else:
                 continue
             if best_score is None or score > best_score:
@@ -50576,9 +50578,9 @@ async def _smart_meet_dm_reminder_loop():
                     color=0x57F287,
                 )
                 _pg.set_footer(text="DIFF Meets • Host Pre-Meet Checklist")
-                await _om_dm_host(rec.host_id, _pg)
-                rec.host_pregame_dm_sent = True
-                _om_upsert_record(rec)
+                if await _om_dm_host(rec.host_id, _pg):
+                    rec.host_pregame_dm_sent = True
+                    _om_upsert_record(rec)
             # 1h window
             if not rec.dm_1h_sent and 50 * 60 <= delta <= 70 * 60:
                 count = await _dm_rsvp_attendees(rec, "1h")
