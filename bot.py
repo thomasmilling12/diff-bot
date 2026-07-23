@@ -43810,52 +43810,15 @@ def _join_build_panel_embed(guild=None) -> discord.Embed:
         if approved_30d > 0:
             social += f"  •  **{approved_30d}** new this month"
         desc_lines.append(social)
-    desc_lines.append("Pick **PlayStation 5** in the dropdown below to get started.")
+    desc_lines.append(
+        f"Pick **PlayStation 5** below to start your join ticket — clean, customized builds only (<#{RULES_CHANNEL_ID}>)."
+    )
+    desc_lines.append(f"🟢 Xbox · 💻 PC → our partners at [**MMI Meets**]({_JOIN_MMI_INVITE}).")
 
     embed = discord.Embed(
         title="🏁 DIFF MEETS — JOIN HUB",
         description="\n".join(desc_lines),
         color=discord.Color.from_str("#00439C"),
-    )
-    embed.add_field(
-        name="🚗 Before You Join",
-        value=(
-            "Only **clean, customized PS5 builds** — no modded money cars, weaponized vehicles, or stock builds.\n"
-            f"📖 Full rules: <#{RULES_CHANNEL_ID}>"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📅 When are meets?",
-        value=f"Three meets every week — check <#{UPCOMING_MEET_CHANNEL_ID}> for current dates, times, and themes.",
-        inline=False,
-    )
-    embed.add_field(
-        name="👇 What happens next",
-        value=(
-            "1️⃣  Pick **PlayStation 5** below\n"
-            "2️⃣  Submit your build photos in a private ticket\n"
-            "3️⃣  Get your PSN rename → verified → you're in"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🎮 PlayStation 5",
-        value="Use the dropdown below to start your join ticket.",
-        inline=True,
-    )
-    embed.add_field(
-        name="🟢 Xbox  ·  💻 PC",
-        value=f"Handled by our partners — [join **MMI Meets**]({_JOIN_MMI_INVITE}).",
-        inline=True,
-    )
-    embed.add_field(
-        name="📋 Want to host meets or join the crew?",
-        value=(
-            "Attend a few meets, get active, then apply.\n"
-            f"Pick **How to Join the Crew** in the dropdown, or apply directly at <#{_JOIN_CREW_APP_CHANNEL}>."
-        ),
-        inline=False,
     )
     embed.set_image(url="https://media.discordapp.net/attachments/1485265848099799163/1486054805796557033/diff_classic.png?format=webp&quality=lossless")
     embed.set_footer(text="Different Meets • PS5 GTA Car Meets")
