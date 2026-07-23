@@ -7109,6 +7109,53 @@ class _BlacklistSearchModal(discord.ui.Modal, title="🔎 Search Host Blacklist"
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+class _BlacklistQuickScanModal(discord.ui.Modal, title="\U0001F50E Blacklist Quick Scan"):
+    names = discord.ui.TextInput(
+        label="PSN names / IDs (one per line or commas)",
+        style=discord.TextStyle.paragraph,
+        placeholder="ExamplePSN1\nExamplePSN2, ExamplePSN3",
+        required=True,
+        max_length=1000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        raw = self.names.value.replace(",", "\n")
+        queries = []
+        for tok in raw.split("\n"):
+            tok = tok.strip()
+            if tok and tok not in queries:
+                queries.append(tok)
+        queries = queries[:20]
+        if not queries:
+            return await interaction.followup.send("No names found in your input.", ephemeral=True)
+        flagged = 0
+        out_lines = []
+        for q in queries:
+            try:
+                rows = _hauto_db.search(guild.id, q)
+            except Exception:
+                rows = []
+            if rows:
+                flagged += 1
+                top = rows[0]
+                out_lines.append(f"\U0001F6AB **{q}** \u2014 Entry #{top['id']} \u2022 {top['severity']} \u2022 {top['reason'][:60]}")
+            else:
+                out_lines.append(f"\u2705 **{q}** \u2014 clear")
+        colour = discord.Color.red() if flagged else discord.Color.green()
+        embed = discord.Embed(
+            title="\U0001F50E Blacklist Quick Scan",
+            description="\n".join(out_lines)[:4000],
+            color=colour,
+            timestamp=utc_now(),
+        )
+        embed.set_footer(text=f"DIFF Meets \u2022 {len(queries)} checked \u2022 {flagged} flagged")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 class _AppealModal(discord.ui.Modal, title="📩 Blacklist Appeal"):
     psn = discord.ui.TextInput(label="Your PSN / Username", required=True, max_length=100)
     reason = discord.ui.TextInput(
@@ -15074,10 +15121,15 @@ def _hosthub_live_lines() -> str:
         pass
     # 🏆 Top host + 🚫 blacklist count
     try:
-        top = _hauto_db.top_points(GUILD_ID, 1)
-        if top and int(top[0]["points"]) > 0:
-            name = _hosthub_name(top[0]["user_id"])
-            lines.append(f"\U0001F3C6 **Top host:** {name} \u2014 {top[0]['points']} pts")
+        g = bot.get_guild(GUILD_ID)
+        for row in _hauto_db.top_points(GUILD_ID, 10):
+            if int(row["points"]) <= 0:
+                break  # sorted desc — nobody positive left
+            m = g.get_member(int(row["user_id"])) if g else None
+            if not m or not any(r.id == HOST_ROLE_ID for r in m.roles):
+                continue  # not an actual host (stale/points-only record)
+            lines.append(f"\U0001F3C6 **Top host:** **{m.display_name}** \u2014 {row['points']} pts")
+            break
     except Exception:
         pass
     try:
@@ -15532,6 +15584,8 @@ class _HostHubBlacklistSelect(discord.ui.Select):
                                      description="Browse all current blacklist records"),
                 discord.SelectOption(label="Appeal Blacklist", value="bl_appeal", emoji="📩",
                                      description="Submit an appeal for a blacklist entry"),
+                discord.SelectOption(label="Quick Scan (multiple names)", value="bl_scan", emoji="🔎",
+                                     description="Paste a list of PSNs and check them all at once"),
             ],
             custom_id="diff_unified_hosthub:blacklist",
             row=2,
@@ -15567,6 +15621,8 @@ class _HostHubBlacklistSelect(discord.ui.Select):
             )
         elif val == "bl_appeal":
             await interaction.response.send_modal(_AppealModal())
+        elif val == "bl_scan":
+            await interaction.response.send_modal(_BlacklistQuickScanModal())
 
 
 class _HostHubPerformanceSelect(discord.ui.Select):
@@ -15762,6 +15818,82 @@ async def _unified_hosthub_post_or_refresh(embed_only: bool = False) -> None:
         await channel.send(embed=embed, view=view)
     except Exception as e:
         print(f"[UnifiedHostHub] Post failed: {e}")
+
+
+_HOST_SPOTLIGHT_FILE = os.path.join(DATA_FOLDER, "diff_host_spotlight.json")
+
+
+def _spotlight_state_load() -> dict:
+    try:
+        with open(_HOST_SPOTLIGHT_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _spotlight_state_save(st: dict) -> None:
+    try:
+        with open(_HOST_SPOTLIGHT_FILE, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
+
+
+@tasks.loop(minutes=30)
+async def _host_spotlight_loop():
+    """Monday 10 AM ET: celebrate the top host of the moment in the Host Hub.
+    Disk-guarded per ISO week so redeploys can't re-fire it."""
+    try:
+        now = datetime.now(ZoneInfo("America/New_York"))
+        if now.weekday() != 0 or now.hour < 10:
+            return
+        week_key = f"{now.isocalendar()[0]}-W{now.isocalendar()[1]:02d}"
+        st = _spotlight_state_load()
+        if st.get("last_week") == week_key:
+            return
+        g = bot.get_guild(GUILD_ID)
+        if not g:
+            return
+        winner = None
+        for row in _hauto_db.top_points(GUILD_ID, 10):
+            if int(row["points"]) <= 0:
+                break
+            m = g.get_member(int(row["user_id"]))
+            if m and any(r.id == HOST_ROLE_ID for r in m.roles):
+                winner = (m, int(row["points"]))
+                break
+        if winner is None:
+            # Still mark the week so we don't re-check every 30 min all Monday.
+            st["last_week"] = week_key
+            _spotlight_state_save(st)
+            return
+        m, pts = winner
+        ch = bot.get_channel(HOST_HUB_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            return
+        embed = discord.Embed(
+            title="\U0001F31F Host Spotlight of the Week",
+            description=(
+                f"Give it up for {m.mention} (**{m.display_name}**)! \U0001F44F\n\n"
+                f"\U0001F3C6 Currently leading the host board with **{pts} pts** "
+                f"\u2022 {host_performance_tier(pts)}\n\n"
+                "Keep hosting great meets \u2014 next Monday it could be you!"
+            ),
+            color=0xC9A227,
+            timestamp=utc_now(),
+        )
+        embed.set_thumbnail(url=m.display_avatar.url)
+        embed.set_footer(text="DIFF Meets \u2022 Host Spotlight \u2022 every Monday")
+        await ch.send(embed=embed)
+        st["last_week"] = week_key
+        _spotlight_state_save(st)
+    except Exception as e:
+        print(f"[HostSpotlight] loop error: {e!r}")
+
+
+@_host_spotlight_loop.before_loop
+async def _host_spotlight_before():
+    await bot.wait_until_ready()
 
 
 @tasks.loop(minutes=15)
@@ -18712,6 +18844,7 @@ class _OmRecord:
     host_start_nudge_sent: bool = False  # host forgot ▶ Start Meet nudge (T+15m)
     host_end_nudge_sent: bool = False    # host forgot ⏹ End Meet nudge (T+3.5h)
     host_pregame_dm_sent: bool = False   # T-1h host checklist DM (start/end buttons, posters, lobby pic)
+    host_t15_dm_sent: bool = False       # T-15m go-live nudge DM to host
     end_speech_done: bool = False        # host posted End Speech via Live Meet Control
     feedback_req_done: bool = False      # host posted Request Feedback via Live Meet Control
     host_wrapup_nudge_sent: bool = False # post-end chase DM for missing End Speech / Request Feedback
@@ -26058,6 +26191,9 @@ async def on_ready():
         if not _hosthub_live_panel_loop.is_running():
             _hosthub_live_panel_loop.start()
             print("[UnifiedHostHub] live panel refresh loop started")
+        if not _host_spotlight_loop.is_running():
+            _host_spotlight_loop.start()
+            print("[HostSpotlight] weekly spotlight loop started")
     except Exception as _e:
         print(f"[UnifiedHostHub] failed to start refresh loop: {_e!r}")
     _safe_add_view(_RcRollCallView(),       "_RcRollCallView")
@@ -51069,6 +51205,24 @@ async def _smart_meet_dm_reminder_loop():
                 _pg = _om_pregame_checklist_embed(rec)
                 if await _om_dm_host(rec.host_id, _pg):
                     rec.host_pregame_dm_sent = True
+                    _om_upsert_record(rec)
+            # T-15m go-live nudge — short and punchy, right before doors open.
+            if (not getattr(rec, "host_t15_dm_sent", False) and not rec.started
+                    and 8 * 60 <= delta <= 20 * 60):
+                _t15 = discord.Embed(
+                    title="\u23F1\uFE0F 15 minutes to go \u2014 time to get in the lobby!",
+                    description=(
+                        f"**{rec.theme}** starts <t:{rec.timestamp}:R>.\n\n"
+                        f"\u25B6 Press **Start Meet** on your meet card when you go live\n"
+                        f"\U0001F531 Then **Post Start Speech** (Host Hub \u2192 Live Meet Control)\n"
+                        f"\U0001F4F8 And grab a **lobby screenshot** early \u2014 <#{LOBBY_PICTURES_CHANNEL_ID}>\n\n"
+                        "Go get 'em! \U0001F3CE\uFE0F"
+                    ),
+                    color=0xFEE75C,
+                )
+                _t15.set_footer(text="DIFF Meets \u2022 Go-Live Nudge")
+                if await _om_dm_host(rec.host_id, _t15):
+                    rec.host_t15_dm_sent = True
                     _om_upsert_record(rec)
             # 1h window
             if not rec.dm_1h_sent and 50 * 60 <= delta <= 70 * 60:
