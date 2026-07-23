@@ -13858,42 +13858,95 @@ def _rc_compute_non_responders(guild):
     return crew_role, non
 
 
-def _rc_build_public_reminder(guild, tag_individuals: bool = False):
-    """Builds (ping_content, embed, non_responders) for a public roll-call nudge,
-    or None if every crew member has already responded."""
-    crew_role, non = _rc_compute_non_responders(guild)
-    if crew_role is None or not non:
+async def _rc_collect_color_voters(guild) -> "set | None":
+    """User-id set of everyone who reacted on the ACTIVE crew-color vote message,
+    or None when there is no active vote (or it can't be read)."""
+    try:
+        data = _cs_load()
+        current_vote = data.get("current_vote")
+        if not current_vote or current_vote.get("closed", False):
+            return None
+        channel = await _cs_fetch_channel(int(current_vote["channel_id"]))
+        vote_msg = await channel.fetch_message(int(current_vote["message_id"]))
+        voters: set = set()
+        n_candidates = len(current_vote.get("candidate_submission_ids", []) or [])
+        valid = set(NUMBER_EMOJIS[:n_candidates]) if n_candidates else set(NUMBER_EMOJIS)
+        for reaction in vote_msg.reactions:
+            if str(reaction.emoji) not in valid:
+                continue
+            async for u in reaction.users():
+                if not u.bot:
+                    voters.add(u.id)
+        return voters
+    except Exception as _e:
+        print(f"[RcPublicReminder] color-vote voter read failed: {_e}")
         return None
-    n = len(non)
-    plural = "s" if n != 1 else ""
+
+
+async def _rc_build_public_reminder(guild, tag_individuals: bool = False):
+    """Builds (ping_content, embed, targets) for the weekly crew nudge.
+    Targets = crew members who still owe the roll call and/or the crew color
+    vote (each shown separately). Returns None only when NOBODY owes anything.
+    tag_individuals=True mentions the members directly instead of the role."""
+    crew_role, rc_non = _rc_compute_non_responders(guild)
+    rc_non = rc_non or []
+    if crew_role is None:
+        crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
+        if crew_role is None:
+            return None
+
+    voters = await _rc_collect_color_voters(guild)
+    if voters is None:
+        color_non = []          # no active vote — only roll call matters this run
+    else:
+        color_non = [m for m in crew_role.members
+                     if not m.bot and m.id not in voters]
+
+    union: dict = {}
+    for m in list(rc_non) + list(color_non):
+        union[m.id] = m
+    targets = list(union.values())
+    if not targets:
+        return None
+
     rc_url = f"https://discord.com/channels/{GUILD_ID}/{ROLL_CALL_CHANNEL_ID}"
     if tag_individuals:
-        mentions = " ".join(m.mention for m in non[:50])
-        extra = f" + {n - 50} more" if n > 50 else ""
+        mentions = " ".join(m.mention for m in targets[:50])
+        extra = f" + {len(targets) - 50} more" if len(targets) > 50 else ""
         ping_content = mentions + extra
     else:
         ping_content = crew_role.mention
+
+    desc_lines = ["The members tagged above still have weekly crew tasks to complete:"]
     embed = discord.Embed(
         title="⏰ Weekly Crew Reminder — Roll Call & Crew Color Vote",
-        description=(
-            f"**{n} crew member{plural}** still haven't done this week's roll call.\n\n"
-            f"👉 **[Complete it here]({rc_url})** — mark **Going, Maybe, or Not Going** "
-            "for each meet. It only takes a few seconds.\n\n"
-            "Roll call resets **Monday**. Repeatedly missing it may result in a **strike**."
-        ),
+        description="\n".join(desc_lines),
         color=discord.Color.orange(),
         timestamp=datetime.now(_EST_TZ),
     )
-    embed.add_field(
-        name="🎨 Crew Color Vote",
-        value=(
-            f"Don't forget to **[vote for this week's crew color]({COLOR_CHANNEL_URL})** — "
-            "it helps choose the crew color for next week."
-        ),
-        inline=False,
-    )
+    if rc_non:
+        _n = len(rc_non)
+        embed.add_field(
+            name=f"✅ Roll Call — {_n} member{'s' if _n != 1 else ''} outstanding",
+            value=(
+                f"👉 **[Complete it here]({rc_url})** — mark **Going, Maybe, or Not Going** "
+                "for each meet.\n"
+                "Roll call resets **Monday**. Repeatedly missing it may result in a **strike**."
+            ),
+            inline=False,
+        )
+    if color_non:
+        _n = len(color_non)
+        embed.add_field(
+            name=f"🎨 Crew Color Vote — {_n} member{'s' if _n != 1 else ''} outstanding",
+            value=(
+                f"👉 **[Vote for this week's crew color]({COLOR_CHANNEL_URL})** — "
+                "it decides the crew color for next week."
+            ),
+            inline=False,
+        )
     embed.set_footer(text="DIFF Meets • Roll Call System")
-    return ping_content, embed, non
+    return ping_content, embed, targets
 
 
 @bot.command(name="warn")
@@ -18047,9 +18100,9 @@ async def _cmd_rcremind(ctx: commands.Context, mode: str = ""):
     except Exception:
         pass
     tag_individuals = mode.strip().lower() in ("tag", "ping", "each", "individual", "individuals")
-    built = _rc_build_public_reminder(ctx.guild, tag_individuals=tag_individuals)
+    built = await _rc_build_public_reminder(ctx.guild, tag_individuals=tag_individuals)
     if not built:
-        return await ctx.send("✅ Every crew member has already responded to this week's roll call.", delete_after=15)
+        return await ctx.send("✅ Every crew member has done this week's roll call and crew color vote.", delete_after=15)
     ping_content, embed, non = built
     ch = ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
     if not isinstance(ch, discord.TextChannel):
@@ -25793,7 +25846,7 @@ async def _rc_public_reminder_loop() -> None:
             guild = bot.get_guild(GUILD_ID)
             if not guild:
                 continue
-            built = _rc_build_public_reminder(guild, tag_individuals=False)
+            built = await _rc_build_public_reminder(guild, tag_individuals=True)
             if not built:
                 st["last_public_reminder"] = today_key
                 _rc_reminder_state_save(st)
