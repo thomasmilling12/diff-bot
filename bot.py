@@ -18104,9 +18104,11 @@ async def _cmd_rcremind(ctx: commands.Context, mode: str = ""):
     if not built:
         return await ctx.send("✅ Every crew member has done this week's roll call and crew color vote.", delete_after=15)
     ping_content, embed, non = built
-    ch = ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    ch = ctx.guild.get_channel(_CREW_CHAT_CHANNEL_ID)
     if not isinstance(ch, discord.TextChannel):
-        return await ctx.send("Roll call channel not found.", delete_after=10)
+        ch = ctx.guild.get_channel(ROLL_CALL_CHANNEL_ID)
+    if not isinstance(ch, discord.TextChannel):
+        return await ctx.send("Crew chat / roll call channel not found.", delete_after=10)
     await ch.send(
         content=ping_content,
         embed=embed,
@@ -25855,7 +25857,11 @@ async def _rc_public_reminder_loop() -> None:
                 _rc_reminder_state_save(st)
                 continue
             ping_content, embed, _non = built
-            ch = guild.get_channel(ROLL_CALL_CHANNEL_ID)
+            # Post in crew chat (owner request Jul 2026) — falls back to the
+            # roll-call channel if crew chat isn't resolvable.
+            ch = guild.get_channel(_CREW_CHAT_CHANNEL_ID)
+            if not isinstance(ch, discord.TextChannel):
+                ch = guild.get_channel(ROLL_CALL_CHANNEL_ID)
             if not isinstance(ch, discord.TextChannel):
                 continue
             await ch.send(
