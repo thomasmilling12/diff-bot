@@ -25130,7 +25130,18 @@ def _spawn_bg_task(name: str, factory) -> None:
     t = _bg_task_handles.get(name)
     if t is not None and not t.done():
         return
-    _bg_task_handles[name] = bot.loop.create_task(factory())
+
+    def _log_crash(task, _name=name):
+        try:
+            exc = task.exception()
+        except (asyncio.CancelledError, Exception):
+            return
+        if exc is not None:
+            print(f"[BG] ⚠️ background worker {_name!r} crashed: {exc!r} — will respawn on next reconnect")
+
+    new_task = bot.loop.create_task(factory())
+    new_task.add_done_callback(_log_crash)
+    _bg_task_handles[name] = new_task
 
 
 @bot.event
