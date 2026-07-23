@@ -18532,6 +18532,35 @@ _om_rsvps: dict[int, dict[str, set]] = {}
 _om_lock = asyncio.Lock()
 
 
+def _om_pregame_checklist_embed(rec) -> discord.Embed:
+    """Host pre-meet checklist. Pass rec=None for a generic on-demand version."""
+    if rec is not None:
+        intro = f"**{rec.theme}** starts <t:{rec.timestamp}:R>. Here's the full host flow:\n\n"
+        card_line = f"\u2022 \u25B6 **Start Meet** on your meet card in <#{rec.channel_id}>\n"
+        title = "\U0001F3C1 Your meet is in about an hour \u2014 quick checklist"
+    else:
+        intro = "Here's the full host flow for any official meet:\n\n"
+        card_line = "\u2022 \u25B6 **Start Meet** on your meet card in the meets channel\n"
+        title = "\U0001F3C1 DIFF Host Pre-Meet Checklist"
+    embed = discord.Embed(
+        title=title,
+        description=(
+            intro
+            + "**When it starts:**\n"
+            + card_line
+            + f"\u2022 \U0001F531 **Post Start Speech** (Host Hub \u2192 Live Meet Control, <#{HOST_HUB_CHANNEL_ID}>)\n"
+            + f"\u2022 \U0001F4F8 Drop a **lobby screenshot** in <#{LOBBY_PICTURES_CHANNEL_ID}>\n\n"
+            + "**When it's over:**\n"
+            + "\u2022 \u23F9 **End Meet** on the meet card\n"
+            + "\u2022 \U0001F4CC **Post End Speech** \u2192 \U0001F4DD **Request Feedback** (Live Meet Control)\n\n"
+            + "Have a great meet tonight! \U0001F64C"
+        ),
+        color=0x57F287,
+    )
+    embed.set_footer(text="DIFF Meets \u2022 Host Pre-Meet Checklist")
+    return embed
+
+
 def _om_live_checklist_text() -> str:
     """Reminder checklist shown to hosts right after they start a meet."""
     return (
