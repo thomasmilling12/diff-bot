@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
+from zoneinfo import ZoneInfo
 
 # =========================
 # CONFIG
@@ -79,6 +80,68 @@ def _set_last_ping_msg_id(guild_id: int, message_id: Optional[int]) -> None:
     _save(d)
 
 
+def _get_last_auto_ping_date() -> Optional[str]:
+    v = _load().get("last_auto_ping_date")
+    return str(v) if v else None
+
+
+def _set_last_auto_ping_date(date_str: str) -> None:
+    d = _load()
+    d["last_auto_ping_date"] = date_str
+    _save(d)
+
+
+def _build_reminder_embed(sender_name: str) -> discord.Embed:
+    """Shared Verification Reminder embed (manual button + daily auto-ping)."""
+    ping_embed = discord.Embed(
+        title="🔔 Verification Reminder",
+        description="Complete the steps below to unlock full access to DIFF.",
+        color=discord.Color.red(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    ping_embed.add_field(
+        name="✅ How to Verify",
+        value=(
+            f"1️⃣  Head to <#{RULES_CHANNEL_ID}> and read the rules\n"
+            f"2️⃣  Click the **Verify** button at the bottom of that channel\n"
+            f"3️⃣  Access unlocks automatically — no wait, no staff needed"
+        ),
+        inline=False,
+    )
+    ping_embed.add_field(
+        name="🚗 After You're Verified",
+        value=f"Head to <#{JOIN_MEETS_CHANNEL}> to get started with car meets.",
+        inline=False,
+    )
+    ping_embed.set_thumbnail(url=DIFF_LOGO_URL)
+    ping_embed.set_footer(text=f"Sent by {sender_name}  •  {FOOTER_TEXT}")
+    return ping_embed
+
+
+async def _post_verification_reminder(
+    channel: discord.TextChannel, role: discord.Role, sender_name: str
+) -> bool:
+    """Post the reminder ping, deleting the previous one so the channel never
+    stacks duplicates. Returns True if the new message was sent."""
+    guild_id = channel.guild.id
+    prev_id = _get_last_ping_msg_id(guild_id)
+    if prev_id:
+        try:
+            prev_msg = await channel.fetch_message(prev_id)
+            await prev_msg.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+        _set_last_ping_msg_id(guild_id, None)
+
+    new_msg = await channel.send(
+        content=role.mention,
+        embed=_build_reminder_embed(sender_name),
+        allowed_mentions=discord.AllowedMentions(roles=True),
+    )
+    _set_last_ping_msg_id(guild_id, new_msg.id)
+    return True
+
+
 def _is_staff(member: discord.Member) -> bool:
     return (
         any(r.id in STAFF_ROLE_IDS for r in member.roles)
@@ -144,61 +207,15 @@ class PingButton(discord.ui.Button):
 
         _ping_cooldowns[guild_id] = now
 
-        label = _staff_label(member)
         count = len(_unverified_members(interaction.guild))
-
         sender_name = member.display_name.split(" | ")[0].strip()
 
-        ping_embed = discord.Embed(
-            title="🔔 Verification Reminder",
-            description="Complete the steps below to unlock full access to DIFF.",
-            color=discord.Color.red(),
-            timestamp=datetime.now(timezone.utc),
-        )
-        ping_embed.add_field(
-            name="✅ How to Verify",
-            value=(
-                f"1️⃣  Head to <#{RULES_CHANNEL_ID}> and read the rules\n"
-                f"2️⃣  Click the **Verify** button at the bottom of that channel\n"
-                f"3️⃣  Access unlocks automatically — no wait, no staff needed"
-            ),
-            inline=False,
-        )
-        ping_embed.add_field(
-            name="🚗 After You're Verified",
-            value=f"Head to <#{JOIN_MEETS_CHANNEL}> to get started with car meets.",
-            inline=False,
-        )
-        ping_embed.set_thumbnail(url=DIFF_LOGO_URL)
-        ping_embed.set_footer(
-            text=f"Sent by {sender_name}  •  {FOOTER_TEXT}"
-        )
+        await _post_verification_reminder(interaction.channel, role, sender_name)
 
-        channel = interaction.channel
-
-        # Delete the previous reminder (if any) so the channel never stacks
-        # duplicate Verification Reminder embeds.
-        prev_deleted = False
-        prev_id = _get_last_ping_msg_id(guild_id)
-        if prev_id:
-            try:
-                prev_msg = await channel.fetch_message(prev_id)
-                await prev_msg.delete()
-                prev_deleted = True
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                pass
-            _set_last_ping_msg_id(guild_id, None)
-
-        new_msg = await channel.send(
-            content=role.mention,
-            embed=ping_embed,
-            allowed_mentions=discord.AllowedMentions(roles=True),
-        )
-        _set_last_ping_msg_id(guild_id, new_msg.id)
+        # A manual ping also counts as today's reminder — skip the auto-ping.
+        _set_last_auto_ping_date(datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d"))
 
         confirm = f"✅ Pinged the unverified role — **{count}** member(s) notified in channel."
-        if prev_deleted:
-            confirm += "\n🧹 Removed previous Verification Reminder to keep the channel clean."
         await interaction.followup.send(confirm, ephemeral=True)
 
 
@@ -297,6 +314,42 @@ class UnverifiedPanelCog(commands.Cog):
         self.bot = bot
         self._view = UnverifiedPingView()
         bot.add_view(self._view)
+        if not self._daily_auto_ping.is_running():
+            self._daily_auto_ping.start()
+
+    def cog_unload(self):
+        self._daily_auto_ping.cancel()
+
+    @tasks.loop(time=datetime.now(ZoneInfo("America/New_York")).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    ).timetz())
+    async def _daily_auto_ping(self):
+        """Daily noon-ET Verification Reminder — replaces the manual button press.
+        Disk-guarded (one per calendar day, ET) so redeploys never double-post;
+        a manual button press earlier the same day also skips it."""
+        try:
+            today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            if _get_last_auto_ping_date() == today:
+                return
+            channel = await self._get_channel()
+            if channel is None:
+                return
+            role = channel.guild.get_role(UNVERIFIED_ROLE_ID)
+            if role is None:
+                return
+            if not _unverified_members(channel.guild):
+                # Nobody unverified — mark done for today, no ping needed.
+                _set_last_auto_ping_date(today)
+                return
+            await _post_verification_reminder(channel, role, "DIFF Bot (daily auto-reminder)")
+            _set_last_auto_ping_date(today)
+            print("[UnverifiedPanel] Daily auto-ping sent.")
+        except Exception as e:
+            print(f"[UnverifiedPanel] Daily auto-ping failed: {e}")
+
+    @_daily_auto_ping.before_loop
+    async def _before_daily_auto_ping(self):
+        await self.bot.wait_until_ready()
 
     def _build_embed(self, guild: Optional[discord.Guild] = None) -> discord.Embed:
         embed = discord.Embed(
