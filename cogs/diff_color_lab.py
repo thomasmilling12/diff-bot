@@ -506,12 +506,35 @@ async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog"
 
     await interaction.response.defer(ephemeral=True)
 
-    transcript_html = await _build_transcript(channel)
-    _ensure_dirs()
-    transcript_path = os.path.join(TRANSCRIPTS_DIR, f"{channel.name}_{_ts()}.html")
-    with open(transcript_path, "w", encoding="utf-8") as f:
-        f.write(transcript_html)
+    # Transcript is best-effort — a transcript failure must not block deletion.
+    transcript_file = None
+    try:
+        transcript_html = await _build_transcript(channel)
+        _ensure_dirs()
+        transcript_path = os.path.join(TRANSCRIPTS_DIR, f"{channel.name}_{_ts()}.html")
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            f.write(transcript_html)
+        transcript_file = discord.File(transcript_path, filename=os.path.basename(transcript_path))
+    except Exception as e:
+        print(f"[ColorLab] transcript failed for #{channel.name}: {e!r}")
 
+    channel_name = channel.name
+    try:
+        await cog.log_action(
+            guild,
+            f"🗑️ Deleted color ticket `#{channel_name}` by {interaction.user.mention}"
+            + (" — transcript attached" if transcript_file else " — ⚠️ transcript could not be generated"),
+            file=transcript_file,
+        )
+    except Exception:
+        pass
+
+    try:
+        await channel.delete(reason=f"Color ticket deleted by {interaction.user}")
+    except Exception as e:
+        return await interaction.followup.send(f"Failed to delete channel: {e}", ephemeral=True)
+
+    # Only free the one-open-ticket slot AFTER the channel is actually gone.
     if channel.topic and "color_request_user_id:" in channel.topic:
         try:
             uid = channel.topic.split("color_request_user_id:")[1].split("|")[0].strip()
@@ -521,19 +544,6 @@ async def _run_archive_flow(interaction: discord.Interaction, cog: "ColorLabCog"
                 _save_tickets(tickets)
         except Exception:
             pass
-
-    transcript_file = discord.File(transcript_path, filename=os.path.basename(transcript_path))
-    await cog.log_action(
-        guild,
-        f"🗑️ Deleted color ticket `#{channel.name}` by {interaction.user.mention} — transcript attached",
-        file=transcript_file,
-    )
-
-    try:
-        await channel.delete(reason=f"Color ticket deleted by {interaction.user}")
-        return  # channel gone — nothing left to respond to
-    except Exception as e:
-        return await interaction.followup.send(f"Failed to delete channel: {e}", ephemeral=True)
 
 
 class _TicketActionsSelect(discord.ui.Select):
