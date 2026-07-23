@@ -30007,7 +30007,11 @@ async def _color_schedule_loop_on_error(error: Exception) -> None:
 class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
     color_name = discord.ui.TextInput(label="Color Name", placeholder="Example: Tangerine Tango", max_length=100, required=True)
     hex_code = discord.ui.TextInput(label="HEX Code", placeholder="Example: #FF9742", max_length=7, min_length=4, required=True)
-    image_url = discord.ui.TextInput(label="Image URL", placeholder="Paste the direct image link here", style=discord.TextStyle.paragraph, required=True)
+    photo = discord.ui.Label(
+        text="Preview Image (required)",
+        description="Upload a screenshot of the car in this color.",
+        component=discord.ui.FileUpload(required=True, min_values=1, max_values=1),
+    )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not isinstance(interaction.user, discord.Member) or not _cs_is_color_team(interaction.user):
@@ -30023,11 +30027,22 @@ class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
         submit_channel = await _cs_fetch_channel(COLOR_SUBMISSION_CHANNEL_ID)
         color_name_val = str(self.color_name.value).strip()
         hex_val = str(self.hex_code.value).strip().upper()
-        image_val = str(self.image_url.value).strip()
         if not hex_val.startswith("#"):
             hex_val = f"#{hex_val}"
         if len(hex_val) not in (4, 7):
             return await interaction.response.send_message("Your HEX code needs to look like `#FF9742` or `#F94`.", ephemeral=True)
+        _atts = [a for a in (self.photo.component.values or [])
+                 if (a.content_type or "").startswith("image/")]
+        if not _atts:
+            return await interaction.response.send_message(
+                "⚠️ The preview image must be an **image** file — please resubmit with a screenshot.",
+                ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            _img_file = await _atts[0].to_file()
+        except Exception:
+            return await interaction.followup.send(
+                "⚠️ Couldn't read your uploaded image — please try again.", ephemeral=True)
         try:
             embed_color = discord.Color.from_str(hex_val)
         except Exception:
@@ -30046,9 +30061,17 @@ class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
         embed.add_field(name="🎨 Color Name", value=color_name_val, inline=True)
         embed.add_field(name="🖌️ HEX Code", value=f"`{hex_val}`", inline=True)
         embed.add_field(name="📋 Status", value="⏳ Pending Review", inline=True)
-        embed.set_image(url=image_val)
+        embed.set_image(url=f"attachment://{_img_file.filename}")
         embed.set_footer(text="DIFF Color Team  •  React to vote: ✅ Yes  ❌ No  🤔 Maybe")
-        msg = await submit_channel.send(embed=embed, view=SubmissionActionView())
+        msg = await submit_channel.send(embed=embed, file=_img_file, view=SubmissionActionView())
+        image_val = ""
+        try:
+            if msg.embeds and msg.embeds[0].image and msg.embeds[0].image.url:
+                image_val = msg.embeds[0].image.url
+            elif msg.attachments:
+                image_val = msg.attachments[0].url
+        except Exception:
+            pass
         for emoji in ("✅", "❌", "🤔"):
             try:
                 await msg.add_reaction(emoji)
@@ -30064,7 +30087,7 @@ class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
         }
         _cs_add_stat(data, interaction.user.id, "submitted", 1)
         _cs_save(data)
-        await interaction.response.send_message(f"Your color submission has been posted in {submit_channel.mention}.", ephemeral=True)
+        await interaction.followup.send(f"Your color submission has been posted in {submit_channel.mention}.", ephemeral=True)
 
 
 class ColorSubmissionPanelView(discord.ui.View):
@@ -30126,36 +30149,14 @@ class SubmissionActionView(discord.ui.View):
 def _cs_build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🎨 DIFF Color Submission Panel",
-        description="Submit a new crew color for leadership review using the button below.",
+        description=(
+            "Got a crew color idea? Hit **Submit Color** — name, hex code and a "
+            "screenshot of the car, all in one form.\n\n"
+            "🗳️ Vote posts **Tuesday ~12 PM ET** • 🏆 Winner announced **Monday ~12 PM ET**"
+        ),
         color=discord.Color.from_str("#7B2FBE"),
     )
     embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.add_field(
-        name="📝 What to Include",
-        value="• Color name\n• HEX code (e.g. `#FF9742`)\n• Image link of the preview car",
-        inline=False,
-    )
-    embed.add_field(
-        name="✅ Before Submitting",
-        value=(
-            "• Keep the color clean and realistic\n"
-            "• Double-check the HEX code\n"
-            "• Use a clear image that shows the color well\n"
-            "• Make sure the submission is meet-ready"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="⚙️ How It Works",
-        value=(
-            "• Press **Submit Color** and fill out the form\n"
-            "• Your submission posts to the review channel automatically\n"
-            "• Leadership can approve or lock submissions\n"
-            "• Weekly vote auto-posts **Tuesday ~12 PM ET**\n"
-            "• Winner auto-announces **Monday ~12 PM ET**"
-        ),
-        inline=False,
-    )
     embed.set_footer(text="DIFF • Color Team System")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
