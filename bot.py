@@ -6712,6 +6712,11 @@ class _HostAutoDB:
         self.conn.commit()
         return int(cur.lastrowid)
 
+    def update_blacklist_evidence(self, entry_id, evidence):
+        cur = self.conn.cursor()
+        cur.execute("UPDATE blacklist_entries SET evidence=? WHERE id=?", (evidence, entry_id))
+        self.conn.commit()
+
     def is_blacklisted(self, guild_id, user_id):
         cur = self.conn.cursor()
         cur.execute("""
@@ -6828,98 +6833,218 @@ async def _hauto_update_leaderboard(guild: discord.Guild) -> None:
 # HOST CONTROL HUB
 # =========================
 
-class _BlacklistModal(discord.ui.Modal, title="🚫 Host Blacklist Submission"):
-    user_field = discord.ui.TextInput(label="User (Discord mention, ID, or name)", required=True, max_length=100)
+# ── Blacklist submission: guided flow ───────────────────────────────────────
+# Member picked from a dropdown (typed name only needed if they already left),
+# severity from a dropdown, reason/PSN in a modal, and evidence is a REQUIRED
+# image upload (phone-friendly) captured as the submitter's next message.
+
+_BL_SEVERITIES = ["Warning", "Serious", "Permanent"]
+_bl_evidence_waiting: set[int] = set()  # user_ids currently in the upload step
+
+
+async def _bl_finalize_entry(channel: discord.TextChannel, guild: discord.Guild,
+                             submitter: discord.Member, target_member,
+                             name_text: str, psn: str, reason: str, severity: str,
+                             evidence_msg: discord.Message) -> None:
+    """Create the blacklist entry and post it (with the uploaded images) to the
+    blacklist channel. Called after the required evidence upload arrives."""
+    removed_host_role = False
+    display_text = name_text
+    user_id_val = None
+    if target_member:
+        display_text = f"{target_member.mention} ({target_member})"
+        user_id_val = target_member.id
+        host_role = guild.get_role(HOST_ROLE_ID)
+        if host_role and host_role in target_member.roles:
+            try:
+                await target_member.remove_roles(host_role, reason="DIFF host blacklist applied")
+                removed_host_role = True
+            except Exception:
+                pass
+
+    entry_id = _hauto_db.add_blacklist(
+        guild_id=guild.id,
+        user_id=user_id_val,
+        discord_tag=str(target_member) if target_member else name_text,
+        psn=psn,
+        reason=reason,
+        evidence="(image evidence attached)",
+        severity=severity,
+        submitted_by_id=submitter.id,
+        submitted_by_tag=str(submitter),
+        removed_host_role=removed_host_role,
+    )
+    if target_member:
+        _hauto_db.adjust_points(guild.id, target_member.id, -_HAUTO_BLACKLIST_POINT_PENALTY, 1)
+
+    embed = discord.Embed(
+        title=f"🚫 DIFF Host Blacklist Entry #{entry_id}",
+        color=discord.Color.red(),
+        timestamp=utc_now(),
+    )
+    embed.add_field(name="👤 User", value=display_text, inline=False)
+    embed.add_field(name="🎮 PSN", value=psn or "Not provided", inline=True)
+    embed.add_field(name="📊 Severity", value=severity, inline=True)
+    embed.add_field(name="📝 Reason", value=reason[:1024], inline=False)
+    embed.add_field(name="⚙️ Action Taken", value="Host role removed" if removed_host_role else "Listed / no host role found", inline=False)
+    embed.set_footer(text=f"Submitted by {submitter} • Different Meets • Host Blacklist")
+
+    # Re-upload evidence images alongside the embed so they live permanently
+    # in the blacklist channel (original message gets cleaned up).
+    files = []
+    for att in evidence_msg.attachments[:4]:
+        if (att.content_type or "").startswith("image/"):
+            try:
+                files.append(await att.to_file())
+            except Exception:
+                pass
+    if files:
+        embed.set_image(url=f"attachment://{files[0].filename}")
+
+    posted = None
+    bl_ch = guild.get_channel(BLACKLIST_CHANNEL_ID)
+    if isinstance(bl_ch, discord.TextChannel):
+        try:
+            posted = await bl_ch.send(embed=embed, files=files)
+        except Exception:
+            pass
+    if posted is not None:
+        try:
+            urls = " ".join(a.url for a in posted.attachments) or posted.jump_url
+            _hauto_db.update_blacklist_evidence(entry_id, f"{posted.jump_url} {urls}"[:1000])
+        except Exception:
+            pass
+
+    log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
+    if isinstance(log_ch, discord.TextChannel):
+        try:
+            await log_ch.send(
+                f"📌 New blacklist entry #{entry_id} submitted by {submitter.mention}"
+                + (f" — {posted.jump_url}" if posted else ""))
+        except Exception:
+            pass
+
+    try:
+        await evidence_msg.delete()
+    except Exception:
+        pass
+    try:
+        await channel.send(f"✅ {submitter.mention} Blacklist entry **#{entry_id}** submitted with evidence.", delete_after=15)
+    except Exception:
+        pass
+
+
+class _BlacklistDetailsModal(discord.ui.Modal, title="🚫 Blacklist Details"):
+    name_field = discord.ui.TextInput(
+        label="Name (only if they LEFT the server)", required=False, max_length=100,
+        placeholder="Leave empty if you picked a member from the dropdown")
     psn_field = discord.ui.TextInput(label="PSN / GamerTag", required=False, max_length=100)
-    reason = discord.ui.TextInput(label="Reason for Blacklisting", style=discord.TextStyle.paragraph, required=True, max_length=1000)
-    evidence = discord.ui.TextInput(label="Evidence (links/screenshots)", required=False, max_length=1000)
-    severity = discord.ui.TextInput(label="Severity (Warning / Serious / Permanent)", required=True, max_length=50)
+    reason = discord.ui.TextInput(label="Reason for Blacklisting", style=discord.TextStyle.paragraph,
+                                  required=True, max_length=1000)
+
+    def __init__(self, target_member, severity: str):
+        super().__init__()
+        self._target = target_member
+        self._severity = severity
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
         submitter = interaction.user
         if not guild or not isinstance(submitter, discord.Member):
-            await interaction.response.send_message("This can only be used in the server.", ephemeral=True)
-            return
+            return await interaction.response.send_message("Server only.", ephemeral=True)
+        name_text = self.name_field.value.strip()
+        if not self._target and not name_text:
+            return await interaction.response.send_message(
+                "⚠️ Pick a member from the dropdown, or type their name in the details form if they already left.",
+                ephemeral=True)
+        if self._target and _hauto_db.is_blacklisted(guild.id, self._target.id):
+            return await interaction.response.send_message(
+                "That user already has an active blacklist entry.", ephemeral=True)
+        if submitter.id in _bl_evidence_waiting:
+            return await interaction.response.send_message(
+                "You already have an evidence upload in progress — finish that one first.", ephemeral=True)
 
-        raw = self.user_field.value.strip()
-        target_member: Optional[discord.Member] = None
-        if raw.startswith("<@") and raw.endswith(">"):
-            uid_str = "".join(ch for ch in raw if ch.isdigit())
-            if uid_str:
-                target_member = guild.get_member(int(uid_str))
-        elif raw.isdigit():
-            target_member = guild.get_member(int(raw))
-        else:
-            lower = raw.lower()
-            for m in guild.members:
-                if m.name.lower() == lower or m.display_name.lower() == lower:
-                    target_member = m
-                    break
+        await interaction.response.send_message(
+            "📸 **Last step — evidence is required.**\n"
+            "Send the screenshot(s) **as your next message in this channel** (upload straight from "
+            "your phone photos). You have **5 minutes**. The image gets attached to the blacklist "
+            "entry and your upload message is cleaned up automatically.",
+            ephemeral=True)
 
-        if target_member and _hauto_db.is_blacklisted(guild.id, target_member.id):
-            await interaction.response.send_message("That user already has an active blacklist entry.", ephemeral=True)
-            return
+        channel = interaction.channel
+        _bl_evidence_waiting.add(submitter.id)
 
-        removed_host_role = False
-        display_text = raw
-        user_id_val = None
-
-        if target_member:
-            display_text = f"{target_member.mention} ({target_member})"
-            user_id_val = target_member.id
-            host_role = guild.get_role(HOST_ROLE_ID)
-            if host_role and host_role in target_member.roles:
+        async def _wait_for_evidence():
+            try:
+                def _check(m: discord.Message) -> bool:
+                    return (m.author.id == submitter.id and m.channel.id == channel.id
+                            and any((a.content_type or "").startswith("image/") for a in m.attachments))
                 try:
-                    await target_member.remove_roles(host_role, reason="DIFF host blacklist applied")
-                    removed_host_role = True
-                except Exception:
-                    pass
+                    msg = await bot.wait_for("message", check=_check, timeout=300)
+                except asyncio.TimeoutError:
+                    try:
+                        await interaction.followup.send(
+                            "⌛ No image received in 5 minutes — blacklist submission cancelled. "
+                            "Press **Submit Blacklist** to start again.", ephemeral=True)
+                    except Exception:
+                        pass
+                    return
+                await _bl_finalize_entry(
+                    channel, guild, submitter, self._target, name_text,
+                    self.psn_field.value.strip(), self.reason.value.strip(),
+                    self._severity, msg)
+            except Exception as _e:
+                print(f"[Blacklist] evidence flow error: {_e}")
+            finally:
+                _bl_evidence_waiting.discard(submitter.id)
 
-        entry_id = _hauto_db.add_blacklist(
-            guild_id=guild.id,
-            user_id=user_id_val,
-            discord_tag=str(target_member) if target_member else raw,
-            psn=self.psn_field.value.strip(),
-            reason=self.reason.value.strip(),
-            evidence=self.evidence.value.strip(),
-            severity=self.severity.value.strip(),
-            submitted_by_id=submitter.id,
-            submitted_by_tag=str(submitter),
-            removed_host_role=removed_host_role,
-        )
+        asyncio.create_task(_wait_for_evidence())
 
-        if target_member:
-            _hauto_db.adjust_points(guild.id, target_member.id, -_HAUTO_BLACKLIST_POINT_PENALTY, 1)
 
-        embed = discord.Embed(
-            title=f"🚫 DIFF Host Blacklist Entry #{entry_id}",
-            color=discord.Color.red(),
-            timestamp=utc_now(),
-        )
-        embed.add_field(name="👤 User", value=display_text, inline=False)
-        embed.add_field(name="🎮 PSN", value=self.psn_field.value.strip() or "Not provided", inline=True)
-        embed.add_field(name="📊 Severity", value=self.severity.value.strip(), inline=True)
-        embed.add_field(name="📝 Reason", value=self.reason.value.strip()[:1024], inline=False)
-        embed.add_field(name="📸 Evidence", value=(self.evidence.value.strip() or "None provided")[:1024], inline=False)
-        embed.add_field(name="⚙️ Action Taken", value="Host role removed" if removed_host_role else "Listed / no host role found", inline=False)
-        embed.set_footer(text=f"Submitted by {submitter} • Different Meets • Host Blacklist")
+class _BlacklistFlowView(discord.ui.View):
+    """Ephemeral guided submission: member dropdown + severity dropdown + details."""
 
-        bl_ch = guild.get_channel(BLACKLIST_CHANNEL_ID)
-        if isinstance(bl_ch, discord.TextChannel):
-            try:
-                await bl_ch.send(embed=embed)
-            except Exception:
-                pass
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.target_member = None
+        self.severity: str | None = None
 
-        log_ch = guild.get_channel(STAFF_LOGS_CHANNEL_ID)
-        if isinstance(log_ch, discord.TextChannel):
-            try:
-                await log_ch.send(f"📌 New blacklist entry #{entry_id} submitted by {submitter.mention}", embed=embed)
-            except Exception:
-                pass
+    @discord.ui.select(cls=discord.ui.UserSelect, placeholder="👤 Select the member (skip if they left the server)",
+                       min_values=0, max_values=1, row=0)
+    async def pick_user(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        self.target_member = select.values[0] if select.values else None
+        await interaction.response.defer()
 
-        await interaction.response.send_message(f"✅ Blacklist entry #{entry_id} submitted successfully.", ephemeral=True)
+    @discord.ui.select(placeholder="📊 Severity (required)", row=1, options=[
+        discord.SelectOption(label="Warning", emoji="🟡", description="Minor violation — on record"),
+        discord.SelectOption(label="Serious", emoji="🟠", description="Major violation"),
+        discord.SelectOption(label="Permanent", emoji="🔴", description="Permanently blacklisted"),
+    ])
+    async def pick_severity(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.severity = select.values[0]
+        await interaction.response.defer()
+
+    @discord.ui.button(label="📝 Next: Reason & Submit", style=discord.ButtonStyle.danger, row=2)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.severity:
+            return await interaction.response.send_message(
+                "⚠️ Pick a **severity** from the dropdown first.", ephemeral=True)
+        target = self.target_member
+        if target is not None and interaction.guild:
+            target = interaction.guild.get_member(target.id) or target
+            if _hauto_db.is_blacklisted(interaction.guild.id, target.id):
+                return await interaction.response.send_message(
+                    "That user already has an active blacklist entry.", ephemeral=True)
+        await interaction.response.send_modal(_BlacklistDetailsModal(target, self.severity))
+
+
+async def _bl_start_flow(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(
+        "🚫 **Host Blacklist Submission**\n"
+        "1️⃣ Pick the member from the dropdown (searchable — start typing their name).\n"
+        "2️⃣ Pick the severity.\n"
+        "3️⃣ Press **Next** for the reason — then upload your screenshot (required).",
+        view=_BlacklistFlowView(), ephemeral=True)
 
 
 class _BlacklistSearchModal(discord.ui.Modal, title="🔎 Search Host Blacklist"):
@@ -7212,7 +7337,7 @@ class HostHubView(discord.ui.View):
         if not is_staff:
             await interaction.response.send_message("Only staff can submit blacklist entries.", ephemeral=True)
             return
-        await interaction.response.send_modal(_BlacklistModal())
+        await _bl_start_flow(interaction)
 
     @discord.ui.button(label="Search Blacklist", emoji="🔎", style=discord.ButtonStyle.secondary, custom_id="diff_host_hub:search_blacklist", row=1)
     async def search_blacklist_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -15190,7 +15315,7 @@ class _HostHubBlacklistSelect(discord.ui.Select):
                 return await interaction.response.send_message(
                     "Only staff can submit blacklist entries.", ephemeral=True
                 )
-            await interaction.response.send_modal(_BlacklistModal())
+            await _bl_start_flow(interaction)
         elif val == "bl_search":
             await interaction.response.send_modal(_BlacklistSearchModal())
         elif val == "bl_view":
