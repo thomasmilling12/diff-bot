@@ -18112,7 +18112,7 @@ async def _cmd_rcremind(ctx: commands.Context, mode: str = ""):
         embed=embed,
         allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
     )
-    await ctx.send(f"📣 Reminder posted in {ch.mention} — **{len(non)}** non-responder(s).", delete_after=10)
+    await ctx.send(f"📣 Reminder posted in {ch.mention} — **{len(non)}** member(s) with outstanding tasks.", delete_after=10)
 
 
 @bot.command(name="rollleaderboard")
