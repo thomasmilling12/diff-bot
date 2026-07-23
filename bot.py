@@ -28820,7 +28820,8 @@ async def _cs_update_submission_message(submission: Dict[str, Any], *, disable_v
         ),
         color=embed_color,
     )
-    embed.set_image(url=submission["image_url"])
+    if submission.get("image_url"):
+        embed.set_image(url=submission["image_url"])
     footer = f"Submitted by {submission.get('author_name', 'Unknown')}"
     if extra_footer:
         footer += f" • {extra_footer}"
@@ -29374,7 +29375,8 @@ async def _cs_post_winner_announcement(guild: discord.Guild, winner: Dict[str, A
                 breakdown_lines.append(f"{_crown}`{_bar}` **{_name}** — {_votes}")
             embed.add_field(name="📋 Full Breakdown", value="\n".join(breakdown_lines), inline=False)
 
-    embed.set_image(url=winner["image_url"])
+    if winner.get("image_url"):
+        embed.set_image(url=winner["image_url"])
     embed.set_footer(text="DIFF • Crew Color Announcement" + (" • Manual Override" if manual else ""))
 
     msg = await channel.send(
@@ -29399,7 +29401,8 @@ async def _cs_post_winner_announcement(guild: discord.Guild, winner: Dict[str, A
                 color=embed_color,
                 timestamp=datetime.now(COLOR_TZ),
             )
-            dm_embed.set_image(url=winner["image_url"])
+            if winner.get("image_url"):
+                dm_embed.set_image(url=winner["image_url"])
             dm_embed.set_footer(text="DIFF Meets • Crew Color System")
             await winner_member.send(embed=dm_embed)
     except Exception as _dme:
@@ -29460,7 +29463,8 @@ async def _cs_post_vote_announcement(guild: discord.Guild, candidates: List[Dict
             except Exception:
                 clr = discord.Color.blurple()
             preview = discord.Embed(title=f"{idx + 1}. {c['color_name']}", description=f"`{c['hex_code']}`", color=clr)
-            preview.set_image(url=c["image_url"])
+            if c.get("image_url"):
+                preview.set_image(url=c["image_url"])
             await channel.send(embed=preview)
     for emoji in NUMBER_EMOJIS[:len(candidates[:4])]:
         try:
@@ -30063,7 +30067,11 @@ class ColorSubmissionModal(discord.ui.Modal, title="DIFF Color Submission"):
         embed.add_field(name="📋 Status", value="⏳ Pending Review", inline=True)
         embed.set_image(url=f"attachment://{_img_file.filename}")
         embed.set_footer(text="DIFF Color Team  •  React to vote: ✅ Yes  ❌ No  🤔 Maybe")
-        msg = await submit_channel.send(embed=embed, file=_img_file, view=SubmissionActionView())
+        try:
+            msg = await submit_channel.send(embed=embed, file=_img_file, view=SubmissionActionView())
+        except Exception as _se:
+            return await interaction.followup.send(
+                f"⚠️ Couldn't post your submission: {_se}", ephemeral=True)
         image_val = ""
         try:
             if msg.embeds and msg.embeds[0].image and msg.embeds[0].image.url:
