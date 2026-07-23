@@ -4233,7 +4233,7 @@ async def _hrsvp_render_layout(bot_client, ping: bool = False) -> None:
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
         new_ids["header"] = header.id
-        for day in _HRSVP_DAYS:
+        for day in _hrsvp_days_sorted():
             mm = await channel.send(embed=_hrsvp_build_meet_embed(day), view=_HrsvpMeetView(day))
             new_ids[day] = mm.id
         data = _hrsvp_load()
@@ -4266,12 +4266,27 @@ async def _hrsvp_update_panel(bot_client) -> None:
     except Exception:
         pass
 
-    for day in _HRSVP_DAYS:
+    # Cards are edited by POSITION (message ids ascend in post order) so the
+    # soonest meet is always the top card — even on already-posted panels.
+    pos_ids = sorted(int(ids[d]) for d in _HRSVP_DAYS)
+    remap = False
+    for pos, day in enumerate(_hrsvp_days_sorted()):
+        mid = pos_ids[pos]
         try:
-            mm = await channel.fetch_message(int(ids[day]))
+            mm = await channel.fetch_message(mid)
             await mm.edit(embed=_hrsvp_build_meet_embed(day), view=_HrsvpMeetView(day))
         except discord.NotFound:
             return await _hrsvp_render_layout(bot_client, ping=False)
+        except Exception:
+            continue
+        if int(ids.get(day, 0)) != mid:
+            ids[day] = mid
+            remap = True
+    if remap:
+        try:
+            fresh = _hrsvp_load()
+            fresh["panel_message_ids"] = ids
+            _hrsvp_save(fresh)
         except Exception:
             pass
 
@@ -4523,6 +4538,20 @@ def _asched_slot_ts(slot) -> int | None:
         return int(p)
     dv, tv = slot.get("day", "TBD"), slot.get("time", "TBD")
     return _this_week_weekday_ts(dv, tv) or _parse_meet_ts(dv, tv)
+
+
+def _hrsvp_days_sorted() -> list:
+    """Meet 1/2/3 ordered by their scheduled date (soonest first).
+    Slots without a resolvable timestamp keep their original relative order at the end."""
+    try:
+        days_cfg = _asched_load().get("days", {})
+        def _key(pair):
+            idx, day = pair
+            ts = _asched_slot_ts(days_cfg.get(day, {}))
+            return (ts if ts else float("inf"), idx)
+        return [d for _, d in sorted(enumerate(_HRSVP_DAYS), key=_key)]
+    except Exception:
+        return list(_HRSVP_DAYS)
 
 
 def _asched_build() -> dict:
@@ -16686,6 +16715,27 @@ def _readable_host(guild, host_id) -> str | None:
     return f"<@{host_id}>"
 
 
+def _rc_meet_render_order(guild_id: int) -> list:
+    """Meet numbers (1,2,3) ordered by their scheduled date (soonest first).
+    Unscheduled meets keep their original relative order at the end."""
+    try:
+        meets = {row["meet_number"]: row for row in _rc_db.get_meets(guild_id)}
+        def _key(pair):
+            idx, n = pair
+            ts = None
+            m = meets.get(n)
+            if m is not None:
+                try:
+                    if m["class_name"] != "TBD" and m["start_time"] != "TBD":
+                        ts = _parse_meet_ts(m["date_text"], m["start_time"])
+                except Exception:
+                    ts = None
+            return (ts if ts else float("inf"), idx)
+        return [n for _, n in sorted(enumerate((1, 2, 3)), key=_key)]
+    except Exception:
+        return [1, 2, 3]
+
+
 def _rc_build_meet_embed(guild: discord.Guild, n: int) -> discord.Embed:
     """One roomy, readable card for a single meet (replaces the old clumped field)."""
     meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
@@ -17324,13 +17374,16 @@ async def _rc_refresh_panel(guild: discord.Guild):
             except Exception as e:
                 print(f"[RcPanel] header edit error: {e}")
 
-            # Edit each per-meet card
-            for n in (1, 2, 3):
-                mid = msgs.get(f"meet{n}")
-                if not mid:
-                    print(f"[RcPanel] meet{n} message missing — reposting layout")
-                    await _rc_post_new_panel(guild, ping_roles=False)
-                    return
+            # Edit each per-meet card — by POSITION (ids ascend in post order) so
+            # the soonest meet is always the top card, even on existing panels.
+            raw_ids = [msgs.get(f"meet{n}") for n in (1, 2, 3)]
+            if not all(raw_ids):
+                print("[RcPanel] a meet message id is missing — reposting layout")
+                await _rc_post_new_panel(guild, ping_roles=False)
+                return
+            pos_ids = sorted(int(m) for m in raw_ids)
+            for pos, n in enumerate(_rc_meet_render_order(guild.id)):
+                mid = pos_ids[pos]
                 try:
                     mm     = await channel.fetch_message(mid)
                     locked = _rc_meet_is_locked(meets_by_num.get(n))
@@ -17341,6 +17394,12 @@ async def _rc_refresh_panel(guild: discord.Guild):
                     return
                 except Exception as e:
                     print(f"[RcPanel] meet{n} edit error: {e}")
+                    continue
+                if int(msgs.get(f"meet{n}") or 0) != mid:
+                    try:
+                        _rc_db.set_message(guild.id, f"meet{n}", mid)
+                    except Exception:
+                        pass
         except Exception as _task_err:
             print(f"[RcPanel] _do_refresh unhandled error: {_task_err}")
             import traceback as _tb; _tb.print_exc()
@@ -17421,7 +17480,7 @@ async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False, res
         _rc_db.upsert_panel(guild.id, channel.id, header_msg.id, None)
         _rc_db.set_message(guild.id, "header", header_msg.id)
 
-        for n in (1, 2, 3):
+        for n in _rc_meet_render_order(guild.id):
             locked   = _rc_meet_is_locked(meets_by_num.get(n))
             meet_msg = await channel.send(
                 embed=_rc_build_meet_embed(guild, n),
