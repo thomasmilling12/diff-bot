@@ -33,6 +33,7 @@ class StaffPanelTests(unittest.IsolatedAsyncioTestCase):
             "_rc_refresh_panel": AsyncMock(), "_rc_post_new_panel": AsyncMock(),
             "_RcFinalizeModal": Mock(return_value="modal"),
             "_asched_load": lambda: {"days": {"Friday": {"class": "Sports"}}},
+            "_asched_slot_ts": lambda entry: entry.get("ts"),
             "_HRSVP_DAYS": ("Friday", "Saturday", "Sunday"),
         }
         exec(compile(module, "bot.py", "exec"), self.ns)

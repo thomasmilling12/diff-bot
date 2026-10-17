@@ -6125,6 +6125,7 @@ class _ASchedSubmitBtn(discord.ui.Button):
                 "start_time": entry.get("time", "TBD"),
                 "host_id": entry.get("host_id"),
                 "date_text": entry.get("day", day),
+                "scheduled_ts": _asched_slot_ts(entry),
                 "is_finalized": False,
             })
         await _rc_sync_from_schedule(guild, rc_meets)
@@ -6496,6 +6497,7 @@ class AutoScheduleView(discord.ui.View):
                     "start_time": entry.get("time", "TBD"),
                     "host_id": entry.get("host_id"),
                     "date_text": entry.get("day", "TBD"),
+                    "scheduled_ts": _asched_slot_ts(entry),
                     "is_finalized": False,
                 })
             await _rc_sync_from_schedule(interaction.guild, rc_meets)
@@ -16488,9 +16490,13 @@ class _RollCallDB:
                 host_id INTEGER,
                 date_text TEXT NOT NULL DEFAULT 'TBD',
                 is_finalized INTEGER NOT NULL DEFAULT 0,
+                scheduled_ts INTEGER,
                 PRIMARY KEY (guild_id, meet_number)
             )
         """)
+        meet_columns = {row["name"] for row in cur.execute("PRAGMA table_info(rollcall_meets)")}
+        if "scheduled_ts" not in meet_columns:
+            cur.execute("ALTER TABLE rollcall_meets ADD COLUMN scheduled_ts INTEGER")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS rollcall_responses (
                 guild_id INTEGER NOT NULL,
@@ -16606,17 +16612,30 @@ class _RollCallDB:
     def upsert_meets(self, guild_id, meets: list):
         cur = self.conn.cursor()
         for m in meets:
+            date_text = m.get("date_text", "TBD")
+            start_time = m.get("start_time", "TBD")
+            scheduled_ts = m.get("scheduled_ts")
+            if not isinstance(scheduled_ts, (int, float)) or scheduled_ts <= 0:
+                scheduled_ts = None
+                if date_text not in ("", "TBD", None) and start_time not in ("", "TBD", None):
+                    scheduled_ts = (
+                        _this_week_weekday_ts(date_text, start_time)
+                        or _parse_meet_ts(date_text, start_time)
+                    )
+            scheduled_ts = int(scheduled_ts) if scheduled_ts else None
             cur.execute("""
-                INSERT INTO rollcall_meets (guild_id, meet_number, class_name, start_time, host_id, date_text, is_finalized)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO rollcall_meets
+                    (guild_id, meet_number, class_name, start_time, host_id, date_text, is_finalized, scheduled_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id, meet_number) DO UPDATE SET
                     class_name=excluded.class_name,
                     start_time=excluded.start_time,
                     host_id=excluded.host_id,
                     date_text=excluded.date_text,
-                    is_finalized=excluded.is_finalized
-            """, (guild_id, m["meet_number"], m.get("class_name", "TBD"), m.get("start_time", "TBD"),
-                  m.get("host_id"), m.get("date_text", "TBD"), 1 if m.get("is_finalized") else 0))
+                    is_finalized=excluded.is_finalized,
+                    scheduled_ts=excluded.scheduled_ts
+            """, (guild_id, m["meet_number"], m.get("class_name", "TBD"), start_time,
+                  m.get("host_id"), date_text, 1 if m.get("is_finalized") else 0, scheduled_ts))
             cur.execute("""
                 INSERT OR IGNORE INTO meet_state (guild_id, meet_number, attendance_finalized) VALUES (?, ?, 0)
             """, (guild_id, m["meet_number"]))
@@ -16891,15 +16910,71 @@ def _rc_build_admin_embed(guild: discord.Guild) -> discord.Embed:
     return embed
 
 
+def _rc_meet_schedule_ts(meet) -> int | None:
+    """Stable timestamp for a roll-call meet; bare weekdays need a saved timestamp."""
+    if not meet:
+        return None
+    try:
+        stored_ts = meet["scheduled_ts"] if "scheduled_ts" in meet.keys() else None
+    except Exception:
+        stored_ts = None
+    if isinstance(stored_ts, (int, float)) and stored_ts > 0:
+        return int(stored_ts)
+
+    try:
+        date_text = str(meet["date_text"] or "").strip()
+        start_time = str(meet["start_time"] or "").strip()
+    except Exception:
+        return None
+    if not date_text or not start_time or date_text.upper() == "TBD" or start_time.upper() == "TBD":
+        return None
+
+    # Only re-parse dates that name a calendar date. Weekday-only values drift to
+    # the next week after Monday; new writes store their resolved timestamp above.
+    explicit_date = re.search(
+        r"<t:\d+|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+        r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|"
+        r"nov(?:ember)?|dec(?:ember)?)\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|"
+        r"\b20\d{2}-\d{1,2}-\d{1,2}\b",
+        date_text,
+        re.IGNORECASE,
+    )
+    return _parse_meet_ts(date_text, start_time) if explicit_date else None
+
+
+def _rc_auto_reset_ready(guild_id: int, now_ts: float | None = None) -> bool:
+    """Reset only on a Monday after every scheduled meet's calendar week has ended."""
+    now_ts = time.time() if now_ts is None else now_ts
+    now_date = datetime.fromtimestamp(now_ts, _EST_TZ).date()
+    current_week_start = now_date - timedelta(days=now_date.weekday())
+    for meet in _rc_db.get_meets(guild_id):
+        meet_num = int(meet["meet_number"])
+        ts = _rc_meet_schedule_ts(meet)
+        if ts is not None:
+            meet_date = datetime.fromtimestamp(ts, _EST_TZ).date()
+            if meet_date >= current_week_start:
+                return False
+            continue
+
+        values = [
+            str(meet[key] or "").strip()
+            for key in ("class_name", "start_time", "date_text")
+        ]
+        partially_scheduled = any(value and value.upper() != "TBD" for value in values)
+        counts = _rc_db.get_counts(guild_id, meet_num)
+        has_rsvps = any(counts.get(status, 0) for status in ("yes", "maybe", "no"))
+        if partially_scheduled or has_rsvps:
+            # Unknown dates and RSVPs on an unscheduled slot are not safe to erase.
+            return False
+    return True
+
+
 def _rc_meet_is_locked(meet) -> bool:
     """RSVP buttons lock on the event day itself (no last-minute flips)."""
     if not meet:
         return False
     from datetime import date as _date, datetime as _dt, timezone as _tz
-    ts = _parse_meet_ts(
-        meet["date_text"]  if "date_text"  in meet.keys() else "",
-        meet["start_time"] if "start_time" in meet.keys() else "",
-    )
+    ts = _rc_meet_schedule_ts(meet)
     if not ts:
         return False
     return _date.today() >= _dt.fromtimestamp(ts, tz=_tz.utc).date()
@@ -16918,6 +16993,31 @@ def _rc_build_header_embed(guild: discord.Guild) -> discord.Embed:
     _next_monday = (_monday + _td(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
     _reset_ts = int(_next_monday.timestamp())
 
+    scheduled_timestamps = []
+    pending_dates = []
+    for n in (1, 2, 3):
+        meet = meets_by_num.get(n)
+        ts = _rc_meet_schedule_ts(meet)
+        if ts:
+            scheduled_timestamps.append(ts)
+        elif meet:
+            configured = any(
+                str(meet[key] or "").strip().upper() not in ("", "TBD")
+                for key in ("class_name", "start_time", "date_text")
+            )
+            counts = _rc_db.get_counts(guild.id, n)
+            has_rsvps = any(counts.get(status, 0) for status in ("yes", "maybe", "no"))
+            if configured or has_rsvps:
+                pending_dates.append(str(n))
+
+    date_labels = []
+    seen_dates = set()
+    for ts in sorted(scheduled_timestamps):
+        meet_date = datetime.fromtimestamp(ts, _EST_TZ).date()
+        if meet_date not in seen_dates:
+            seen_dates.add(meet_date)
+            date_labels.append(f"<t:{ts}:D>")
+
     finalized_count = sum(1 for n in (1, 2, 3)
                           if meets_by_num.get(n) and meets_by_num[n]["is_finalized"])
     all_finalized = finalized_count == 3
@@ -16925,17 +17025,28 @@ def _rc_build_header_embed(guild: discord.Guild) -> discord.Embed:
              else 0xFEE75C if finalized_count > 0
              else 0x5865F2)
 
-    if all_finalized:
-        desc = (
-            f"📅 **Week of {_week_str}**\n\n"
-            "**All meets this week have been finalized!** 🎉\n"
-            "Attendance has been recorded — see you on the track."
-        )
+    if date_labels or pending_dates:
+        if date_labels:
+            dates_text = " · ".join(date_labels)
+            if pending_dates:
+                dates_text += f" · {len(pending_dates)} more pending"
+        else:
+            dates_text = f"{len(pending_dates)} meet date{'s' if len(pending_dates) != 1 else ''} pending"
+        if all_finalized:
+            desc = (
+                f"📅 **Meet dates:** {dates_text}\n\n"
+                "✅ All three meets are finalized. The panel resets on Monday after the last meet week ends."
+            )
+        else:
+            desc = (
+                f"📅 **Meet dates:** {dates_text}\n\n"
+                "Responses are kept through the last listed meet. The panel resets on Monday after its week ends.\n"
+                "Please RSVP to each meet, even if you can't make it. *No-shows are tracked.*"
+            )
     else:
-        desc = (
-            f"📅 **Week of {_week_str}**  •  🔄 Resets <t:{_reset_ts}:R>\n\n"
-            "There are **three meets** this week — each one has its own card below.\n"
-            "Please RSVP to **every** meet, even the ones you can't make.\n"
+        desc = f"📅 **Week of {_week_str}**  •  🔄 Resets <t:{_reset_ts}:R>\n\n"
+        desc += (
+            "Meet dates are being set. Please RSVP to each meet, even if you can't make it.\n"
             "*No-shows are tracked.*"
         )
 
@@ -16951,7 +17062,7 @@ def _rc_build_header_embed(guild: discord.Guild) -> discord.Embed:
         name="Different Meets",
         icon_url=DIFF_LOGO_URL if DIFF_LOGO_URL else discord.utils.MISSING,
     )
-    embed.set_footer(text=f"DIFF • Auto Roll Call System  •  Updated {_now_et.strftime('%-m/%-d/%Y %-I:%M %p')}  •  Use 📊 My RSVP to see your responses")
+    embed.set_footer(text=f"DIFF Roll Call • Updated {_now_et.strftime('%-m/%-d/%Y %-I:%M %p')} • My RSVP shows your responses")
     return embed
 
 
@@ -16985,14 +17096,7 @@ def _rc_meet_render_order(guild_id: int) -> list:
         meets = {row["meet_number"]: row for row in _rc_db.get_meets(guild_id)}
         def _key(pair):
             idx, n = pair
-            ts = None
-            m = meets.get(n)
-            if m is not None:
-                try:
-                    if m["class_name"] != "TBD" and m["start_time"] != "TBD":
-                        ts = _parse_meet_ts(m["date_text"], m["start_time"])
-                except Exception:
-                    ts = None
+            ts = _rc_meet_schedule_ts(meets.get(n))
             return (ts if ts else float("inf"), idx)
         return [n for _, n in sorted(enumerate((1, 2, 3)), key=_key)]
     except Exception:
@@ -17011,7 +17115,7 @@ def _rc_build_meet_embed(guild: discord.Guild, n: int) -> discord.Embed:
     host_text    = _readable_host(guild, host_id) or "*No host assigned*"
     is_finalized = bool(meet and meet["is_finalized"])
     scheduled    = class_name != "TBD" and start_time != "TBD"
-    ts           = _parse_meet_ts(date_text, start_time) if scheduled else None
+    ts           = _rc_meet_schedule_ts(meet) if scheduled else None
 
     if is_finalized:
         color       = 0x57F287
@@ -17025,7 +17129,7 @@ def _rc_build_meet_embed(guild: discord.Guild, n: int) -> discord.Embed:
 
     title_class = class_name if class_name != "TBD" else "To be announced"
     embed = discord.Embed(
-        title=f"〔 Meet {n} 〕  {title_class}",
+        title=f"Meet {n} · {title_class}",
         color=color,
     )
     if DIFF_LOGO_URL:
@@ -17039,8 +17143,8 @@ def _rc_build_meet_embed(guild: discord.Guild, n: int) -> discord.Embed:
         when_val = "📆 *Date & time not posted yet*"
 
     embed.add_field(name="\u200b", value=status_line, inline=False)
-    embed.add_field(name="When", value=when_val, inline=True)
-    embed.add_field(name="Host", value=host_text, inline=True)
+    embed.add_field(name="🗓 When", value=when_val, inline=False)
+    embed.add_field(name="👤 Host", value=host_text, inline=False)
 
     total        = c["yes"] + c["maybe"] + c["no"]
     scale        = max(total, 10)
@@ -17048,14 +17152,13 @@ def _rc_build_meet_embed(guild: discord.Guild, n: int) -> discord.Embed:
     maybe_blocks = round(c["maybe"] / scale * 10)
     bar          = "🟩" * yes_blocks + "🟨" * maybe_blocks + "⬜" * (10 - yes_blocks - maybe_blocks)
     embed.add_field(
-        name="Attendance",
+        name="RSVPs",
         value=(
-            f"✅ **{c['yes']}** going    ❓ **{c['maybe']}** maybe    ❌ **{c['no']}** out\n"
+            f"✅ **{c['yes']}** going · ❓ **{c['maybe']}** maybe · ❌ **{c['no']}** out\n"
             f"{bar}"
         ),
         inline=False,
     )
-    embed.set_footer(text=f"Meet {n} of 3  •  Tap a button below to RSVP")
     return embed
 
 
@@ -17133,6 +17236,7 @@ class _RcNoShowDisputeView(discord.ui.View):
 class _RcBtn(discord.ui.Button):
     """Pi-compatible button for the roll call RSVP panel."""
     _LABELS  = {"yes": "✅", "maybe": "❓", "no": "❌"}
+    _BUTTON_LABELS = {"yes": "Going", "maybe": "Maybe", "no": "Out"}
     _STYLES  = {
         "yes":   discord.ButtonStyle.success,
         "maybe": discord.ButtonStyle.secondary,
@@ -17146,7 +17250,7 @@ class _RcBtn(discord.ui.Button):
 
     def __init__(self, meet_number: int, status: str, row: int) -> None:
         super().__init__(
-            label=f"Meet {meet_number} {self._LABELS[status]}",
+            label=f"{self._LABELS[status]} {self._BUTTON_LABELS[status]}",
             style=self._STYLES[status],
             custom_id=f"diff_rollcall:{meet_number}:{status}",
             row=row,
@@ -17315,10 +17419,7 @@ class _RcRollCallView(discord.ui.View):
             # Lock buttons on the event day itself
             lock = False
             if meet:
-                ts = _parse_meet_ts(
-                    meet["date_text"] if "date_text" in meet.keys() else "",
-                    meet["start_time"] if "start_time" in meet.keys() else "",
-                )
+                ts = _rc_meet_schedule_ts(meet)
                 if ts:
                     event_date = _dt.fromtimestamp(ts, tz=_tz.utc).date()
                     lock = today >= event_date
@@ -17446,7 +17547,8 @@ class _RcStaffSelect(discord.ui.Select):
                     meets.append({
                         "meet_number": n, "class_name": entry.get("class", "TBD"),
                         "start_time": entry.get("time", "TBD"), "host_id": entry.get("host_id"),
-                        "date_text": entry.get("day", "TBD"), "is_finalized": False,
+                        "date_text": entry.get("day", "TBD"),
+                        "scheduled_ts": _asched_slot_ts(entry), "is_finalized": False,
                     })
                 _rc_db.upsert_meets(interaction.guild.id, meets)
             await _rc_refresh_panel(interaction.guild)
@@ -17858,13 +17960,13 @@ async def _rc_post_new_panel_locked(guild: discord.Guild, ping_roles: bool = Fal
     """Re-post the roll-call layout (header card → 3 per-meet cards → staff admin card).
 
     Deletes any existing roll-call messages first, then posts fresh.
-    `reset=True` ALSO wipes the week (responses/meets/finalized) — use ONLY for an
-    explicit new-week post (`!postrollcall`). When `reset=False` (recovery/repost),
-    existing responses + meets are preserved so a missing card never costs data.
+    `reset=True` ALSO wipes the week (responses/meets/finalized) — use only for an
+    explicit reset or after the protected weekly-reset check. When `reset=False`
+    (recovery/repost), existing responses + meets are preserved.
     """
     channel = await _rc_resolve_channel(guild)
     if channel is None:
-        return
+        return "failed"
 
     # Delete any existing roll-call layout messages before posting fresh
     bot_id = guild.me.id if guild.me else None
@@ -17879,6 +17981,7 @@ async def _rc_post_new_panel_locked(guild: discord.Guild, ping_roles: bool = Fal
         except Exception:
             pass
 
+    reset_applied = False
     if reset:
         # Snapshot the ending week's responses BEFORE the wipe — the Monday-00:15
         # pruning report reads this snapshot (the live DB is already empty by then).
@@ -17889,6 +17992,7 @@ async def _rc_post_new_panel_locked(guild: discord.Guild, ping_roles: bool = Fal
         except Exception as _sne:
             print(f"[RollCall] week snapshot failed: {_sne}")
         _rc_db.reset_week(guild.id)   # wipe responses, meets, finalized flags + message rows → fresh slate
+        reset_applied = True
         if _snap_ok:
             # Mark the wipe as completed AFTER it succeeds — the report only prefers
             # the snapshot when this flag is set (if the wipe threw, live DB is still
@@ -17937,9 +18041,11 @@ async def _rc_post_new_panel_locked(guild: discord.Guild, ping_roles: bool = Fal
         admin_msg = await _rc_refresh_admin_card_locked(guild, channel)
         _rc_db.upsert_panel(guild.id, channel.id, header_msg.id, admin_msg.id)
         _rc_db.set_message(guild.id, "admin", admin_msg.id)
+        return "posted"
     except Exception as e:
         print(f"[RollCall] post failed: {e}")
         import traceback as _tb; _tb.print_exc()
+        return "reset-only" if reset_applied else "failed"
 
 
 async def _rc_ensure_panel(guild: discord.Guild):
@@ -19347,6 +19453,7 @@ async def _cmd_syncrc(ctx: commands.Context):
             "start_time": entry.get("time", "TBD"),
             "host_id": entry.get("host_id"),
             "date_text": entry.get("day", "TBD"),
+            "scheduled_ts": _asched_slot_ts(entry),
             "is_finalized": False,
         })
 
@@ -28015,25 +28122,47 @@ async def _cmd_hostnudge(ctx: commands.Context):
 # ROLL CALL WEEKLY AUTO-RESET LOOP
 # =========================
 async def _rc_weekly_reset_loop() -> None:
-    """Once per week, when a new Monday (EST) begins, wipe last week's roll-call
-    responses/meets and post a fresh roll-call panel (pings crew) — mirrors the host
-    availability panel's auto-reset. Checks every 60 s; on startup immediately catches
-    up if this week's Monday reset was missed. The once-per-week guard
+    """On Monday, reset roll call only after every listed meet's week has passed.
+    Checks every 60 s and catches up after downtime. The once-per-week guard
     (`last_weekly_reset` in the rc reminder-state file) is persisted to disk so a
     redeploy can't re-fire the same week."""
     await bot.wait_until_ready()
     from zoneinfo import ZoneInfo as _ZI
     from datetime import timedelta as _td
 
-    async def _do_reset(monday_str: str) -> None:
+    wait_log_for = None
+
+    async def _do_reset(monday_str: str) -> bool:
+        nonlocal wait_log_for
         guild = bot.get_guild(GUILD_ID)
         if guild is None:
-            return
-        await _rc_post_new_panel(guild, ping_roles=True, reset=True)
+            return False
+        if not _rc_auto_reset_ready(guild.id):
+            if wait_log_for != monday_str:
+                print(
+                    "[RcWeeklyReset] Keeping responses; at least one meet is still "
+                    "scheduled in or after this week, or its date is unresolved."
+                )
+                wait_log_for = monday_str
+            return False
+        result = await _rc_post_new_panel(guild, ping_roles=True, reset=True)
+        if result == "failed":
+            if wait_log_for != monday_str:
+                print("[RcWeeklyReset] Panel refresh failed; keeping reset due for retry.")
+                wait_log_for = monday_str
+            return False
         st = _rc_reminder_state_load()
         st["last_weekly_reset"] = monday_str
         _rc_reminder_state_save(st)
-        print(f"[RcWeeklyReset] Reset + reposted roll call for week of {monday_str}.")
+        if result == "posted":
+            print(f"[RcWeeklyReset] Reset + reposted roll call for week of {monday_str}.")
+        else:
+            print(
+                f"[RcWeeklyReset] Reset roll call for week of {monday_str}; "
+                "panel post failed and will need a refresh."
+            )
+        wait_log_for = None
+        return True
 
     # ── Startup catch-up ───────
     # Reset is destructive (wipes responses/meets), so on the VERY first run (or if the
@@ -28050,12 +28179,12 @@ async def _rc_weekly_reset_loop() -> None:
             _rc_reminder_state_save(st)
             print("[RcWeeklyReset] First run — seeded weekly marker (no reset).")
         elif stored != most_recent_monday:
-            await _do_reset(most_recent_monday)
-            print("[RcWeeklyReset] Startup catch-up reset applied (missed Monday).")
+            if await _do_reset(most_recent_monday):
+                print("[RcWeeklyReset] Startup catch-up reset applied (missed Monday).")
     except Exception as _e:
         print(f"[RcWeeklyReset] Startup catch-up error: {_e}")
 
-    # ── Ongoing loop: reset within ~60 s of Monday 00:00 EST ──
+    # ── Ongoing loop: try within ~60 s of Monday 00:00 EST, retaining data if needed ──
     while not bot.is_closed():
         await asyncio.sleep(60)
         try:
