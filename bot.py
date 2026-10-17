@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from utils import reminder_layouts as _reminder_ui
 
 try: 
     import aiohttp
@@ -16612,22 +16613,29 @@ def _rc_build_rollcall_embed(guild: discord.Guild) -> discord.Embed:
     return embed
 
 
-def _rc_build_admin_embed() -> discord.Embed:
+def _rc_build_admin_embed(guild: discord.Guild) -> discord.Embed:
+    counts = _rc_db.get_all_counts(guild.id)
+    totals = {status: sum(c[status] for c in counts.values())
+              for status in ("yes", "maybe", "no")}
     embed = discord.Embed(
         title="🛠️ DIFF Roll Call — Staff Tools",
-        description="Use the menu below to manage the roll call panel, view attendance, or sync from the host schedule.",
-        color=discord.Color.dark_teal(),
-    )
-    embed.add_field(
-        name="Available Actions",
-        value=(
-            "📊 **View Attendance** — see full RSVP breakdown\n"
-            "🗓️ **Sync from Schedule** — update meet dates, times, classes & hosts\n"
-            "🔃 **Refresh Panel** — re-render with latest response counts\n"
-            "🗑️ **Reset Roll Call** — wipe all responses and post a fresh panel"
+        description=(
+            "**This week's response summary**\n"
+            f"✅ `{totals['yes']}` attending · ❓ `{totals['maybe']}` maybe · "
+            f"❌ `{totals['no']}` not attending\n"
+            "────────────────────"
         ),
-        inline=False,
+        color=discord.Color.dark_teal(),
+        timestamp=datetime.now(timezone.utc),
     )
+    for n in (1, 2, 3):
+        c = counts[n]
+        embed.add_field(
+            name=f"Meet {n}",
+            value=f"✅ `{c['yes']}` · ❓ `{c['maybe']}` · ❌ `{c['no']}`",
+            inline=True,
+        )
+    embed.set_footer(text="DIFF Roll Call • Staff Tools")
     return embed
 
 
@@ -17105,11 +17113,136 @@ class _RcFinalizeBtn(discord.ui.Button):
         await interaction.response.send_modal(_RcFinalizeModal(self.meet_number))
 
 
-class _RcAdminView(discord.ui.View):
+class _RcResetConfirmView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.user_id and _rc_is_admin(interaction.user):
+            return True
+        await interaction.response.send_message("Staff only.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Confirm reset", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Resetting roll call…", view=None)
+        self.stop()
+        await _rc_post_new_panel(interaction.guild, ping_roles=False, reset=True)
+        await interaction.edit_original_response(content="Roll-call reset processed. Check the panel.")
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Reset cancelled. RSVPs kept.", view=None)
+        self.stop()
+
+
+class _RcStaffSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="⚙️ Choose a staff action…",
+            custom_id="diff_rollcall:staff_action", row=0,
+            options=[
+                discord.SelectOption(label="View Attendance", value="attendance", emoji="📊"),
+                discord.SelectOption(label="Sync from Schedule", value="sync", emoji="🗓️"),
+                discord.SelectOption(label="Refresh Panel", value="refresh", emoji="🔃"),
+                *[discord.SelectOption(label=f"Finalize Meet {n}", value=f"finalize:{n}", emoji="✅")
+                  for n in (1, 2, 3)],
+                discord.SelectOption(label="Reset Roll Call", value="reset", emoji="🗑️"),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild or not _rc_is_admin(interaction.user):
+            return await interaction.response.send_message("Staff only.", ephemeral=True)
+        action = self.values[0]
+        if action.startswith("finalize:"):
+            return await interaction.response.send_modal(_RcFinalizeModal(int(action.split(":")[1])))
+        if action == "reset":
+            return await interaction.response.send_message(
+                "Reset this week's roll call? This clears all RSVPs, meet details, and "
+                "finalization flags. This cannot be undone.",
+                view=_RcResetConfirmView(interaction.user.id), ephemeral=True,
+            )
+        await interaction.response.defer(ephemeral=True)
+        try:
+            if action == "attendance":
+                responses = _rc_db.get_all_responses(interaction.guild.id)
+                # A text attachment preserves the complete breakdown even for large crews.
+                from io import BytesIO
+                lines = ["DIFF Roll Call — RSVP breakdown"]
+                for n in (1, 2, 3):
+                    lines.append(f"\nMeet {n}")
+                    for status, label in (("yes", "Attending"), ("maybe", "Maybe"), ("no", "Not attending")):
+                        users = responses[n][status]
+                        lines.append(f"{label} ({len(users)}):")
+                        for uid in users:
+                            member = interaction.guild.get_member(uid)
+                            lines.append(f"  {member.display_name if member else 'Unknown member'} ({uid})")
+                        if not users:
+                            lines.append("  None")
+                return await interaction.followup.send(
+                    embed=_rc_build_admin_embed(interaction.guild),
+                    file=discord.File(BytesIO("\n".join(lines).encode("utf-8")), filename="roll-call-attendance.txt"),
+                    ephemeral=True,
+                )
+            if action == "sync":
+                schedule = _asched_load()
+                meets = []
+                for n, day in enumerate(_HRSVP_DAYS, 1):
+                    entry = schedule.get("days", {}).get(day, {})
+                    meets.append({
+                        "meet_number": n, "class_name": entry.get("class", "TBD"),
+                        "start_time": entry.get("time", "TBD"), "host_id": entry.get("host_id"),
+                        "date_text": entry.get("day", "TBD"), "is_finalized": False,
+                    })
+                _rc_db.upsert_meets(interaction.guild.id, meets)
+            await _rc_refresh_panel(interaction.guild)
+            await interaction.followup.send(
+                "Schedule synced; panel refresh queued." if action == "sync" else "Panel refresh queued. RSVPs kept.",
+                ephemeral=True,
+            )
+        except Exception as exc:
+            print(f"[RcStaff] {action} failed: {exc}")
+            await interaction.followup.send("That action failed. Please try again.", ephemeral=True)
+
+
+class _RcLegacyFinalizeView(discord.ui.View):
+    """Keep already-posted finalize buttons working until their card is refreshed."""
     def __init__(self) -> None:
         super().__init__(timeout=None)
         for n in (1, 2, 3):
             self.add_item(_RcFinalizeBtn(n))
+
+
+class _RcAdminView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self.add_item(_RcStaffSelect())
+
+
+async def _rc_refresh_admin_card(guild: discord.Guild, channel):
+    """Upgrade the staff card in place, preserving all roll-call data."""
+    msgs = _rc_db.get_messages(guild.id)
+    mid = msgs.get("admin")
+    if mid:
+        try:
+            message = await channel.fetch_message(mid)
+            await message.edit(embed=_rc_build_admin_embed(guild), view=_RcAdminView())
+            return
+        except discord.NotFound:
+            pass
+    else:
+        # Recover a legacy card before creating a replacement.
+        async for message in channel.history(limit=80):
+            if message.author.id == guild.me.id and any(
+                e.title == "🛠️ DIFF Roll Call — Staff Tools" for e in message.embeds
+            ):
+                _rc_db.set_message(guild.id, "admin", message.id)
+                await message.edit(embed=_rc_build_admin_embed(guild), view=_RcAdminView())
+                return
+    message = await channel.send(embed=_rc_build_admin_embed(guild), view=_RcAdminView())
+    _rc_db.set_message(guild.id, "admin", message.id)
 
 
 def _rc_collect_detected_attendees(guild_id: int) -> dict:
@@ -17414,6 +17547,7 @@ async def _rc_refresh_panel(guild: discord.Guild):
                             _rc_db.set_message(guild.id, f"meet{n}", mid)
                         except Exception:
                             pass
+            await _rc_refresh_admin_card(guild, channel)
         except Exception as _task_err:
             print(f"[RcPanel] _do_refresh unhandled error: {_task_err}")
             import traceback as _tb; _tb.print_exc()
@@ -17502,7 +17636,7 @@ async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False, res
             )
             _rc_db.set_message(guild.id, f"meet{n}", meet_msg.id)
 
-        admin_msg = await channel.send(embed=_rc_build_admin_embed(), view=_RcAdminView())
+        admin_msg = await channel.send(embed=_rc_build_admin_embed(guild), view=_RcAdminView())
         _rc_db.upsert_panel(guild.id, channel.id, header_msg.id, admin_msg.id)
         _rc_db.set_message(guild.id, "admin", admin_msg.id)
     except Exception as e:
@@ -17520,6 +17654,7 @@ async def _rc_ensure_panel(guild: discord.Guild):
     if msgs.get("header"):
         try:
             await channel.fetch_message(msgs["header"])
+            await _rc_refresh_admin_card(guild, channel)
             return
         except discord.NotFound:
             pass
@@ -17531,6 +17666,7 @@ async def _rc_ensure_panel(guild: discord.Guild):
     if bot_id:
         kept = await _rc_scan_and_recover(channel, guild.id, bot_id)
         if kept.get("header"):
+            await _rc_refresh_admin_card(guild, channel)
             return  # recovered successfully, no need to post
 
     await _rc_post_new_panel(guild, ping_roles=True)
@@ -18778,14 +18914,21 @@ async def cmd_setrecapchannel(ctx, channel: discord.TextChannel = None):
     await ctx.reply(f"✅ Weekly recap will post in {channel.mention} every Monday.", mention_author=False)
 
 
+def _rc_reminder_ts(meet):
+    """Weekly roll-call dates must not roll into next week after the meet ends."""
+    try:
+        day, start = meet["date_text"], meet["start_time"]
+        return _this_week_weekday_ts(day, start) or _parse_meet_ts(day, start)
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
 async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
     """Post roll call reminder to crew chat and DM crew members who haven't responded yet."""
 
     # ── Sort meets chronologically ────────────────────────────
     def _meet_sort_key(m):
-        dt = m.get("date_text", "")
-        t  = m.get("start_time", "TBD")
-        ts = _parse_meet_ts(dt, t) if dt and t != "TBD" else None
+        ts = _rc_reminder_ts(m)
         return ts or 0
 
     sorted_meets = sorted(meets, key=_meet_sort_key)
@@ -18795,7 +18938,7 @@ async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
     # been set" while every card read TBD/TBD/TBD. Skip undated meets entirely.
     dated_meets = [
         m for m in sorted_meets
-        if _parse_meet_ts(m.get("date_text", ""), m.get("start_time", "TBD"))
+        if (_rc_reminder_ts(m) or 0) > time.time() and not m.get("is_finalized")
     ]
     if not dated_meets:
         print("[RollCallNotify] No meets have real dates yet — skipping crew notification.")
@@ -18807,46 +18950,24 @@ async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
         n       = m["meet_number"]
         host_id = m.get("host_id")
         cls     = m.get("class_name", "TBD")
-        t       = m.get("start_time", "TBD")
-        dt      = m.get("date_text", "")
-        ts      = _parse_meet_ts(dt, t) if dt and t != "TBD" else None
-        when    = f"<t:{ts}:F>  ·  <t:{ts}:R>" if ts else f"🕒 {t}"
-        host_str = _readable_host(guild, host_id) or "*TBD*"
-        field_val = f"🎮 {cls}\n📅 {when}\n👤 {host_str}"
-        meet_fields.append((f"Meet {n}", field_val))
+        ts      = _rc_reminder_ts(m)
+        host_str = _reminder_ui.host_name(guild, host_id)
+        meet_fields.append((n, cls, ts, host_str))
 
     # ── Count crew who haven't responded ─────────────────────
     crew_role = guild.get_role(CREW_MEMBER_ROLE_ID)
     all_responses = _rc_db.get_all_responses(guild.id)
     responded_ids: set = set()
-    for meet_responses in all_responses.values():
+    for m in dated_meets:
+        meet_responses = all_responses.get(m["meet_number"], {})
         for uid_list in meet_responses.values():
             for uid in uid_list:
                 responded_ids.add(str(uid))
-    total_crew    = len(crew_role.members) if crew_role else 0
-    not_responded = sum(1 for m in (crew_role.members if crew_role else []) if str(m.id) not in responded_ids)
-    pending_note  = (
-        f"\n\n⚠️ **{not_responded} of {total_crew} crew members** haven't responded yet."
-        if total_crew > 0 else ""
-    )
+    not_responded = sum(1 for m in (crew_role.members if crew_role else [])
+                        if not m.bot and str(m.id) not in responded_ids)
 
     # ── Channel embed ─────────────────────────────────────────
-    embed = discord.Embed(
-        title="📋 Roll Call is Open — Mark Your Attendance!",
-        description=(
-            "The meet schedule has been set. Mark your attendance for each meet below."
-            f"\n\n📌 **[Open the Roll Call]({ROLL_CALL_URL})**"
-            "\n\n✅ Attending  •  ❓ Maybe  •  ❌ Not Attending"
-            "\n⚠️ No-shows are tracked — make sure your response is accurate."
-            + pending_note
-        ),
-        color=discord.Color.green(),
-        timestamp=utc_now(),
-    )
-    for name, value in meet_fields:
-        embed.add_field(name=name, value=value, inline=True)
-    embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.set_footer(text="DIFF Meets • Roll Call System")
+    embed = _reminder_ui.schedule_card(meet_fields, not_responded)
 
     # ── Channel post ──────────────────────────────────────────
     crew_ch = guild.get_channel(_CREW_CHAT_CHANNEL_ID)
@@ -18854,7 +18975,9 @@ async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
         ps5_role = guild.get_role(PS5_ROLE_ID)
         pings = " ".join(r.mention for r in [crew_role, ps5_role] if r)
         try:
-            await crew_ch.send(content=pings or None, embed=embed)
+            await crew_ch.send(content=pings or None, embed=embed,
+                               view=_reminder_ui.open_panel("Open roll call", ROLL_CALL_URL),
+                               allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False))
         except Exception as _ce:
             print(f"[RollCallNotify] Channel post failed: {_ce}")
 
@@ -18862,29 +18985,15 @@ async def _rc_notify_crew_of_schedule(guild: discord.Guild, meets: list):
     if not crew_role:
         return
 
-    dm_embed = discord.Embed(
-        title="📋 Roll Call is Open — Mark Your Attendance!",
-        description=(
-            "Hey! The DIFF Meet schedule has been set. Don't forget to mark your attendance in the roll call."
-            f"\n\n📌 **[Open the Roll Call]({ROLL_CALL_URL})**"
-            "\n\n✅ Attending  •  ❓ Maybe  •  ❌ Not Attending"
-            "\n⚠️ No-shows are tracked — make sure your response is accurate."
-        ),
-        color=discord.Color.green(),
-        timestamp=utc_now(),
-    )
-    for name, value in meet_fields:
-        dm_embed.add_field(name=name, value=value, inline=True)
-    dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
-    dm_embed.set_footer(text="DIFF Meets • Roll Call System")
+    dm_embed = _reminder_ui.schedule_card(meet_fields, 0, personal=True)
 
     sent = failed = skipped = 0
     for member in crew_role.members:
-        if str(member.id) in responded_ids:
+        if member.bot or str(member.id) in responded_ids:
             skipped += 1
             continue
         try:
-            await member.send(embed=dm_embed)
+            await member.send(embed=dm_embed, view=_reminder_ui.open_panel("Open roll call", ROLL_CALL_URL))
             sent += 1
             await asyncio.sleep(1)
         except discord.Forbidden:
@@ -18909,6 +19018,15 @@ async def _rc_sync_from_schedule(guild: discord.Guild, meets: list):
     print(f"[RcSync] verified DB after upsert: {written}")
     await _rc_refresh_panel(guild)
     asyncio.create_task(_rc_notify_crew_of_schedule(guild, meets))
+
+
+@bot.command(name="refreshrollcall")
+async def _cmd_refreshrollcall(ctx: commands.Context):
+    """Refresh the existing layout without resetting RSVPs or changing the schedule."""
+    if not ctx.guild or not _rc_is_admin(ctx.author):
+        return await ctx.send("Staff only.", delete_after=5)
+    await _rc_refresh_panel(ctx.guild)
+    await ctx.send("Roll-call refresh queued. Existing RSVPs and schedule kept.", delete_after=10)
 
 
 @bot.command(name="syncrc")
@@ -26396,6 +26514,7 @@ async def on_ready():
     _safe_add_view(HostFeedbackRequestView(),                            "HostFeedbackRequestView")
     _safe_add_view(_RcRollCallView(),                                    "_RcRollCallView")
     _safe_add_view(_RcAdminView(),                                       "_RcAdminView")
+    _safe_add_view(_RcLegacyFinalizeView(),                              "_RcLegacyFinalizeView")
     # Re-register persistent warn proof buttons for all stored warnings
     for _wp_uid, _wp_entries in data.get("warnings", {}).items():
         for _wp_entry in _wp_entries:
@@ -27010,7 +27129,7 @@ async def _rc_t5h_reminder_loop() -> None:
                     continue
                 if bool(meet["is_finalized"]):
                     continue
-                ts = _parse_meet_ts(date_text, start_time)
+                ts = _rc_reminder_ts(meet)
                 if not ts:
                     continue
                 secs_to_meet = ts - now_ts
@@ -27029,8 +27148,10 @@ async def _rc_t5h_reminder_loop() -> None:
                     (GUILD_ID, mn),
                 )
                 rows = cur.fetchall()
-                yes_ids   = [r["user_id"] for r in rows if r["status"] == "yes"]
-                maybe_ids = [r["user_id"] for r in rows if r["status"] == "maybe"]
+                yes_ids   = [r["user_id"] for r in rows if r["status"] == "yes"
+                             and guild.get_member(r["user_id"]) and not guild.get_member(r["user_id"]).bot]
+                maybe_ids = [r["user_id"] for r in rows if r["status"] == "maybe"
+                             and guild.get_member(r["user_id"]) and not guild.get_member(r["user_id"]).bot]
                 responded_ids = {r["user_id"] for r in rows}
                 # Crew members who haven't answered the roll call at all get a
                 # "complete it before the meet" ping (owner request Jul 2026).
@@ -27056,50 +27177,17 @@ async def _rc_t5h_reminder_loop() -> None:
                         parts.append(f"(+{len(ids) - cap} more)")
                     return " ".join(parts)
 
-                host_text = _readable_host(guild, meet["host_id"]) or "TBD"
-                emb = discord.Embed(
-                    title=f"⏰ Meet {mn} starts in ~5 hours!",
-                    description=(
-                        f"🎮 **Class:** {class_name}\n"
-                        f"🎤 **Host:** {host_text}\n"
-                        f"🕒 **Start:** <t:{ts}:F>  (<t:{ts}:R>)\n\n"
-                        "You confirmed on the roll call — clean your car, "
-                        "charge the controller and be on PSN on time. "
-                        "Session gets full fast! 🏁"
-                    ),
-                    color=0x5865F2,
+                emb = _reminder_ui.meet_reminder(
+                    mn, class_name, ts, _reminder_ui.host_name(guild, meet["host_id"]),
+                    len(yes_ids), len(maybe_ids), len(nonresp_ids),
                 )
-                if maybe_ids:
-                    # Display names, not <@id> — mentions inside embeds render
-                    # as raw numbers on clients that haven't cached the user.
-                    _maybe_names = []
-                    for _mid in maybe_ids[:30]:
-                        _mm = guild.get_member(_mid)
-                        _maybe_names.append(_mm.display_name if _mm else f"User {_mid}")
-                    if len(maybe_ids) > 30:
-                        _maybe_names.append(f"(+{len(maybe_ids) - 30} more)")
-                    _maybe_val = (", ".join(_maybe_names)
-                                  + "\nLock in your answer on the roll call if you can make it!")
-                    emb.add_field(
-                        name="🤔 Still a maybe?",
-                        value=_maybe_val[:1024],
-                        inline=False,
-                    )
-                if nonresp_ids:
-                    rc_url = f"https://discord.com/channels/{GUILD_ID}/{ROLL_CALL_CHANNEL_ID}"
-                    emb.add_field(
-                        name=f"📋 Haven't done the roll call? ({len(nonresp_ids)})",
-                        value=(f"You're tagged above — **[complete the roll call]({rc_url})** "
-                               "before the meet starts so the host knows who's coming."),
-                        inline=False,
-                    )
-                emb.set_footer(text="Different Meets • Roll Call Reminder")
                 _ping_ids = yes_ids + [i for i in nonresp_ids if i not in yes_ids]
                 content = _mentions(_ping_ids) if _ping_ids else None
                 try:
                     await crew_ch.send(
                         content=content,
                         embed=emb,
+                        view=_reminder_ui.open_panel("Open roll call", ROLL_CALL_URL),
                         allowed_mentions=discord.AllowedMentions(
                             users=True, roles=False, everyone=False
                         ),
@@ -27478,29 +27566,38 @@ def _host_nudge_state_load() -> dict:
 
 
 async def _host_nudge_post_once(guild: discord.Guild) -> bool:
-    """Build + post the host-team nudge: pings hosts who haven't marked any
-    availability this week, and flags meets with zero available hosts.
+    """Ping hosts with incomplete availability for remaining slots.
     Returns True if a message was posted (or nothing was owed)."""
     rsvp_data = _hrsvp_load()
     host_role = guild.get_role(HOST_ROLE_ID)
     if host_role is None:
         return False
 
-    resp_uids: set = set()
+    answered_by_slot: list = []
     uncovered: list = []
+    schedule = _asched_load().get("days", {})
+    now_ts = time.time()
+    current_hosts = {str(m.id) for m in host_role.members if not m.bot}
     for day in _HRSVP_DAYS:
         slot = rsvp_data.get(day, {})
+        scheduled = schedule.get(day, {})
+        ts = _asched_slot_ts(scheduled)
+        if ts and ts <= now_ts:
+            continue
         yes  = slot.get("yes", []) or []
+        responded = set()
         for _bkt in (yes, slot.get("no", []) or [], slot.get("maybe", []) or []):
             for _e in _bkt:
                 _u = _hrsvp_uid(_e)
                 if _u:
-                    resp_uids.add(str(_u))
-        if not yes:
+                    responded.add(str(_u))
+        answered_by_slot.append(responded)
+        has_available_host = any(str(_hrsvp_uid(e)) in current_hosts for e in yes)
+        if not has_available_host and not scheduled.get("host_id"):
             uncovered.append(day)
 
     nonresp = [m for m in host_role.members
-               if not m.bot and str(m.id) not in resp_uids]
+               if not m.bot and any(str(m.id) not in ids for ids in answered_by_slot)]
 
     if not nonresp and not uncovered:
         return True  # everyone responded and every meet has a host — stay quiet
@@ -27509,28 +27606,7 @@ async def _host_nudge_post_once(guild: discord.Guild) -> bool:
     if not isinstance(ch, discord.TextChannel):
         return False
 
-    emb = discord.Embed(
-        title="📋 Host Availability Check",
-        color=discord.Color.orange(),
-        timestamp=datetime.now(timezone.utc),
-    )
-    if nonresp:
-        emb.add_field(
-            name=f"⏳ No availability marked yet ({len(nonresp)})",
-            value=(f"You're tagged above — please mark **Available or Unavailable** "
-                   f"for Meet 1, Meet 2 and Meet 3 in <#{HOST_RSVP_CHANNEL_ID}>.\n"
-                   "If you can't host, pressing **Unavailable** takes seconds and "
-                   "keeps the schedule accurate."),
-            inline=False,
-        )
-    if uncovered:
-        emb.add_field(
-            name=f"🚨 Meets still needing a host ({len(uncovered)})",
-            value=("**" + ", ".join(uncovered) + "** have no available host yet. "
-                   f"If you can cover one, submit your details in <#{HOST_RSVP_CHANNEL_ID}>."),
-            inline=False,
-        )
-    emb.set_footer(text="DIFF Meets • Host Availability Reminder")
+    emb = _reminder_ui.host_reminder(len(nonresp), uncovered)
 
     _ids = [m.id for m in nonresp[:50]]
     content = " ".join(f"<@{i}>" for i in _ids) if _ids else None
@@ -27541,6 +27617,8 @@ async def _host_nudge_post_once(guild: discord.Guild) -> bool:
     await ch.send(
         content=content,
         embed=emb,
+        view=_reminder_ui.open_panel(
+            "Update availability", f"https://discord.com/channels/{guild.id}/{HOST_RSVP_CHANNEL_ID}"),
         allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
     )
     print(f"[HostNudge] Posted ({len(nonresp)} non-responder(s), "
@@ -27550,8 +27628,8 @@ async def _host_nudge_post_once(guild: discord.Guild) -> bool:
 
 async def _host_avail_nudge_loop() -> None:
     """Automates the founder's manual #host-team follow-ups: every day, every
-    3 hours (9 AM–9 PM ET: 9/12/15/18/21), ping ONLY hosts who haven't marked
-    availability on the Host Schedule Panel and flag meets that still have no
+    3 hours (9 AM–9 PM ET: 9/12/15/18/21), ping hosts with incomplete
+    availability for remaining slots and flag meets that still have no
     available host — repeating until every slot is covered and every host has
     responded, then it goes quiet automatically. Disk-guarded timestamp
     (min 2.5 h between posts) so redeploys can't double-fire."""
@@ -29008,42 +29086,63 @@ def _cc_changer_ids() -> list:
 
 
 def _cc_build_dm_embed(pending: dict, *, reminder: bool = False) -> discord.Embed:
+    return _reminder_ui.color_card(pending, reminder=reminder)
+
+
+def _cc_mark_sent(opened_at: str) -> None:
+    """Merge into fresh state after awaits; never resurrect a completed/replaced task."""
+    st = _cc_load()
+    pending = st.get("pending") or {}
+    if pending.get("opened_at") == opened_at and not pending.get("done"):
+        pending["last_dm_ts"] = time.time()
+        _cc_save(st)
+
+
+def _cc_track_message(opened_at: str, message) -> None:
+    st = _cc_load()
+    pending = st.get("pending") or {}
+    if pending.get("opened_at") == opened_at:
+        ids = pending.setdefault("message_ids", [])
+        if str(message.id) not in ids:
+            ids.append(str(message.id))
+        _cc_save(st)
+
+
+def _cc_message_matches(message, pending: dict) -> bool:
+    if not message:
+        return False
+    if str(message.id) in pending.get("message_ids", []):
+        return True
+    # Legacy cards predate message tracking. Only accept a card created during
+    # this task and displaying the same color, never an earlier week's button.
     try:
-        col = discord.Color.from_str(pending.get("hex_code") or "#5865F2")
-    except Exception:
-        col = discord.Color.blurple()
-    emb = discord.Embed(
-        title=("⏰ Reminder — Crew Color Still Not Updated" if reminder
-               else "🎨 Update the Crew Color on Rockstar Social Club"),
-        description=(
-            f"This week's winning crew color is:\n\n"
-            f"**{pending.get('color_name', '?')}**\n"
-            f"HEX: `{pending.get('hex_code', '?')}`\n\n"
-            "Please update the crew color on **Rockstar Social Club** to match, "
-            "then press **✅ Done** below so the team knows it's handled."
-            + ("\n\n*You'll keep getting this reminder every ~12 hours until "
-               "someone presses Done.*" if reminder else "")
-        ),
-        color=col,
-        timestamp=datetime.now(timezone.utc),
-    )
-    if pending.get("image_url"):
-        emb.set_image(url=pending["image_url"])
-    emb.set_footer(text="DIFF Meets • Crew Color System")
-    return emb
+        opened = datetime.fromisoformat(pending["opened_at"])
+        if message.created_at < opened:
+            return False
+        return any(
+            pending.get("color_name") and pending.get("hex_code")
+            and pending["color_name"] in (e.description or "")
+            and pending["hex_code"] in (e.description or "")
+            for e in message.embeds
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 class _CcDoneView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="✅ Done — color updated", style=discord.ButtonStyle.success, custom_id="diff_cc_done")
+    @discord.ui.button(label="Mark updated", emoji="✅", style=discord.ButtonStyle.success, custom_id="diff_cc_done")
     async def _done(self, interaction: discord.Interaction, button: discord.ui.Button):
         st = _cc_load()
         pending = st.get("pending")
         if not pending or pending.get("done"):
             return await interaction.response.send_message(
                 "✅ This one's already marked done — thank you!", ephemeral=True)
+        if not _cc_message_matches(interaction.message, pending):
+            return await interaction.response.send_message(
+                "This is an older color task. Use the latest color-team reminder.", ephemeral=True)
         if interaction.user.id not in _cc_changer_ids():
             _g = bot.get_guild(GUILD_ID)
             _m = _g.get_member(interaction.user.id) if _g else None
@@ -29051,16 +29150,24 @@ class _CcDoneView(discord.ui.View):
                 return await interaction.response.send_message(
                     "⚠️ Only the current crew-color changers (or staff) can mark this done.",
                     ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        # The acknowledgement yields; another staff member/new weekly task may win.
+        latest = _cc_load()
+        current = latest.get("pending") or {}
+        if current.get("opened_at") != pending.get("opened_at") or current.get("done"):
+            return await interaction.followup.send("This task has already changed or been completed.", ephemeral=True)
+        st, pending = latest, current
         pending["done"] = True
         pending["done_by"] = interaction.user.id
         pending["done_at"] = datetime.now(timezone.utc).isoformat()
         _cc_save(st)
         try:
-            await interaction.response.send_message(
-                f"🙌 Thank you! **{pending.get('color_name', 'The crew color')}** is marked as updated — "
-                "no more reminders for this week.")
-        except Exception:
-            pass
+            await interaction.message.edit(embed=_cc_build_dm_embed(pending), view=None)
+        except discord.HTTPException as exc:
+            print(f"[CcTask] Completed-card edit failed: {exc}")
+        await interaction.followup.send(
+            f"**{_reminder_ui.text(pending.get('color_name'))}** marked updated. Reminders stopped.",
+            ephemeral=True)
         try:
             log_ch = bot.get_channel(STAFF_LOGS_CHANNEL_ID)
             if isinstance(log_ch, discord.TextChannel):
@@ -29081,25 +29188,35 @@ async def _cc_dm_changers(guild: discord.Guild, pending: dict, *, reminder: bool
     (harder to miss than a DM). Returns how many sends went through."""
     emb = _cc_build_dm_embed(pending, reminder=reminder)
     sent = 0
+    opened_at = pending.get("opened_at")
+    def still_pending():
+        current = _cc_load().get("pending") or {}
+        return current.get("opened_at") == opened_at and not current.get("done")
     for uid in _cc_changer_ids():
+        if not still_pending():
+            return sent
         try:
             member = guild.get_member(uid) or await guild.fetch_member(uid)
-            if member:
-                await member.send(embed=emb, view=_CcDoneView())
+            if member and still_pending():
+                message = await member.send(embed=emb, view=_CcDoneView())
+                _cc_track_message(opened_at, message)
                 sent += 1
         except Exception as _e:
             print(f"[CcTask] DM to {uid} failed: {_e}")
     # Channel ping in #color-team with the same Done button
     try:
+        if not still_pending():
+            return sent
         ch = guild.get_channel(_CC_TEAM_CHANNEL_ID)
         if isinstance(ch, discord.TextChannel):
             mentions = " ".join(f"<@{i}>" for i in _cc_changer_ids())
-            await ch.send(
+            message = await ch.send(
                 content=mentions or None,
                 embed=emb,
                 view=_CcDoneView(),
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
             )
+            _cc_track_message(opened_at, message)
             sent += 1
     except Exception as _e:
         print(f"[CcTask] Color-team channel ping failed: {_e}")
@@ -29116,11 +29233,12 @@ async def _cc_open_task(guild: discord.Guild, winner: Dict[str, Any]) -> None:
         "hex_code": winner.get("hex_code", ""),
         "image_url": winner.get("image_url", ""),
         "opened_at": now_iso,
-        "last_dm_ts": time.time(),
+        "last_dm_ts": 0,
         "done": False,
     }
     _cc_save(st)
-    await _cc_dm_changers(guild, st["pending"], reminder=False)
+    if await _cc_dm_changers(guild, st["pending"], reminder=False):
+        _cc_mark_sent(now_iso)
 
 
 async def _cc_reminder_loop() -> None:
@@ -29161,8 +29279,7 @@ async def _cc_reminder_loop() -> None:
             if not guild:
                 continue
             if await _cc_dm_changers(guild, pending, reminder=True):
-                pending["last_dm_ts"] = time.time()
-                _cc_save(st)
+                _cc_mark_sent(pending.get("opened_at"))
                 print(f"[CcTask] Sent 12h color-change reminder ({pending.get('color_name')}).")
         except Exception as _e:
             print(f"[CcTask] Loop error: {_e}")
