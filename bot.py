@@ -48805,13 +48805,22 @@ def _mgmt_open_appeal_tickets(guild: discord.Guild) -> list:
 
 
 def _mgmt_recent_warnings(days: int = 7) -> list:
-    """Return warning dicts issued in the last N days."""
+    """Use the same formal warning store as !warnings, skipping malformed records."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
     out = []
-    for uid_str, entries in data.get("warnings", {}).items():
+    for uid_str, entries in _warnings_load().items():
+        if not isinstance(entries, list):
+            continue
         for w in entries:
-            if isinstance(w, dict) and w.get("timestamp", 0) >= cutoff:
-                out.append({**w, "user_id": uid_str})
+            try:
+                stamp = w["timestamp"]
+                if isinstance(stamp, str):
+                    dt = datetime.fromisoformat(stamp)
+                    stamp = (dt if dt.tzinfo else dt.replace(tzinfo=_EST_TZ)).timestamp()
+                if float(stamp) >= cutoff:
+                    out.append({**w, "user_id": uid_str})
+            except (TypeError, KeyError, ValueError, OverflowError):
+                continue
     return out
 
 
@@ -48835,10 +48844,59 @@ async def _mgmt_channel_obj(guild: discord.Guild):
         return None
 
 
-async def _mgmt_send_daily_briefing(guild: discord.Guild) -> None:
+def _mgmt_briefing_host_status(guild: discord.Guild) -> tuple:
+    """Count incomplete remaining slots without changing the no-response alerts."""
+    host_role = guild.get_role(HOST_ROLE_ID)
+    if not host_role:
+        return None, "Host role unavailable; check configuration."
+    hosts = [m for m in host_role.members if not m.bot]
+    if not hosts:
+        return None, "No members have the host role."
+    schedule = _asched_load().get("days", {})
+    rsvps = _hrsvp_load()
+    responses = []
+    for day in _HRSVP_DAYS:
+        ts = _asched_slot_ts(schedule.get(day, {}))
+        if ts and ts <= time.time():
+            continue
+        slot = rsvps.get(day, {})
+        responses.append({
+            str(uid) for status in ("yes", "no", "maybe")
+            for entry in (slot.get(status) or [])
+            if (uid := _hrsvp_uid(entry))
+        })
+    pending = sum(any(str(m.id) not in ids for ids in responses) for m in hosts)
+    if pending:
+        return pending, f"**{pending} hosts** still need to complete availability."
+    return 0, ("All hosts answered the remaining slots." if responses else
+               "No remaining scheduled slots this week.")
+
+
+def _mgmt_briefing_next_meet():
+    """Combine published schedule slots and official meet records, earliest first."""
+    now_ts = time.time()
+    candidates = []
+    for slot in _asched_load().get("days", {}).values():
+        try:
+            ts = _asched_slot_ts(slot)
+            if slot.get("host_id") and ts and ts > now_ts:
+                candidates.append((int(ts), slot.get("class") or "Meet"))
+        except (TypeError, ValueError, KeyError):
+            continue
+    for record in _om_load_records().values():
+        try:
+            ts = int(record.get("timestamp") or 0)
+            if not record.get("ended") and ts > now_ts:
+                candidates.append((ts, record.get("theme") or "Meet"))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            continue
+    return min(candidates, key=lambda item: item[0]) if candidates else None
+
+
+async def _mgmt_send_daily_briefing(guild: discord.Guild) -> bool:
     ch = await _mgmt_channel_obj(guild)
     if not ch:
-        return
+        return False
 
     now_et = datetime.now(_EST_TZ)
     join_tickets  = _mgmt_open_join_tickets(guild)
@@ -48846,59 +48904,38 @@ async def _mgmt_send_daily_briefing(guild: discord.Guild) -> None:
     appeal_tickets  = [(c, a) for c, a, ia in all_tickets if ia]
     support_tickets = [(c, a) for c, a, ia in all_tickets if not ia]
     recent_warns  = _mgmt_recent_warnings(days=1)
-    all_records   = _om_load_records()
-    now_ts        = int(datetime.now(timezone.utc).timestamp())
-    upcoming      = sorted(
-        [r for r in all_records.values() if not r.get("ended") and r.get("timestamp", 0) > now_ts],
-        key=lambda r: r.get("timestamp", 0),
-    )
-    pending_hosts = _mgmt_hosts_pending_members(guild)
+    upcoming = _mgmt_briefing_next_meet()
+    pending_hosts, host_status = _mgmt_briefing_host_status(guild)
+    needs_attention = bool(join_tickets or all_tickets or recent_warns or pending_hosts is None or pending_hosts)
 
     embed = discord.Embed(
-        title="☀️ Daily Management Briefing",
+        title="Management • Daily briefing",
         description=f"**{now_et.strftime('%A, %B %-d %Y')}**",
-        color=discord.Color.blurple(),
+        color=discord.Color.orange() if needs_attention else discord.Color.green(),
         timestamp=datetime.now(timezone.utc),
     )
-    embed.set_thumbnail(url=DIFF_LOGO_URL)
-
-    # Join tickets
-    if join_tickets:
-        oldest_ch, oldest_age = join_tickets[0]
-        psn = _join_parse_psn(oldest_ch.topic)
-        jval = f"**{len(join_tickets)}** open\n📌 Oldest: `{psn}` — {oldest_age:.0f}h ({oldest_ch.mention})"
-    else:
-        jval = "✅ None open"
-    embed.add_field(name="🎮 Join Tickets", value=jval, inline=True)
-
-    # Appeal tickets
-    if appeal_tickets:
-        aval = f"**{len(appeal_tickets)}** pending\n📌 Oldest: {appeal_tickets[0][0].mention} — {appeal_tickets[0][1]:.0f}h ago"
-    else:
-        aval = "✅ None pending"
-    embed.add_field(name="⚖️ Appeals", value=aval, inline=True)
-
-    # Support tickets
-    sval = f"**{len(support_tickets)}** open" if support_tickets else "✅ None open"
-    embed.add_field(name="🎫 Support Tickets", value=sval, inline=True)
-
-    # Warnings last 24h
-    embed.add_field(name="⚠️ Warnings (24h)", value=str(len(recent_warns)) or "0", inline=True)
-
-    # Next meet
+    ticket_lines = []
+    for label, tickets in (("Join", join_tickets), ("Appeals", appeal_tickets), ("Support", support_tickets)):
+        if tickets:
+            oldest, age = tickets[0]
+            ticket_lines.append(f"**{label}: {len(tickets)} open** · Oldest {oldest.mention} ({age:.0f}h)")
+    embed.add_field(name="Tickets", value="\n".join(ticket_lines) or "No open join, appeal, or support tickets.", inline=False)
+    if recent_warns:
+        embed.add_field(name="Warnings · Last 24 hours", value=f"**{len(recent_warns)}** issued. Use `!warnings @member` for details.", inline=False)
+    embed.add_field(name="Host availability", value=host_status, inline=False)
     if upcoming:
-        nm = upcoming[0]
-        mval = f"**{nm.get('theme','?')}** — <t:{nm.get('timestamp',0)}:R>"
+        ts, theme = upcoming
+        mval = f"**{_reminder_ui.text(theme)}**\n<t:{ts}:F>"
     else:
-        mval = "None scheduled"
-    embed.add_field(name="🏁 Next Meet", value=mval, inline=True)
-
-    # Hosts pending
-    hval = f"**{len(pending_hosts)}** not responded" if pending_hosts else "✅ All responded"
-    embed.add_field(name="📋 Host Availability", value=hval, inline=True)
-
-    embed.set_footer(text="DIFF Management • Daily Briefing — 9 AM ET")
-    await ch.send(embed=embed)
+        mval = "No upcoming meet scheduled."
+    embed.add_field(name="Next meet at briefing time", value=mval, inline=False)
+    embed.set_footer(text="DIFF Management • Snapshot at posting • Daily at 9 AM ET")
+    view = _reminder_ui.open_panel("Roll call", ROLL_CALL_URL)
+    view.add_item(discord.ui.Button(
+        label="Host availability", style=discord.ButtonStyle.link,
+        url=f"https://discord.com/channels/{guild.id}/{HOST_RSVP_CHANNEL_ID}"))
+    await ch.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+    return True
 
 
 async def _mgmt_send_weekly_report(guild: discord.Guild) -> None:
@@ -48985,12 +49022,13 @@ async def __mgmt_daily_briefing_loop_logic():
     snap = _mgmt_snapshot_load()
     if snap.get("_briefing_sent") == today_str:
         return
-    snap["_briefing_sent"] = today_str
-    _mgmt_snapshot_save(snap)
     guild = next((g for g in bot.guilds if g.id == GUILD_ID), None)
     if guild:
         try:
-            await _mgmt_send_daily_briefing(guild)
+            if await _mgmt_send_daily_briefing(guild):
+                snap = _mgmt_snapshot_load()
+                snap["_briefing_sent"] = today_str
+                _mgmt_snapshot_save(snap)
         except Exception as _e:
             print(f"[MgmtBriefing] {_e}")
 
