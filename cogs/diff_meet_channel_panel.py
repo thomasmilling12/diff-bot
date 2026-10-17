@@ -15,6 +15,7 @@ DIFF_LOGO_URL = (
 
 EMBED_COLOR = 0x111111
 PANEL_TAG   = "DIFF_MEET_CHANNEL_PANEL_V1"
+PANEL_FOOTER = "Different Meets • Live meet updates"
 
 
 class DiffMeetChannelPanel(commands.Cog):
@@ -37,34 +38,15 @@ class DiffMeetChannelPanel(commands.Cog):
         role_mention = carmeet_role.mention if carmeet_role else "@Car Meet"
 
         embed = discord.Embed(
-            title="DIFF Meet Channel",
+            title="🏁 DIFF Meet Channel",
             description=(
-                f"Welcome to the **DIFF Meet Channel** — this is where all official meets begin.\n\n"
-                f"**Access:** This channel is for {role_mention} members only.\n\n"
-                "**What this channel is used for:**\n"
-                "• Meet start announcements\n"
-                "• Meet locations & movement updates\n"
-                "• Host instructions during the meet\n"
-                "• Important real-time meet communication\n\n"
-                "**Channel Rules:**\n"
-                "• Only hosts or staff should speak here during meets\n"
-                "• Follow all instructions posted in this channel\n"
-                "• Do not spam or talk over hosts\n"
-                "• Stay ready for location changes\n\n"
-                "**Important:**\n"
-                "When a meet is live, this channel becomes the main source of direction. "
-                "Make sure notifications are on so you don't miss anything.\n\n"
-                "Stay ready. Stay organized. Stay DIFF."
+                "Meet starts, locations, and live host instructions—all in one place.\n\n"
+                "**During meets:** hosts and staff only. Follow directions and keep chat clear.\n"
+                f"**Access:** {role_mention} · Keep channel notifications on."
             ),
             color=EMBED_COLOR,
         )
-        embed.add_field(
-            name="📋 Staff Commands",
-            value="`!postmeetchannelpanel` — Post / refresh this panel",
-            inline=False,
-        )
-        embed.set_image(url=DIFF_LOGO_URL)
-        embed.set_footer(text=PANEL_TAG)
+        embed.set_footer(text=PANEL_FOOTER)
         return embed
 
     async def _post_or_refresh(self, channel: discord.TextChannel) -> discord.Message | None:
@@ -74,7 +56,7 @@ class DiffMeetChannelPanel(commands.Cog):
         async for msg in channel.history(limit=50):
             if msg.author.id == self.bot.user.id and msg.embeds:
                 footer = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
-                if footer == PANEL_TAG:
+                if footer in (PANEL_TAG, PANEL_FOOTER):
                     if existing is None:
                         existing = msg
                     else:
@@ -87,8 +69,12 @@ class DiffMeetChannelPanel(commands.Cog):
             try:
                 await existing.edit(content=None, embed=embed, view=None)
                 return existing
-            except Exception:
+            except discord.NotFound:
                 pass
+            except discord.HTTPException as exc:
+                # An edit failure is not evidence the old panel disappeared.
+                print(f"[DiffMeetChannelPanel] Refresh failed: {exc}")
+                return None
 
         return await channel.send(embed=embed)
 

@@ -860,59 +860,40 @@ _UNIFIED_OLD_TITLES = frozenset({
 })
 
 _CHANNEL_LINKS = [
-    ("📅", "Schedule / Planning",  "https://discord.com/channels/850386896509337710/1089579004517953546"),
-    ("📍", "Meet Coordination",    "https://discord.com/channels/850386896509337710/1091157191895023626"),
-    ("🚫", "Blacklist / Reports",  "https://discord.com/channels/850386896509337710/1057016810261712938"),
+    ("📅", "Schedule",             "https://discord.com/channels/850386896509337710/1089579004517953546"),
+    ("📍", "Coordination",         "https://discord.com/channels/850386896509337710/1091157191895023626"),
+    ("🚫", "Blacklist",            "https://discord.com/channels/850386896509337710/1057016810261712938"),
     ("📊", "Staff Logs",           "https://discord.com/channels/850386896509337710/1485265848099799163"),
     ("🛠️", "Host Tools",           "https://discord.com/channels/850386896509337710/1485840926612918383"),
-    ("💬", "Host Team Chat",       "https://discord.com/channels/850386896509337710/1485830232270307410"),
+    ("💬", "Host Chat",            "https://discord.com/channels/850386896509337710/1485830232270307410"),
 ]
 
 
 def build_unified_host_team_embed(data: dict | None = None) -> discord.Embed:
     if data is None:
         data = ensure_data_shape(load_data())
-    total_ann  = len(data["announcements"])
     open_ann   = sum(1 for a in data["announcements"].values() if not a.get("closed"))
     total_warn = sum(int(s.get("warning_count", 0)) for s in data["host_stats"].values())
     flagged    = sum(1 for s in data["host_stats"].values() if s.get("flagged"))
 
     embed = discord.Embed(
         title="🏁 DIFF Host Team",
-        description="*Host coordination hub for DIFF meet leaders.*",
+        description=(
+            "Plan meets, coordinate with hosts, and catch up on announcements.\n"
+            "**Before hosting:** check the blacklist and confirm your location and time."
+        ),
         color=0xC9A227,
     )
     maybe_set_thumbnail(embed, DIFF_LOGO_URL)
-    embed.add_field(
-        name="🚨 Coordination Rules",
-        value=(
-            "• Stay active and communicate clearly\n"
-            "• Coordinate locations, themes, and timing\n"
-            "• Check the blacklist before hosting\n"
-            "• Keep everything organised and professional"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📢 Smart Announcement System",
-        value=(
-            "• Auto-suggests type from your message text\n"
-            "• Detects urgent wording automatically\n"
-            "• Auto-reminders (15 min) + escalation (30 min)\n"
-            "• Tracks host acknowledgements and response speed"
-        ),
-        inline=False,
-    )
-    embed.add_field(name="Announcements",  value=str(total_ann),  inline=True)
-    embed.add_field(name="Open / Active",  value=str(open_ann),   inline=True)
-    embed.add_field(name="Warnings",       value=str(total_warn), inline=True)
-    embed.add_field(name="Flagged Hosts",  value=str(flagged),    inline=True)
-    embed.add_field(
-        name="Reminder Cycle",
-        value=f"{REMINDER_DELAY_MINUTES}m / {ESCALATION_DELAY_MINUTES}m",
-        inline=True,
-    )
-    embed.set_footer(text=UNIFIED_HOST_TEAM_TAG + "  |  Announcement tools are Manager+ only")
+    status = []
+    if open_ann:
+        status.append(f"**{open_ann}** open announcement{'s' if open_ann != 1 else ''}")
+    if total_warn:
+        status.append(f"**{total_warn}** warning{'s' if total_warn != 1 else ''}")
+    if flagged:
+        status.append(f"**{flagged}** flagged host{'s' if flagged != 1 else ''}")
+    embed.add_field(name="At a glance", value=" · ".join(status) or "No open announcements or host alerts.", inline=False)
+    embed.set_footer(text=UNIFIED_HOST_TEAM_TAG + " • Manager tools in the menu")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
@@ -920,22 +901,22 @@ def build_unified_host_team_embed(data: dict | None = None) -> discord.Embed:
 class _HostTeamActionSelect(discord.ui.Select):
     def __init__(self):
         super().__init__(
-            placeholder="🛠️  Announcement & Manager Tools",
+            placeholder="Choose a manager action…",
             options=[
                 discord.SelectOption(
-                    label="Create Smart Announcement", value="create_ann", emoji="🧠",
+                    label="Create Announcement", value="create_ann", emoji="📢",
                     description="Send a tracked announcement to the host team",
                 ),
                 discord.SelectOption(
-                    label="View Announcement Stats", value="view_stats", emoji="📈",
+                    label="Announcement Stats", value="view_stats", emoji="📈",
                     description="Total announcements, reminders, and ack counts",
                 ),
                 discord.SelectOption(
-                    label="View Host Performance", value="view_perf", emoji="🏆",
+                    label="Host Performance", value="view_perf", emoji="🏆",
                     description="Host responsiveness leaderboard",
                 ),
                 discord.SelectOption(
-                    label="View Ignored Announcements", value="view_ignored", emoji="🚫",
+                    label="Missing Acknowledgements", value="view_ignored", emoji="📋",
                     description="Announcements with missing acknowledgements",
                 ),
                 discord.SelectOption(
@@ -949,12 +930,16 @@ class _HostTeamActionSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         val = self.values[0]
-        if val == "refresh":
-            await ensure_unified_host_team_panel(interaction.client)
-            await interaction.response.send_message("✅ Host Team panel refreshed.", ephemeral=True)
-            return
         if not isinstance(interaction.user, discord.Member) or not user_is_manager(interaction.user):
             return await interaction.response.send_message("Manager+ only.", ephemeral=True)
+        if val == "refresh":
+            await interaction.response.defer(ephemeral=True)
+            try:
+                await ensure_unified_host_team_panel(interaction.client)
+            except discord.HTTPException:
+                return await interaction.followup.send("Couldn't refresh the panel. Please try again.", ephemeral=True)
+            await interaction.followup.send("✅ Host Team panel refresh requested.", ephemeral=True)
+            return
         if val == "create_ann":
             await interaction.response.send_modal(SmartAnnouncementModal())
         elif val == "view_stats":
@@ -1026,8 +1011,11 @@ async def ensure_unified_host_team_panel(bot: commands.Bot) -> None:
             await unified_msg.edit(embed=embed, view=view)
             print("[UnifiedHostTeam] Panel refreshed.")
             return
-        except Exception:
+        except discord.NotFound:
             pass
+        except discord.HTTPException as exc:
+            print(f"[UnifiedHostTeam] Refresh failed: {exc}")
+            raise
 
     try:
         await channel.send(embed=embed, view=view)
