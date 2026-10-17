@@ -3760,7 +3760,7 @@ def _hrsvp_build_embed() -> discord.Embed:
 
 # ── Split layout: slim header card + one roomy availability card per meet ───────
 def _hrsvp_build_header_embed() -> discord.Embed:
-    """Header card: week range, reset countdown, progress + legend. No per-meet lists."""
+    """Compact weekly summary; available volunteers are not assigned hosts."""
     data = _hrsvp_load()
     from datetime import timedelta as _td
     _now_et = datetime.now(_EST_TZ)
@@ -3777,121 +3777,96 @@ def _hrsvp_build_header_embed() -> discord.Embed:
             for e in d.get(bucket, []):
                 all_responded_uids.add(_hrsvp_uid(e))
     total_responders = len(all_responded_uids)
-    slots_with_host  = sum(1 for day in _HRSVP_DAYS if data.get(day, {}).get("yes", []))
+    schedule = _asched_load().get("days", {})
+    slots_with_host = sum(1 for day in _HRSVP_DAYS
+                          if schedule.get(day, {}).get("host_id")
+                          and schedule[day].get("host_status") == "yes")
     slots_needed     = len(_HRSVP_DAYS)
-    slot_bar         = "🟩" * slots_with_host + "⬜" * (slots_needed - slots_with_host)
-    slots_open       = slots_needed - slots_with_host
-    if slots_open > 0:
-        urgency_line = (
-            f"⏳ **{slots_open} slot{'s' if slots_open != 1 else ''} still need a host** — "
-            f"leadership builds the schedule from your replies, so respond before reset!"
-        )
-    else:
-        urgency_line = "✅ **All slots have a confirmed host — thank you!**"
 
     embed = discord.Embed(
-        title="📋 DIFF Host Availability — Meet Schedule",
+        title=f"Host Schedule · {_week_str}",
         description=(
-            f"📅 **Week of {_week_str}**  •  🔄 Resets <t:{_reset_ts}:R>\n\n"
-            f"**Hosts, mark your availability on each meet card below.**\n\n"
-            f"📊 {slot_bar}  **{slots_with_host}/{slots_needed} slots have a confirmed host**\n"
-            f"👥 **{total_responders} host{'s' if total_responders != 1 else ''}** have responded so far\n"
-            f"{urgency_line}\n\n"
-            "• ✅ **Available** — opens a form for your day, time & class\n"
-            "• ❓ **Maybe** — opens a form to note your preferred day\n"
-            "• ❌ **Unavailable** — marks you as unable to host\n"
-            "• 👤 **My Status** — shows what you've submitted so far"
+            f"**{slots_with_host}/{slots_needed} hosts assigned** · {total_responders} hosts responded\n"
+            "Choose your availability on each open meet below.\n"
+            f"Weekly reset <t:{_reset_ts}:R>."
         ),
         color=0x5865F2,
         timestamp=utc_now(),
     )
-    if DIFF_LOGO_URL:
-        embed.set_thumbnail(url=DIFF_LOGO_URL)
     embed.set_footer(text="Different Meets • Host Availability  •  Times shown in your local timezone")
     return embed
 
 
+def _hrsvp_week_key() -> str:
+    now = datetime.now(_EST_TZ)
+    return (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+
+
+def _hrsvp_is_staff(user) -> bool:
+    return bool(getattr(getattr(user, "guild_permissions", None), "administrator", False)
+                or any(r.id in _LEADERSHIP_ROLE_IDS for r in getattr(user, "roles", [])))
+
+
+def _hrsvp_response_state(day: str) -> tuple:
+    """Past responses close by schedule time; a staff override is tied to week AND slot time."""
+    ts = _asched_slot_ts(_asched_load().get("days", {}).get(day, {}))
+    past = bool(ts and ts <= time.time())
+    override = _hrsvp_load().get("response_reopen", {}).get(day, {})
+    reopened = past and override == {"week": _hrsvp_week_key(), "ts": ts}
+    return past, bool(reopened), past and not reopened
+
+
+def _hrsvp_response_error(user, day: str, week: str | None = None) -> str | None:
+    if day not in _HRSVP_DAYS:
+        return "This meet is no longer available. Refresh the panel."
+    if not any(r.id == HOST_ROLE_ID for r in getattr(user, "roles", [])):
+        return "Only hosts can use this panel."
+    if week is not None and week != _hrsvp_week_key():
+        return "The week changed while this form was open. Open a new form from the panel."
+    if _hrsvp_response_state(day)[2]:
+        return "This meet is past and responses are closed. Leadership can reopen it from Staff Tools."
+    return None
+
+
 def _hrsvp_build_meet_embed(day: str) -> discord.Embed:
-    """One roomy availability card for a single meet slot."""
+    """One scheduled time and actual assignment, with response details behind a button."""
     data          = _hrsvp_load()
     d             = data.get(day, {"yes": [], "no": [], "maybe": []})
-    yes_entries   = d.get("yes", [])
-    no_entries    = d.get("no", [])
-    maybe_entries = d.get("maybe", [])
-    _MAX = 12
-
-    if yes_entries:
-        slot_status = f"🟢 **{len(yes_entries)} host{'s' if len(yes_entries) != 1 else ''} available**"
-        color = 0x57F287
-    elif maybe_entries:
-        slot_status = f"🟡 **{len(maybe_entries)} maybe** — still needs a host"
-        color = 0xFEE75C
+    scheduled = _asched_load().get("days", {}).get(day, {})
+    ts = _asched_slot_ts(scheduled)
+    past, reopened, closed = _hrsvp_response_state(day)
+    assigned = scheduled.get("host_id") and scheduled.get("host_status") == "yes"
+    color = 0x747F8D if closed else (0x57F287 if assigned else 0xFEE75C)
+    if ts:
+        when = f"<t:{ts}:F>"
     else:
-        slot_status = "🔴 **Open — no hosts yet**"
-        color = 0xED4245
-
-    # Scheduled date/time for this slot, once leadership has built it.
-    when_sub = "🗓️ *Date is set once a host signs up*"
-    try:
-        sched_entry = _asched_load().get("days", {}).get(day, {})
-        s_day  = sched_entry.get("day", "TBD")
-        s_time = sched_entry.get("time", "TBD")
-        _known = s_day not in ("TBD", "-", None, "") and s_time not in ("TBD", "-", None, "")
-        s_ts   = _asched_slot_ts(sched_entry) if _known else None
-        if s_ts:
-            when_sub = f"🗓️ <t:{s_ts}:F>  (<t:{s_ts}:R>)"
-        elif _known:
-            when_sub = f"🗓️ {s_day} · {s_time}"
-    except Exception:
-        pass
-
-    lines = [slot_status, when_sub, ""]
-    if yes_entries:
-        for e in yes_entries[:_MAX]:
-            uid = _hrsvp_uid(e)
-            if isinstance(e, dict):
-                dv = e.get('day', 'TBD')
-                tv = e.get('time', 'TBD')
-                ts = _hrsvp_entry_ts(e) if not tv.startswith("<t:") else None
-                if ts:
-                    when_display = f"<t:{ts}:F>  (<t:{ts}:R>)"
-                elif tv.startswith("<t:"):
-                    when_display = tv
-                else:
-                    when_display = f"📅 {dv}  🕒 {tv}"
-                lines.append(f"✅ <@{uid}>\n　{when_display}  🎮 {e.get('theme', 'TBD')}")
-            else:
-                lines.append(f"✅ <@{uid}>")
-        if len(yes_entries) > _MAX:
-            lines.append(f"-# +{len(yes_entries) - _MAX} more available")
-
-    if maybe_entries:
-        for e in maybe_entries[:_MAX]:
-            uid = _hrsvp_uid(e)
-            day_pref = e.get("day", "") if isinstance(e, dict) else ""
-            lines.append(f"❓ <@{uid}>" + (f" — prefers {day_pref}" if day_pref else ""))
-        if len(maybe_entries) > _MAX:
-            lines.append(f"-# +{len(maybe_entries) - _MAX} more maybe")
-
-    if no_entries:
-        no_tags = "  ".join(f"<@{_hrsvp_uid(u)}>" for u in no_entries[:_MAX])
-        extra   = f"  +{len(no_entries) - _MAX}" if len(no_entries) > _MAX else ""
-        lines.append(f"❌ Unavailable: {no_tags}{extra}")
-
-    desc = "\n".join(lines)
-    if len(desc) > 4000:
-        desc = desc[:3990] + "\n-# …"
-    embed = discord.Embed(title=f"🏁 {day}", description=desc, color=color)
-    embed.set_footer(text=f"{day} • mark your availability below")
+        when = "Date and time awaiting scheduling."
+    host = f"<@{scheduled['host_id']}>" if assigned else "Needs assignment"
+    if scheduled.get("host_id") and scheduled.get("host_status") == "maybe":
+        host += f" · Tentative: <@{scheduled['host_id']}>"
+    counts = [f"{len(d.get(key, []))} {label}" for key, label in
+              (("yes", "available"), ("maybe", "maybe"), ("no", "unavailable")) if d.get(key)]
+    status = "**Past · Responses closed**\n" if closed else ("**Past · Reopened by staff**\n" if reopened else "")
+    theme = scheduled.get("class") or "Awaiting theme"
+    if theme == "TBD":
+        theme = "Awaiting theme"
+    embed = discord.Embed(
+        title=f"{day} · {_reminder_ui.text(theme, 100)}",
+        description=f"{status}{when}\n**Assigned host:** {host}\n**Responses:** {' · '.join(counts) or 'None yet'}",
+        color=color,
+    )
+    embed.set_footer(text="Times shown locally • View Responses for proposed times")
     return embed
 
 
 class _HrsvpHeaderView(discord.ui.View):
-    """My Status + Reset only — buttons reuse registered custom_ids."""
+    """Staff-only actions are behind a permission-gated private menu."""
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(_HrsvpMyStatusBtn())
-        self.add_item(_HrsvpResetBtn())
+        status = _HrsvpMyStatusBtn()
+        status.row = 0
+        self.add_item(status)
+        self.add_item(_HrsvpStaffToolsBtn())
 
 
 class _HrsvpMeetView(discord.ui.View):
@@ -3902,6 +3877,130 @@ class _HrsvpMeetView(discord.ui.View):
         self.add_item(_HostRSVPBtn(day, "yes",   "✅", discord.ButtonStyle.success,   label="Available"))
         self.add_item(_HostRSVPBtn(day, "maybe", "❓", discord.ButtonStyle.secondary, label="Maybe"))
         self.add_item(_HostRSVPBtn(day, "no",    "❌", discord.ButtonStyle.danger,    label="Unavailable"))
+        for child in self.children:
+            child.disabled = _hrsvp_response_state(day)[2]
+        self.add_item(_HrsvpResponsesBtn(day))
+
+
+class _HrsvpResponsesBtn(discord.ui.Button):
+    def __init__(self, day: str):
+        super().__init__(label="View Responses", style=discord.ButtonStyle.secondary,
+                         custom_id=f"hrsvp_responses_{day.replace(' ', '_')}", row=1)
+        self.day = day
+
+    async def callback(self, interaction: discord.Interaction):
+        if not _hrsvp_is_staff(interaction.user) and not any(
+                r.id == HOST_ROLE_ID for r in getattr(interaction.user, "roles", [])):
+            return await interaction.response.send_message("Hosts and leadership only.", ephemeral=True)
+        slot = _hrsvp_load().get(self.day, {})
+        lines = []
+        for bucket, label in (("yes", "Available"), ("maybe", "Maybe"), ("no", "Unavailable")):
+            for entry in slot.get(bucket, []):
+                uid = _hrsvp_uid(entry)
+                member = interaction.guild.get_member(int(uid)) if str(uid).isdigit() else None
+                name = _reminder_ui.text(member.display_name, 80) if member else f"<@{uid}>"
+                line = f"**{name} · {label}**"
+                if isinstance(entry, dict) and bucket == "yes":
+                    ts = _hrsvp_entry_ts(entry)
+                    when = f"<t:{ts}:F>" if ts else _reminder_ui.text(f"{entry.get('day', 'TBD')} · {entry.get('time', 'TBD')}")
+                    line += f"\nProposed: {when} · {_reminder_ui.text(entry.get('theme'), 100)}"
+                elif isinstance(entry, dict) and bucket == "maybe" and entry.get("day"):
+                    line += f"\nPreferred day: {_reminder_ui.text(entry['day'], 100)}"
+                lines.append(line)
+        pages, text = [], ""
+        for line in lines:
+            if len(text) + len(line) + 2 > 3500:
+                pages.append(text)
+                text = ""
+            text += line + "\n\n"
+        pages.append(text or "No responses yet.")
+        view = _HrsvpResponsesPages(self.day, pages)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True,
+                                                allowed_mentions=discord.AllowedMentions.none())
+
+
+class _HrsvpResponsesPages(discord.ui.View):
+    def __init__(self, day, pages):
+        super().__init__(timeout=300)
+        self.day, self.pages, self.index = day, pages, 0
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        self.previous.disabled = self.index == 0
+        self.next_page.disabled = self.index == len(self.pages) - 1
+
+    def embed(self):
+        embed = discord.Embed(title=f"{self.day} · Responses", description=self.pages[self.index], color=0x5865F2)
+        embed.set_footer(text=f"Page {self.index + 1}/{len(self.pages)} • Proposals are not the assigned schedule")
+        return embed
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.index = max(0, self.index - 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.index = min(len(self.pages) - 1, self.index + 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+
+class _HrsvpStaffToolsBtn(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Staff Tools", style=discord.ButtonStyle.secondary,
+                         custom_id="hrsvp_staff_tools", row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not _hrsvp_is_staff(interaction.user):
+            return await interaction.response.send_message("Leadership only.", ephemeral=True)
+        view = discord.ui.View(timeout=300)
+        view.add_item(_HrsvpStaffActions())
+        await interaction.response.send_message(
+            "Manage availability responses. Reopening does not change the assigned host or schedule.",
+            view=view, ephemeral=True)
+
+
+class _HrsvpStaffActions(discord.ui.Select):
+    def __init__(self):
+        options = [discord.SelectOption(label="Refresh panel", value="refresh"),
+                   discord.SelectOption(label="Reset all responses…", value="reset")]
+        for day in _HRSVP_DAYS:
+            past, reopened, closed = _hrsvp_response_state(day)
+            if past:
+                options.append(discord.SelectOption(
+                    label=f"{'Close' if reopened else 'Reopen'} {day} responses",
+                    value=f"{'close' if reopened else 'reopen'}:{day}"))
+        super().__init__(placeholder="Choose a staff action…", options=options)
+        self.week = _hrsvp_week_key()
+
+    async def callback(self, interaction: discord.Interaction):
+        if not _hrsvp_is_staff(interaction.user):
+            return await interaction.response.send_message("Leadership only.", ephemeral=True)
+        if self.week != _hrsvp_week_key():
+            return await interaction.response.send_message("The week changed. Open Staff Tools again.", ephemeral=True)
+        action = self.values[0]
+        if action == "reset":
+            return await interaction.response.send_modal(_HrsvpResetConfirmModal())
+        await interaction.response.defer(ephemeral=True)
+        if ":" in action:
+            choice, day = action.split(":", 1)
+            if day not in _HRSVP_DAYS or choice not in ("reopen", "close"):
+                return await interaction.followup.send("Invalid action.", ephemeral=True)
+            past, _, _ = _hrsvp_response_state(day)
+            if not past:
+                return await interaction.followup.send("This meet is not past; responses are already open.", ephemeral=True)
+            data = _hrsvp_load()
+            overrides = data.setdefault("response_reopen", {})
+            if choice == "reopen":
+                ts = _asched_slot_ts(_asched_load().get("days", {}).get(day, {}))
+                overrides[day] = {"week": self.week, "ts": ts}
+            else:
+                overrides.pop(day, None)
+            _hrsvp_save(data)
+        await _hrsvp_update_panel(interaction.client)
+        await interaction.followup.send("Availability panel updated. Existing responses were kept.", ephemeral=True)
 
 
 class _HrsvpResetConfirmModal(discord.ui.Modal, title="Confirm Reset"):
@@ -3912,7 +4011,15 @@ class _HrsvpResetConfirmModal(discord.ui.Modal, title="Confirm Reset"):
         max_length=10,
     )
 
+    def __init__(self):
+        super().__init__()
+        self.week = _hrsvp_week_key()
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not _hrsvp_is_staff(interaction.user):
+            return await interaction.response.send_message("Leadership only.", ephemeral=True)
+        if self.week != _hrsvp_week_key():
+            return await interaction.response.send_message("The week changed. Open a new reset confirmation.", ephemeral=True)
         if str(self.confirm).strip().upper() != "RESET":
             return await interaction.response.send_message(
                 "❌ Reset cancelled — you didn't type RESET.", ephemeral=True
@@ -3980,7 +4087,7 @@ class _HrsvpMyStatusBtn(discord.ui.Button):
                         ts = _hrsvp_entry_ts(e) if dv and tv != 'TBD' else None
                         when_str = f"<t:{ts}:F>" if ts else f"{dv} · {tv}"
                         lines.append(
-                            f"✅ **{day}** — {when_str} · 🎮 {e.get('theme','TBD')}"
+                            f"✅ **{day}** — Proposed: {when_str} · 🎮 {e.get('theme','TBD')}"
                         )
                     else:
                         lines.append(f"✅ **{day}** — Available")
@@ -3995,13 +4102,15 @@ class _HrsvpMyStatusBtn(discord.ui.Button):
                     lines.append(f"❌ **{day}** — Unavailable")
                     found = True
             if not found:
-                lines.append(f"⬜ **{day}** — No response yet")
-                missing.append(day)
+                closed = _hrsvp_response_state(day)[2]
+                lines.append(f"⬜ **{day}** — {'Past · Responses closed' if closed else 'No response yet'}")
+                if not closed:
+                    missing.append(day)
 
         if missing:
             summary = f"⚠️ **Still need your answer for:** {', '.join(missing)}"
         else:
-            summary = "✅ **You've responded to every meet — thank you!**"
+            summary = "✅ **No open meets are missing your response.**"
 
         await interaction.response.send_message(
             "**Your current availability:**\n" + summary + "\n\n" + "\n".join(lines),
@@ -4012,12 +4121,21 @@ class _HrsvpMyStatusBtn(discord.ui.Button):
 class HostRSVPView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        for day in _HRSVP_DAYS:
-            self.add_item(_HostRSVPBtn(day, "yes",   "✅", discord.ButtonStyle.success))
-            self.add_item(_HostRSVPBtn(day, "no",    "❌", discord.ButtonStyle.danger))
-            self.add_item(_HostRSVPBtn(day, "maybe", "❓", discord.ButtonStyle.secondary))
+        for row, day in enumerate(_HRSVP_DAYS):
+            for choice, emoji, style in (("yes", "✅", discord.ButtonStyle.success),
+                                         ("no", "❌", discord.ButtonStyle.danger),
+                                         ("maybe", "❓", discord.ButtonStyle.secondary)):
+                button = _HostRSVPBtn(day, choice, emoji, style)
+                button.row = row
+                self.add_item(button)
+            responses = _HrsvpResponsesBtn(day)
+            responses.row = row
+            self.add_item(responses)
         self.add_item(_HrsvpMyStatusBtn())
         self.add_item(_HrsvpResetBtn())
+        staff = _HrsvpStaffToolsBtn()
+        staff.row = 4
+        self.add_item(staff)
 
 
 class _HostAvailModal(discord.ui.Modal):
@@ -4038,12 +4156,16 @@ class _HostAvailModal(discord.ui.Modal):
     def __init__(self, day: str):
         super().__init__(title=f"✅ Available for {day}")
         self.day = day
+        self.week = _hrsvp_week_key()
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user:
             await interaction.response.defer()
             return
         await interaction.response.defer(ephemeral=True)
+        error = _hrsvp_response_error(interaction.user, self.day, self.week)
+        if error:
+            return await interaction.followup.send(error, ephemeral=True)
         try:
             uid       = str(interaction.user.id)
             raw_dt    = str(self.day_time_input).strip()
@@ -4091,12 +4213,16 @@ class _HostMaybeModal(discord.ui.Modal):
     def __init__(self, day: str):
         super().__init__(title=f"❓ Maybe for {day}")
         self.day = day
+        self.week = _hrsvp_week_key()
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user:
             await interaction.response.defer()
             return
         await interaction.response.defer(ephemeral=True)
+        error = _hrsvp_response_error(interaction.user, self.day, self.week)
+        if error:
+            return await interaction.followup.send(error, ephemeral=True)
         try:
             uid      = str(interaction.user.id)
             day_pref = str(self.day_pref).strip()
@@ -4135,9 +4261,9 @@ class _HostRSVPBtn(discord.ui.Button):
         if not interaction.user:
             await interaction.response.defer()
             return
-        has_host = any(r.id == HOST_ROLE_ID for r in getattr(interaction.user, "roles", []))
-        if not has_host:
-            await interaction.response.send_message("Only hosts can use this panel.", ephemeral=True)
+        error = _hrsvp_response_error(interaction.user, self.day)
+        if error:
+            await interaction.response.send_message(error, ephemeral=True)
             return
         # "yes" → modal for day/time/class
         if self.choice == "yes":
@@ -4149,6 +4275,9 @@ class _HostRSVPBtn(discord.ui.Button):
             return
         # "no" → toggle: first click marks unavailable, second click clears the response
         await interaction.response.defer(ephemeral=True)
+        error = _hrsvp_response_error(interaction.user, self.day)
+        if error:
+            return await interaction.followup.send(error, ephemeral=True)
         try:
             uid  = str(interaction.user.id)
             data = _hrsvp_load()
@@ -4194,13 +4323,13 @@ async def _hrsvp_resolve_channel(bot_client) -> "discord.TextChannel | None":
     return channel if isinstance(channel, discord.TextChannel) else None
 
 
-async def _hrsvp_render_layout(bot_client, ping: bool = False) -> None:
+async def _hrsvp_render_layout(bot_client, ping: bool = False) -> bool:
     """Delete any existing host-availability messages, then post header + one card per meet.
     Only touches messages carrying `hrsvp_` buttons — the Auto Schedule Builder panel
     in the same channel is left alone."""
     channel = await _hrsvp_resolve_channel(bot_client)
     if channel is None:
-        return
+        return False
     bot_id = bot_client.user.id
 
     data    = _hrsvp_load()
@@ -4240,15 +4369,26 @@ async def _hrsvp_render_layout(bot_client, ping: bool = False) -> None:
         data = _hrsvp_load()
         data["panel_message_ids"] = new_ids
         _hrsvp_save(data)
+        return True
     except Exception as e:
         print(f"[HostRSVP] layout post failed: {e}")
+        return False
 
 
-async def _hrsvp_update_panel(bot_client) -> None:
+_hrsvp_panel_lock = asyncio.Lock()
+
+
+async def _hrsvp_update_panel(bot_client) -> bool:
+    # Concurrent replies and automatic clock updates must not remap cards simultaneously.
+    async with _hrsvp_panel_lock:
+        return await _hrsvp_update_panel_inner(bot_client)
+
+
+async def _hrsvp_update_panel_inner(bot_client) -> bool:
     """Edit header + meet cards in place; full (no-ping) repost if anything is missing."""
     channel = await _hrsvp_resolve_channel(bot_client)
     if channel is None:
-        return
+        return False
 
     data     = _hrsvp_load()
     ids      = data.get("panel_message_ids") or {}
@@ -4256,16 +4396,15 @@ async def _hrsvp_update_panel(bot_client) -> None:
 
     if set(ids.keys()) != expected:
         # First rollout / broken layout → fresh post (ping only if nothing existed before).
-        await _hrsvp_render_layout(bot_client, ping=not ids)
-        return
+        return await _hrsvp_render_layout(bot_client, ping=not ids)
 
     try:
         hm = await channel.fetch_message(int(ids["header"]))
         await hm.edit(embed=_hrsvp_build_header_embed(), view=_HrsvpHeaderView())
     except discord.NotFound:
         return await _hrsvp_render_layout(bot_client, ping=False)
-    except Exception:
-        pass
+    except discord.HTTPException:
+        return False
 
     # Cards are edited by POSITION (message ids ascend in post order) so the
     # soonest meet is always the top card — even on already-posted panels.
@@ -4292,7 +4431,8 @@ async def _hrsvp_update_panel(bot_client) -> None:
             fresh["panel_message_ids"] = {"header": ids["header"], **proposed}
             _hrsvp_save(fresh)
         except Exception:
-            pass
+            return False
+    return all_ok
 
 
 # =========================
@@ -4545,14 +4685,14 @@ def _asched_slot_ts(slot) -> int | None:
 
 
 def _hrsvp_days_sorted() -> list:
-    """Meet 1/2/3 ordered by their scheduled date (soonest first).
-    Slots without a resolvable timestamp keep their original relative order at the end."""
+    """Upcoming, unscheduled, then past slots; stable Meet identifiers never change."""
     try:
         days_cfg = _asched_load().get("days", {})
         def _key(pair):
             idx, day = pair
             ts = _asched_slot_ts(days_cfg.get(day, {}))
-            return (ts if ts else float("inf"), idx)
+            group = 2 if ts and ts <= time.time() else (0 if ts else 1)
+            return (group, ts if ts else float("inf"), idx)
         return [d for _, d in sorted(enumerate(_HRSVP_DAYS), key=_key)]
     except Exception:
         return list(_HRSVP_DAYS)
@@ -7754,8 +7894,9 @@ async def _cmd_attendlb(ctx: commands.Context):
 @bot.command(name="refreshschedule")
 @commands.has_permissions(manage_guild=True)
 async def _cmd_refreshschedule(ctx: commands.Context):
-    """!refreshschedule — force-refresh the Auto Schedule panel with the latest view."""
+    """!refreshschedule — refresh schedule and host availability without resetting replies."""
     await _asched_update_panel(ctx.bot)
+    await _hrsvp_update_panel(ctx.bot)
     await ctx.send("✅ Schedule panel refreshed.", delete_after=5)
 
 
@@ -26636,6 +26777,7 @@ async def on_ready():
     _safe_add_view(_RCStrikeConfirmView(),  "_RCStrikeConfirmView")
     _asched_build()
     await _asched_update_panel(bot)
+    await _hrsvp_update_panel(bot)
     _safe_add_view(HostHubView(),           "HostHubView")
     _safe_add_view(HostFlowView(),          "HostFlowView")
     _safe_add_view(_MobileRefreshView(),    "_MobileRefreshView")
@@ -27505,6 +27647,9 @@ async def _hrsvp_auto_reset_loop() -> None:
         now_est = datetime.now(_ZI("America/New_York"))
         days_since_monday = now_est.weekday()            # 0=Mon … 6=Sun
         most_recent_monday = (now_est - _td(days=days_since_monday)).strftime("%Y-%m-%d")
+        # Missing state on a deployment is not proof that the current replies are stale.
+        if _hrsvp_reset_ts_load() is None:
+            _hrsvp_reset_ts_save(most_recent_monday)
         if _hrsvp_reset_ts_load() != most_recent_monday:
             _hrsvp_reset()
             _hrsvp_reset_ts_save(most_recent_monday)
@@ -27527,9 +27672,22 @@ async def _hrsvp_auto_reset_loop() -> None:
     # Mirrors the startup catch-up logic (compare stored vs. most-recent Monday)
     # instead of gating on hour==0, so a missed midnight tick can't leave the
     # panel stale for up to half an hour — it resets within ~60 s of Monday 00:00.
+    last_panel_signature = None
     while not bot.is_closed():
         await asyncio.sleep(60)
         try:
+            schedule = _asched_load().get("days", {})
+            signature = (
+                _hrsvp_week_key(),
+                tuple((day, _hrsvp_response_state(day),
+                       _asched_slot_ts(schedule.get(day, {})),
+                       schedule.get(day, {}).get("host_id"),
+                       schedule.get(day, {}).get("host_status"),
+                       schedule.get(day, {}).get("class")) for day in _HRSVP_DAYS),
+            )
+            if signature != last_panel_signature:
+                if await _hrsvp_update_panel(bot):
+                    last_panel_signature = signature
             now_est            = datetime.now(_ZI("America/New_York"))
             most_recent_monday = (now_est - _td(days=now_est.weekday())).strftime("%Y-%m-%d")
             if _hrsvp_reset_ts_load() == most_recent_monday:
