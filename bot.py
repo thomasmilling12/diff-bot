@@ -4842,31 +4842,55 @@ def _asched_build_embed() -> discord.Embed:
 
 # ── Split layout: slim controls header + one status card per meet ───────────────
 def _asched_build_console_header_embed() -> discord.Embed:
-    """Builder header: progress + last-rebuilt + control buttons (no per-meet lists)."""
+    """Short controls header with a live breakdown of upcoming and past slots."""
     schedule = _asched_load()
     updated_at = schedule.get("updated_at")
     if updated_at:
         try:
             ts = int(datetime.fromisoformat(updated_at).timestamp())
-            rebuilt_str = f"<t:{ts}:R>  (<t:{ts}:f>)"
+            rebuilt_str = f"<t:{ts}:f>"
         except Exception:
             rebuilt_str = "recently"
     else:
         rebuilt_str = "*never — press Rebuild Schedule*"
 
-    filled = sum(1 for d in _HRSVP_DAYS if schedule["days"].get(d, {}).get("host_id"))
-    total  = len(_HRSVP_DAYS)
-    embed_color = 0x57F287 if filled == total else (0xFEE75C if filled > 0 else 0xEB459E)
-    progress_bar = "🟩" * filled + "⬜" * (total - filled)
+    now_ts = time.time()
+    upcoming = []
+    for day in _HRSVP_DAYS:
+        ts = _asched_slot_ts(schedule["days"].get(day, {}))
+        if ts is None or ts > now_ts:
+            upcoming.append(day)
+    past = len(_HRSVP_DAYS) - len(upcoming)
+    assigned = sum(
+        1 for day in upcoming
+        if schedule["days"].get(day, {}).get("host_id")
+        and schedule["days"].get(day, {}).get("host_status") != "maybe"
+    )
+    tentative = sum(
+        1 for day in upcoming
+        if schedule["days"].get(day, {}).get("host_id")
+        and schedule["days"].get(day, {}).get("host_status") == "maybe"
+    )
+    open_slots = len(upcoming) - assigned - tentative
+    embed_color = 0x747F8D if not upcoming else (
+        0x57F287 if open_slots == 0 and tentative == 0 else (
+            0xFEE75C if assigned or tentative else 0xEB459E
+        )
+    )
+    progress = f"**{assigned}/{len(upcoming)} upcoming assigned**"
+    if tentative:
+        progress += f" · {tentative} tentative"
+    if open_slots:
+        progress += f" · {open_slots} open"
+    if past:
+        progress += f" · {past} past"
 
     embed = discord.Embed(
-        title="📋 DIFF PS5 Weekly Schedule — Builder",
+        title="Weekly Schedule Builder",
         description=(
-            f"*Built automatically from host availability responses.*\n\n"
-            f"📊 {progress_bar}  **{filled}/{total} slots filled**\n"
-            f"🕐 **Last rebuilt:** {rebuilt_str}\n\n"
-            "Use the buttons below to **rebuild**, **override**, **remind hosts**, "
-            "and **submit** the schedule. Each meet's status is shown on its own card below."
+            f"{progress}\n"
+            f"Updated {rebuilt_str}\n"
+            "Past meets appear last. Locked slots are skipped when rebuilding."
         ),
         color=embed_color,
         timestamp=utc_now(),
@@ -4877,16 +4901,25 @@ def _asched_build_console_header_embed() -> discord.Embed:
     )
     if DIFF_LOGO_URL:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
-    embed.add_field(
-        name="📌 Important Information",
-        value=(
-            "*All DIFF Meets are based on the host's work & IRL schedule.*\n"
-            "*Meet details are all subject to change.*"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text="DIFF • Auto Host Schedule Builder  •  🔒 = slot locked by leadership")
+    embed.set_footer(text="DIFF • Host Schedule")
     return embed
+
+
+def _asched_console_order(schedule: dict | None = None, now_ts: float | None = None) -> list[str]:
+    """Display upcoming slots first without changing their stable Meet numbers."""
+    schedule = schedule if schedule is not None else _asched_load()
+    days = schedule.get("days", {})
+    now_ts = time.time() if now_ts is None else now_ts
+
+    def key(day):
+        ts = _asched_slot_ts(days.get(day, {}))
+        if ts and ts <= now_ts:
+            return (2, ts, _HRSVP_DAYS.index(day))
+        if ts:
+            return (0, ts, _HRSVP_DAYS.index(day))
+        return (1, float("inf"), _HRSVP_DAYS.index(day))
+
+    return sorted(_HRSVP_DAYS, key=key)
 
 
 def _asched_build_console_meet_embed(idx: int, day: str) -> discord.Embed:
@@ -4903,8 +4936,15 @@ def _asched_build_console_meet_embed(idx: int, day: str) -> discord.Embed:
     locked      = entry.get("locked", False)
     lock_tag    = " 🔒" if locked else ""
 
-    if host_id:
-        status_tag = "🟢 Confirmed" if host_status != "maybe" else "🟡 Tentative"
+    meet_ts = _asched_slot_ts(entry)
+    is_past = bool(meet_ts and meet_ts <= time.time())
+    if is_past:
+        status_tag = "Past"
+        host_val = _readable_host(None, host_id) if host_id else "Unassigned"
+        avail_line = None
+        color = 0x747F8D
+    elif host_id:
+        status_tag = "Assigned" if host_status != "maybe" else "Tentative"
         host_val   = _readable_host(None, host_id) + (" *(tentative)*" if host_status == "maybe" else "")
         avail_line = None
         color      = 0x57F287 if host_status != "maybe" else 0xFEE75C
@@ -4931,23 +4971,23 @@ def _asched_build_console_meet_embed(idx: int, day: str) -> discord.Embed:
             avail_line = None
             color = 0xEB459E
 
-    meet_ts = _asched_slot_ts(entry)
     if meet_ts:
-        when_line = f"📅 <t:{meet_ts}:D>  ·  🕒 <t:{meet_ts}:t>  ·  <t:{meet_ts}:R>"
+        when_line = f"<t:{meet_ts}:f>"
     else:
-        when_line = f"📅 {date_val}  ·  🕒 {time_val}"
+        raw_date = _reminder_ui.text(date_val, 50)
+        raw_time = _reminder_ui.text(time_val, 50)
+        when_line = " · ".join(v for v in (raw_date, raw_time) if v and v not in ("-", "TBD"))
+        if not when_line:
+            when_line = "Date and time not set"
 
-    lines = [
-        f"**{status_tag}**{lock_tag}",
-        f"🎮 {class_val}",
-        when_line,
-        f"👤 **Host:** {host_val}",
-    ]
+    safe_class = _reminder_ui.text(class_val, 100)
+    if not safe_class or safe_class in ("-", "TBD"):
+        safe_class = "Class not set"
+    lines = [f"**{status_tag}{lock_tag}**", when_line, f"**{safe_class}** · {host_val}"]
     if avail_line:
         lines.append(avail_line)
 
-    embed = discord.Embed(title=f"〔{idx}〕 Meet {idx}", description="\n".join(lines), color=color)
-    embed.set_footer(text="DIFF • Auto Host Schedule Builder  •  🔒 = slot locked by leadership")
+    embed = discord.Embed(title=f"Meet {idx}", description="\n".join(lines), color=color)
     return embed
 
 
@@ -6019,14 +6059,16 @@ class _ASchedReminderBtn(discord.ui.Button):
         lines = []
         for day in _HRSVP_DAYS:
             entry    = schedule["days"].get(day, {})
+            meet_ts  = _asched_slot_ts(entry)
+            if not meet_ts or meet_ts <= time.time():
+                continue
             host_id  = entry.get("host_id")
             host_str = _readable_host(interaction.guild, host_id) or "*TBD*"
             cls_val  = entry.get('class', 'TBD')
-            time_val = entry.get('time', 'TBD')
-            date_val = entry.get('day', '')
-            meet_ts  = _asched_slot_ts(entry) if date_val and time_val != 'TBD' else None
-            when_str = f"<t:{meet_ts}:F>  ·  <t:{meet_ts}:R>" if meet_ts else f"🕒 {time_val}"
-            lines.append(f"**{day}** — 🎮 {cls_val} | 📅 {when_str} | 👤 {host_str}")
+            when_str = f"<t:{meet_ts}:f>"
+            lines.append(f"**{day}** · {_reminder_ui.text(cls_val, 80)} · {when_str} · {host_str}")
+        if not lines:
+            return await interaction.followup.send("No upcoming scheduled meets to remind people about.", ephemeral=True)
         remind_embed = discord.Embed(
             title="📅 Upcoming DIFF Meets — This Week's Schedule",
             description="\n".join(lines),
@@ -6055,7 +6097,7 @@ class _ASchedSubmitBtn(discord.ui.Button):
             emoji="📤",
             style=discord.ButtonStyle.success,
             custom_id=_ASCHED_SUBMIT_ID,
-            row=2,
+            row=0,
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -6270,7 +6312,7 @@ class _ASchedOverrideBtn(discord.ui.Button):
             emoji="🛠️",
             style=discord.ButtonStyle.secondary,
             custom_id="diff_asched_override",
-            row=1,
+            row=0,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -6380,25 +6422,53 @@ class _ASchedPingNonRespondersBtn(discord.ui.Button):
         )
 
 
-class AutoScheduleView(discord.ui.View):
-    def __init__(self, bot_ref=None):
-        super().__init__(timeout=None)
-        self._bot_ref = bot_ref
-        self.add_item(_ASchedReminderBtn())
-        self.add_item(_ASchedOverrideBtn())
-        self.add_item(_ASchedPingNonRespondersBtn())
-        self.add_item(_ASchedSubmitBtn())
+class _ASchedRefreshBtn(discord.ui.Button):
+    """Keep old Refresh button IDs routable while their message is upgraded."""
+    def __init__(self):
+        super().__init__(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary,
+                         custom_id=_ASCHED_REFRESH_ID)
 
-    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id=_ASCHED_REFRESH_ID)
-    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Panel sync fetches + edits messages under _asched_sync_lock and can
-        # easily exceed Discord's 3s ack window (seen as "The application didn't
-        # respond in time") — defer FIRST, then do the work, reply via followup.
+    async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         await _asched_update_panel(interaction.client)
         await interaction.followup.send("Schedule panel refreshed.", ephemeral=True)
 
-    @discord.ui.button(label="Rebuild Schedule", emoji="🧠", style=discord.ButtonStyle.primary, custom_id=_ASCHED_REBUILD_ID)
+
+class _ASchedMoreActionsSelect(discord.ui.Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="More staff actions…",
+            custom_id="diff_auto_sched_more",
+            min_values=1,
+            max_values=1,
+            row=1,
+            options=[
+                discord.SelectOption(label="Refresh builder", value="refresh", emoji="🔄"),
+                discord.SelectOption(label="Send meet reminders", value="reminders", emoji="📣"),
+                discord.SelectOption(label="Ping non-responders", value="nonresponders", emoji="📩"),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        action = self.values[0]
+        if action == "refresh":
+            return await _ASchedRefreshBtn().callback(interaction)
+        if action == "reminders":
+            return await _ASchedReminderBtn().callback(interaction)
+        if action == "nonresponders":
+            return await _ASchedPingNonRespondersBtn().callback(interaction)
+        await interaction.response.send_message("Unknown schedule action.", ephemeral=True)
+
+
+class AutoScheduleView(discord.ui.View):
+    def __init__(self, bot_ref=None):
+        super().__init__(timeout=None)
+        self._bot_ref = bot_ref
+        self.add_item(_ASchedOverrideBtn())
+        self.add_item(_ASchedSubmitBtn())
+        self.add_item(_ASchedMoreActionsSelect())
+
+    @discord.ui.button(label="Rebuild Schedule", emoji="🧠", style=discord.ButtonStyle.primary, custom_id=_ASCHED_REBUILD_ID, row=0)
     async def rebuild_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         is_staff = any(
             r.id in _LEADERSHIP_HOST_ROLE_IDS
@@ -6469,6 +6539,15 @@ class AutoScheduleView(discord.ui.View):
         await interaction.followup.send(_rebuild_msg, ephemeral=True)
 
 
+class _ASchedLegacyActionsView(discord.ui.View):
+    """Keep existing refresh/reminder/ping component IDs routable during rollout."""
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(_ASchedRefreshBtn())
+        self.add_item(_ASchedReminderBtn())
+        self.add_item(_ASchedPingNonRespondersBtn())
+
+
 def _asched_is_sched_msg(msg: discord.Message, bot_id: int) -> bool:
     if msg.author.id != bot_id:
         return False
@@ -6533,7 +6612,8 @@ async def _asched_render_console(bot_client) -> None:
             view=AutoScheduleView(bot_client),
         )
         new_ids["header"] = header.id
-        for idx, day in enumerate(_HRSVP_DAYS, start=1):
+        for day in _asched_console_order():
+            idx = _HRSVP_DAYS.index(day) + 1
             mm = await channel.send(embed=_asched_build_console_meet_embed(idx, day))
             new_ids[day] = mm.id
         sched = _asched_load()
@@ -6570,14 +6650,39 @@ async def _asched_update_panel(bot_client) -> None:
     except Exception:
         pass
 
-    for idx, day in enumerate(_HRSVP_DAYS, start=1):
+    # Message IDs represent visual positions; dictionary keys remain stable Meet IDs.
+    # Only persist a new map after every card has been edited successfully.
+    card_ids = [ids.get(day) for day in _HRSVP_DAYS]
+    if not all(card_ids):
+        await _asched_render_console(bot_client)
+        return
+    try:
+        position_ids = sorted(int(mid) for mid in card_ids)
+    except (TypeError, ValueError):
+        await _asched_render_console(bot_client)
+        return
+    if len(set(position_ids)) != len(_HRSVP_DAYS):
+        await _asched_render_console(bot_client)
+        return
+    proposed = {}
+    all_ok = True
+    for position, day in enumerate(_asched_console_order()):
+        idx = _HRSVP_DAYS.index(day) + 1
         try:
-            mm = await channel.fetch_message(int(ids[day]))
+            mid = position_ids[position]
+            mm = await channel.fetch_message(mid)
             await mm.edit(embed=_asched_build_console_meet_embed(idx, day))
         except discord.NotFound:
             return await _asched_render_console(bot_client)
-        except Exception:
-            pass
+        except Exception as exc:
+            all_ok = False
+            print(f"[AutoSched] Meet card refresh failed ({day}): {exc}")
+        else:
+            proposed[day] = mid
+    if all_ok and proposed != {day: int(ids[day]) for day in _HRSVP_DAYS}:
+        fresh = _asched_load()
+        fresh["console_message_ids"] = {"header": ids["header"], **proposed}
+        _asched_save(fresh)
 
 
 # -------------------------------------------------------
@@ -26825,6 +26930,7 @@ async def on_ready():
     _spawn_bg_task("_hp_session_cleanup_loop", _hp_session_cleanup_loop)
     _safe_add_view(HostRSVPView(),          "HostRSVPView")
     _safe_add_view(AutoScheduleView(bot),   "AutoScheduleView")
+    _safe_add_view(_ASchedLegacyActionsView(), "_ASchedLegacyActionsView")
     _safe_add_view(_ASchedAnnounceView(),   "_ASchedAnnounceView")
     _safe_add_view(_RCStrikeConfirmView(),  "_RCStrikeConfirmView")
     _asched_build()
