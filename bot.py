@@ -16467,6 +16467,12 @@ class _RollCallDB:
             VALUES (?, ?, ?)
             ON CONFLICT(guild_id, slot) DO UPDATE SET message_id=excluded.message_id
         """, (guild_id, slot, message_id))
+        if slot == "admin":
+            # Legacy extensions read this table; keep both pointers in one commit.
+            cur.execute(
+                "UPDATE rollcall_panels SET admin_message_id=?, updated_at=? WHERE guild_id=?",
+                (message_id, datetime.now(timezone.utc).isoformat(), guild_id),
+            )
         self.conn.commit()
 
     def get_messages(self, guild_id) -> dict:
@@ -17362,28 +17368,60 @@ class _RcAdminView(discord.ui.View):
         self.add_item(_RcStaffSelect())
 
 
+_rc_staff_locks: dict[int, asyncio.Lock] = {}
+
+
+def _rc_staff_lock(guild_id: int):
+    return _rc_staff_locks.setdefault(guild_id, asyncio.Lock())
+
+
 async def _rc_refresh_admin_card(guild: discord.Guild, channel):
-    """Upgrade the staff card in place, preserving all roll-call data."""
+    """Single writer for both the main bot and the legacy staff extension."""
+    async with _rc_staff_lock(guild.id):
+        return await _rc_refresh_admin_card_locked(guild, channel)
+
+
+async def _rc_refresh_admin_card_locked(guild: discord.Guild, channel):
+    """Recover either stored ID, edit one card, then remove only extra staff cards."""
     msgs = _rc_db.get_messages(guild.id)
-    mid = msgs.get("admin")
-    if mid:
+    panel = _rc_db.get_panel(guild.id)
+    ids = [msgs.get("admin"), panel["admin_message_id"] if panel else None]
+    candidates = {}
+    bot_id = guild.me.id
+    for mid in dict.fromkeys(mid for mid in ids if mid):
         try:
             message = await channel.fetch_message(mid)
-            await message.edit(embed=_rc_build_admin_embed(guild), view=_RcAdminView())
-            return
         except discord.NotFound:
-            pass
-    else:
-        # Recover a legacy card before creating a replacement.
-        async for message in channel.history(limit=80):
-            if message.author.id == guild.me.id and any(
-                e.title == "🛠️ DIFF Roll Call — Staff Tools" for e in message.embeds
-            ):
-                _rc_db.set_message(guild.id, "admin", message.id)
-                await message.edit(embed=_rc_build_admin_embed(guild), view=_RcAdminView())
-                return
-    message = await channel.send(embed=_rc_build_admin_embed(guild), view=_RcAdminView())
+            continue
+        if _rc_classify_msg(message, bot_id) == "admin":
+            candidates[message.id] = message
+    # Scan even with a valid ID: old deployments may already have orphaned copies.
+    # Permission/network failures must propagate, not cause an unverified repost.
+    async for message in channel.history(limit=100):
+        if _rc_classify_msg(message, bot_id) == "admin":
+            candidates[message.id] = message
+    message = None
+    preferred = next((mid for mid in ids if mid in candidates), None)
+    for mid in sorted(candidates, key=lambda mid: (mid != preferred, mid)):
+        candidate = candidates[mid]
+        try:
+            await candidate.edit(embed=_rc_build_admin_embed(guild), view=_RcAdminView())
+            message = candidate
+            break
+        except discord.NotFound:
+            continue
+    if message is None:
+        message = await channel.send(embed=_rc_build_admin_embed(guild), view=_RcAdminView())
     _rc_db.set_message(guild.id, "admin", message.id)
+    for mid, duplicate in candidates.items():
+        if mid != message.id:
+            try:
+                await duplicate.delete()
+            except discord.NotFound:
+                pass
+            except discord.HTTPException as exc:
+                print(f"[RcPanel] Could not remove duplicate staff card {mid}: {exc}")
+    return message
 
 
 def _rc_collect_detected_attendees(guild_id: int) -> dict:
@@ -17556,17 +17594,26 @@ def _rc_classify_msg(msg: discord.Message, bot_id: int) -> str | None:
     for row in msg.components:
         for child in row.children:
             cid = getattr(child, "custom_id", "") or ""
-            if cid.startswith("diff_rollcall_finalize:"):
+            if cid == "diff_rollcall:staff_action" or cid.startswith("diff_rollcall_finalize:"):
                 return "admin"
             m = re.match(r"diff_rollcall:([123]):", cid)
             if m:
                 return f"meet{m.group(1)}"
             if cid == "diff_rollcall:my_rsvp":
                 has_my_rsvp = True
-    return "header" if has_my_rsvp else None
+    if has_my_rsvp:
+        return "header"
+    if any(e.title == "🛠️ DIFF Roll Call — Staff Tools" for e in msg.embeds):
+        return "admin"
+    return None
 
 
 async def _rc_scan_and_recover(channel: discord.TextChannel, guild_id: int, bot_id: int) -> dict:
+    async with _rc_staff_lock(guild_id):
+        return await _rc_scan_and_recover_locked(channel, guild_id, bot_id)
+
+
+async def _rc_scan_and_recover_locked(channel: discord.TextChannel, guild_id: int, bot_id: int) -> dict:
     """Scan channel history for the roll-call layout messages.
     Deletes duplicate copies (keeps newest per slot), saves recovered IDs.
     Returns {slot: message_id} for whatever was found."""
@@ -17698,6 +17745,11 @@ async def _rc_refresh_panel(guild: discord.Guild):
 
 
 async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False, reset: bool = False):
+    async with _rc_staff_lock(guild.id):
+        return await _rc_post_new_panel_locked(guild, ping_roles=ping_roles, reset=reset)
+
+
+async def _rc_post_new_panel_locked(guild: discord.Guild, ping_roles: bool = False, reset: bool = False):
     """Re-post the roll-call layout (header card → 3 per-meet cards → staff admin card).
 
     Deletes any existing roll-call messages first, then posts fresh.
@@ -17777,7 +17829,7 @@ async def _rc_post_new_panel(guild: discord.Guild, ping_roles: bool = False, res
             )
             _rc_db.set_message(guild.id, f"meet{n}", meet_msg.id)
 
-        admin_msg = await channel.send(embed=_rc_build_admin_embed(guild), view=_RcAdminView())
+        admin_msg = await _rc_refresh_admin_card_locked(guild, channel)
         _rc_db.upsert_panel(guild.id, channel.id, header_msg.id, admin_msg.id)
         _rc_db.set_message(guild.id, "admin", admin_msg.id)
     except Exception as e:

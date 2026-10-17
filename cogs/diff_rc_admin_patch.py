@@ -456,37 +456,11 @@ class RcAdminPatch(commands.Cog, name="RcAdminPatch"):
         except Exception as e:
             print(f"[RcAdminPatch] add_view failed: {e}")
 
-    async def _find_and_delete_old_panel(self, ch: discord.TextChannel) -> None:
-        """Delete any existing staff panel messages so a fresh one can be posted."""
-        bot_id = self.bot.user.id if self.bot.user else None
-        if not bot_id:
-            return
-        admin_id = _get_admin_msg_id()
-        if admin_id:
-            try:
-                old = await ch.fetch_message(admin_id)
-                await old.delete()
-                print(f"[RcAdminPatch] Deleted old panel (DB id={admin_id}).")
-            except Exception:
-                pass
-        try:
-            async for msg in ch.history(limit=100):
-                if msg.author.id != bot_id:
-                    continue
-                for row in msg.components:
-                    for child in row.children:
-                        cid = getattr(child, "custom_id", "") or ""
-                        if cid.startswith("diff_rollcall_finalize:"):
-                            try:
-                                await msg.delete()
-                                print(f"[RcAdminPatch] Deleted stale panel (scan id={msg.id}).")
-                            except Exception:
-                                pass
-        except Exception as e:
-            print(f"[RcAdminPatch] Scan/delete error: {e}")
-
     async def refresh_panel(self, *, force_repost: bool = False) -> None:
-        """Edit (or repost) the staff admin panel using the cog's registered view."""
+        """Compatibility entry point; never run a second independent panel writer.
+
+        force_repost remains accepted for old callers, but now safely reconciles in place.
+        """
         ch = self.bot.get_channel(ROLL_CALL_CHANNEL_ID)
         if not isinstance(ch, discord.TextChannel):
             try:
@@ -495,39 +469,8 @@ class RcAdminPatch(commands.Cog, name="RcAdminPatch"):
                 print(f"[RcAdminPatch] Cannot fetch channel: {e}")
                 return
 
-        if not force_repost:
-            admin_id = _get_admin_msg_id()
-            if admin_id:
-                try:
-                    msg = await ch.fetch_message(admin_id)
-                    # Always use self.view so the registered persistent view stays attached
-                    await msg.edit(embed=_build_embed(), view=self.view)
-                    print(f"[RcAdminPatch] Panel edited via DB (msg {admin_id}).")
-                    return
-                except discord.NotFound:
-                    print("[RcAdminPatch] DB message not found, will repost.")
-                except Exception as e:
-                    print(f"[RcAdminPatch] Edit failed ({e}), will repost.")
-
-        # Delete all old copies then post a fresh panel using self.view
-        await self._find_and_delete_old_panel(ch)
-        new_msg = await ch.send(embed=_build_embed(), view=self.view)
-        print(f"[RcAdminPatch] Fresh panel posted (msg {new_msg.id}).")
-        try:
-            conn = sqlite3.connect(RC_DB_PATH)
-            conn.execute(
-                "UPDATE rollcall_panels SET admin_message_id=? WHERE guild_id=?",
-                (new_msg.id, GUILD_ID)
-            )
-            if conn.execute("SELECT changes()").fetchone()[0] == 0:
-                conn.execute(
-                    "INSERT INTO rollcall_panels (guild_id, channel_id, admin_message_id) VALUES (?,?,?)",
-                    (GUILD_ID, ch.id, new_msg.id)
-                )
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            print(f"[RcAdminPatch] DB update error: {e}")
+        guild = ch.guild
+        await _main()._rc_refresh_admin_card(guild, ch)
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -539,9 +482,9 @@ class RcAdminPatch(commands.Cog, name="RcAdminPatch"):
     @commands.command(name="patch_rc_admin")
     @commands.has_permissions(manage_guild=True)
     async def cmd_patch(self, ctx: commands.Context):
-        await ctx.send("Reposting roll call staff panel…", delete_after=5)
-        await self.refresh_panel(force_repost=True)
-        await ctx.send("✅ Done — panel reposted with updated options.", delete_after=10)
+        await ctx.send("Refreshing roll call staff panel…", delete_after=5)
+        await self.refresh_panel()
+        await ctx.send("✅ Staff panel refreshed; duplicate copies removed. RSVPs kept.", delete_after=10)
 
 
 print("[RcAdminPatch] Module loaded OK.")
