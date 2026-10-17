@@ -173,7 +173,7 @@ class RollCallCycleSafetyTests(unittest.TestCase):
         }
         self.assertEqual(self.ns["_rc_meet_schedule_ts"](row), 123456)
 
-    def test_header_and_meet_cards_are_compact_and_use_correct_labels(self):
+    def test_header_and_meet_cards_are_compact_and_show_local_date_time_on_one_line(self):
         first_ts = int(datetime(2026, 10, 21, 21, tzinfo=EST).timestamp())
         second_ts = int(datetime(2026, 10, 22, 21, tzinfo=EST).timestamp())
         self.db.meets = [
@@ -201,9 +201,11 @@ class RollCallCycleSafetyTests(unittest.TestCase):
         self.assertNotIn("Week of", header.description)
         self.assertNotIn("Resets <", header.description)
         self.assertEqual(card.title, "Meet 1 · Class 1")
-        self.assertEqual([field.name for field in card.fields], ["\u200b", "🗓 When", "👤 Host", "RSVPs"])
-        self.assertFalse(card.fields[1].inline)
-        self.assertFalse(card.fields[2].inline)
+        self.assertEqual(card.fields, [])
+        self.assertIn(f"📆 <t:{first_ts}:f>", card.description)
+        self.assertNotIn(f"<t:{first_ts}:R>", card.description)
+        self.assertIn("👤 **Host:**", card.description)
+        self.assertIn("**2** going · ❓ **1** maybe · ❌ **3** out", card.description)
         self.assertEqual(button.label, "✅ Going")
         self.assertEqual(button.custom_id, "diff_rollcall:1:yes")
 

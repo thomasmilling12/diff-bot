@@ -17104,7 +17104,7 @@ def _rc_meet_render_order(guild_id: int) -> list:
 
 
 def _rc_build_meet_embed(guild: discord.Guild, n: int) -> discord.Embed:
-    """One roomy, readable card for a single meet (replaces the old clumped field)."""
+    """Build a compact single-meet card with a localized, one-line date and time."""
     meets_by_num = {row["meet_number"]: row for row in _rc_db.get_meets(guild.id)}
     meet         = meets_by_num.get(n)
     c            = _rc_db.get_counts(guild.id, n)
@@ -17136,28 +17136,25 @@ def _rc_build_meet_embed(guild: discord.Guild, n: int) -> discord.Embed:
         embed.set_thumbnail(url=DIFF_LOGO_URL)
 
     if ts:
-        when_val = f"📆 <t:{ts}:F>\n🕐 <t:{ts}:R>"
+        # Discord renders this in each viewer's local timezone. Keep date and
+        # time together instead of splitting them into separate rows.
+        when_line = f"📆 <t:{ts}:f>"
     elif scheduled:
-        when_val = f"📆 {date_text}\n🕒 {start_time}"
+        when_line = f"📆 {date_text} · 🕒 {start_time}"
     else:
-        when_val = "📆 *Date & time not posted yet*"
-
-    embed.add_field(name="\u200b", value=status_line, inline=False)
-    embed.add_field(name="🗓 When", value=when_val, inline=False)
-    embed.add_field(name="👤 Host", value=host_text, inline=False)
+        when_line = "📆 *Date & time not posted yet*"
 
     total        = c["yes"] + c["maybe"] + c["no"]
     scale        = max(total, 10)
     yes_blocks   = round(c["yes"]   / scale * 10)
     maybe_blocks = round(c["maybe"] / scale * 10)
     bar          = "🟩" * yes_blocks + "🟨" * maybe_blocks + "⬜" * (10 - yes_blocks - maybe_blocks)
-    embed.add_field(
-        name="RSVPs",
-        value=(
-            f"✅ **{c['yes']}** going · ❓ **{c['maybe']}** maybe · ❌ **{c['no']}** out\n"
-            f"{bar}"
-        ),
-        inline=False,
+    embed.description = (
+        f"{status_line}\n"
+        f"{when_line}\n"
+        f"👤 **Host:** {host_text}\n\n"
+        f"✅ **{c['yes']}** going · ❓ **{c['maybe']}** maybe · ❌ **{c['no']}** out\n"
+        f"{bar}"
     )
     return embed
 
