@@ -15,6 +15,7 @@ from utils import reminder_layouts
 NAMES = {
     "_hrsvp_uid", "_hrsvp_reset", "_hrsvp_build_header_embed", "_hrsvp_build_meet_embed",
     "_hrsvp_week_key", "_hrsvp_is_staff", "_hrsvp_response_state", "_hrsvp_response_error",
+    "_hrsvp_responded_uids",
     "_HrsvpHeaderView", "_HrsvpMeetView", "_HrsvpResponsesBtn", "_HrsvpResponsesPages",
     "_HrsvpStaffToolsBtn", "_HrsvpStaffActions", "_HrsvpResetConfirmModal",
     "_HrsvpResetBtn", "_HrsvpMyStatusBtn", "HostRSVPView", "_HostAvailModal",
@@ -149,7 +150,30 @@ class HostAvailabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.data["Meet 2"]["no"], ["1"])
         self.assertFalse(self.data["Meet 2"]["maybe"])
         await button.callback(self.interaction())
-        self.assertEqual(self.data["Meet 2"]["no"], [])
+        self.assertEqual(self.data["Meet 2"]["no"], ["1"])
+        self.assertIn("1", self.ns["_hrsvp_responded_uids"]())
+
+    async def test_response_confirmation_precedes_panel_refresh(self):
+        for response_type in ("available", "maybe", "unavailable"):
+            interaction = self.interaction()
+
+            async def refresh_after_ack(_client):
+                self.assertGreater(interaction.followup.send.await_count, 0)
+
+            self.ns["_hrsvp_update_panel"].side_effect = refresh_after_ack
+            if response_type == "available":
+                modal = self.ns["_HostAvailModal"]("Meet 2")
+                modal.day_time_input._value = "Thursday 8 PM"
+                modal.theme_input._value = "Sports"
+                await modal.on_submit(interaction)
+            elif response_type == "maybe":
+                modal = self.ns["_HostMaybeModal"]("Meet 2")
+                modal.day_pref._value = "Friday"
+                await modal.on_submit(interaction)
+            else:
+                button = self.ns["_HostRSVPBtn"]("Meet 2", "no", "?", discord.ButtonStyle.secondary)
+                await button.callback(interaction)
+            self.assertEqual(interaction.followup.send.await_count, 1)
 
     async def test_staff_reopen_close_preserves_data_and_schedule(self):
         self.data["Meet 1"]["yes"] = [{"uid": "3", "ts": 900}]

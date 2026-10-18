@@ -4185,14 +4185,12 @@ class _HostAvailModal(discord.ui.Modal):
             slot["yes"].append({"uid": uid, "day": day_val, "time": time_val, "theme": theme_val, "ts": _entry_ts})
             _hrsvp_save(data)
             _hrel_track_rsvp(uid)
-            await _hrsvp_update_panel(interaction.client)
             ts = _entry_ts
             time_display = f"<t:{ts}:F>  (<t:{ts}:R>)" if ts else time_val
-            await interaction.followup.send(
+            confirmation = (
                 f"✅ **{self.day}** — you're marked available!\n"
                 f"📅 **Day:** {day_val}  🕒 **Time:** {time_display}  🎮 **Class:** {theme_val}\n\n"
-                f"*You can update this anytime by clicking the button again.*",
-                ephemeral=True,
+                f"*You can update this anytime by clicking the button again.*"
             )
         except Exception as _e:
             print(f"[HRSVP] AvailModal on_submit error: {_e}")
@@ -4200,6 +4198,15 @@ class _HostAvailModal(discord.ui.Modal):
                 await interaction.followup.send("❌ Something went wrong saving your response. Try again.", ephemeral=True)
             except Exception:
                 pass
+            return
+        try:
+            await interaction.followup.send(confirmation, ephemeral=True)
+        except Exception as _e:
+            print(f"[HRSVP] Availability confirmation failed: {_e}")
+        try:
+            await _hrsvp_update_panel(interaction.client)
+        except Exception as _e:
+            print(f"[HRSVP] Panel refresh after availability save failed: {_e}")
 
 
 class _HostMaybeModal(discord.ui.Modal):
@@ -4232,11 +4239,9 @@ class _HostMaybeModal(discord.ui.Modal):
                 slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
             slot["maybe"].append({"uid": uid, "day": day_pref})
             _hrsvp_save(data)
-            await _hrsvp_update_panel(interaction.client)
             pref_str = f" — preference: **{day_pref}**" if day_pref else ""
-            await interaction.followup.send(
-                f"❓ **{self.day}** — marked as Maybe{pref_str}.\n*Leadership will follow up if needed.*",
-                ephemeral=True,
+            confirmation = (
+                f"❓ **{self.day}** — marked as Maybe{pref_str}.\n*Leadership will follow up if needed.*"
             )
         except Exception as _e:
             print(f"[HRSVP] MaybeModal on_submit error: {_e}")
@@ -4244,6 +4249,15 @@ class _HostMaybeModal(discord.ui.Modal):
                 await interaction.followup.send("❌ Something went wrong saving your response. Try again.", ephemeral=True)
             except Exception:
                 pass
+            return
+        try:
+            await interaction.followup.send(confirmation, ephemeral=True)
+        except Exception as _e:
+            print(f"[HRSVP] Maybe confirmation failed: {_e}")
+        try:
+            await _hrsvp_update_panel(interaction.client)
+        except Exception as _e:
+            print(f"[HRSVP] Panel refresh after Maybe response failed: {_e}")
 
 
 class _HostRSVPBtn(discord.ui.Button):
@@ -4273,7 +4287,7 @@ class _HostRSVPBtn(discord.ui.Button):
         if self.choice == "maybe":
             await interaction.response.send_modal(_HostMaybeModal(self.day))
             return
-        # "no" → toggle: first click marks unavailable, second click clears the response
+        # "no" is idempotent: repeated taps must not accidentally clear the response.
         await interaction.response.defer(ephemeral=True)
         error = _hrsvp_response_error(interaction.user, self.day)
         if error:
@@ -4285,14 +4299,15 @@ class _HostRSVPBtn(discord.ui.Button):
             already_no = any(_hrsvp_uid(e) == uid for e in slot.get("no", []))
             for c in ("yes", "no", "maybe"):
                 slot[c] = [e for e in slot.get(c, []) if _hrsvp_uid(e) != uid]
-            if not already_no:
-                slot["no"].append(uid)
+            slot["no"].append(uid)
             _hrsvp_save(data)
-            await _hrsvp_update_panel(interaction.client)
             if already_no:
-                reply = f"↩️ **{self.day}** — your unavailable response has been cleared."
+                reply = f"❌ **{self.day}** — you're still marked unavailable. Your response is saved."
             else:
-                reply = f"❌ **{self.day}** — you're marked as unavailable.\n*Changed your mind? Hit ❌ again to clear it.*"
+                reply = (
+                    f"❌ **{self.day}** — you're marked as unavailable.\n"
+                    "*Future host availability reminders will skip you.*"
+                )
             await interaction.followup.send(reply, ephemeral=True)
         except Exception as _e:
             print(f"[HRSVP] NoBtn callback error: {_e}")
@@ -4300,6 +4315,11 @@ class _HostRSVPBtn(discord.ui.Button):
                 await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
             except Exception:
                 pass
+            return
+        try:
+            await _hrsvp_update_panel(interaction.client)
+        except Exception as _e:
+            print(f"[HRSVP] Panel refresh after Unavailable response failed: {_e}")
 
 
 def _hrsvp_is_rsvp_msg(msg: discord.Message, bot_id: int) -> bool:
