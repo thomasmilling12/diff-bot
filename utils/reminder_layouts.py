@@ -63,7 +63,7 @@ def host_reminder(pending_count, uncovered):
     lines = []
     if pending_count:
         lines.append(f"**{pending_count}** hosts still need to complete their availability.\n"
-                     "Mark **Available or Unavailable** for each remaining slot.")
+                     "Mark **Available or Unavailable** for slots still needing a confirmed host.")
     if uncovered:
         lines.append("**Needs coverage:** " + ", ".join(text(day, 60) for day in uncovered))
     embed = discord.Embed(

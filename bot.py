@@ -28022,13 +28022,12 @@ def _host_nudge_state_load() -> dict:
         return {}
 
 
-async def _host_nudge_post_once(guild: discord.Guild) -> bool:
-    """Ping hosts with incomplete availability for remaining slots.
-    Returns True if a message was posted (or nothing was owed)."""
+def _host_nudge_targets(guild: discord.Guild) -> tuple:
+    """Only request missing availability for remaining, unconfirmed slots."""
     rsvp_data = _hrsvp_load()
     host_role = guild.get_role(HOST_ROLE_ID)
     if host_role is None:
-        return False
+        return None, [], []
 
     answered_by_slot: list = []
     uncovered: list = []
@@ -28037,9 +28036,12 @@ async def _host_nudge_post_once(guild: discord.Guild) -> bool:
     current_hosts = {str(m.id) for m in host_role.members if not m.bot}
     for day in _HRSVP_DAYS:
         slot = rsvp_data.get(day, {})
-        scheduled = schedule.get(day, {})
+        scheduled = _hrsvp_availability_slot(schedule.get(day, {}))
         ts = _asched_slot_ts(scheduled)
         if ts and ts <= now_ts:
+            continue
+        if (str(scheduled.get("host_id")) in current_hosts
+                and scheduled.get("host_status") in ("yes", "confirmed", "assigned")):
             continue
         yes  = slot.get("yes", []) or []
         responded = set()
@@ -28050,14 +28052,22 @@ async def _host_nudge_post_once(guild: discord.Guild) -> bool:
                     responded.add(str(_u))
         answered_by_slot.append(responded)
         has_available_host = any(str(_hrsvp_uid(e)) in current_hosts for e in yes)
-        if not has_available_host and not scheduled.get("host_id"):
+        if not has_available_host:
             uncovered.append(day)
 
     nonresp = [m for m in host_role.members
                if not m.bot and any(str(m.id) not in ids for ids in answered_by_slot)]
 
+    return host_role, nonresp, uncovered
+
+
+async def _host_nudge_post_once(guild: discord.Guild) -> bool:
+    """Ping only for unconfirmed slots; True also means nothing was owed."""
+    host_role, nonresp, uncovered = _host_nudge_targets(guild)
+    if host_role is None:
+        return False
     if not nonresp and not uncovered:
-        return True  # everyone responded and every meet has a host — stay quiet
+        return True  # no missing availability or coverage for unconfirmed slots
 
     ch = guild.get_channel(_HOST_TEAM_CHANNEL_ID)
     if not isinstance(ch, discord.TextChannel):
@@ -28086,9 +28096,9 @@ async def _host_nudge_post_once(guild: discord.Guild) -> bool:
 async def _host_avail_nudge_loop() -> None:
     """Automates the founder's manual #host-team follow-ups: every day, every
     3 hours (9 AM–9 PM ET: 9/12/15/18/21), ping hosts with incomplete
-    availability for remaining slots and flag meets that still have no
-    available host — repeating until every slot is covered and every host has
-    responded, then it goes quiet automatically. Disk-guarded timestamp
+    availability only for remaining slots without a confirmed current host.
+    Confirmed slots never require further availability responses; once all
+    remaining slots are confirmed it goes quiet. Disk-guarded timestamp
     (min 2.5 h between posts) so redeploys can't double-fire."""
     await bot.wait_until_ready()
     from zoneinfo import ZoneInfo as _ZI
@@ -28125,24 +28135,13 @@ async def _cmd_hostnudge(ctx: commands.Context):
     guild = ctx.guild
     if not guild:
         return
-    rsvp_data = _hrsvp_load()
-    host_role = guild.get_role(HOST_ROLE_ID)
-    resp_uids = set()
-    uncovered = []
-    for day in _HRSVP_DAYS:
-        slot = rsvp_data.get(day, {})
-        yes  = slot.get("yes", []) or []
-        for _bkt in (yes, slot.get("no", []) or [], slot.get("maybe", []) or []):
-            for _e in _bkt:
-                _u = _hrsvp_uid(_e)
-                if _u:
-                    resp_uids.add(str(_u))
-        if not yes:
-            uncovered.append(day)
-    nonresp = [m for m in (host_role.members if host_role else [])
-               if not m.bot and str(m.id) not in resp_uids]
+    host_role, nonresp, uncovered = _host_nudge_targets(guild)
+    if host_role is None:
+        return await ctx.send("⚠️ Meet Hosts role not found — no nudge sent.", delete_after=10)
     if not nonresp and not uncovered:
-        return await ctx.send("✅ Every host has responded and all meets have a host — nothing to nudge.", delete_after=10)
+        return await ctx.send(
+            "✅ No availability reminders needed — remaining meets are confirmed, "
+            "or their availability responses already provide coverage.", delete_after=10)
     ok = await _host_nudge_post_once(guild)
     await ctx.send(
         f"📣 Nudge posted — {len(nonresp)} host(s) missing availability, "

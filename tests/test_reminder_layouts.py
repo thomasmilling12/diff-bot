@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import time
 import unittest
 from unittest.mock import AsyncMock, Mock
+from zoneinfo import ZoneInfo
 
 import discord
 from utils import reminder_layouts as ui
@@ -14,11 +15,16 @@ from utils import reminder_layouts as ui
 FUNCTIONS = {
     "_cc_build_dm_embed", "_cc_mark_sent", "_cc_track_message", "_cc_message_matches",
     "_CcDoneView", "_cc_dm_changers", "_cc_open_task", "_rc_reminder_ts",
-    "_host_nudge_post_once", "_rc_t5h_reminder_loop", "_rc_notify_crew_of_schedule",
+    "_host_nudge_targets", "_host_nudge_post_once", "_hrsvp_availability_slot",
+    "_cmd_hostnudge", "_rc_t5h_reminder_loop", "_rc_notify_crew_of_schedule",
 }
 tree = ast.parse(Path("bot.py").read_text())
-module = ast.Module(body=[node for node in tree.body
-                         if getattr(node, "name", None) in FUNCTIONS], type_ignores=[])
+nodes = [copy.deepcopy(node) for node in tree.body
+         if getattr(node, "name", None) in FUNCTIONS]
+for node in nodes:
+    if node.name == "_cmd_hostnudge":
+        node.decorator_list = []
+module = ast.Module(body=nodes, type_ignores=[])
 
 
 class ReminderTests(unittest.IsolatedAsyncioTestCase):
@@ -45,6 +51,8 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
             self.state = copy.deepcopy(data)
         self.ns = {
             "discord": discord, "datetime": datetime, "timezone": timezone, "time": time,
+            "timedelta": timedelta, "_EST_TZ": ZoneInfo("America/New_York"),
+            "commands": SimpleNamespace(Context=object),
             "Dict": dict, "Any": object, "_reminder_ui": ui,
             "_cc_load": lambda: copy.deepcopy(self.state), "_cc_save": save,
             "_cc_changer_ids": lambda: [1, 2],
@@ -54,7 +62,7 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
             "_HOST_TEAM_CHANNEL_ID": 21, "HOST_RSVP_CHANNEL_ID": 22, "_CREW_CHAT_CHANNEL_ID": 23,
             "ROLL_CALL_URL": "https://discord.com/channels/5/24", "ROLL_CALL_CHANNEL_ID": 24,
             "_HRSVP_DAYS": ("Meet 1", "Meet 2", "Meet 3"),
-            "_hrsvp_uid": lambda entry: entry,
+            "_hrsvp_uid": lambda entry: entry.get("uid", "") if isinstance(entry, dict) else entry,
             "_asched_slot_ts": lambda slot: slot.get("ts"),
             "_this_week_weekday_ts": lambda day, start: int(day),
             "_parse_meet_ts": Mock(return_value=None),
@@ -112,7 +120,8 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
             "Meet 1": {"no": [1, 2]}, "Meet 2": {"yes": [2]}, "Meet 3": {"no": [1, 2]},
         }
         self.ns["_asched_load"] = lambda: {"days": {
-            "Meet 1": {"ts": time.time()-100}, "Meet 2": {}, "Meet 3": {"host_id": 2},
+            "Meet 1": {"ts": time.time()-100}, "Meet 2": {},
+            "Meet 3": {"host_id": 2, "host_status": "yes"},
         }}
         await self.ns["_host_nudge_post_once"](self.guild)
         sent = self.channel.send.call_args.kwargs
@@ -128,10 +137,117 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
         self.channel.send.assert_not_awaited()
 
     async def test_host_all_past_stays_quiet(self):
+        now = datetime(2026, 10, 28, 12, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        self.ns["time"] = SimpleNamespace(time=lambda: now)
         self.ns["_hrsvp_load"] = lambda: {}
-        self.ns["_asched_load"] = lambda: {"days": {day: {"ts": time.time()-60} for day in self.ns["_HRSVP_DAYS"]}}
+        self.ns["_asched_load"] = lambda: {"days": {day: {"ts": now-60} for day in self.ns["_HRSVP_DAYS"]}}
         await self.ns["_host_nudge_post_once"](self.guild)
         self.channel.send.assert_not_awaited()
+
+    def host_schedule(self):
+        return {"days": {day: {"host_id": 2, "host_status": "yes"}
+                         for day in self.ns["_HRSVP_DAYS"]}}
+
+    async def test_all_confirmed_stops_repeated_pings_even_without_any_responses(self):
+        schedule = self.host_schedule()
+        before = copy.deepcopy(schedule)
+        self.ns["_hrsvp_load"] = lambda: {}
+        self.ns["_asched_load"] = lambda: schedule
+        for _ in range(3):
+            self.assertTrue(await self.ns["_host_nudge_post_once"](self.guild))
+        self.channel.send.assert_not_awaited()
+        self.assertEqual(schedule, before)
+
+    async def test_missing_responses_for_confirmed_slots_do_not_count(self):
+        schedule = self.host_schedule()
+        schedule["days"]["Meet 2"] = {}
+        self.ns["_asched_load"] = lambda: schedule
+        self.ns["_hrsvp_load"] = lambda: {"Meet 2": {"yes": [{"uid": "2"}], "no": ["1"]}}
+        await self.ns["_host_nudge_post_once"](self.guild)
+        self.channel.send.assert_not_awaited()
+
+    async def test_only_missing_response_for_unconfirmed_slot_is_pinged(self):
+        schedule = self.host_schedule()
+        schedule["days"]["Meet 2"] = {}
+        self.ns["_asched_load"] = lambda: schedule
+        self.ns["_hrsvp_load"] = lambda: {"Meet 2": {"no": [{"uid": "1"}]}}
+        await self.ns["_host_nudge_post_once"](self.guild)
+        sent = self.channel.send.call_args.kwargs
+        self.assertEqual(sent["content"], "<@2>")
+        self.assertIn("Meet 2", sent["embed"].description)
+        self.assertNotIn("Meet 1", sent["embed"].description)
+        self.assertNotIn("Meet 3", sent["embed"].description)
+        self.assertIn("slots still needing a confirmed host", sent["embed"].description)
+
+    async def test_tentative_missing_or_former_host_is_not_confirmed_coverage(self):
+        for slot in (
+            {"host_id": 2, "host_status": "maybe"},
+            {"host_id": 2},
+            {"host_id": 999, "host_status": "yes"},
+        ):
+            self.channel.send.reset_mock()
+            schedule = self.host_schedule()
+            schedule["days"]["Meet 2"] = slot
+            self.ns["_asched_load"] = lambda: schedule
+            self.ns["_hrsvp_load"] = lambda: {}
+            await self.ns["_host_nudge_post_once"](self.guild)
+            sent = self.channel.send.call_args.kwargs
+            self.assertEqual(sent["content"], "<@1> <@2>")
+            self.assertIn("Meet 2", sent["embed"].description)
+
+    async def test_unavailable_and_maybe_responses_count_for_pending_slots(self):
+        schedule = self.host_schedule()
+        schedule["days"]["Meet 2"] = {"host_id": 2, "host_status": "maybe"}
+        self.ns["_asched_load"] = lambda: schedule
+        self.ns["_hrsvp_load"] = lambda: {
+            "Meet 2": {"no": ["1"], "maybe": [{"uid": "2"}]},
+        }
+        await self.ns["_host_nudge_post_once"](self.guild)
+        sent = self.channel.send.call_args.kwargs
+        self.assertEqual(sent["content"], self.role.mention)
+        self.assertNotIn("still need to complete", sent["embed"].description)
+        self.assertIn("Needs coverage", sent["embed"].description)
+
+    async def test_prior_week_assignment_does_not_suppress_new_week_reminders(self):
+        tz = ZoneInfo("America/New_York")
+        now = datetime(2026, 10, 26, 12, tzinfo=tz).timestamp()
+        previous = datetime(2026, 10, 23, 20, tzinfo=tz).timestamp()
+        self.ns["time"] = SimpleNamespace(time=lambda: now)
+        schedule = self.host_schedule()
+        schedule["days"]["Meet 2"]["ts"] = previous
+        self.ns["_asched_load"] = lambda: schedule
+        self.ns["_hrsvp_load"] = lambda: {}
+        await self.ns["_host_nudge_post_once"](self.guild)
+        self.assertIn("Meet 2", self.channel.send.call_args.kwargs["embed"].description)
+
+    async def test_missing_host_role_and_failed_delivery_are_not_successful(self):
+        self.ns["_hrsvp_load"] = lambda: {}
+        self.ns["_asched_load"] = lambda: {"days": {}}
+        self.guild.get_role = lambda rid: None
+        self.assertFalse(await self.ns["_host_nudge_post_once"](self.guild))
+        self.channel.send.assert_not_awaited()
+        self.guild.get_role = lambda rid: self.role
+        self.channel.send.side_effect = RuntimeError("offline simulated failure")
+        with self.assertRaises(RuntimeError):
+            await self.ns["_host_nudge_post_once"](self.guild)
+
+    async def test_manual_nudge_reports_quiet_instead_of_claiming_a_post(self):
+        self.ns["_hrsvp_load"] = lambda: {}
+        self.ns["_asched_load"] = self.host_schedule
+        self.ns["_is_staff_member"] = lambda member: True
+        ctx = SimpleNamespace(author=Mock(spec=discord.Member), guild=self.guild,
+                              message=SimpleNamespace(delete=AsyncMock()), send=AsyncMock())
+        await self.ns["_cmd_hostnudge"](ctx)
+        self.channel.send.assert_not_awaited()
+        self.assertIn("No availability reminders needed", ctx.send.call_args.args[0])
+
+    async def test_manual_nudge_keeps_staff_permission_check(self):
+        ctx = SimpleNamespace(author=Mock(spec=discord.Member),
+                              message=SimpleNamespace(delete=AsyncMock()), send=AsyncMock())
+        await self.ns["_cmd_hostnudge"](ctx)
+        ctx.message.delete.assert_not_awaited()
+        self.channel.send.assert_not_awaited()
+        self.assertEqual(ctx.send.call_args.args[0], "Staff only.")
 
     def test_color_success_marker_preserves_done_and_replaced_task(self):
         self.state["pending"]["done"] = True
