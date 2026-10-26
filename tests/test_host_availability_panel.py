@@ -14,7 +14,8 @@ from utils import reminder_layouts
 
 NAMES = {
     "_hrsvp_uid", "_hrsvp_reset", "_hrsvp_build_header_embed", "_hrsvp_build_meet_embed",
-    "_hrsvp_week_key", "_hrsvp_is_staff", "_hrsvp_response_state", "_hrsvp_response_error",
+    "_hrsvp_week_key", "_hrsvp_availability_slot", "_hrsvp_is_staff",
+    "_hrsvp_response_state", "_hrsvp_response_error",
     "_hrsvp_responded_uids",
     "_HrsvpHeaderView", "_HrsvpMeetView", "_HrsvpResponsesBtn", "_HrsvpResponsesPages",
     "_HrsvpStaffToolsBtn", "_HrsvpStaffActions", "_HrsvpResetConfirmModal",
@@ -44,7 +45,7 @@ class HostAvailabilityTests(unittest.IsolatedAsyncioTestCase):
             "_reminder_ui": reminder_layouts, "_hrsvp_panel_lock": asyncio.Lock(),
             "_hrsvp_load": lambda: copy.deepcopy(self.data), "_hrsvp_save": Mock(side_effect=self.save),
             "_asched_load": lambda: copy.deepcopy(self.schedule),
-            "_asched_slot_ts": lambda entry: entry.get("ts"),
+            "_asched_slot_ts": lambda entry: int(entry["ts"]) if entry.get("ts") is not None else None,
             "_hrsvp_entry_ts": lambda entry: entry.get("ts"),
             "_this_week_weekday_ts": lambda *args: 2200, "_parse_meet_ts": lambda *args: 2200,
             "_hrel_track_rsvp": Mock(),
@@ -89,6 +90,103 @@ class HostAvailabilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_order_preserves_slot_ids_upcoming_then_unscheduled_then_past(self):
         self.assertEqual(self.ns["_hrsvp_days_sorted"](), ["Meet 2", "Meet 3", "Meet 1"])
+
+    def set_clock(self, year, month, day, hour=0, minute=0):
+        now = datetime(year, month, day, hour, minute, tzinfo=self.ns["_EST_TZ"])
+        self.ns["time"] = SimpleNamespace(time=lambda: now.timestamp())
+        return now
+
+    async def test_monday_rollover_opens_cards_without_changing_stored_data(self):
+        self.set_clock(2026, 10, 26, 0, 1)
+        for day, date in zip(self.days, (22, 21, 23)):
+            self.schedule["days"][day] = {
+                "ts": datetime(2026, 10, date, 20, tzinfo=self.ns["_EST_TZ"]).timestamp(),
+                "host_id": 123, "host_status": "yes", "class": "Last week's theme",
+                "locked": True,
+            }
+        self.schedule["console_message_ids"] = {"header": 100}
+        self.schedule["panel_message_ids"] = {"header": 200}
+        self.data["panel_message_ids"] = {"header": 10, "Meet 1": 11, "Meet 2": 12, "Meet 3": 13}
+        self.data["Meet 1"]["yes"] = [{"uid": "1", "theme": "Saved proposal"}]
+        before_schedule, before_data = copy.deepcopy(self.schedule), copy.deepcopy(self.data)
+        header = self.ns["_hrsvp_build_header_embed"]()
+        self.assertIn("0/3 hosts assigned", header.description)
+        self.assertIn("1 hosts responded", header.description)
+        for day in self.days:
+            self.assertEqual(self.ns["_hrsvp_response_state"](day), (False, False, False))
+            embed = self.ns["_hrsvp_build_meet_embed"](day)
+            self.assertIn("Date and time awaiting scheduling.", embed.description)
+            self.assertIn("Needs assignment", embed.description)
+            self.assertNotIn("Past", embed.description)
+            self.assertNotIn("<@123>", embed.description)
+            self.assertNotIn("Last week's theme", embed.title)
+            view = self.ns["_HrsvpMeetView"](day)
+            self.assertTrue(view.is_persistent())
+            self.assertTrue(all(not item.disabled for item in view.children))
+            self.assertIsNone(self.ns["_hrsvp_response_error"](self.interaction().user, day))
+        self.assertEqual(self.ns["_hrsvp_days_sorted"](), self.days)
+        self.assertEqual(self.schedule, before_schedule)
+        self.assertEqual(self.data, before_data)
+        self.ns["_hrsvp_save"].assert_not_called()
+
+    async def test_rollover_is_at_monday_midnight_in_new_york_not_utc(self):
+        ts = datetime(2026, 10, 23, 20, tzinfo=self.ns["_EST_TZ"]).timestamp()
+        self.schedule["days"]["Meet 1"] = {"ts": ts}
+        self.set_clock(2026, 10, 25, 23, 59)
+        self.assertEqual(self.ns["_hrsvp_response_state"]("Meet 1"), (True, False, True))
+        self.set_clock(2026, 10, 26)
+        self.assertEqual(self.ns["_hrsvp_response_state"]("Meet 1"), (False, False, False))
+
+    async def test_same_week_past_current_future_and_next_week_dates_are_preserved(self):
+        self.set_clock(2026, 10, 28, 12)
+        for day, date in zip(self.days, (27, 29, 3)):
+            month = 11 if date == 3 else 10
+            self.schedule["days"][day] = {
+                "ts": datetime(2026, month, date, 20, tzinfo=self.ns["_EST_TZ"]).timestamp(),
+                "host_id": 123, "host_status": "yes", "class": "Scheduled",
+            }
+        self.assertTrue(self.ns["_hrsvp_response_state"]("Meet 1")[2])
+        for day in ("Meet 2", "Meet 3"):
+            self.assertEqual(self.ns["_hrsvp_response_state"](day), (False, False, False))
+        for day in self.days:
+            embed = self.ns["_hrsvp_build_meet_embed"](day)
+            self.assertIn(f"<t:{int(self.schedule['days'][day]['ts'])}:F>", embed.description)
+            self.assertIn("<@123>", embed.description)
+        self.assertIn("3/3 hosts assigned", self.ns["_hrsvp_build_header_embed"]().description)
+        self.assertEqual(self.ns["_hrsvp_days_sorted"](), ["Meet 2", "Meet 3", "Meet 1"])
+
+    async def test_year_boundary_and_dst_week_rollover(self):
+        for now, previous in (
+            ((2027, 1, 4), (2026, 12, 31)),
+            ((2026, 11, 2), (2026, 10, 30)),
+            ((2026, 3, 9), (2026, 3, 6)),
+        ):
+            self.set_clock(*now)
+            self.schedule["days"]["Meet 1"] = {
+                "ts": datetime(*previous, 20, tzinfo=self.ns["_EST_TZ"]).timestamp(),
+            }
+            self.assertEqual(self.ns["_hrsvp_response_state"]("Meet 1"), (False, False, False))
+
+    async def test_unknown_date_does_not_discard_assignment(self):
+        self.set_clock(2026, 10, 26)
+        slot = {"host_id": 123, "host_status": "yes", "class": "Pending date"}
+        self.schedule["days"]["Meet 1"] = slot
+        self.assertEqual(self.ns["_hrsvp_availability_slot"](slot), slot)
+        self.assertFalse(self.ns["_hrsvp_response_state"]("Meet 1")[2])
+        self.assertIn("<@123>", self.ns["_hrsvp_build_meet_embed"]("Meet 1").description)
+
+    async def test_new_week_response_saves_without_unlocking_or_reassigning_old_slot(self):
+        self.set_clock(2026, 10, 26)
+        self.schedule["days"]["Meet 1"] = {
+            "ts": datetime(2026, 10, 22, 20, tzinfo=self.ns["_EST_TZ"]).timestamp(),
+            "host_id": 123, "host_status": "yes", "locked": True,
+        }
+        before = copy.deepcopy(self.schedule)
+        button = self.ns["_HostRSVPBtn"]("Meet 1", "no", "?", discord.ButtonStyle.secondary)
+        await button.callback(self.interaction())
+        self.assertEqual(self.data["Meet 1"]["no"], ["1"])
+        self.assertEqual(self.schedule, before)
+        self.ns["_hrsvp_save"].assert_called_once()
 
     async def test_view_layout_and_persistent_legacy_routing(self):
         aggregate = self.ns["HostRSVPView"]()

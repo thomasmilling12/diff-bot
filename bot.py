@@ -3777,7 +3777,8 @@ def _hrsvp_build_header_embed() -> discord.Embed:
             for e in d.get(bucket, []):
                 all_responded_uids.add(_hrsvp_uid(e))
     total_responders = len(all_responded_uids)
-    schedule = _asched_load().get("days", {})
+    schedule = {day: _hrsvp_availability_slot(slot)
+                for day, slot in _asched_load().get("days", {}).items()}
     slots_with_host = sum(1 for day in _HRSVP_DAYS
                           if schedule.get(day, {}).get("host_id")
                           and schedule[day].get("host_status") == "yes")
@@ -3802,6 +3803,21 @@ def _hrsvp_week_key() -> str:
     return (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
 
 
+def _hrsvp_availability_slot(slot: dict) -> dict:
+    """Hide previous-week assignments only in availability; never mutate the schedule.
+
+    Same-week past meets still close, and future meets keep their exact dates.
+    An unknown date is not evidence that an assignment belongs to a prior week.
+    """
+    ts = _asched_slot_ts(slot)
+    now = datetime.fromtimestamp(time.time(), _EST_TZ)
+    monday = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    if ts is not None and ts < monday.timestamp():
+        return {}
+    return slot
+
+
 def _hrsvp_is_staff(user) -> bool:
     return bool(getattr(getattr(user, "guild_permissions", None), "administrator", False)
                 or any(r.id in _LEADERSHIP_ROLE_IDS for r in getattr(user, "roles", [])))
@@ -3809,7 +3825,8 @@ def _hrsvp_is_staff(user) -> bool:
 
 def _hrsvp_response_state(day: str) -> tuple:
     """Past responses close by schedule time; a staff override is tied to week AND slot time."""
-    ts = _asched_slot_ts(_asched_load().get("days", {}).get(day, {}))
+    slot = _hrsvp_availability_slot(_asched_load().get("days", {}).get(day, {}))
+    ts = _asched_slot_ts(slot)
     past = bool(ts and ts <= time.time())
     override = _hrsvp_load().get("response_reopen", {}).get(day, {})
     reopened = past and override == {"week": _hrsvp_week_key(), "ts": ts}
@@ -3832,7 +3849,7 @@ def _hrsvp_build_meet_embed(day: str) -> discord.Embed:
     """One scheduled time and actual assignment, with response details behind a button."""
     data          = _hrsvp_load()
     d             = data.get(day, {"yes": [], "no": [], "maybe": []})
-    scheduled = _asched_load().get("days", {}).get(day, {})
+    scheduled = _hrsvp_availability_slot(_asched_load().get("days", {}).get(day, {}))
     ts = _asched_slot_ts(scheduled)
     past, reopened, closed = _hrsvp_response_state(day)
     assigned = scheduled.get("host_id") and scheduled.get("host_status") == "yes"
@@ -4710,7 +4727,7 @@ def _hrsvp_days_sorted() -> list:
         days_cfg = _asched_load().get("days", {})
         def _key(pair):
             idx, day = pair
-            ts = _asched_slot_ts(days_cfg.get(day, {}))
+            ts = _asched_slot_ts(_hrsvp_availability_slot(days_cfg.get(day, {})))
             group = 2 if ts and ts <= time.time() else (0 if ts else 1)
             return (group, ts if ts else float("inf"), idx)
         return [d for _, d in sorted(enumerate(_HRSVP_DAYS), key=_key)]
