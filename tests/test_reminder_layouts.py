@@ -174,6 +174,8 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
         await self.ns["_host_nudge_post_once"](self.guild)
         sent = self.channel.send.call_args.kwargs
         self.assertEqual(sent["content"], "<@2>")
+        self.assertFalse(sent["allowed_mentions"].roles)
+        self.assertFalse(sent["allowed_mentions"].everyone)
         self.assertIn("Meet 2", sent["embed"].description)
         self.assertNotIn("Meet 1", sent["embed"].description)
         self.assertNotIn("Meet 3", sent["embed"].description)
@@ -203,10 +205,71 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
             "Meet 2": {"no": ["1"], "maybe": [{"uid": "2"}]},
         }
         await self.ns["_host_nudge_post_once"](self.guild)
+        self.channel.send.assert_not_awaited()
+        _, pending, uncovered = self.ns["_host_nudge_targets"](self.guild)
+        self.assertEqual(pending, [])
+        self.assertEqual(uncovered, ["Meet 2"])
+
+    async def test_six_unavailable_hosts_do_not_trigger_repeated_role_pings(self):
+        self.role.members = [SimpleNamespace(id=uid, bot=False) for uid in range(1, 7)]
+        schedule = self.host_schedule()
+        schedule["days"]["Meet 2"] = {}
+        responses = {"Meet 2": {"no": [
+            "1", {"uid": "2"}, "3", {"uid": "4"}, "5", {"uid": "6"},
+        ]}}
+        before_schedule = copy.deepcopy(schedule)
+        before_responses = copy.deepcopy(responses)
+        self.ns["_asched_load"] = lambda: schedule
+        self.ns["_hrsvp_load"] = lambda: responses
+        for _ in range(5):
+            self.assertTrue(await self.ns["_host_nudge_post_once"](self.guild))
+        self.channel.send.assert_not_awaited()
+        self.assertEqual(schedule, before_schedule)
+        self.assertEqual(responses, before_responses)
+
+    async def test_all_maybe_hosts_do_not_trigger_role_ping(self):
+        schedule = self.host_schedule()
+        schedule["days"]["Meet 2"] = {}
+        self.ns["_asched_load"] = lambda: schedule
+        self.ns["_hrsvp_load"] = lambda: {"Meet 2": {"maybe": ["1", {"uid": "2"}]}}
+        self.assertTrue(await self.ns["_host_nudge_post_once"](self.guild))
+        self.channel.send.assert_not_awaited()
+
+    async def test_new_unanswered_host_resumes_only_targeted_reminders(self):
+        schedule = self.host_schedule()
+        schedule["days"]["Meet 2"] = {}
+        self.ns["_asched_load"] = lambda: schedule
+        self.ns["_hrsvp_load"] = lambda: {"Meet 2": {"no": ["1", "2"]}}
+        await self.ns["_host_nudge_post_once"](self.guild)
+        self.channel.send.assert_not_awaited()
+        self.role.members.append(SimpleNamespace(id=3, bot=False))
+        await self.ns["_host_nudge_post_once"](self.guild)
         sent = self.channel.send.call_args.kwargs
-        self.assertEqual(sent["content"], self.role.mention)
-        self.assertNotIn("still need to complete", sent["embed"].description)
-        self.assertIn("Needs coverage", sent["embed"].description)
+        self.assertEqual(sent["content"], "<@3>")
+        self.assertFalse(sent["allowed_mentions"].roles)
+
+    async def test_empty_host_cache_does_not_fall_back_to_role_ping(self):
+        self.role.members = []
+        self.ns["_asched_load"] = lambda: {"days": {}}
+        self.ns["_hrsvp_load"] = lambda: {}
+        self.assertTrue(await self.ns["_host_nudge_post_once"](self.guild))
+        self.channel.send.assert_not_awaited()
+
+    async def test_manual_nudge_explains_uncovered_slot_without_role_ping(self):
+        schedule = self.host_schedule()
+        schedule["days"]["Meet 2"] = {}
+        self.ns["_asched_load"] = lambda: schedule
+        self.ns["_hrsvp_load"] = lambda: {"Meet 2": {"no": ["1", "2"]}}
+        self.ns["_is_staff_member"] = lambda member: True
+        ctx = SimpleNamespace(author=Mock(spec=discord.Member), guild=self.guild,
+                              message=SimpleNamespace(delete=AsyncMock()), send=AsyncMock())
+        await self.ns["_cmd_hostnudge"](ctx)
+        self.channel.send.assert_not_awaited()
+        message = ctx.send.call_args.args[0]
+        self.assertIn("All hosts have responded", message)
+        self.assertIn("Still needs coverage: Meet 2", message)
+        self.assertNotIn(self.role.mention, message)
+        self.assertNotIn("Nudge posted", message)
 
     async def test_prior_week_assignment_does_not_suppress_new_week_reminders(self):
         tz = ZoneInfo("America/New_York")

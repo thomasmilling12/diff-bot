@@ -28062,12 +28062,12 @@ def _host_nudge_targets(guild: discord.Guild) -> tuple:
 
 
 async def _host_nudge_post_once(guild: discord.Guild) -> bool:
-    """Ping only for unconfirmed slots; True also means nothing was owed."""
+    """Ping only missing responders, never the whole role for a coverage gap."""
     host_role, nonresp, uncovered = _host_nudge_targets(guild)
     if host_role is None:
         return False
-    if not nonresp and not uncovered:
-        return True  # no missing availability or coverage for unconfirmed slots
+    if not nonresp:
+        return True  # a coverage gap does not make answered hosts non-responders
 
     ch = guild.get_channel(_HOST_TEAM_CHANNEL_ID)
     if not isinstance(ch, discord.TextChannel):
@@ -28079,14 +28079,12 @@ async def _host_nudge_post_once(guild: discord.Guild) -> bool:
     content = " ".join(f"<@{i}>" for i in _ids) if _ids else None
     if nonresp and len(nonresp) > 50:
         content += f" (+{len(nonresp) - 50} more)"
-    if uncovered and not nonresp:
-        content = host_role.mention
     await ch.send(
         content=content,
         embed=emb,
         view=_reminder_ui.open_panel(
             "Update availability", f"https://discord.com/channels/{guild.id}/{HOST_RSVP_CHANNEL_ID}"),
-        allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
+        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
     )
     print(f"[HostNudge] Posted ({len(nonresp)} non-responder(s), "
           f"{len(uncovered)} uncovered meet(s)).")
@@ -28098,7 +28096,8 @@ async def _host_avail_nudge_loop() -> None:
     3 hours (9 AM–9 PM ET: 9/12/15/18/21), ping hosts with incomplete
     availability only for remaining slots without a confirmed current host.
     Confirmed slots never require further availability responses; once all
-    remaining slots are confirmed it goes quiet. Disk-guarded timestamp
+    remaining slots are confirmed or every host has answered, it goes quiet.
+    A coverage gap alone never triggers a role-wide ping. Disk-guarded timestamp
     (min 2.5 h between posts) so redeploys can't double-fire."""
     await bot.wait_until_ready()
     from zoneinfo import ZoneInfo as _ZI
@@ -28138,7 +28137,15 @@ async def _cmd_hostnudge(ctx: commands.Context):
     host_role, nonresp, uncovered = _host_nudge_targets(guild)
     if host_role is None:
         return await ctx.send("⚠️ Meet Hosts role not found — no nudge sent.", delete_after=10)
-    if not nonresp and not uncovered:
+    if not nonresp:
+        if uncovered:
+            return await ctx.send(
+                "✅ All hosts have responded for the remaining unconfirmed meets — "
+                "no availability ping sent.\n"
+                "Still needs coverage: " + ", ".join(uncovered)
+                + ". Staff should review the responses and arrange coverage.",
+                delete_after=20,
+            )
         return await ctx.send(
             "✅ No availability reminders needed — remaining meets are confirmed, "
             "or their availability responses already provide coverage.", delete_after=10)
