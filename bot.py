@@ -6498,6 +6498,68 @@ class _ASchedMoreActionsSelect(discord.ui.Select):
         await interaction.response.send_message("Unknown schedule action.", ephemeral=True)
 
 
+_ASCHED_REBUILD_TIMEOUT = 90
+_ASCHED_REBUILD_REPLY_TIMEOUT = 5
+_asched_rebuild_running: set[int] = set()
+
+
+async def _asched_rebuild_reply(interaction: discord.Interaction, content: str) -> None:
+    """Replace the deferred reply; a failed status edit must not strand the worker."""
+    try:
+        await asyncio.wait_for(
+            interaction.edit_original_response(content=content),
+            timeout=_ASCHED_REBUILD_REPLY_TIMEOUT,
+        )
+        return
+    except Exception as exc:
+        print(f"[AutoSched] rebuild status edit failed: {type(exc).__name__}")
+    try:
+        await asyncio.wait_for(
+            interaction.followup.send(content, ephemeral=True),
+            timeout=_ASCHED_REBUILD_REPLY_TIMEOUT,
+        )
+    except Exception as exc:
+        print(f"[AutoSched] rebuild status delivery failed: {type(exc).__name__}")
+
+
+async def _asched_run_rebuild(interaction: discord.Interaction, work) -> None:
+    """Bound one rebuild's Discord work, without rolling back committed assignments."""
+    guild_id = getattr(interaction.guild, "id", 0)
+    if guild_id in _asched_rebuild_running:
+        await _asched_rebuild_reply(
+            interaction,
+            "⏳ A schedule rebuild is already running. Please wait; "
+            "another rebuild was not started.",
+        )
+        return
+    _asched_rebuild_running.add(guild_id)
+    progress = {"stage": "saving the schedule", "saved": False}
+    try:
+        message = await asyncio.wait_for(work(progress), timeout=_ASCHED_REBUILD_TIMEOUT)
+    except Exception as exc:
+        timed_out = isinstance(exc, asyncio.TimeoutError)
+        reason = "timed out" if timed_out else f"failed ({type(exc).__name__})"
+        print(
+            f"[AutoSched] rebuild {reason}; stage={progress['stage']}; "
+            f"schedule_saved={progress['saved']}"
+        )
+        save_note = (
+            "The schedule was saved. Later Discord updates may be incomplete."
+            if progress["saved"] else
+            "A successful schedule save could not be confirmed."
+        )
+        message = (
+            f"⚠️ Rebuild {reason} while {progress['stage']}.\n"
+            f"{save_note}\n"
+            "Do not reset responses or keep pressing Rebuild. "
+            "Ask staff to check !bothealth and the [AutoSched] Pi logs before retrying."
+        )
+    finally:
+        # Also release on task cancellation; never restart the bot to recover this guard.
+        _asched_rebuild_running.discard(guild_id)
+    await _asched_rebuild_reply(interaction, message)
+
+
 class AutoScheduleView(discord.ui.View):
     def __init__(self, bot_ref=None):
         super().__init__(timeout=None)
@@ -6518,64 +6580,92 @@ class AutoScheduleView(discord.ui.View):
         # Heavy work below (panel rebuild, finalized post, RC sync, per-host DMs)
         # easily exceeds Discord's 3s ack window — defer first, reply via followup.
         await interaction.response.defer(ephemeral=True)
-        schedule = _asched_build()
-        await _asched_update_panel(interaction.client)
-        # Only auto-post to upcoming-meet when every slot has a confirmed host
-        all_filled = all(schedule["days"].get(d, {}).get("host_id") for d in _HRSVP_DAYS)
-        if all_filled:
-            await _asched_post_finalized(interaction.client)
-        if interaction.guild:
-            rc_meets = []
-            for idx, day in enumerate(_HRSVP_DAYS, 1):
-                entry = schedule["days"].get(day, {})
-                rc_meets.append({
-                    "meet_number": idx,
-                    "class_name": entry.get("class", "TBD"),
-                    "start_time": entry.get("time", "TBD"),
-                    "host_id": entry.get("host_id"),
-                    "date_text": entry.get("day", "TBD"),
-                    "scheduled_ts": _asched_slot_ts(entry),
-                    "is_finalized": False,
-                })
-            await _rc_sync_from_schedule(interaction.guild, rc_meets)
 
-            # DM each assigned host their meet details
-            for day in _HRSVP_DAYS:
-                entry = schedule["days"].get(day, {})
-                host_id = entry.get("host_id")
-                if not host_id:
-                    continue
-                host_member = interaction.guild.get_member(int(host_id))
-                if not host_member:
-                    continue
-                # Cache the display name so the public embed never shows a raw ID
-                entry["host_name"] = host_member.display_name
-                try:
-                    dm_embed = discord.Embed(
-                        title=f"📅 You've Been Assigned — {day}",
-                        description="You have been assigned as the host for the upcoming meet schedule.",
-                        color=discord.Color.blurple(),
-                        timestamp=utc_now(),
-                    )
-                    dm_embed.add_field(name="🗓 Day", value=entry.get("day", "TBD"), inline=True)
-                    dm_embed.add_field(name="🕒 Time", value=entry.get("time", "TBD"), inline=True)
-                    dm_embed.add_field(name="🎮 Class", value=entry.get("class", "TBD"), inline=True)
-                    dm_embed.set_footer(text="DIFF Meets • Host Schedule — questions? Contact leadership.")
-                    await host_member.send(embed=dm_embed)
-                except discord.Forbidden:
-                    pass
-                except Exception as _dme:
-                    print(f"[AutoSched] DM to host {host_id} failed: {_dme}")
-                _hrel_track_confirmed(str(host_id))
-            _asched_save(schedule)  # persist host_name fields written above
+        async def work(progress):
+            schedule = _asched_build()
+            progress["saved"] = True
+            progress["stage"] = "refreshing the schedule panel"
+            await _asched_rebuild_reply(
+                interaction,
+                "✅ Schedule saved. Updating Discord panels and notifications… "
+                "Please wait; do not press Rebuild again.",
+            )
+            if await _asched_update_panel(interaction.client) is False:
+                raise RuntimeError("Schedule panel refresh did not complete")
+            # Only auto-post to upcoming-meet when every slot has a confirmed host
+            all_filled = all(schedule["days"].get(d, {}).get("host_id") for d in _HRSVP_DAYS)
+            if all_filled:
+                progress["stage"] = "posting the finalized schedule"
+                await _asched_post_finalized(interaction.client)
+            if interaction.guild:
+                rc_meets = []
+                for idx, day in enumerate(_HRSVP_DAYS, 1):
+                    entry = schedule["days"].get(day, {})
+                    rc_meets.append({
+                        "meet_number": idx,
+                        "class_name": entry.get("class", "TBD"),
+                        "start_time": entry.get("time", "TBD"),
+                        "host_id": entry.get("host_id"),
+                        "date_text": entry.get("day", "TBD"),
+                        "scheduled_ts": _asched_slot_ts(entry),
+                        "is_finalized": False,
+                    })
+                progress["stage"] = "syncing roll call"
+                await _rc_sync_from_schedule(interaction.guild, rc_meets)
 
-        _slots_filled = sum(1 for d in _HRSVP_DAYS if schedule["days"].get(d, {}).get("host_id"))
-        _rebuild_msg = "✅ Schedule rebuilt and hosts have been DM'd their assignments."
-        if all_filled:
-            _rebuild_msg += f"\n📢 All 3 slots confirmed — schedule auto-posted to <#{UPCOMING_MEET_CHANNEL_ID}>."
-        else:
-            _rebuild_msg += f"\n⚠️ {_slots_filled}/{len(_HRSVP_DAYS)} slots filled — schedule will auto-post to <#{UPCOMING_MEET_CHANNEL_ID}> once all slots are confirmed."
-        await interaction.followup.send(_rebuild_msg, ephemeral=True)
+                # DM each assigned host their meet details
+                for day in _HRSVP_DAYS:
+                    entry = schedule["days"].get(day, {})
+                    host_id = entry.get("host_id")
+                    if not host_id:
+                        continue
+                    host_member = interaction.guild.get_member(int(host_id))
+                    if not host_member:
+                        continue
+                    # Cache the display name so the public embed never shows a raw ID
+                    entry["host_name"] = host_member.display_name
+                    progress["stage"] = f"sending the assignment DM for {day}"
+                    try:
+                        dm_embed = discord.Embed(
+                            title=f"📅 You've Been Assigned — {day}",
+                            description="You have been assigned as the host for the upcoming meet schedule.",
+                            color=discord.Color.blurple(),
+                            timestamp=utc_now(),
+                        )
+                        dm_embed.add_field(name="🗓 Day", value=entry.get("day", "TBD"), inline=True)
+                        dm_embed.add_field(name="🕒 Time", value=entry.get("time", "TBD"), inline=True)
+                        dm_embed.add_field(name="🎮 Class", value=entry.get("class", "TBD"), inline=True)
+                        dm_embed.set_footer(text="DIFF Meets • Host Schedule — questions? Contact leadership.")
+                        await host_member.send(embed=dm_embed)
+                    except discord.Forbidden:
+                        pass
+                    except Exception as _dme:
+                        print(f"[AutoSched] DM to host {host_id} failed: {_dme}")
+                    progress["stage"] = f"recording host credit for {day}"
+                    _hrel_track_confirmed(str(host_id))
+                progress["stage"] = "saving host display names"
+                # Panel refresh may have remapped message IDs, and staff may have
+                # overridden a slot while Discord requests were in flight. Only
+                # merge cached names for assignments that are still unchanged.
+                fresh = _asched_load()
+                for day in _HRSVP_DAYS:
+                    entry = schedule["days"].get(day, {})
+                    current = fresh.get("days", {}).get(day, {})
+                    if (entry.get("host_name") and entry.get("host_id")
+                            and str(current.get("host_id")) == str(entry["host_id"])):
+                        current["host_name"] = entry["host_name"]
+                _asched_save(fresh)
+
+            _slots_filled = sum(1 for d in _HRSVP_DAYS if schedule["days"].get(d, {}).get("host_id"))
+            _rebuild_msg = "✅ Schedule rebuilt. Assignment DMs attempted for eligible hosts found in this server."
+            if all_filled:
+                _rebuild_msg += f"\n📢 All 3 slots confirmed — schedule auto-posted to <#{UPCOMING_MEET_CHANNEL_ID}>."
+            else:
+                _rebuild_msg += f"\n⚠️ {_slots_filled}/{len(_HRSVP_DAYS)} slots filled — schedule will auto-post to <#{UPCOMING_MEET_CHANNEL_ID}> once all slots are confirmed."
+            return _rebuild_msg
+
+
+        await _asched_run_rebuild(interaction, work)
 
 
 class _ASchedLegacyActionsView(discord.ui.View):
@@ -6613,13 +6703,13 @@ def _asched_get_console_ids(schedule: dict) -> dict:
     return dict(v) if isinstance(v, dict) else {}
 
 
-async def _asched_render_console(bot_client) -> None:
+async def _asched_render_console(bot_client) -> bool:
     """Delete any existing builder messages, then post header (controls) + one card per meet.
     Only touches messages carrying the builder's buttons plus the stored card ids — the Host
     Availability panel in the same channel uses `hrsvp_` ids and is left alone."""
     channel = await _asched_resolve_console_channel(bot_client)
     if channel is None:
-        return
+        return False
     bot_id = bot_client.user.id
 
     sched   = _asched_load()
@@ -6658,51 +6748,50 @@ async def _asched_render_console(bot_client) -> None:
         sched = _asched_load()
         sched["console_message_ids"] = new_ids
         _asched_save(sched)
+        return True
     except Exception as e:
         print(f"[AutoSched] console post failed: {e}")
+        return False
 
 
-async def _asched_update_panel(bot_client) -> None:
-    """Edit builder header + meet cards in place; full repost if anything is missing."""
+async def _asched_update_panel(bot_client) -> bool:
+    """Edit the builder in place; report failure instead of implying success."""
     channel = await _asched_resolve_console_channel(bot_client)
     if channel is None:
-        return
+        return False
     try:
         _ = _asched_build_console_header_embed()
     except Exception as _be:
         print(f"[AutoSched] Build embed error: {_be}")
-        return
+        return False
 
     sched    = _asched_load()
     ids      = _asched_get_console_ids(sched)
     expected = {"header"} | set(_HRSVP_DAYS)
 
     if set(ids.keys()) != expected:
-        await _asched_render_console(bot_client)
-        return
+        return await _asched_render_console(bot_client)
 
+    header_ok = True
     try:
         hm = await channel.fetch_message(int(ids["header"]))
         await hm.edit(embed=_asched_build_console_header_embed(), view=AutoScheduleView(bot_client))
     except discord.NotFound:
         return await _asched_render_console(bot_client)
     except Exception:
-        pass
+        header_ok = False
 
     # Message IDs represent visual positions; dictionary keys remain stable Meet IDs.
     # Only persist a new map after every card has been edited successfully.
     card_ids = [ids.get(day) for day in _HRSVP_DAYS]
     if not all(card_ids):
-        await _asched_render_console(bot_client)
-        return
+        return await _asched_render_console(bot_client)
     try:
         position_ids = sorted(int(mid) for mid in card_ids)
     except (TypeError, ValueError):
-        await _asched_render_console(bot_client)
-        return
+        return await _asched_render_console(bot_client)
     if len(set(position_ids)) != len(_HRSVP_DAYS):
-        await _asched_render_console(bot_client)
-        return
+        return await _asched_render_console(bot_client)
     proposed = {}
     all_ok = True
     for position, day in enumerate(_asched_console_order()):
@@ -6722,6 +6811,7 @@ async def _asched_update_panel(bot_client) -> None:
         fresh = _asched_load()
         fresh["console_message_ids"] = {"header": ids["header"], **proposed}
         _asched_save(fresh)
+    return header_ok and all_ok
 
 
 # -------------------------------------------------------
