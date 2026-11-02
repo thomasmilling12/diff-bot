@@ -403,16 +403,19 @@ class HostAvailabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No remaining unconfirmed meets need your response",
                       interaction.response.send_message.await_args.args[0])
 
-    async def test_my_status_rejects_non_hosts_and_allows_leadership(self):
-        for roles, allowed in (((), False), ((20,), True)):
+    async def test_my_status_preserves_existing_access_and_private_responses(self):
+        self.data["Meet 3"]["yes"] = [
+            {"uid": "2", "day": "PRIVATE_OTHER_DAY", "time": "PRIVATE_OTHER_TIME",
+             "theme": "PRIVATE_OTHER_THEME"},
+        ]
+        for roles in ((), (10,), (20,)):
             interaction = self.interaction(roles=roles)
             await self.ns["_HrsvpMyStatusBtn"]().callback(interaction)
             payload = interaction.response.send_message.await_args
             self.assertTrue(payload.kwargs["ephemeral"])
-            if allowed:
-                self.assertIn("Your current availability", payload.args[0])
-            else:
-                self.assertEqual(payload.args[0], "Hosts and leadership only.")
+            self.assertIn("Your current availability", payload.args[0])
+            self.assertNotIn("PRIVATE_OTHER_", payload.args[0])
+            self.assertFalse(payload.kwargs["allowed_mentions"].everyone)
 
     async def test_my_status_bounds_long_proposals_and_duplicate_legacy_entries(self):
         for day in self.days:

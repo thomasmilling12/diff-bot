@@ -4095,9 +4095,6 @@ class _HrsvpMyStatusBtn(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if not _hrsvp_is_staff(interaction.user) and not any(
-                r.id == HOST_ROLE_ID for r in getattr(interaction.user, "roles", [])):
-            return await interaction.response.send_message("Hosts and leadership only.", ephemeral=True)
         uid  = str(interaction.user.id)
         data = _hrsvp_load()
         lines = []
