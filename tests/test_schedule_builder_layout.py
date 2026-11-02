@@ -48,6 +48,7 @@ class ScheduleBuilderLayoutTests(unittest.TestCase):
             "_hrsvp_load": lambda: {},
             "_readable_host": lambda _guild, uid: f"<@{uid}>" if uid else None,
             "_hrsvp_uid": lambda item: item["uid"],
+            "_hrsvp_entry_ts": lambda item: item.get("ts"),
             "_reminder_ui": reminder_layouts,
             "utc_now": lambda: datetime.now(timezone.utc),
             "DIFF_LOGO_URL": "",
@@ -75,7 +76,7 @@ class ScheduleBuilderLayoutTests(unittest.TestCase):
         self.assertNotIn("<t:20:R>", past_card.description)
         self.assertEqual(past_card.title, "Meet 2")
 
-    def test_compact_controls_and_legacy_button_ids(self):
+    def test_visible_controls_and_legacy_button_ids(self):
         ns = {
             "discord": discord,
             "_ASCHED_REFRESH_ID": "diff_auto_sched_refresh",
@@ -104,11 +105,19 @@ class ScheduleBuilderLayoutTests(unittest.TestCase):
                 "diff_asched_override",
                 "diff_auto_sched_submit",
                 "diff_auto_sched_more",
+                "diff_auto_sched_refresh",
+                "diff_auto_sched_remind",
+                "diff_asched_ping_nonresponders",
             },
         )
         menu = next(item for item in children if isinstance(item, discord.ui.Select))
-        self.assertEqual(menu.row, 1)
-        self.assertEqual(len([item for item in children if item.row == 0]), 3)
+        self.assertEqual(menu.row, 2)
+        self.assertEqual(len([item for item in children if item.row == 0]), 4)
+        self.assertEqual(len([item for item in children if item.row == 1]), 2)
+        self.assertEqual(len(custom_ids), len(children))
+        self.assertTrue(view.is_persistent())
+        self.assertTrue(all(sum(item.width for item in children if item.row == row) <= 5
+                            for row in range(5)))
         legacy_ids = {item.custom_id for item in ns["_ASchedLegacyActionsView"]().children}
         self.assertEqual(
             legacy_ids,
@@ -213,6 +222,38 @@ class ScheduleBuilderLayoutTests(unittest.TestCase):
         self.assertEqual(schedule["days"], original_days)
         channel.send.assert_not_awaited()
         ns["_asched_render_console"].assert_not_awaited()
+
+    def test_builder_shows_proposals_without_turning_them_into_assignments(self):
+        import copy
+        responses = {"Meet 1": {
+            "yes": [{"uid": "11", "ts": 2000000000, "theme": "Euro"}],
+            "maybe": [{"uid": "22", "day": "Sunday evening"}],
+            "no": ["33"],
+        }}
+        schedule = {"days": {"Meet 1": {"locked": True}}}
+        before = copy.deepcopy((responses, schedule))
+        ns = {
+            "discord": discord, "time": time, "_reminder_ui": reminder_layouts,
+            "_asched_load": lambda: schedule, "_hrsvp_load": lambda: responses,
+            "_asched_slot_ts": lambda slot: slot.get("ts"),
+            "_hrsvp_entry_ts": lambda entry: entry.get("ts"),
+            "_hrsvp_uid": lambda entry: entry["uid"] if isinstance(entry, dict) else entry,
+            "_readable_host": lambda guild, uid: f"**Host {uid}** · <@{uid}>",
+        }
+        load_definitions({"_asched_build_console_meet_embed"}, ns)
+        embed = ns["_asched_build_console_meet_embed"](1, "Meet 1")
+        self.assertIn("Awaiting Assignment", embed.description)
+        self.assertIn("🔒", embed.description)
+        self.assertIn("Assigned host:** Not assigned", embed.description)
+        self.assertIn("Scheduled:** Date and time not set", embed.description)
+        self.assertIn("<t:2000000000:f>", embed.fields[0].value)
+        self.assertIn("Host 11", embed.fields[0].value)
+        self.assertNotIn("<@11>", embed.fields[0].value)
+        self.assertIn("Euro", embed.fields[0].value)
+        self.assertIn("Sunday evening", embed.fields[1].value)
+        self.assertIn("Host 33", embed.fields[2].value)
+        self.assertEqual((responses, schedule), before)
+
 
 
 if __name__ == "__main__":

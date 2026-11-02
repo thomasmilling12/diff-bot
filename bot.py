@@ -3789,6 +3789,7 @@ def _hrsvp_build_header_embed() -> discord.Embed:
         description=(
             f"**{slots_with_host}/{slots_needed} hosts assigned** · {total_responders} hosts responded\n"
             "Choose your availability on each open meet below.\n"
+            "**Available** submits a proposal; staff assign the final host and time.\n"
             f"Weekly reset <t:{_reset_ts}:R>."
         ),
         color=0x5865F2,
@@ -3846,7 +3847,7 @@ def _hrsvp_response_error(user, day: str, week: str | None = None) -> str | None
 
 
 def _hrsvp_build_meet_embed(day: str) -> discord.Embed:
-    """One scheduled time and actual assignment, with response details behind a button."""
+    """Show assignments and clearly separated proposals without changing either."""
     data          = _hrsvp_load()
     d             = data.get(day, {"yes": [], "no": [], "maybe": []})
     scheduled = _hrsvp_availability_slot(_asched_load().get("days", {}).get(day, {}))
@@ -3864,15 +3865,20 @@ def _hrsvp_build_meet_embed(day: str) -> discord.Embed:
     counts = [f"{len(d.get(key, []))} {label}" for key, label in
               (("yes", "available"), ("maybe", "maybe"), ("no", "unavailable")) if d.get(key)]
     status = "**Past · Responses closed**\n" if closed else ("**Past · Reopened by staff**\n" if reopened else "")
-    theme = scheduled.get("class") or "Awaiting theme"
+    theme = scheduled.get("class") or "Hosting proposals"
     if theme == "TBD":
-        theme = "Awaiting theme"
+        theme = "Hosting proposals"
     embed = discord.Embed(
         title=f"{day} · {_reminder_ui.text(theme, 100)}",
-        description=f"{status}{when}\n**Assigned host:** {host}\n**Responses:** {' · '.join(counts) or 'None yet'}",
+        description=f"{status}**Scheduled:** {when}\n**Assigned host:** {host}\n**Responses:** {' · '.join(counts) or 'None yet'}",
         color=color,
     )
-    embed.set_footer(text="Times shown locally • View Responses for proposed times")
+    for name, value in _reminder_ui.availability_fields(
+            d, _hrsvp_entry_ts, _hrsvp_uid, lambda uid: _readable_host(None, uid)):
+        embed.add_field(name=name, value=value, inline=False)
+    if not counts:
+        embed.add_field(name="Your availability", value="Choose Available, Maybe, or Unavailable below.", inline=False)
+    embed.set_footer(text="Proposals are not assignments • Local times • View Responses for the full list")
     return embed
 
 
@@ -4089,49 +4095,57 @@ class _HrsvpMyStatusBtn(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if not _hrsvp_is_staff(interaction.user) and not any(
+                r.id == HOST_ROLE_ID for r in getattr(interaction.user, "roles", [])):
+            return await interaction.response.send_message("Hosts and leadership only.", ephemeral=True)
         uid  = str(interaction.user.id)
         data = _hrsvp_load()
         lines = []
-        missing = []
+        _, _, _, pending_by_host = _host_nudge_targets(interaction.guild)
+        missing = pending_by_host.get(uid, [])
         for day in _HRSVP_DAYS:
             slot = data.get(day, {})
             found = False
             for e in slot.get("yes", []):
-                if _hrsvp_uid(e) == uid:
+                if str(_hrsvp_uid(e)) == uid:
                     if isinstance(e, dict):
                         dv = e.get('day', 'TBD')
                         tv = e.get('time', 'TBD')
                         ts = _hrsvp_entry_ts(e) if dv and tv != 'TBD' else None
-                        when_str = f"<t:{ts}:F>" if ts else f"{dv} · {tv}"
+                        when_str = f"<t:{int(ts)}:F>" if ts else _reminder_ui.text(f"{dv} · {tv}", 180)
                         lines.append(
-                            f"✅ **{day}** — Proposed: {when_str} · 🎮 {e.get('theme','TBD')}"
+                            f"✅ **{day}** — Proposed: {when_str} · 🎮 {_reminder_ui.text(e.get('theme'), 100)}"
                         )
                     else:
                         lines.append(f"✅ **{day}** — Available")
                     found = True
+                    break
             for e in slot.get("maybe", []):
-                if _hrsvp_uid(e) == uid:
+                if not found and str(_hrsvp_uid(e)) == uid:
                     day_pref = e.get("day","") if isinstance(e, dict) else ""
-                    lines.append(f"❓ **{day}** — Maybe" + (f" (prefers {day_pref})" if day_pref else ""))
+                    lines.append(f"❓ **{day}** — Maybe" + (f" (prefers {_reminder_ui.text(day_pref, 100)})" if day_pref else ""))
                     found = True
+                    break
             for e in slot.get("no", []):
-                if _hrsvp_uid(e) == uid:
+                if not found and str(_hrsvp_uid(e)) == uid:
                     lines.append(f"❌ **{day}** — Unavailable")
                     found = True
+                    break
             if not found:
                 closed = _hrsvp_response_state(day)[2]
-                lines.append(f"⬜ **{day}** — {'Past · Responses closed' if closed else 'No response yet'}")
-                if not closed:
-                    missing.append(day)
+                status = ("Past · Responses closed" if closed else
+                          "No response yet" if day in missing else "No response needed for reminders")
+                lines.append(f"⬜ **{day}** — {status}")
 
         if missing:
             summary = f"⚠️ **Still need your answer for:** {', '.join(missing)}"
         else:
-            summary = "✅ **No open meets are missing your response.**"
+            summary = "✅ **No remaining unconfirmed meets need your response.**"
 
         await interaction.response.send_message(
             "**Your current availability:**\n" + summary + "\n\n" + "\n".join(lines),
             ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
 
@@ -4158,7 +4172,7 @@ class HostRSVPView(discord.ui.View):
 class _HostAvailModal(discord.ui.Modal):
     day_time_input = discord.ui.TextInput(
         label="Day & Time you want to host",
-        placeholder="e.g. Sunday 8:00 PM ET  or  <t:1234567890:F>",
+        placeholder='e.g. Sunday 8 PM ET | November 8 8 PM ET | <t:1234567890:F>',
         required=True,
         max_length=60,
     )
@@ -4926,7 +4940,10 @@ def _asched_build_console_header_embed() -> discord.Embed:
         title="Weekly Schedule Builder",
         description=(
             f"{progress}\n"
-            f"Updated {rebuilt_str}\n"
+            f"Last rebuilt {rebuilt_str}\n\n"
+            "**Rebuild Schedule** selects hosts from saved availability.\n"
+            "**Override Slot** sets a specific host, date, time, and theme.\n"
+            "**Submit to Roll Call** publishes the assigned meets for RSVPs.\n\n"
             "Past meets appear last. Locked slots are skipped when rebuilding."
         ),
         color=embed_color,
@@ -4978,12 +4995,10 @@ def _asched_build_console_meet_embed(idx: int, day: str) -> discord.Embed:
     if is_past:
         status_tag = "Past"
         host_val = _readable_host(None, host_id) if host_id else "Unassigned"
-        avail_line = None
         color = 0x747F8D
     elif host_id:
         status_tag = "Assigned" if host_status != "maybe" else "Tentative"
         host_val   = _readable_host(None, host_id) + (" *(tentative)*" if host_status == "maybe" else "")
-        avail_line = None
         color      = 0x57F287 if host_status != "maybe" else 0xFEE75C
     else:
         available = [_hrsvp_uid(e) for e in rsvp_slot.get("yes", [])]
@@ -4991,40 +5006,37 @@ def _asched_build_console_meet_embed(idx: int, day: str) -> discord.Embed:
         host_val  = "-"
         if available:
             status_tag = "⏳ Awaiting Assignment"
-            avail_line = (
-                f"✅ **Available ({len(available)} host{'s' if len(available) != 1 else ''}):** "
-                + "  ".join(f"<@{u}>" for u in available[:8])
-            )
             color = 0xFEE75C
         elif maybe_av:
             status_tag = "❓ Possible Hosts"
-            avail_line = (
-                f"❓ **Maybe ({len(maybe_av)}):** "
-                + "  ".join(f"<@{u}>" for u in maybe_av[:8])
-            )
             color = 0xFEE75C
         else:
             status_tag = "🔴 Open Slot"
-            avail_line = None
             color = 0xEB459E
 
     if meet_ts:
         when_line = f"<t:{meet_ts}:f>"
     else:
-        raw_date = _reminder_ui.text(date_val, 50)
-        raw_time = _reminder_ui.text(time_val, 50)
-        when_line = " · ".join(v for v in (raw_date, raw_time) if v and v not in ("-", "TBD"))
+        raw_date = "" if str(date_val or "").strip() in ("", "-", "TBD") else _reminder_ui.text(date_val, 50)
+        raw_time = "" if str(time_val or "").strip() in ("", "-", "TBD") else _reminder_ui.text(time_val, 50)
+        when_line = " · ".join(v for v in (raw_date, raw_time) if v)
         if not when_line:
             when_line = "Date and time not set"
 
-    safe_class = _reminder_ui.text(class_val, 100)
-    if not safe_class or safe_class in ("-", "TBD"):
-        safe_class = "Class not set"
-    lines = [f"**{status_tag}{lock_tag}**", when_line, f"**{safe_class}** · {host_val}"]
-    if avail_line:
-        lines.append(avail_line)
+    safe_class = ("Class not set" if str(class_val or "").strip() in ("", "-", "TBD")
+                  else _reminder_ui.text(class_val, 100))
+    lines = [f"**{status_tag}{lock_tag}**", f"📅 **Scheduled:** {when_line}",
+             f"🎨 **Theme:** {safe_class}", f"👤 **Assigned host:** {host_val if host_id else 'Not assigned'}"]
+    if not host_id and not is_past:
+        lines.append("Review the proposals below, then Rebuild Schedule or Override Slot.")
 
     embed = discord.Embed(title=f"Meet {idx}", description="\n".join(lines), color=color)
+    for name, value in _reminder_ui.availability_fields(
+            rsvp_slot, _hrsvp_entry_ts, _hrsvp_uid, lambda uid: _readable_host(None, uid)):
+        embed.add_field(name=name, value=value, inline=False)
+    if not any(rsvp_slot.get(key) for key in ("yes", "maybe", "no")):
+        embed.add_field(name="Host responses", value="No responses yet — hosts can answer on the availability cards.", inline=False)
+    embed.set_footer(text="Host proposals are not confirmed assignments • Times shown locally")
     return embed
 
 
@@ -6566,7 +6578,16 @@ class AutoScheduleView(discord.ui.View):
         self._bot_ref = bot_ref
         self.add_item(_ASchedOverrideBtn())
         self.add_item(_ASchedSubmitBtn())
-        self.add_item(_ASchedMoreActionsSelect())
+        refresh = _ASchedRefreshBtn()
+        refresh.row = 0
+        self.add_item(refresh)
+        self.add_item(_ASchedReminderBtn())
+        nonresponders = _ASchedPingNonRespondersBtn()
+        nonresponders.row = 1
+        self.add_item(nonresponders)
+        menu = _ASchedMoreActionsSelect()
+        menu.row = 2
+        self.add_item(menu)
 
     @discord.ui.button(label="Rebuild Schedule", emoji="🧠", style=discord.ButtonStyle.primary, custom_id=_ASCHED_REBUILD_ID, row=0)
     async def rebuild_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -28113,13 +28134,13 @@ def _host_nudge_state_load() -> dict:
 
 
 def _host_nudge_targets(guild: discord.Guild) -> tuple:
-    """Only request missing availability for remaining, unconfirmed slots."""
+    """Return role, recipients, coverage gaps, and private per-host pending slots."""
     rsvp_data = _hrsvp_load()
     host_role = guild.get_role(HOST_ROLE_ID)
     if host_role is None:
-        return None, [], []
+        return None, [], [], {}
 
-    answered_by_slot: list = []
+    answered_by_slot: dict = {}
     uncovered: list = []
     schedule = _asched_load().get("days", {})
     now_ts = time.time()
@@ -28140,20 +28161,24 @@ def _host_nudge_targets(guild: discord.Guild) -> tuple:
                 _u = _hrsvp_uid(_e)
                 if _u:
                     responded.add(str(_u))
-        answered_by_slot.append(responded)
+        answered_by_slot[day] = responded
         has_available_host = any(str(_hrsvp_uid(e)) in current_hosts for e in yes)
         if not has_available_host:
             uncovered.append(day)
 
-    nonresp = [m for m in host_role.members
-               if not m.bot and any(str(m.id) not in ids for ids in answered_by_slot)]
+    pending_by_host = {
+        str(m.id): [day for day, ids in answered_by_slot.items() if str(m.id) not in ids]
+        for m in host_role.members if not m.bot
+    }
+    pending_by_host = {uid: days for uid, days in pending_by_host.items() if days}
+    nonresp = [m for m in host_role.members if str(m.id) in pending_by_host and not m.bot]
 
-    return host_role, nonresp, uncovered
+    return host_role, nonresp, uncovered, pending_by_host
 
 
 async def _host_nudge_post_once(guild: discord.Guild) -> bool:
     """Ping only missing responders, never the whole role for a coverage gap."""
-    host_role, nonresp, uncovered = _host_nudge_targets(guild)
+    host_role, nonresp, uncovered, pending_by_host = _host_nudge_targets(guild)
     if host_role is None:
         return False
     if not nonresp:
@@ -28163,7 +28188,13 @@ async def _host_nudge_post_once(guild: discord.Guild) -> bool:
     if not isinstance(ch, discord.TextChannel):
         return False
 
-    emb = _reminder_ui.host_reminder(len(nonresp), uncovered)
+    pending_slots = [day for day in _HRSVP_DAYS
+                     if any(day in days for days in pending_by_host.values())]
+    emb = _reminder_ui.host_reminder(len(nonresp), uncovered, pending_slots=pending_slots)
+    for name, value in _reminder_ui.host_pending_fields([
+            (getattr(member, "display_name", f"Host {member.id}"),
+             pending_by_host.get(str(member.id), [])) for member in nonresp[:50]]):
+        emb.add_field(name=name, value=value, inline=False)
 
     _ids = [m.id for m in nonresp[:50]]
     content = " ".join(f"<@{i}>" for i in _ids) if _ids else None
@@ -28224,7 +28255,7 @@ async def _cmd_hostnudge(ctx: commands.Context):
     guild = ctx.guild
     if not guild:
         return
-    host_role, nonresp, uncovered = _host_nudge_targets(guild)
+    host_role, nonresp, uncovered, _ = _host_nudge_targets(guild)
     if host_role is None:
         return await ctx.send("⚠️ Meet Hosts role not found — no nudge sent.", delete_after=10)
     if not nonresp:

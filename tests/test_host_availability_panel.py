@@ -22,6 +22,7 @@ NAMES = {
     "_HrsvpResetBtn", "_HrsvpMyStatusBtn", "HostRSVPView", "_HostAvailModal",
     "_HostMaybeModal", "_HostRSVPBtn", "_hrsvp_days_sorted", "_hrsvp_update_panel",
     "_hrsvp_update_panel_inner",
+    "_host_nudge_targets",
 }
 tree = ast.parse(Path("bot.py").read_text())
 module = ast.Module(body=[n for n in tree.body if getattr(n, "name", None) in NAMES],
@@ -49,6 +50,7 @@ class HostAvailabilityTests(unittest.IsolatedAsyncioTestCase):
             "_hrsvp_entry_ts": lambda entry: entry.get("ts"),
             "_this_week_weekday_ts": lambda *args: 2200, "_parse_meet_ts": lambda *args: 2200,
             "_hrel_track_rsvp": Mock(),
+            "_readable_host": lambda guild, uid: f"Host {uid}",
         }
         exec(compile(module, "bot.py", "exec"), self.ns)
         self.real_update = self.ns["_hrsvp_update_panel"]
@@ -61,7 +63,10 @@ class HostAvailabilityTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(
             user=SimpleNamespace(id=1, roles=[SimpleNamespace(id=r) for r in roles],
                                  guild_permissions=SimpleNamespace(administrator=administrator)),
-            client=object(), guild=SimpleNamespace(get_member=lambda uid: SimpleNamespace(display_name=f"Host {uid}")),
+            client=object(), guild=SimpleNamespace(
+                get_member=lambda uid: SimpleNamespace(display_name=f"Host {uid}"),
+                get_role=lambda rid: SimpleNamespace(members=[
+                    SimpleNamespace(id=uid, bot=False) for uid in (1, 2, 3)])),
             response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock(),
                                      send_modal=AsyncMock(), edit_message=AsyncMock()),
             followup=SimpleNamespace(send=AsyncMock()),
@@ -73,13 +78,18 @@ class HostAvailabilityTests(unittest.IsolatedAsyncioTestCase):
         embed = self.ns["_hrsvp_build_header_embed"]()
         self.assertIn("1/3 hosts assigned", embed.description)
         self.assertIn("2 hosts responded", embed.description)
-        self.assertLess(len(embed), 500)
+        self.assertLess(len(embed), 700)
 
-    async def test_card_has_only_scheduled_time_and_response_totals(self):
+    async def test_card_separates_scheduled_time_from_visible_proposals(self):
         self.data["Meet 2"]["yes"] = [{"uid": "2", "ts": 3000, "theme": "Proposed theme"}]
         embed = self.ns["_hrsvp_build_meet_embed"]("Meet 2")
         self.assertIn("<t:2000:F>", embed.description)
         self.assertNotIn("3000", embed.description)
+        self.assertIn("Scheduled:", embed.description)
+        self.assertIn("<t:3000:f>", embed.fields[0].value)
+        self.assertIn("proposed hosting", embed.fields[0].name)
+        self.assertIn("Proposed theme", embed.fields[0].value)
+        self.assertIn("Host 2", embed.fields[0].value)
         self.assertIn("Assigned host:** <@1>", embed.description)
         self.assertIn("1 available", embed.description)
         self.assertNotIn("0 maybe", embed.description)
@@ -347,6 +357,80 @@ class HostAvailabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.data["panel_message_ids"], {"header": 10, "Meet 2": 11, "Meet 3": 12, "Meet 1": 13})
         self.assertEqual(self.data["Meet 1"]["no"], ["1"])
         self.assertEqual(messages[11].edit.call_args.kwargs["view"].children[0].day, "Meet 2")
+
+    async def test_detailed_card_preserves_data_and_bounds_long_legacy_responses(self):
+        self.data["Meet 3"]["yes"] = [
+            {"uid": str(i), "ts": 3000, "theme": "@everyone " + "X" * 5000}
+            for i in range(30)]
+        self.data["Meet 3"]["maybe"] = [{"uid": "40", "day": "Sunday evening"}]
+        self.data["Meet 3"]["no"] = ["50", "51"]
+        before = copy.deepcopy((self.data, self.schedule))
+        embed = self.ns["_hrsvp_build_meet_embed"]("Meet 3")
+        self.assertIn("Hosting proposals", embed.title)
+        self.assertIn("Needs assignment", embed.description)
+        self.assertIn("+27 more", embed.fields[0].value)
+        self.assertIn("Sunday evening", embed.fields[1].value)
+        self.assertIn("Host 50", embed.fields[2].value)
+        self.assertNotIn("@everyone", str(embed.to_dict()))
+        self.assertTrue(all(len(field.value) <= 1024 for field in embed.fields))
+        self.assertLess(len(embed), 6000)
+        self.assertEqual((self.data, self.schedule), before)
+        self.ns["_hrsvp_save"].assert_not_called()
+
+    async def test_my_status_matches_reminders_and_keeps_proposals_private(self):
+        self.data["Meet 3"]["yes"] = [
+            {"uid": "2", "day": "PRIVATE_OTHER_DAY", "time": "PRIVATE_OTHER_TIME",
+             "theme": "PRIVATE_OTHER_THEME"},
+        ]
+        before = copy.deepcopy((self.data, self.schedule))
+        interaction = self.interaction()
+        button = self.ns["_HrsvpMyStatusBtn"]()
+        self.assertEqual(button.custom_id, "hrsvp_my_status")
+        await button.callback(interaction)
+        payload = interaction.response.send_message.await_args
+        message = payload.args[0]
+        summary = message.split("\n")[1]
+        self.assertIn("Still need your answer for:** Meet 3", summary)
+        self.assertNotIn("Meet 1", summary)  # past
+        self.assertNotIn("Meet 2", summary)  # confirmed
+        self.assertNotIn("PRIVATE_OTHER_", message)
+        self.assertTrue(payload.kwargs["ephemeral"])
+        self.assertFalse(payload.kwargs["allowed_mentions"].users)
+        self.assertEqual((self.data, self.schedule), before)
+        self.data["Meet 3"]["maybe"] = ["1"]
+        interaction = self.interaction()
+        await button.callback(interaction)
+        self.assertIn("No remaining unconfirmed meets need your response",
+                      interaction.response.send_message.await_args.args[0])
+
+    async def test_my_status_rejects_non_hosts_and_allows_leadership(self):
+        for roles, allowed in (((), False), ((20,), True)):
+            interaction = self.interaction(roles=roles)
+            await self.ns["_HrsvpMyStatusBtn"]().callback(interaction)
+            payload = interaction.response.send_message.await_args
+            self.assertTrue(payload.kwargs["ephemeral"])
+            if allowed:
+                self.assertIn("Your current availability", payload.args[0])
+            else:
+                self.assertEqual(payload.args[0], "Hosts and leadership only.")
+
+    async def test_my_status_bounds_long_proposals_and_duplicate_legacy_entries(self):
+        for day in self.days:
+            self.data[day]["yes"] = [
+                {"uid": "1", "day": "@everyone" * 1000, "time": "TBD",
+                 "theme": "X" * 10000},
+            ] * 20
+            self.data[day]["maybe"] = [{"uid": "1", "day": "X" * 10000}]
+        interaction = self.interaction()
+        await self.ns["_HrsvpMyStatusBtn"]().callback(interaction)
+        payload = interaction.response.send_message.await_args
+        self.assertLessEqual(len(payload.args[0]), 2000)
+        self.assertEqual(payload.args[0].count("Proposed:"), 3)
+        self.assertFalse(payload.kwargs["allowed_mentions"].everyone)
+
+
+
+
 
 
 if __name__ == "__main__":

@@ -128,6 +128,8 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent["content"], "<@1>")
         self.assertNotIn("Needs coverage", sent["embed"].description)
         self.assertIn("1", sent["embed"].description)
+        self.assertIn("Still awaiting responses:** Meet 2", sent["embed"].description)
+        self.assertIn("My Status", sent["embed"].description)
         self.assertEqual(sent["view"].children[0].label, "Update availability")
 
     async def test_host_all_complete_and_covered_stays_quiet(self):
@@ -206,9 +208,10 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
         }
         await self.ns["_host_nudge_post_once"](self.guild)
         self.channel.send.assert_not_awaited()
-        _, pending, uncovered = self.ns["_host_nudge_targets"](self.guild)
+        _, pending, uncovered, pending_by_host = self.ns["_host_nudge_targets"](self.guild)
         self.assertEqual(pending, [])
         self.assertEqual(uncovered, ["Meet 2"])
+        self.assertEqual(pending_by_host, {})
 
     async def test_six_unavailable_hosts_do_not_trigger_repeated_role_pings(self):
         self.role.members = [SimpleNamespace(id=uid, bot=False) for uid in range(1, 7)]
@@ -392,6 +395,72 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
     async def test_t5h_send_failure_does_not_mark_sent(self):
         await self.run_t5h(fail=True)
         self.ns["_rc_reminder_state_save"].assert_not_called()
+
+    async def test_pending_slots_are_distinct_from_coverage_and_private_proposals(self):
+        responses = {
+            "Meet 1": {"yes": [{"uid": "1", "day": "PRIVATE_DAY",
+                              "time": "PRIVATE_TIME", "theme": "PRIVATE_THEME"}]},
+            "Meet 2": {"no": ["2"]},
+            "Meet 3": {"yes": ["1"], "maybe": ["2"]},
+        }
+        schedule = {"days": {}}
+        before = copy.deepcopy((responses, schedule))
+        self.ns["_hrsvp_load"] = lambda: responses
+        self.ns["_asched_load"] = lambda: schedule
+        _, recipients, uncovered, pending_by_host = self.ns["_host_nudge_targets"](self.guild)
+        self.assertEqual([m.id for m in recipients], [1, 2])
+        self.assertEqual(uncovered, ["Meet 2"])
+        self.assertEqual(pending_by_host, {"1": ["Meet 2"], "2": ["Meet 1"]})
+        await self.ns["_host_nudge_post_once"](self.guild)
+        sent = self.channel.send.call_args.kwargs
+        description = sent["embed"].description
+        self.assertIn("Still awaiting responses:** Meet 1, Meet 2", description)
+        self.assertIn("Needs coverage:** Meet 2", description)
+        self.assertNotIn("Meet 3", description)
+        self.assertNotIn("PRIVATE_", str(sent["embed"].to_dict()))
+        self.assertEqual(sent["content"], "<@1> <@2>")
+        self.assertIn("**Host 1:** Meet 2", sent["embed"].fields[0].value)
+        self.assertIn("**Host 2:** Meet 1", sent["embed"].fields[0].value)
+        self.assertEqual(sent["view"].children[0].url, "https://discord.com/channels/5/22")
+        for member in self.members:
+            member.send.assert_not_awaited()
+        self.assertEqual((responses, schedule), before)
+
+    async def test_large_host_reminder_has_bounded_size_and_only_current_human_recipients(self):
+        humans = [SimpleNamespace(id=100000000000000000 + i, bot=False) for i in range(120)]
+        self.role.members = humans + [SimpleNamespace(id=999, bot=True)]
+        self.ns["_asched_load"] = lambda: {"days": {}}
+        # First host has answered every slot; departed/bot proposals are not coverage.
+        self.ns["_hrsvp_load"] = lambda: {
+            day: {"no": [str(humans[0].id)], "yes": ["999", "888"]}
+            for day in self.ns["_HRSVP_DAYS"]
+        }
+        await self.ns["_host_nudge_post_once"](self.guild)
+        self.channel.send.assert_awaited_once()
+        sent = self.channel.send.call_args.kwargs
+        self.assertLessEqual(len(sent["content"]), 2000)
+        self.assertLessEqual(len(sent["embed"].description), 4096)
+        self.assertLess(len(sent["embed"]), 6000)
+        self.assertTrue(all(len(field.value) <= 1024 for field in sent["embed"].fields))
+        self.assertEqual(sent["content"].split(" (+")[0],
+                         " ".join(f"<@{m.id}>" for m in humans[1:51]))
+        self.assertIn("(+69 more)", sent["content"])
+        self.assertNotIn(f"<@{humans[0].id}>", sent["content"])
+        self.assertNotIn("<@999>", sent["content"])
+        self.assertNotIn("<@888>", sent["content"])
+        self.assertFalse(sent["allowed_mentions"].roles)
+        self.assertFalse(sent["allowed_mentions"].everyone)
+        self.assertIn("Needs coverage:** Meet 1, Meet 2, Meet 3", sent["embed"].description)
+
+    async def test_missing_host_role_has_no_recipients_or_send(self):
+        self.guild.get_role = lambda rid: None
+        self.ns["_hrsvp_load"] = lambda: {}
+        self.assertEqual(self.ns["_host_nudge_targets"](self.guild), (None, [], [], {}))
+        self.assertFalse(await self.ns["_host_nudge_post_once"](self.guild))
+        self.channel.send.assert_not_awaited()
+
+
+
 
 
 if __name__ == "__main__":
