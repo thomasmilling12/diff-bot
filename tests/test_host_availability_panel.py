@@ -318,14 +318,27 @@ class HostAvailabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_reset_requires_confirmation_and_preserves_panel_ids(self):
         self.data["panel_message_ids"] = {"header": 10, "Meet 1": 11, "Meet 2": 12, "Meet 3": 13}
         self.data["Meet 1"]["no"] = ["1"]
+        schedule_before = copy.deepcopy(self.schedule)
+        week_before = self.ns["_hrsvp_week_key"]()
+        state_before = self.ns["_hrsvp_response_state"]("Meet 1")
         modal = self.ns["_HrsvpResetConfirmModal"]()
         modal.confirm._value = "no"
         await modal.on_submit(self.interaction(roles=(20,)))
         self.ns["_hrsvp_save"].assert_not_called()
         modal.confirm._value = "RESET"
-        await modal.on_submit(self.interaction(roles=(20,)))
+        interaction = self.interaction(roles=(20,))
+        await modal.on_submit(interaction)
         self.assertEqual(self.data["Meet 1"]["no"], [])
         self.assertEqual(self.data["panel_message_ids"]["header"], 10)
+        self.assertEqual(self.schedule, schedule_before)
+        self.assertEqual(self.ns["_hrsvp_week_key"](), week_before)
+        self.assertEqual(self.ns["_hrsvp_response_state"]("Meet 1"), state_before)
+        payload = interaction.followup.send.await_args
+        self.assertTrue(payload.kwargs["ephemeral"])
+        self.assertIn("responses have been cleared.", payload.args[0])
+        self.assertIn("Scheduled dates, assigned hosts, and weekly reset timing are unchanged", payload.args[0])
+        self.assertIn("Past meets remain closed", payload.args[0])
+        self.assertNotIn("for the new week", payload.args[0])
 
     async def test_private_details_paginate_without_losing_proposals(self):
         self.data["Meet 2"]["yes"] = [
@@ -430,6 +443,37 @@ class HostAvailabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(payload.args[0]), 2000)
         self.assertEqual(payload.args[0].count("Proposed:"), 3)
         self.assertFalse(payload.kwargs["allowed_mentions"].everyone)
+
+    async def test_empty_closed_card_explains_why_responses_are_closed(self):
+        before = copy.deepcopy((self.data, self.schedule))
+        embed = self.ns["_hrsvp_build_meet_embed"]("Meet 1")
+        fields = {field.name: field.value for field in embed.fields}
+        self.assertIn("Past · Responses closed", embed.description)
+        self.assertNotIn("Your availability", fields)
+        self.assertIn("scheduled start time has passed", fields["Responses closed"])
+        self.assertIn("Staff Tools", fields["Responses closed"])
+        self.assertNotIn("Choose Available", str(embed.to_dict()))
+        self.assertEqual((self.data, self.schedule), before)
+        self.ns["_hrsvp_save"].assert_not_called()
+
+    async def test_empty_open_card_keeps_response_instructions(self):
+        embed = self.ns["_hrsvp_build_meet_embed"]("Meet 2")
+        fields = {field.name: field.value for field in embed.fields}
+        self.assertEqual(fields["Your availability"], "Choose Available, Maybe, or Unavailable below.")
+        self.assertNotIn("Responses closed", fields)
+
+    async def test_empty_reopened_card_keeps_response_instructions(self):
+        self.data["response_reopen"] = {
+            "Meet 1": {"week": self.ns["_hrsvp_week_key"](), "ts": 900},
+        }
+        embed = self.ns["_hrsvp_build_meet_embed"]("Meet 1")
+        fields = {field.name: field.value for field in embed.fields}
+        self.assertIn("Past · Reopened by staff", embed.description)
+        self.assertIn("Choose Available", fields["Your availability"])
+        self.assertNotIn("Responses closed", fields)
+
+
+
 
 
 

@@ -3877,7 +3877,14 @@ def _hrsvp_build_meet_embed(day: str) -> discord.Embed:
             d, _hrsvp_entry_ts, _hrsvp_uid, lambda uid: _readable_host(None, uid)):
         embed.add_field(name=name, value=value, inline=False)
     if not counts:
-        embed.add_field(name="Your availability", value="Choose Available, Maybe, or Unavailable below.", inline=False)
+        if closed:
+            embed.add_field(
+                name="Responses closed",
+                value="The scheduled start time has passed. Leadership can reopen responses from Staff Tools.",
+                inline=False,
+            )
+        else:
+            embed.add_field(name="Your availability", value="Choose Available, Maybe, or Unavailable below.", inline=False)
     embed.set_footer(text="Proposals are not assignments • Local times • View Responses for the full list")
     return embed
 
@@ -4052,7 +4059,10 @@ class _HrsvpResetConfirmModal(discord.ui.Modal, title="Confirm Reset"):
             _hrsvp_reset()
             await _hrsvp_update_panel(interaction.client)
             await interaction.followup.send(
-                "🗑️ All host availability responses have been cleared for the new week.", ephemeral=True
+                "🗑️ All host availability responses have been cleared. "
+                "Scheduled dates, assigned hosts, and weekly reset timing are unchanged. "
+                "Past meets remain closed unless leadership reopens them from Staff Tools.",
+                ephemeral=True,
             )
         except Exception as _e:
             print(f"[HRSVP] Reset on_submit error: {_e}")
