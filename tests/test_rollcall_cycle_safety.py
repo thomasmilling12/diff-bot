@@ -61,6 +61,7 @@ class RollCallCycleSafetyTests(unittest.TestCase):
     def setUp(self):
         self.db = FakeDB([])
         self.ns = {
+            "_activity_pause": SimpleNamespace(wait_until_running=AsyncMock()),
             "datetime": datetime,
             "timedelta": timedelta,
             "timezone": timezone,

@@ -315,6 +315,9 @@ class ColorTeamSchedulerCog(commands.Cog):
 
     async def send_dm_reminders(self) -> None:
         await asyncio.sleep(REMINDER_DELAY_MINUTES * 60)
+        pause = getattr(self.bot, "_activity_pause", None)
+        if pause is not None and pause.paused["colors"]:
+            return
         channel = self.bot.get_channel(COLOR_CHANNEL_ID)
         if not isinstance(channel, discord.TextChannel):
             return
@@ -323,6 +326,8 @@ class ColorTeamSchedulerCog(commands.Cog):
         if role is None:
             return
         for member in role.members:
+            if pause is not None and pause.paused["colors"]:
+                return
             if member.bot:
                 continue
             if member.id in self.state.available or member.id in self.state.not_available:

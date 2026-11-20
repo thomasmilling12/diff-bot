@@ -27,6 +27,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from utils import reminder_layouts as _reminder_ui
+from utils.activity_pause import ActivityPause, symbol_domain as _paused_activity_domain
 
 try: 
     import aiohttp
@@ -22483,6 +22484,7 @@ async def _om_panel_auto_refresh_loop() -> None:
     await bot.wait_until_ready()
     await asyncio.sleep(60)  # let startup settle
     while not bot.is_closed():
+        await _activity_pause.wait_until_running("meets")
         try:
             for g in bot.guilds:
                 try:
@@ -22789,6 +22791,7 @@ async def _om_recur_loop():
     await bot.wait_until_ready()
     await asyncio.sleep(90)
     while not bot.is_closed():
+        await _activity_pause.wait_until_running("meets")
         try:
             data = _om_recur_load()
             slots = data.get("slots", {})
@@ -23175,6 +23178,7 @@ async def _om_autopost_from_schedule_loop():
     await bot.wait_until_ready()
     await asyncio.sleep(120)
     while not bot.is_closed():
+        await _activity_pause.wait_until_running("meets")
         try:
             schedule = _asched_load()
             days = schedule.get("days", {})
@@ -24674,6 +24678,7 @@ async def _popup_auto_end_loop() -> None:
     message in place (greyed out, ended state) and DMs the host."""
     await bot.wait_until_ready()
     while not bot.is_closed():
+        await _activity_pause.wait_until_running("meets")
         try:
             now_utc = datetime.now(timezone.utc)
             for g in bot.guilds:
@@ -27192,7 +27197,8 @@ async def on_ready():
     _safe_add_view(_ASchedLegacyActionsView(), "_ASchedLegacyActionsView")
     _safe_add_view(_ASchedAnnounceView(),   "_ASchedAnnounceView")
     _safe_add_view(_RCStrikeConfirmView(),  "_RCStrikeConfirmView")
-    _asched_build()
+    if not _activity_pause.paused["meets"]:
+        _asched_build()
     await _asched_update_panel(bot)
     await _hrsvp_update_panel(bot)
     _safe_add_view(HostHubView(),           "HostHubView")
@@ -27370,6 +27376,7 @@ async def _rc_auto_archive_loop() -> None:
     global _rc_archive_last_ran
     while not bot.is_closed():
         await asyncio.sleep(60)
+        await _activity_pause.wait_until_running("meets")
         try:
             now = datetime.now(_EST_TZ)
             # Monday (weekday 0), 12:05 AM
@@ -27437,6 +27444,7 @@ async def _rc_saturday_reminder_loop() -> None:
     global _rc_saturday_reminder_last_ran
     while not bot.is_closed():
         await asyncio.sleep(60)
+        await _activity_pause.wait_until_running("meets")
         try:
             now = datetime.now(_EST_TZ)
             # Saturday (weekday 5), noon
@@ -27609,6 +27617,7 @@ async def _rc_public_reminder_loop() -> None:
     await bot.wait_until_ready()
     while not bot.is_closed():
         await asyncio.sleep(60)
+        await _activity_pause.wait_until_running("meets")
         try:
             now = datetime.now(_EST_TZ)
             # Sunday (weekday 6), 6 PM ET — the day before the Monday reset
@@ -27658,6 +27667,7 @@ async def _rc_t5h_reminder_loop() -> None:
     T5H = 5 * 3600
     while not bot.is_closed():
         await asyncio.sleep(300)
+        await _activity_pause.wait_until_running("meets")
         try:
             guild = bot.get_guild(GUILD_ID)
             if not guild:
@@ -27779,6 +27789,7 @@ async def _rc_pruning_report_loop() -> None:
     global _rc_pruning_report_last_ran
     while not bot.is_closed():
         await asyncio.sleep(60)
+        await _activity_pause.wait_until_running("meets")
         try:
             now = datetime.now(_EST_TZ)
             # Monday (weekday 0), 12:15 AM
@@ -28056,6 +28067,7 @@ async def _hrsvp_auto_reset_loop() -> None:
     """Checks every 60 s: wipe RSVP panel once per week when a new Monday (EST) begins,
     ping @Meet Hosts. On startup, immediately catches up any missed Monday reset."""
     await bot.wait_until_ready()
+    await _activity_pause.wait_until_running("meets")
     from zoneinfo import ZoneInfo as _ZI
     from datetime import timedelta as _td
 
@@ -28092,6 +28104,7 @@ async def _hrsvp_auto_reset_loop() -> None:
     last_panel_signature = None
     while not bot.is_closed():
         await asyncio.sleep(60)
+        await _activity_pause.wait_until_running("meets")
         try:
             schedule = _asched_load().get("days", {})
             signature = (
@@ -28231,6 +28244,7 @@ async def _host_avail_nudge_loop() -> None:
     from zoneinfo import ZoneInfo as _ZI
     while not bot.is_closed():
         await asyncio.sleep(300)
+        await _activity_pause.wait_until_running("meets")
         try:
             now_et = datetime.now(_ZI("America/New_York"))
             if now_et.hour not in (9, 12, 15, 18, 21):
@@ -28295,6 +28309,7 @@ async def _rc_weekly_reset_loop() -> None:
     (`last_weekly_reset` in the rc reminder-state file) is persisted to disk so a
     redeploy can't re-fire the same week."""
     await bot.wait_until_ready()
+    await _activity_pause.wait_until_running("meets")
     from zoneinfo import ZoneInfo as _ZI
     from datetime import timedelta as _td
 
@@ -28355,6 +28370,7 @@ async def _rc_weekly_reset_loop() -> None:
     # ── Ongoing loop: try within ~60 s of Monday 00:00 EST, retaining data if needed ──
     while not bot.is_closed():
         await asyncio.sleep(60)
+        await _activity_pause.wait_until_running("meets")
         try:
             now_est            = datetime.now(_ZI("America/New_York"))
             most_recent_monday = (now_est - _td(days=now_est.weekday())).strftime("%Y-%m-%d")
@@ -28376,6 +28392,7 @@ async def _hrsvp_escalation_loop() -> None:
     await bot.wait_until_ready()
     while not bot.is_closed():
         await asyncio.sleep(21600)
+        await _activity_pause.wait_until_running("meets")
         try:
             schedule = _asched_load()
             guild    = discord.utils.get(bot.guilds, id=GUILD_ID)
@@ -29862,6 +29879,7 @@ async def _cc_reminder_loop() -> None:
     from zoneinfo import ZoneInfo as _ZI
     while not bot.is_closed():
         await asyncio.sleep(600)
+        await _activity_pause.wait_until_running("colors")
         try:
             st = _cc_load()
             pending = st.get("pending")
@@ -43808,7 +43826,7 @@ async def on_message(message: discord.Message) -> None:
         pass
 
     # --- Lobby-pictures: full pipeline (match meet, OCR, watermark, gate) ---
-    if message.channel.id == LOBBY_PICTURES_CHANNEL_ID:
+    if not _activity_pause.paused["meets"] and message.channel.id == LOBBY_PICTURES_CHANNEL_ID:
         try:
             await _lp_handle_lobby_post(message)
         except Exception as _lp_err:
@@ -43816,7 +43834,7 @@ async def on_message(message: discord.Message) -> None:
         return
 
     # --- Everyone-chat meet Q&A auto-responder ---
-    if message.channel.id == EVERYONE_CHAT_CHANNEL_ID:
+    if not _activity_pause.paused["meets"] and message.channel.id == EVERYONE_CHAT_CHANNEL_ID:
         import time as _time_mod
         content_lower = message.content.lower()
         if any(trigger in content_lower for trigger in _MEET_QA_TRIGGERS):
@@ -43891,7 +43909,7 @@ async def on_message(message: discord.Message) -> None:
                     pass
 
     # --- Host posters auto-embed + multi-action view + DM mirror ---
-    if message.channel.id == _POSTMEET_HOST_POSTERS_ID:
+    if not _activity_pause.paused["meets"] and message.channel.id == _POSTMEET_HOST_POSTERS_ID:
         _pm_images = [
             a for a in message.attachments
             if (a.content_type and a.content_type.startswith("image/"))
@@ -51325,10 +51343,15 @@ async def _cmd_bot_health(ctx: commands.Context):
     now = time.time()
 
     # ── Per-loop stats ──────────────────────────────────────────────
-    healthy = unstable = failing = alerted_count = 0
+    healthy = unstable = failing = alerted_count = paused_count = 0
     loop_lines = []
 
     for name in LOOP_NAMES:
+        domain = _paused_activity_domain(name)
+        if domain and _activity_pause.paused[domain]:
+            paused_count += 1
+            loop_lines.append(f"⏸ `{name}`\n↳ intentionally paused")
+            continue
         fails   = _loop_fail_counts.get(name, 0)
         last_ts = _loop_last_run.get(name)
         alerted = _loop_alerted.get(name, False)
@@ -51405,9 +51428,18 @@ async def _cmd_bot_health(ctx: commands.Context):
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(
+        name="⏸ Activity pauses",
+        value=(
+            f"**Car meets:** {'PAUSED' if _activity_pause.paused['meets'] else 'RUNNING'}\n"
+            f"**Crew colors:** {'PAUSED' if _activity_pause.paused['colors'] else 'RUNNING'}\n"
+            "Paused jobs are held, not failed. Use `!activitystatus` for controls."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="📊 Loop Summary",
         value=(
-            f"**Total:** {total}  |  ✅ {healthy}  ⚠️ {unstable}  ❌ {failing}\n"
+            f"**Total:** {total}  |  ✅ {healthy}  ⚠️ {unstable}  ❌ {failing}  ⏸ {paused_count}\n"
             f"**Staff alerted on:** {alerted_count} loop(s)"
         ),
         inline=False,
@@ -52488,6 +52520,12 @@ async def cmd_test_meet_reminders(ctx, kind: str = "1h"):
         f"*Note: idempotency flag NOT set — this won't block the auto-loop.*"
     )
 
+
+_activity_pause = ActivityPause("diff_data/activity_pause.json", _atomic_json_save)
+bot._activity_pause = _activity_pause
+_activity_pause.protect_namespace(globals(), __name__, main=True)
+_activity_pause.install_cog_loading(bot)
+_activity_pause.install_commands(bot, _LEADERSHIP_ROLE_IDS)
 
 from logging.handlers import RotatingFileHandler as _RotatingFileHandler
 _log_handler = _RotatingFileHandler(

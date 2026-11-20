@@ -50,6 +50,7 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
         def save(data):
             self.state = copy.deepcopy(data)
         self.ns = {
+            "_activity_pause": SimpleNamespace(wait_until_running=AsyncMock()),
             "discord": discord, "datetime": datetime, "timezone": timezone, "time": time,
             "timedelta": timedelta, "_EST_TZ": ZoneInfo("America/New_York"),
             "commands": SimpleNamespace(Context=object),
