@@ -9,6 +9,7 @@ from typing import Optional
 
 import discord
 from discord.ext import commands, tasks
+from utils import join_pause
 
 GUILD_ID               = 850386896509337710
 WELCOME_POST_CHANNEL_ID = 1486006000808103986
@@ -201,6 +202,10 @@ class CheckInHelpSelect(discord.ui.Select):
             return
 
         selected = self.values[0]
+        if selected in ("howto", "locked") and join_pause.is_paused(interaction.client):
+            return await interaction.response.send_message(
+                embed=join_pause.verification_embed(RULES_CHANNEL_ID), ephemeral=True,
+            )
 
         if selected == "progress":
             cog: DiffWelcomeJoinSystem = interaction.client.cogs.get("DiffWelcomeJoinSystem")
@@ -364,6 +369,14 @@ class DiffWelcomeJoinSystem(commands.Cog):
         return ProgressState(has_verified, posted, has_verified)
 
     def build_progress_embed(self, member: discord.Member, state: ProgressState) -> discord.Embed:
+        if join_pause.is_paused(self.bot):
+            embed = join_pause.verification_embed(RULES_CHANNEL_ID)
+            embed.add_field(
+                name="Your verification",
+                value="Verified" if state.has_verified_role else "Pending — use the rules verification button",
+                inline=False,
+            )
+            return embed
         embed = discord.Embed(
             title="📊 Your DIFF Check-In Progress",
             description=f"**Progress:** `{state.progress_bar()}`",
@@ -419,7 +432,9 @@ class DiffWelcomeJoinSystem(commands.Cog):
             value="**Locked** — complete all steps to unlock the meet area, chats, and events.",
             inline=False,
         )
-        embed.set_footer(text=FOOTER_TEXT)
+        if join_pause.is_paused(self.bot):
+            embed = join_pause.verification_embed(RULES_CHANNEL_ID)
+        embed.set_footer(text="Different Meets • Community access" if join_pause.is_paused(self.bot) else FOOTER_TEXT)
 
         file = None
         if EMBLEM_FILE_PATH.exists():
@@ -582,6 +597,13 @@ class DiffWelcomeJoinSystem(commands.Cog):
                         value=f"Head to <#{JOIN_MEETS_HUB_CHANNEL_ID}> to complete your PS5 setup and get your platform role.",
                         inline=False,
                     )
+                    if join_pause.is_paused(self.bot):
+                        embed = join_pause.verification_embed(RULES_CHANNEL_ID)
+                        embed.title = "You're verified — welcome to DIFF"
+                        embed.description = (
+                            "Your server verification is complete. Explore the community and follow staff announcements.\n\n"
+                            + join_pause.APPLICATION_NOTICE
+                        )
                     embed.set_footer(text="DIFF Meets • PlayStation GTA Car Meets")
                     await after.send(embed=embed)
                 except discord.Forbidden:
@@ -617,11 +639,15 @@ class DiffWelcomeJoinSystem(commands.Cog):
     @tasks.loop(minutes=REMINDER_CHECK_EVERY_MINUTES)
     async def reminder_loop(self):
         await self.bot.wait_until_ready()
+        if join_pause.is_paused(self.bot):
+            return
         guild = self.bot.get_guild(GUILD_ID)
         if guild is None:
             return
         verified_role = self.verified_role(guild)
         for row in self.db.reminder_candidates():
+            if join_pause.is_paused(self.bot):
+                return
             member = guild.get_member(int(row["user_id"]))
             if member is None:
                 continue

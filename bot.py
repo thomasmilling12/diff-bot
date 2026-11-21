@@ -28,6 +28,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from utils import reminder_layouts as _reminder_ui
 from utils.activity_pause import ActivityPause, symbol_domain as _paused_activity_domain
+from utils import join_pause as _join_pause
 
 try: 
     import aiohttp
@@ -9000,6 +9001,8 @@ def _ft_build_suggestions_embed(guild: discord.Guild) -> discord.Embed:
 async def _notify_toggle_role(interaction: discord.Interaction, role_id: int, label: str, on_emoji: str) -> None:
     """Shared notification opt-in toggle — used by the standalone NotifyMeetView
     panel and the Welcome Hub panel's notification buttons."""
+    if role_id == NOTIFY_ROLE_ID and not await _join_pause.allow_application(interaction):
+        return
     member = (interaction.user if isinstance(interaction.user, discord.Member)
               else (interaction.guild.get_member(interaction.user.id) if interaction.guild else None))
     if not member or not interaction.guild:
@@ -27069,6 +27072,12 @@ async def on_ready():
     _safe_add_view(_AppealActionView(),                                  "_AppealActionView")
     _safe_add_view(StaffReviewView(),                                    "StaffReviewView")
     _safe_add_view(JoinPlatformView(),                                   "JoinPlatformView")
+    try:
+        await asyncio.wait_for(_join_refresh_pause_notice(), timeout=15)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Join-hub pause notice refresh did not finish (%s)", type(exc).__name__,
+        )
     _safe_add_view(JoinTicketView(),                                     "JoinTicketView")
     _safe_add_view(NotifyMeetView(),                                     "NotifyMeetView")
     _safe_add_view(StaffDashboardView(),                                 "StaffDashboardView")
@@ -36138,6 +36147,11 @@ async def _cmd_notify(ctx: commands.Context, target: str = ""):
         opts = "  🏁 `!notify carmeet` — Car Meet Notifications\n  📸 `!notify media` — Media Live Notifications\n  📢 `!notify announcements` — Announcement Notifications"
         return await ctx.reply(f"**Pick a notification to toggle:**\n{opts}", mention_author=False)
     role_id, label, emoji = _NOTIFY_ROLES[key]
+    if role_id == NOTIFY_ROLE_ID and _join_pause.is_paused(bot):
+        return await ctx.reply(
+            _join_pause.APPLICATION_NOTICE + " Meet-notification sign-ups are also paused.",
+            mention_author=False,
+        )
     role = ctx.guild.get_role(role_id)
     if not role:
         return await ctx.reply("That notification role isn't configured.", mention_author=False)
@@ -42025,6 +42039,8 @@ async def _send_welcome_dm(member: discord.Member) -> None:
             ),
             inline=False,
         )
+        if _join_pause.is_paused(bot):
+            dm_embed = _join_pause.verification_embed(RULES_CHANNEL_ID)
         dm_embed.set_footer(text="Different Meets • EST. 2020  •  If you have questions just ask in the server!")
         if DIFF_LOGO_URL:
             dm_embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -43900,6 +43916,8 @@ async def on_message(message: discord.Message) -> None:
                     ),
                     inline=False,
                 )
+                if _join_pause.is_paused(bot):
+                    _nm_embed = _join_pause.verification_embed(RULES_CHANNEL_ID)
                 _nm_embed.set_footer(text="This message auto-deletes in 60 seconds • Different Meets")
                 try:
                     _nm_reply = await message.reply(embed=_nm_embed, mention_author=False)
@@ -44554,6 +44572,13 @@ def _join_build_panel_embed(guild=None) -> discord.Embed:
     )
     embed.set_image(url="https://media.discordapp.net/attachments/1485265848099799163/1486054805796557033/diff_classic.png?format=webp&quality=lossless")
     embed.set_footer(text="Different Meets • PS5 GTA Car Meets")
+    if _join_pause.is_paused(bot):
+        embed.description = (
+            _join_pause.APPLICATION_NOTICE
+            + f"\n\nRules verification remains available in <#{RULES_CHANNEL_ID}>. "
+            "Existing applications and tickets are being kept. "
+            "You can still explore the community and read staff announcements."
+        )
     return embed
 
 
@@ -44580,6 +44605,8 @@ async def _join_idle_timer(channel: discord.TextChannel, applicant: discord.Memb
     _JOIN_IDLE_CLOSE = 10 * 60   # 10 more minutes — then delete
 
     await asyncio.sleep(_JOIN_IDLE_WARN)
+    if _join_pause.is_paused(bot):
+        return
 
     # Check if any image was sent by the applicant
     def _has_photos(msgs: list[discord.Message]) -> bool:
@@ -44616,6 +44643,8 @@ async def _join_idle_timer(channel: discord.TextChannel, applicant: discord.Memb
         pass
 
     await asyncio.sleep(_JOIN_IDLE_CLOSE)
+    if _join_pause.is_paused(bot):
+        return
 
     # Final check — did they send photos during the grace period?
     try:
@@ -44645,6 +44674,8 @@ async def _join_idle_timer(channel: discord.TextChannel, applicant: discord.Memb
 
     await asyncio.sleep(8)
     _join_ticket_tasks.pop(channel.id, None)
+    if _join_pause.is_paused(bot):
+        return
     try:
         await channel.delete(reason="Join ticket auto-closed — no photos sent within 30 minutes")
     except discord.HTTPException:
@@ -44916,6 +44947,12 @@ class JoinPlatformSelect(discord.ui.Select):
                 )
 
             platform = self.values[0]
+            if platform == "playstation" and not await _join_pause.allow_application(interaction):
+                return
+            if platform == "faq" and _join_pause.is_paused(interaction.client):
+                return await interaction.response.send_message(
+                    embed=_join_pause.verification_embed(RULES_CHANNEL_ID), ephemeral=True,
+                )
 
             if platform in ("xbox", "pc"):
                 is_xbox = platform == "xbox"
@@ -45133,6 +45170,8 @@ class JoinPsnModal(discord.ui.Modal, title="PlayStation Join Application"):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
 
+        if not await _join_pause.allow_application(interaction):
+            return
         clean_psn = _join_sanitize_psn(str(self.psn_name.component.value or ""))
         car_type_val = str(self.car_type.component.value or "").strip()
         heard_from_val = str(self.heard_from.component.value or "").strip()
@@ -45365,6 +45404,10 @@ class JoinPlatformView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(JoinPlatformSelect())
         self.add_item(_CarRequirementsButton(row=1, key="jh"))
+        if _join_pause.is_paused(bot):
+            for item in self.children:
+                if isinstance(item, JoinPlatformSelect):
+                    item.placeholder = "Applications on hold — information available"
         # Clear the platform dropdown's selection after each use — even on
         # freshly posted/refreshed panels. The global add_view hook only wraps
         # the persistent instance (which handles interactions after a restart);
@@ -45395,6 +45438,8 @@ class JoinPlatformView(discord.ui.View):
     async def notify_toggle(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Server only.", ephemeral=True)
+        if not await _join_pause.allow_application(interaction):
+            return
         role = interaction.guild.get_role(NOTIFY_ROLE_ID)
         if not role:
             return await interaction.response.send_message("Notify role not found. Please contact staff.", ephemeral=True)
@@ -46459,6 +46504,23 @@ async def refresh_join_panel(interaction: discord.Interaction) -> None:
             pass
     await channel.send(embed=_join_build_panel_embed(interaction.guild), view=JoinPlatformView())
     await interaction.followup.send(f"Join Hub panel reposted in {channel.mention} (no existing panel found).", ephemeral=True)
+
+
+async def _join_refresh_pause_notice():
+    """Refresh the existing hub in place on paused startup; never post or ping."""
+    if not _join_pause.is_paused(bot):
+        return
+    channel = bot.get_channel(JOIN_PANEL_CHANNEL_ID)
+    if channel is None:
+        return
+    try:
+        async for message in channel.history(limit=30):
+            if (message.author.id == bot.user.id
+                    and any(e.title and "JOIN HUB" in e.title.upper() for e in message.embeds)):
+                await message.edit(embed=_join_build_panel_embed(channel.guild), view=JoinPlatformView())
+                return
+    except discord.HTTPException:
+        logging.getLogger(__name__).warning("Could not update the existing join-hub pause notice")
 
 
 # =========================

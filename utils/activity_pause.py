@@ -59,6 +59,10 @@ MEET_FUNCTIONS = {
     "_hierarchy_attendance_loop_logic", "hierarchy_attendance_loop",
     "_host_onboard_loop", "record_meet_attendance", "post_or_refresh_live_attendance",
     "_re_engagement_logic", "_re_engagement_loop",
+    "_unverified_dm_reminder_logic", "_unverified_dm_reminder_loop",
+    "__join_auto_bump_loop_logic", "_join_auto_bump_loop",
+    "__join_micro_bump_logic", "_join_micro_bump_loop",
+    "__stale_join_alert_task_logic", "_stale_join_alert_task",
 }
 COLOR_FUNCTIONS = {"_color_schedule_loop_logic", "color_schedule_loop", "color_ops_refresh_loop",
                    "_post_or_refresh_color_team_panel"}
@@ -70,6 +74,8 @@ MIXED_JOBS = {
     ("diff_server_improvements", "_inactive_member_check"): "meets",
     ("diff_server_improvements", "_crew_leaderboard_weekly"): "meets",
     ("diff_community_features", "_poll_check"): "meets",
+    ("diff_welcome_join", "reminder_loop"): "meets",
+    ("diff_unverified_panel", "_daily_auto_ping"): "meets",
 }
 MIXED_CONTROLS = {
     ("diff_community_features", "_PollView"): "meets",

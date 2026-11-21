@@ -9,6 +9,7 @@ from typing import Optional
 import discord
 from discord.ext import commands, tasks
 from zoneinfo import ZoneInfo
+from utils import join_pause
 
 # =========================
 # CONFIG
@@ -93,7 +94,7 @@ def _set_last_reminder_ts(ts: float) -> None:
     _save(d)
 
 
-def _build_reminder_embed(sender_name: str) -> discord.Embed:
+def _build_reminder_embed(sender_name: str, *, paused: bool = False) -> discord.Embed:
     """Shared Verification Reminder embed (manual button + daily auto-ping)."""
     ping_embed = discord.Embed(
         title="🔔 Verification Reminder",
@@ -112,7 +113,8 @@ def _build_reminder_embed(sender_name: str) -> discord.Embed:
     )
     ping_embed.add_field(
         name="🚗 After You're Verified",
-        value=f"Head to <#{JOIN_MEETS_CHANNEL}> to get started with car meets.",
+        value=(join_pause.APPLICATION_NOTICE + " Explore the community and follow staff announcements."
+               if paused else f"Head to <#{JOIN_MEETS_CHANNEL}> to get started with car meets."),
         inline=False,
     )
     ping_embed.set_thumbnail(url=DIFF_LOGO_URL)
@@ -121,7 +123,7 @@ def _build_reminder_embed(sender_name: str) -> discord.Embed:
 
 
 async def _post_verification_reminder(
-    channel: discord.TextChannel, role: discord.Role, sender_name: str
+    channel: discord.TextChannel, role: discord.Role, sender_name: str, *, paused: bool = False
 ) -> bool:
     """Post the reminder ping, deleting the previous one so the channel never
     stacks duplicates. Returns True if the new message was sent."""
@@ -137,7 +139,7 @@ async def _post_verification_reminder(
 
     new_msg = await channel.send(
         content=role.mention,
-        embed=_build_reminder_embed(sender_name),
+        embed=_build_reminder_embed(sender_name, paused=paused),
         allowed_mentions=discord.AllowedMentions(roles=True),
     )
     _set_last_ping_msg_id(guild_id, new_msg.id)
@@ -212,7 +214,10 @@ class PingButton(discord.ui.Button):
         count = len(_unverified_members(interaction.guild))
         sender_name = member.display_name.split(" | ")[0].strip()
 
-        await _post_verification_reminder(interaction.channel, role, sender_name)
+        await _post_verification_reminder(
+            interaction.channel, role, sender_name,
+            paused=join_pause.is_paused(interaction.client),
+        )
 
         # A manual ping counts as a recent reminder — the auto-loop skips its
         # next slot if this happened within the last ~2.5 hours.
@@ -332,6 +337,8 @@ class UnverifiedPanelCog(commands.Cog):
         the manual button press. Disk-guarded: skips the slot if ANY reminder
         (auto or manual) went out within the last ~2.5h, so redeploys never
         double-post and manual presses just delay the next auto-ping."""
+        if join_pause.is_paused(self.bot):
+            return
         try:
             if time.time() - _get_last_reminder_ts() < 2.5 * 3600:
                 return
@@ -345,6 +352,8 @@ class UnverifiedPanelCog(commands.Cog):
                 # Nobody unverified — mark the slot done, no ping needed.
                 _set_last_reminder_ts(time.time())
                 return
+            if join_pause.is_paused(self.bot):
+                return
             await _post_verification_reminder(channel, role, "DIFF Bot (auto-reminder)")
             _set_last_reminder_ts(time.time())
             print("[UnverifiedPanel] Auto-ping sent.")
@@ -356,6 +365,11 @@ class UnverifiedPanelCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     def _build_embed(self, guild: Optional[discord.Guild] = None) -> discord.Embed:
+        if join_pause.is_paused(self.bot):
+            embed = join_pause.verification_embed(RULES_CHANNEL_ID)
+            embed.set_thumbnail(url=DIFF_LOGO_URL)
+            embed.set_footer(text=FOOTER_TEXT)
+            return embed
         embed = discord.Embed(
             title="🔒 Verification Required",
             description="Complete the steps below to unlock full access to DIFF.",
@@ -415,6 +429,8 @@ class UnverifiedPanelCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         print("[UnverifiedPanel] Cog ready.")
+        if join_pause.is_paused(self.bot):
+            await self.ensure_panel()
 
     @commands.command(name="refresh_unverified_panel")
     @commands.has_permissions(manage_guild=True)

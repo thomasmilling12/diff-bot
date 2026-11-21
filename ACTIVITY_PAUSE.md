@@ -37,8 +37,8 @@ and reports the problem instead of silently resuming.
   visible and can still change on Discord. The bot does not tally them, close
   the vote, or choose a winner while paused. Review that outstanding vote before
   resuming; this change does not delete reactions or change channel permissions.
-- Moderation, blacklist tools, existing no-show appeals, applications,
-  interviews, backups, and unrelated bot services remain enabled.
+- Moderation, blacklist tools, existing no-show appeals, existing application
+  reviews, crew applications/interviews, backups, and unrelated bot services remain enabled.
 - A Discord request or operation already in progress when staff pause may
   finish. New work is held; pausing is not a rollback of completed actions.
 
@@ -60,3 +60,31 @@ Do not use Reset Responses or delete panels to activate the pause.
 
 Run `python -m unittest discover -s tests -p 'test_activity_pause.py'`.
 The tests do not start the bot or connect to Discord.
+
+## Join hub and verification during the meet pause
+
+New car-meet applications and car-meet notification toggles are also paused.
+Old join-panel controls and an application form opened before the pause check
+the current pause state before creating a ticket or assigning a role.
+Media/announcement notification choices and existing meet-notification roles
+are unchanged.
+
+Rules verification remains available. Welcome messages, check-in help/progress,
+and the unverified panel explain that server verification does not require a
+car-meet application. The existing join hub and pinned unverified panel are
+updated in place on paused startup; missing messages are not automatically
+recreated or pinged. Other older welcome messages are not rewritten in bulk.
+The existing staff refresh commands remain available.
+
+Automatic unverified channel pings, unverified/check-in reminder DMs, and join
+ticket escalation/auto-close work are held. Their reminder markers and application
+records are not marked completed by the pause. Existing tickets and staff
+review controls remain available, and staff can still send a manual verification
+reminder with their existing permissions.
+
+These checks follow the existing `meets` pause setting, not a separate timer.
+Explicitly resuming meets restores the normal join/reminder behavior, including
+existing overdue-job policies. After changing that setting, use
+`/refresh-join-panel` and `!refresh_unverified_panel` to refresh the visible
+panel text immediately. Pause guards always consult current state, even when
+an older message is still displayed.
